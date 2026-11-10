@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Game, loadSave, type HudState, type ObjectiveState } from "./game/Game";
+import { Game, loadSave, SAVE_KEY, type HudState, type ObjectiveState } from "./game/Game";
 import { MISSIONS, type MissionDef } from "./game/story";
 import soldierUrl from "./assets/soldier.glb?url";
 
@@ -118,13 +118,25 @@ export default function App() {
             <div className="mt-10">
               <div className="mb-4 flex items-center justify-between">
                 <h3 className="text-xs font-bold uppercase tracking-[0.4em] text-zinc-300">Campaign</h3>
-                <span className="font-mono text-xs text-zinc-500">
-                  Progress: {saved} / {MISSIONS.length - 1} missions unlocked
-                </span>
+                <div className="flex items-center gap-3">
+                  <span className="font-mono text-xs text-zinc-500">
+                    Progress: {saved} / {MISSIONS.length - 1} missions unlocked
+                  </span>
+                  <button
+                    onClick={() => {
+                      try { localStorage.removeItem(SAVE_KEY); } catch {}
+                      setSaved(0);
+                    }}
+                    className="rounded border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[10px] uppercase tracking-wider text-zinc-400 transition hover:bg-white/10 hover:text-zinc-200"
+                    title="Clears saved progress (localStorage)"
+                  >
+                    Reset
+                  </button>
+                </div>
               </div>
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                 {MISSIONS.map((m) => {
-                  const locked = m.id > saved;
+                  const locked = !m.practice && m.id > saved;
                   return (
                     <button
                       key={m.id}

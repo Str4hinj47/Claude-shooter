@@ -67,11 +67,15 @@ export interface GameCallbacks {
   onMissionEnd: (mission: MissionDef, success: boolean) => void;
 }
 
-const SAVE_KEY = "vanguard_blackout_save_v1";
+export const SAVE_KEY = "vanguard_blackout_save_v1";
 export function loadSave(): { unlocked: number } {
   try {
     const raw = localStorage.getItem(SAVE_KEY);
-    if (raw) return JSON.parse(raw) as { unlocked: number };
+    if (raw) {
+      const parsed = JSON.parse(raw) as { unlocked?: unknown };
+      const u = Number(parsed?.unlocked);
+      if (Number.isFinite(u) && u >= 0) return { unlocked: Math.floor(u) };
+    }
   } catch {
     /* ignore */
   }
