@@ -141,7 +141,11 @@ export default function App() {
                     <button
                       key={m.id}
                       disabled={locked}
-                      onClick={() => (locked ? null : setBriefing(m))}
+                      onClick={() => {
+                        if (locked) return;
+                        setBriefing(m);
+                        setScreen("briefing");
+                      }}
                       className="group relative overflow-hidden rounded-xl border bg-white/[0.03] p-5 text-left transition hover:bg-white/[0.07] disabled:cursor-not-allowed disabled:opacity-40"
                       style={{ borderColor: locked ? "rgba(255,255,255,0.08)" : m.accent + "55" }}
                     >
