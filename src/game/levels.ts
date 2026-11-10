@@ -664,6 +664,9 @@ class Kit {
     const bow = this.mesh(hullMat, new THREE.CylinderGeometry(3.2, 5, 14, 18), x, 0, z - 25, 0);
     bow.rotation.x = Math.PI / 2;
     this.scene.add(hull, bow);
+    // red waterline stripe
+    const stripe = this.mesh(new THREE.MeshStandardMaterial({ color: 0x8a1c1c, roughness: 0.6, metalness: 0.4 }), new THREE.BoxGeometry(10.04, 0.45, 44.04), x, 0.05, z);
+    this.scene.add(stripe);
     // waterline collider — blocks walking through the hull, shots at deck pass over
     this.colliders.push(this.box(hullMat, 14, 2.9, 44, x, -1.45, z, 0));
     // deck — walkable surface (top at y = 3.5)
