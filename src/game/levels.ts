@@ -234,6 +234,96 @@ function adTex(rng: () => number): THREE.CanvasTexture {
   return t;
 }
 
+/* ---- roof surface textures ---- */
+/** flat-roof gravel/membrane: gray noise + speckles */
+function gravelTex(size: number, rng: () => number): THREE.CanvasTexture {
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const g = c.getContext("2d")!;
+  g.fillStyle = "#5a5a5e";
+  g.fillRect(0, 0, size, size);
+  for (let i = 0; i < 260; i++) {
+    const x = rng() * size;
+    const y = rng() * size;
+    const r = 2 + rng() * 12;
+    const a = 0.05 + rng() * 0.2;
+    g.fillStyle = rng() > 0.5 ? `rgba(0,0,0,${a})` : `rgba(255,255,255,${a * 0.8})`;
+    g.beginPath();
+    g.arc(x, y, r, 0, Math.PI * 2);
+    g.fill();
+  }
+  for (let i = 0; i < 4000; i++) {
+    g.fillStyle = `rgba(0,0,0,${0.05 + rng() * 0.15})`;
+    g.fillRect(rng() * size, rng() * size, 1 + rng() * 2, 1 + rng() * 2);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+/** tile roof: horizontal tile rows (bands) stacking along the slope */
+function tileTex(size: number, rng: () => number): THREE.CanvasTexture {
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const g = c.getContext("2d")!;
+  const rows = 6;
+  for (let r = 0; r < rows; r++) {
+    const base = 0.62 + rng() * 0.18;
+    g.fillStyle = `rgb(${Math.floor(120 * base)},${Math.floor(62 * base)},${Math.floor(44 * base)})`;
+    g.fillRect(0, (r * size) / rows, size, size / rows);
+    // tile highlight + shadow within the row
+    g.fillStyle = "rgba(255,220,180,0.10)";
+    g.fillRect(0, (r * size) / rows, size, size / rows / 3);
+    g.fillStyle = "rgba(0,0,0,0.18)";
+    g.fillRect(0, ((r + 1) * size) / rows - 3, size, 3);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+/** slate roof: finer dark bands */
+function slateTex(size: number, rng: () => number): THREE.CanvasTexture {
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const g = c.getContext("2d")!;
+  const rows = 9;
+  for (let r = 0; r < rows; r++) {
+    const v = 0.32 + rng() * 0.14;
+    g.fillStyle = `rgb(${Math.floor(70 * v)},${Math.floor(74 * v)},${Math.floor(80 * v)})`;
+    g.fillRect(0, (r * size) / rows, size, size / rows);
+    g.fillStyle = "rgba(255,255,255,0.07)";
+    g.fillRect(0, (r * size) / rows, size, size / rows / 3);
+    g.fillStyle = "rgba(0,0,0,0.25)";
+    g.fillRect(0, ((r + 1) * size) / rows - 2, size, 2);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+/** corrugated metal: vertical wave stripes */
+function corrugTex(size: number, rng: () => number): THREE.CanvasTexture {
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const g = c.getContext("2d")!;
+  g.fillStyle = "#5a5f66";
+  g.fillRect(0, 0, size, size);
+  const waves = 12;
+  for (let i = 0; i < waves; i++) {
+    const x = (i * size) / waves;
+    g.fillStyle = i % 2 ? "rgba(255,255,255,0.10)" : "rgba(0,0,0,0.22)";
+    g.fillRect(x, 0, size / waves, size);
+  }
+  for (let i = 0; i < 2000; i++) {
+    g.fillStyle = `rgba(0,0,0,${0.04 + rng() * 0.1})`;
+    g.fillRect(rng() * size, rng() * size, 1 + rng() * 2, 1 + rng() * 2);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
 /** building facade: colour map + emissive glow map, tiled per bay/floor */
 interface FacadeOpts {
   base: string;
@@ -312,6 +402,8 @@ function facade(o: FacadeOpts) {
     glow: new THREE.CanvasTexture(glow),
     tileW,
     tileH: o.floorH * o.rows,
+    rows: o.rows,
+    cols: o.cols,
   };
 }
 
@@ -468,6 +560,40 @@ class Kit {
   }
 
   /* ---------------- buildings ---------------- */
+  /** wall material with the facade tiled to this face's real length (bays align
+      across faces and corners) */
+  wallFaceMat(f: ReturnType<typeof facade>, lenH: number, h: number, emissive: number): THREE.MeshStandardMaterial {
+    const m = new THREE.MeshStandardMaterial({
+      map: f.map.clone(),
+      bumpMap: f.map.clone(),
+      bumpScale: 0.06,
+      roughness: 0.85,
+      metalness: 0.02,
+      emissive: 0xffffff,
+      emissiveMap: f.glow.clone(),
+      emissiveIntensity: emissive,
+    });
+    const repX = Math.max(1, lenH / f.tileW);
+    const repY = Math.max(1, h / f.tileH);
+    for (const tx of [m.map, m.bumpMap, m.emissiveMap] as THREE.Texture[]) {
+      tx!.wrapS = tx!.wrapT = THREE.RepeatWrapping;
+      tx!.repeat.set(repX, repY);
+      tx!.needsUpdate = true;
+    }
+    return m;
+  }
+
+  /** roof surface material: clone the roof material and apply a surface texture */
+  roofSurfaceMat(mat: THREE.Material, map: THREE.Texture, rep: [number, number]): THREE.MeshStandardMaterial {
+    const rm = mat.clone() as THREE.MeshStandardMaterial;
+    rm.map = map.clone();
+    rm.map!.wrapS = rm.map!.wrapT = THREE.RepeatWrapping;
+    rm.map!.repeat.set(rep[0], rep[1]);
+    rm.map!.colorSpace = THREE.SRGBColorSpace;
+    rm.needsUpdate = true;
+    return rm;
+  }
+
   building(o: {
     x: number;
     z: number;
@@ -484,38 +610,66 @@ class Kit {
     collideTo?: number; // shorter collider (leaves roofline shootable)
   }) {
     const { x, z, w, d, h } = o;
-    // wall (facade texture tiled to real dimensions)
-    const wallMat = new THREE.MeshStandardMaterial({
-      map: o.facade.map.clone(),
-      bumpMap: o.facade.map.clone(),
-      bumpScale: 0.06,
-      roughness: 0.85,
-      metalness: 0.02,
-      emissive: 0xffffff,
-      emissiveMap: o.facade.glow.clone(),
-      emissiveIntensity: o.emissive ?? 0,
-    });
-    wallMat.map!.wrapS = wallMat.map!.wrapT = THREE.RepeatWrapping;
-    wallMat.map!.repeat.set(Math.max(1, w / o.facade.tileW), Math.max(1, h / o.facade.tileH));
-    wallMat.map!.needsUpdate = true;
-    wallMat.emissiveMap!.wrapS = wallMat.emissiveMap!.wrapT = THREE.RepeatWrapping;
-    wallMat.emissiveMap!.repeat.copy(wallMat.map!.repeat);
-    wallMat.emissiveMap!.needsUpdate = true;
-    wallMat.bumpMap!.wrapS = wallMat.bumpMap!.wrapT = THREE.RepeatWrapping;
-    wallMat.bumpMap!.repeat.copy(wallMat.map!.repeat);
-    wallMat.bumpMap!.needsUpdate = true;
-    const wall = this.box(wallMat, w, h, d, x, 0, z, o.ry ?? 0);
+    const ry = o.ry ?? 0;
+    const t = 0.3;
     const colH = o.collideTo ?? h;
-    this.solid(wall);
+    // hidden collision box (identical AABB to before — gameplay unchanged)
+    const collider = this.box(this.wallFaceMat(o.facade, w, h, o.emissive ?? 0), w, colH, d, x, 0, z, ry);
+    this.solid(collider);
     if (colH < h) {
       // trim collider so rooftop combat works (raycast gap at roofline)
       const last = this.aabbs[this.aabbs.length - 1];
       last.max.y = colH;
     }
+    // visual shell (non-colliding) in a rotated group; outer faces flush with the collider
+    const g = new THREE.Group();
+    g.position.set(x, 0, z);
+    g.rotation.y = ry;
+    this.scene.add(g);
+    // four wall faces, each tiled to its own length so bays line up at corners
+    for (const sz of [-1, 1]) {
+      const m = this.mesh(this.wallFaceMat(o.facade, w, h, o.emissive ?? 0), new THREE.BoxGeometry(w, h, t), 0, h / 2, sz * (d / 2 - t / 2), 0);
+      g.add(m);
+    }
+    for (const sx of [-1, 1]) {
+      const m = this.mesh(this.wallFaceMat(o.facade, d, h, o.emissive ?? 0), new THREE.BoxGeometry(t, h, d), sx * (w / 2 - t / 2), h / 2, 0, 0);
+      g.add(m);
+    }
+    // corner quoins (protrude slightly, hide face seams)
+    const quoinMat = new THREE.MeshStandardMaterial({ color: 0x5a5550, roughness: 0.9 });
+    for (const sx of [-1, 1]) {
+      for (const sz of [-1, 1]) {
+        const q = this.mesh(quoinMat, new RoundedBoxGeometry(t * 1.15, h, t * 1.15, 2, 0.03), sx * (w / 2 + t * 0.28), h / 2, sz * (d / 2 + t * 0.28), 0);
+        g.add(q);
+      }
+    }
+    // plinth band around the base
+    const plinthMat = new THREE.MeshStandardMaterial({ color: 0x4a4640, roughness: 0.92 });
+    for (const sz of [-1, 1]) {
+      const p = this.mesh(plinthMat, new RoundedBoxGeometry(w + 0.1, 0.5, t + 0.12, 3, 0.04), 0, 0.25, sz * (d / 2 + 0.04), 0);
+      g.add(p);
+    }
+    for (const sx of [-1, 1]) {
+      const p = this.mesh(plinthMat, new RoundedBoxGeometry(t + 0.12, 0.5, d + 0.1, 3, 0.04), sx * (w / 2 + 0.04), 0.25, 0, 0);
+      g.add(p);
+    }
+    // floor-line bands (sill/lintel courses) at each floor level
+    const floorH = o.facade.tileH / o.facade.rows;
+    const bandMat = new THREE.MeshStandardMaterial({ color: 0x8a8580, roughness: 0.9 });
+    for (let k = 1; k * floorH < h - 0.2; k++) {
+      for (const sz of [-1, 1]) {
+        const b = this.mesh(bandMat, new RoundedBoxGeometry(w + 0.08, 0.14, t + 0.1, 2, 0.02), 0, k * floorH, sz * (d / 2 + 0.03), 0);
+        g.add(b);
+      }
+      for (const sx of [-1, 1]) {
+        const b = this.mesh(bandMat, new RoundedBoxGeometry(t + 0.1, 0.14, d + 0.08, 2, 0.02), sx * (w / 2 + 0.03), k * floorH, 0, 0);
+        g.add(b);
+      }
+    }
     if (o.roof !== "none") this.roof(x, z, w, d, h, o.roof ?? "flat", o.roofMat);
     if (o.parapet) this.parapet(x, z, w, d, h, o.roofMat);
     if (o.details) this.roofDetails(x, z, w, d, h, o.roofMat);
-    return wall;
+    return collider;
   }
 
   /* hollow building with a doorway on the +z face — player can walk inside.
@@ -541,41 +695,60 @@ class Kit {
     const doorW = o.doorW ?? 1.8;
     const doorH = o.doorH ?? 2.4;
     const ry = o.ry ?? 0;
-    const wallMat = new THREE.MeshStandardMaterial({
-      map: o.facade.map.clone(),
-      bumpMap: o.facade.map.clone(),
-      bumpScale: 0.06,
-      roughness: 0.85,
-      metalness: 0.02,
-      emissive: 0xffffff,
-      emissiveMap: o.facade.glow.clone(),
-      emissiveIntensity: o.emissive ?? 0,
-    });
-    wallMat.map!.wrapS = wallMat.map!.wrapT = THREE.RepeatWrapping;
-    wallMat.map!.repeat.set(Math.max(1, w / o.facade.tileW), Math.max(1, h / o.facade.tileH));
-    wallMat.map!.needsUpdate = true;
-    wallMat.emissiveMap!.wrapS = wallMat.emissiveMap!.wrapT = THREE.RepeatWrapping;
-    wallMat.emissiveMap!.repeat.copy(wallMat.map!.repeat);
-    wallMat.emissiveMap!.needsUpdate = true;
-    wallMat.bumpMap!.wrapS = wallMat.bumpMap!.wrapT = THREE.RepeatWrapping;
-    wallMat.bumpMap!.repeat.copy(wallMat.map!.repeat);
-    wallMat.bumpMap!.needsUpdate = true;
+    const em = o.emissive ?? 0;
+    const wallNorth = this.wallFaceMat(o.facade, w, h, em);
+    const wallSouth = this.wallFaceMat(o.facade, w, h, em);
+    const wallSide = this.wallFaceMat(o.facade, d - 2 * t, h, em);
+    const wallDoor = this.wallFaceMat(o.facade, w, h, em);
 
     // north + south walls (full span, along X)
-    this.solid(this.box(wallMat, w, h, t, x, 0, z - d / 2, ry), "concrete");
-    this.solid(this.box(wallMat, w, h, t, x, 0, z + d / 2, ry), "concrete");
+    this.solid(this.box(wallNorth, w, h, t, x, 0, z - d / 2, ry), "concrete");
+    this.solid(this.box(wallSouth, w, h, t, x, 0, z + d / 2, ry), "concrete");
     // west + east walls (along Z)
     const sideSpan = d - 2 * t;
     const doorInset = doorW / 2 + t;
     for (const sx of [-1, 1]) {
       const cx = x + sx * (w / 2);
-      this.solid(this.box(wallMat, t, h, sideSpan, cx, 0, z, ry), "concrete");
+      this.solid(this.box(wallSide, t, h, sideSpan, cx, 0, z, ry), "concrete");
     }
     // lintel above the door on the south wall (keeps the opening head solid)
-    this.solid(this.box(wallMat, doorW, h - doorH, t, x, 0, z + d / 2, ry), "concrete");
+    this.solid(this.box(wallDoor, doorW, h - doorH, t, x, 0, z + d / 2, ry), "concrete");
     // door reveal on the south wall (two jamb returns)
     for (const sx of [-1, 1]) {
-      this.solid(this.box(wallMat, doorW / 2, doorH, t, x + sx * doorInset, 0, z + d / 2, ry), "concrete");
+      this.solid(this.box(wallDoor, doorW / 2, doorH, t, x + sx * doorInset, 0, z + d / 2, ry), "concrete");
+    }
+
+    // exterior trim: plinth + floor bands (visual only)
+    const g = new THREE.Group();
+    g.position.set(x, 0, z);
+    g.rotation.y = ry;
+    this.scene.add(g);
+    const plinthMat = new THREE.MeshStandardMaterial({ color: 0x4a4640, roughness: 0.92 });
+    const bandMat = new THREE.MeshStandardMaterial({ color: 0x8a8580, roughness: 0.9 });
+    const floorH = o.facade.tileH / o.facade.rows;
+    for (const sz of [-1, 1]) {
+      const p = this.mesh(plinthMat, new RoundedBoxGeometry(w + 0.1, 0.5, t + 0.12, 3, 0.04), 0, 0.25, sz * (d / 2 + 0.04), 0);
+      g.add(p);
+    }
+    for (const sx of [-1, 1]) {
+      const p = this.mesh(plinthMat, new RoundedBoxGeometry(t + 0.12, 0.5, d + 0.1, 3, 0.04), sx * (w / 2 + 0.04), 0.25, 0, 0);
+      g.add(p);
+    }
+    for (let k = 1; k * floorH < h - 0.2; k++) {
+      for (const sz of [-1, 1]) {
+        const b = this.mesh(bandMat, new RoundedBoxGeometry(w + 0.08, 0.14, t + 0.1, 2, 0.02), 0, k * floorH, sz * (d / 2 + 0.03), 0);
+        g.add(b);
+      }
+      for (const sx of [-1, 1]) {
+        const b = this.mesh(bandMat, new RoundedBoxGeometry(t + 0.1, 0.14, d + 0.08, 2, 0.02), sx * (w / 2 + 0.03), k * floorH, 0, 0);
+        g.add(b);
+      }
+    }
+    // door frame (trim around the doorway on the outside)
+    const frameMat = new THREE.MeshStandardMaterial({ color: 0x3a3328, roughness: 0.9 });
+    g.add(this.mesh(frameMat, new RoundedBoxGeometry(doorW + 0.2, 0.14, 0.14, 2, 0.03), 0, doorH + 0.07, d / 2 + 0.07, 0));
+    for (const sx of [-1, 1]) {
+      g.add(this.mesh(frameMat, new RoundedBoxGeometry(0.14, doorH + 0.2, 0.14, 2, 0.03), sx * (doorW / 2 + 0.07), (doorH + 0.2) / 2, d / 2 + 0.07, 0));
     }
 
     // interior floor slab (visual + walkable top)
@@ -585,6 +758,53 @@ class Kit {
     this.scene.add(floor);
     this.colliders.push(floor);
     this.aabbs.push(new THREE.Box3().setFromObject(floor));
+    // floor plank lines
+    const plankMat = new THREE.MeshStandardMaterial({ color: 0x4a3f33, roughness: 0.95 });
+    for (let px = -(w - 2 * t) / 2 + 0.5; px < (w - 2 * t) / 2; px += 0.7) {
+      const pl = this.mesh(plankMat, new THREE.BoxGeometry(0.03, 0.01, d - 2 * t - 0.2), x + px, 0.19, z, ry);
+      this.scene.add(pl);
+    }
+
+    // interior wall liners (hide mirrored facade texture from inside)
+    const linerMat = new THREE.MeshStandardMaterial({ color: 0x2a2622, roughness: 0.95 });
+    const linerH = h - 0.15;
+    const innerW = w - 2 * t - 0.1;
+    const innerD = d - 2 * t - 0.1;
+    const addLiner = (lx: number, lz: number, lw: number, ld: number) => {
+      const ln = this.mesh(linerMat, new THREE.BoxGeometry(lw, linerH, ld), lx, linerH / 2 + 0.08, lz, ry);
+      this.scene.add(ln);
+    };
+    addLiner(x, z - d / 2 + t / 2 - 0.05, innerW, 0.08); // north
+    addLiner(x, z + d / 2 - t / 2 - 0.05, innerW, 0.08); // south (behind door — mostly covered by door threshold)
+    for (const sx of [-1, 1]) addLiner(x + sx * (w / 2 - t / 2 - 0.05), z, 0.08, innerD); // east/west
+
+    // interior furniture (visual only — placed clear of the doorway path)
+    const furnMat = new THREE.MeshStandardMaterial({ color: 0x5a4a38, roughness: 0.9 });
+    const crateMat = new THREE.MeshStandardMaterial({ color: 0x6a5438, roughness: 0.92 });
+    const ix = x, iz = z - d * 0.24;
+    // table
+    this.scene.add(this.mesh(furnMat, new RoundedBoxGeometry(1.3, 0.08, 0.75, 3, 0.02), ix, 0.95, iz, ry));
+    for (const [dx, dz] of [[-0.55, -0.28], [0.55, -0.28], [-0.55, 0.28], [0.55, 0.28]]) {
+      this.scene.add(this.mesh(furnMat, new THREE.BoxGeometry(0.07, 0.9, 0.07), ix + dx, 0.49, iz + dz, ry));
+    }
+    // crates
+    for (const [cx, cz, s] of [[ix - 1.1, iz + 0.3, 0.6], [ix + 1.1, iz + 0.35, 0.5]]) {
+      this.scene.add(this.mesh(crateMat, new RoundedBoxGeometry(s, s, s, 3, 0.05), cx, s / 2 + 0.12, cz, ry + 0.2));
+    }
+    // shelf unit against the north wall
+    this.scene.add(this.mesh(furnMat, new RoundedBoxGeometry(1.6, 1.6, 0.4, 3, 0.04), ix + 0.6, 0.9, z - d / 2 + 0.5, ry));
+    for (const sy of [0.5, 1.0, 1.5]) {
+      this.scene.add(this.mesh(furnMat, new THREE.BoxGeometry(1.5, 0.05, 0.38), ix + 0.6, sy, z - d / 2 + 0.5, ry));
+    }
+    // hanging lamp
+    const lampRod = this.mesh(new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.7, metalness: 0.8 }), new THREE.CylinderGeometry(0.02, 0.02, 0.7, 6), ix - 0.4, h - 0.35, iz + 0.2, ry);
+    this.scene.add(lampRod);
+    const lamp = this.mesh(new THREE.MeshStandardMaterial({ color: 0xffe9b0, emissive: 0xffd98a, emissiveIntensity: 1.6, roughness: 0.6 }), new THREE.SphereGeometry(0.14, 12, 10), ix - 0.4, h - 0.75, iz + 0.2, ry);
+    this.scene.add(lamp);
+    // rug
+    const rug = this.mesh(new THREE.MeshStandardMaterial({ color: 0x7a3a30, roughness: 0.95 }), new THREE.PlaneGeometry(1.8, 1.2), ix, 0.205, iz, ry);
+    rug.rotation.x = -Math.PI / 2;
+    this.scene.add(rug);
 
     // door threshold (visual)
     const door = this.box(new THREE.MeshStandardMaterial({ color: 0x3a2a1a, roughness: 0.9 }), doorW, doorH, 0.08, x, 0, z + d / 2 + 0.02, ry);
@@ -592,6 +812,58 @@ class Kit {
 
     if (o.roof !== "none") this.roof(x, z, w, d, h, o.roof ?? "flat", o.roofMat);
     return { x, z, w, d, h };
+  }
+
+  /** 3D window frames (+ optional shutters) on all four faces, aligned to the
+      facade's bay grid so frames sit exactly on the textured windows */
+  windowTrim(o: {
+    x: number; z: number; w: number; d: number; h: number;
+    bayW: number; floorH: number; rows: number; cols: number;
+    ry: number; frameMat: THREE.Material; shutterMat: THREE.Material | null;
+  }) {
+    const { x, z, w, d, h, bayW, floorH, rows, cols, ry } = o;
+    const tileW = bayW * cols;
+    const tileH = floorH * rows;
+    // vertical mapping (same for all faces)
+    const clampY = h < tileH;
+    const rowCount = clampY ? rows : Math.max(1, Math.floor(h / floorH));
+    const winY = (row: number) => (row + 0.5) * (clampY ? h / rows : floorH);
+    const winH = (clampY ? h / rows : floorH) * 0.56;
+    const g = new THREE.Group();
+    g.position.set(x, 0, z);
+    g.rotation.y = ry;
+    this.scene.add(g);
+    const face = (alongX: boolean, sign: number, len: number) => {
+      const clampX = len < tileW;
+      const nWin = clampX ? cols : Math.max(1, Math.floor(len / bayW));
+      const winW = (clampX ? len / cols : bayW) * 0.64;
+      for (let m = 0; m < nWin; m++) {
+        const p = (m + 0.5) * (clampX ? len / cols : bayW);
+        for (let row = 0; row < rowCount; row++) {
+          const wy = winY(row);
+          if (alongX) {
+            g.add(this.mesh(o.frameMat, new RoundedBoxGeometry(winW + 0.14, winH + 0.14, 0.1, 2, 0.02), sign * p, wy, d / 2 + 0.05, 0));
+          } else {
+            g.add(this.mesh(o.frameMat, new RoundedBoxGeometry(0.1, winH + 0.14, winW + 0.14, 2, 0.02), w / 2 + 0.05, wy, sign * p, 0));
+          }
+          if (o.shutterMat) {
+            const off = winW / 2 + 0.06;
+            if (alongX) {
+              g.add(this.mesh(o.shutterMat, new RoundedBoxGeometry(0.07, winH + 0.06, 0.06, 2, 0.02), sign * (p - off), wy, d / 2 + 0.08, 0));
+              g.add(this.mesh(o.shutterMat, new RoundedBoxGeometry(0.07, winH + 0.06, 0.06, 2, 0.02), sign * (p + off), wy, d / 2 + 0.08, 0));
+            } else {
+              g.add(this.mesh(o.shutterMat, new RoundedBoxGeometry(0.06, winH + 0.06, 0.07, 2, 0.02), w / 2 + 0.08, wy, sign * (p - off), 0));
+              g.add(this.mesh(o.shutterMat, new RoundedBoxGeometry(0.06, winH + 0.06, 0.07, 2, 0.02), w / 2 + 0.08, wy, sign * (p + off), 0));
+            }
+          }
+        }
+      }
+    };
+    face(true, 1, w);
+    face(true, -1, w);
+    face(false, 1, d);
+    face(false, -1, d);
+    return g;
   }
 
   /* flight of steps ascending along +X (or +Z when alongZ). Each step is a solid
@@ -650,97 +922,142 @@ class Kit {
   }
 
   roof(x: number, z: number, w: number, d: number, h: number, kind: string, mat: THREE.Material) {
+    const fasciaMat = new THREE.MeshStandardMaterial({ color: 0x3a3a40, roughness: 0.8, metalness: 0.4 });
     if (kind === "flat") {
-      // rounded slab + raised cap + edge fascia
-      this.scene.add(this.mesh(mat, new RoundedBoxGeometry(w + 0.6, 0.4, d + 0.6, 4, 0.1), x, h + 0.2, z));
-      this.scene.add(this.mesh(mat, new RoundedBoxGeometry(w + 0.3, 0.12, d + 0.3, 3, 0.04), x, h + 0.42, z));
-      const fascia = new THREE.MeshStandardMaterial({ color: 0x3a3a40, roughness: 0.8, metalness: 0.4 });
-      this.scene.add(this.mesh(fascia, new RoundedBoxGeometry(w + 0.64, 0.14, 0.16, 3, 0.03), x, h + 0.1, z + d / 2 + 0.08));
-      this.scene.add(this.mesh(fascia, new RoundedBoxGeometry(w + 0.64, 0.14, 0.16, 3, 0.03), x, h + 0.1, z - d / 2 - 0.08));
+      // gravel membrane slab + raised cap + eave fascia on ALL four sides
+      const rm = this.roofSurfaceMat(mat, this.pTex("gravel", () => gravelTex(256, this.rng)), [Math.max(1, w / 5), Math.max(1, d / 5)]);
+      this.scene.add(this.mesh(rm, new RoundedBoxGeometry(w + 0.6, 0.4, d + 0.6, 4, 0.1), x, h + 0.2, z));
+      this.scene.add(this.mesh(rm, new RoundedBoxGeometry(w + 0.3, 0.12, d + 0.3, 3, 0.04), x, h + 0.42, z));
+      for (const sz of [-1, 1]) this.scene.add(this.mesh(fasciaMat, new RoundedBoxGeometry(w + 0.66, 0.16, 0.18, 3, 0.03), x, h + 0.1, z + sz * (d / 2 + 0.32)));
+      for (const sx of [-1, 1]) this.scene.add(this.mesh(fasciaMat, new RoundedBoxGeometry(0.18, 0.16, d + 0.66, 3, 0.03), x + sx * (w / 2 + 0.32), h + 0.1, z));
     } else if (kind === "tile") {
-      const shape = new THREE.Shape();
+      // pitched tile roof: shape x-axis = depth (world Z via 90° rotation),
+      // extruded along the width (world X). Ridge runs along Z.
       const rise = Math.min(2.2, d * 0.35);
-      shape.moveTo(-w / 2 - 0.4, 0);
-      shape.lineTo(w / 2 + 0.4, 0);
-      shape.lineTo(w / 2, rise);
-      shape.lineTo(-w / 2, rise);
-      shape.closePath();
-      const g = new THREE.ExtrudeGeometry(shape, { depth: 0.35, bevelEnabled: true, bevelThickness: 0.04, bevelSize: 0.04, bevelSegments: 2 });
-      g.translate(0, 0, -d / 2);
-      const m = this.mesh(mat, g, x, h + rise / 2, z);
-      this.scene.add(m);
-      // tile ridge cap along the peak
-      const ridge = new THREE.MeshStandardMaterial({ color: 0x6a2a1a, roughness: 0.9 });
-      this.scene.add(this.mesh(ridge, new RoundedBoxGeometry(w + 0.4, 0.14, 0.3, 3, 0.04), x, h + rise + 0.05, z));
-      // tile ridge rolls at the gable ends
-      for (const sx of [-1, 1]) {
-        this.scene.add(this.mesh(ridge, new THREE.CylinderGeometry(0.16, 0.16, 0.35, 16), x + sx * (w / 2 + 0.15), h + rise * 0.5, z, Math.PI / 2));
-      }
-    } else if (kind === "gable") {
       const shape = new THREE.Shape();
+      shape.moveTo(-d / 2 - 0.4, 0);
+      shape.lineTo(d / 2 + 0.4, 0);
+      shape.lineTo(d / 2, rise);
+      shape.lineTo(-d / 2, rise);
+      shape.closePath();
+      const g = new THREE.ExtrudeGeometry(shape, { depth: w, bevelEnabled: true, bevelThickness: 0.04, bevelSize: 0.04, bevelSegments: 2 });
+      g.translate(0, -rise / 2, -w / 2);
+      const rm = this.roofSurfaceMat(mat, this.pTex("tile", () => tileTex(256, this.rng)), [1, 1]);
+      const m = this.mesh(rm, g, x, h + rise / 2, z);
+      m.rotation.y = Math.PI / 2;
+      this.scene.add(m);
+      // eave fascia along the two long eaves (world x sides)
+      for (const sx of [-1, 1]) this.scene.add(this.mesh(fasciaMat, new RoundedBoxGeometry(0.24, 0.24, d + 0.8, 3, 0.04), x + sx * (w / 2 + 0.2), h + 0.08, z));
+      // gable-end trim (extrusion ends at world x) framing the trapezoid ends
+      for (const sx of [-1, 1]) this.scene.add(this.mesh(fasciaMat, new RoundedBoxGeometry(0.2, rise + 0.2, d + 0.8, 3, 0.04), x + sx * (w / 2 + 0.1), h + rise / 2, z));
+      // ridge cap + rolls at the ridge ends
+      const ridge = new THREE.MeshStandardMaterial({ color: 0x6a2a1a, roughness: 0.9 });
+      this.scene.add(this.mesh(ridge, new RoundedBoxGeometry(0.28, 0.16, d + 0.4, 3, 0.04), x, h + rise + 0.05, z));
+      for (const sz of [-1, 1]) {
+        const roll = this.mesh(ridge, new THREE.CylinderGeometry(0.16, 0.16, 0.4, 16), x, h + rise + 0.05, z + sz * (d / 2 + 0.2));
+        roll.rotation.x = Math.PI / 2;
+        this.scene.add(roll);
+      }
+      this.chimney(x, z, w, d, h, rise);
+    } else if (kind === "gable") {
+      // pitched slate roof, same orientation fix as tile
       const rise = Math.min(3.2, d * 0.45);
+      const shape = new THREE.Shape();
       shape.moveTo(-d / 2 - 0.4, 0);
       shape.lineTo(d / 2 + 0.4, 0);
       shape.lineTo(d / 2, rise);
       shape.lineTo(-d / 2, rise);
       shape.closePath();
       const g = new THREE.ExtrudeGeometry(shape, { depth: w, bevelEnabled: true, bevelThickness: 0.05, bevelSize: 0.05, bevelSegments: 2 });
-      g.translate(0, 0, -w / 2);
-      const m = this.mesh(mat, g, x, h + rise / 2, z);
+      g.translate(0, -rise / 2, -w / 2);
+      const rm = this.roofSurfaceMat(mat, this.pTex("slate", () => slateTex(256, this.rng)), [1, 1]);
+      const m = this.mesh(rm, g, x, h + rise / 2, z);
+      m.rotation.y = Math.PI / 2;
       this.scene.add(m);
-      // roof ridge beam
+      for (const sx of [-1, 1]) this.scene.add(this.mesh(fasciaMat, new RoundedBoxGeometry(0.26, 0.26, d + 0.8, 3, 0.04), x + sx * (w / 2 + 0.2), h + 0.08, z));
+      for (const sx of [-1, 1]) this.scene.add(this.mesh(fasciaMat, new RoundedBoxGeometry(0.22, rise + 0.2, d + 0.8, 3, 0.04), x + sx * (w / 2 + 0.1), h + rise / 2, z));
       const ridge = new THREE.MeshStandardMaterial({ color: 0x4a4a50, roughness: 0.85 });
-      this.scene.add(this.mesh(ridge, new RoundedBoxGeometry(w + 0.5, 0.2, 0.32, 3, 0.05), x, h + rise + 0.08, z));
-    } else { // metal: shallow pitched corrugated sheet + ridge
-      const m = this.mesh(mat, new RoundedBoxGeometry(w + 0.5, 0.25, d + 0.5, 4, 0.06), x, h + 0.05 + 0.125, z);
-      this.scene.add(m);
+      this.scene.add(this.mesh(ridge, new RoundedBoxGeometry(0.3, 0.34, d + 0.5, 3, 0.05), x, h + rise + 0.08, z));
+      for (const sz of [-1, 1]) {
+        const roll = this.mesh(ridge, new THREE.CylinderGeometry(0.18, 0.18, 0.44, 16), x, h + rise + 0.08, z + sz * (d / 2 + 0.25));
+        roll.rotation.x = Math.PI / 2;
+        this.scene.add(roll);
+      }
+      this.chimney(x, z, w, d, h, rise);
+    } else { // metal: shallow pitched corrugated sheet + eave trim
+      const rm = this.roofSurfaceMat(mat, this.pTex("corr", () => corrugTex(256, this.rng)), [Math.max(1, w / 3), Math.max(1, d / 3)]);
+      this.scene.add(this.mesh(rm, new RoundedBoxGeometry(w + 0.5, 0.25, d + 0.5, 4, 0.06), x, h + 0.05 + 0.125, z));
+      for (const sz of [-1, 1]) this.scene.add(this.mesh(fasciaMat, new RoundedBoxGeometry(w + 0.54, 0.16, 0.16, 3, 0.03), x, h + 0.1, z + sz * (d / 2 + 0.28)));
+      for (const sx of [-1, 1]) this.scene.add(this.mesh(fasciaMat, new RoundedBoxGeometry(0.16, 0.16, d + 0.54, 3, 0.03), x + sx * (w / 2 + 0.28), h + 0.1, z));
       const ridge = new THREE.MeshStandardMaterial({ color: 0x5a5a60, roughness: 0.7, metalness: 0.6 });
-      this.scene.add(this.mesh(ridge, new THREE.CylinderGeometry(0.1, 0.1, w + 0.5, 18), x, h + 0.25, z, Math.PI / 2));
+      this.scene.add(this.mesh(ridge, new THREE.CylinderGeometry(0.1, 0.1, d + 0.5, 18), x, h + 0.25, z, Math.PI / 2));
     }
+  }
+
+  /** chimney on a pitched roof (sits on the roof's flat top strip) */
+  chimney(x: number, z: number, w: number, d: number, h: number, rise: number) {
+    const cx = x + (this.rng() - 0.5) * w * 0.4;
+    const cz = z + (this.rng() - 0.5) * d * 0.3;
+    const chim = new THREE.MeshStandardMaterial({ color: 0x7a5a48, roughness: 0.95 });
+    this.scene.add(this.mesh(chim, new RoundedBoxGeometry(0.5, 1.7, 0.5, 3, 0.08), cx, h + rise + 0.95, cz));
+    this.scene.add(this.mesh(chim, new RoundedBoxGeometry(0.62, 0.12, 0.62, 3, 0.03), cx, h + rise + 1.81, cz));
   }
 
   parapet(x: number, z: number, w: number, d: number, h: number, mat: THREE.Material) {
     const t = 0.25;
     const H = 0.9;
+    // sits on the roof slab edge (slab overhangs the walls by ~0.3)
+    const ox = w / 2 + 0.25;
+    const oz = d / 2 + 0.25;
     // rounded merlon caps along the long edges
     const cap = new THREE.MeshStandardMaterial({ color: 0x6a6a70, roughness: 0.85 });
     // long sides (along z)
-    this.scene.add(this.mesh(mat, new RoundedBoxGeometry(t, H, d + 0.5, 3, 0.05), x - w / 2, h - 0.2 + H / 2, z));
-    this.scene.add(this.mesh(mat, new RoundedBoxGeometry(t, H, d + 0.5, 3, 0.05), x + w / 2, h - 0.2 + H / 2, z));
+    this.scene.add(this.mesh(mat, new RoundedBoxGeometry(t, H, d + 0.5, 3, 0.05), x - ox, h - 0.2 + H / 2, z));
+    this.scene.add(this.mesh(mat, new RoundedBoxGeometry(t, H, d + 0.5, 3, 0.05), x + ox, h - 0.2 + H / 2, z));
     // short sides (along x)
-    this.scene.add(this.mesh(mat, new RoundedBoxGeometry(w + 0.5, H, t, 3, 0.05), x, h - 0.2 + H / 2, z - d / 2));
-    this.scene.add(this.mesh(mat, new RoundedBoxGeometry(w + 0.5, H, t, 3, 0.05), x, h - 0.2 + H / 2, z + d / 2));
+    this.scene.add(this.mesh(mat, new RoundedBoxGeometry(w + 0.5, H, t, 3, 0.05), x, h - 0.2 + H / 2, z - oz));
+    this.scene.add(this.mesh(mat, new RoundedBoxGeometry(w + 0.5, H, t, 3, 0.05), x, h - 0.2 + H / 2, z + oz));
     // crenellated cap stones on the two long sides
     const step = 1.2;
     const n = Math.max(1, Math.floor((d + 0.5) / step));
     for (let i = 0; i <= n; i++) {
       const zc = z - (d + 0.5) / 2 + i * step;
-      this.scene.add(this.mesh(cap, new RoundedBoxGeometry(t + 0.14, 0.16, step * 0.6, 3, 0.03), x - w / 2, h + H - 0.04, zc));
-      this.scene.add(this.mesh(cap, new RoundedBoxGeometry(t + 0.14, 0.16, step * 0.6, 3, 0.03), x + w / 2, h + H - 0.04, zc));
+      this.scene.add(this.mesh(cap, new RoundedBoxGeometry(t + 0.14, 0.16, step * 0.6, 3, 0.03), x - ox, h + H - 0.04, zc));
+      this.scene.add(this.mesh(cap, new RoundedBoxGeometry(t + 0.14, 0.16, step * 0.6, 3, 0.03), x + ox, h + H - 0.04, zc));
     }
   }
 
   roofDetails(x: number, z: number, w: number, d: number, h: number, mat: THREE.Material) {
     const r = this.rng;
-    const steel = mat;
-    // AC units
+    // detailed AC units
     const acCount = 1 + Math.floor(r() * 2);
     for (let i = 0; i < acCount; i++) {
-      const ax = x + (r() - 0.5) * w * 0.6;
-      const az = z + (r() - 0.5) * d * 0.6;
-      this.box(steel, 1.1, 0.8, 0.9, ax, h, az, r() * Math.PI);
+      this.acUnit(x + (r() - 0.5) * w * 0.6, z + (r() - 0.5) * d * 0.6, h, r() * Math.PI);
     }
-    // water tank
+    // water tank: legs + cylindrical body + conical top
     if (r() < 0.5) {
       const tx = x + (r() - 0.5) * w * 0.5;
       const tz = z + (r() - 0.5) * d * 0.5;
-      const tank = this.mesh(new THREE.MeshStandardMaterial({ color: 0x8a8f96, roughness: 0.5, metalness: 0.7 }), new THREE.CylinderGeometry(0.8, 0.8, 1.6, 16), tx, h + 0.8, tz);
+      const tankMat = new THREE.MeshStandardMaterial({ color: 0x8a8f96, roughness: 0.5, metalness: 0.7 });
+      for (const [lx, lz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+        const leg = this.mesh(tankMat, new THREE.CylinderGeometry(0.08, 0.08, 0.6, 8), tx + lx * 0.6, h + 0.3, tz + lz * 0.6);
+        this.scene.add(leg);
+      }
+      const tank = this.mesh(tankMat, new THREE.CylinderGeometry(0.8, 0.8, 1.4, 20), tx, h + 1.3, tz);
       this.scene.add(tank);
+      const top = this.mesh(new THREE.MeshStandardMaterial({ color: 0x5a5f66, roughness: 0.6, metalness: 0.6 }), new THREE.ConeGeometry(0.85, 0.4, 20), tx, h + 2.1, tz);
+      this.scene.add(top);
     }
-    // antenna / pipes
+    // antenna mast with crossbar
     if (r() < 0.6) {
-      const an = this.mesh(steel, new THREE.CylinderGeometry(0.04, 0.04, 2 + r() * 2, 8), x + (r() - 0.5) * w * 0.4, h, z + (r() - 0.5) * d * 0.4);
-      this.scene.add(an);
+      const ax = x + (r() - 0.5) * w * 0.4;
+      const az = z + (r() - 0.5) * d * 0.4;
+      const mastH = 2 + r() * 2;
+      const mast = this.mesh(mat, new THREE.CylinderGeometry(0.04, 0.05, mastH, 8), ax, h + mastH / 2, az);
+      this.scene.add(mast);
+      const bar = this.mesh(mat, new THREE.CylinderGeometry(0.02, 0.02, 0.8, 6), ax, h + mastH * 0.7, az);
+      bar.rotation.z = Math.PI / 2;
+      this.scene.add(bar);
     }
   }
 
@@ -1453,9 +1770,23 @@ class Kit {
     });
     const roof = new THREE.MeshStandardMaterial({ color: 0x8a3b2a, roughness: 0.9, metalness: 0 });
     this.building({ x, z, w, d, h, facade: stone, roof: "tile", roofMat: roof, emissive: 0.35, parapet: false, details: false, ry });
-    // door + shutters
-    const door = this.box(new THREE.MeshStandardMaterial({ color: 0x4a3320, roughness: 0.9 }), 1.1, 2, 0.12, x + Math.sin(ry) * (w / 2 - 0.6), 0, z + Math.cos(ry) * (d / 2 + 0.1), ry + Math.PI);
+    // 3D window frames + shutters on all faces
+    this.windowTrim({
+      x, z, w, d, h, bayW: 1.6, floorH: 3, rows: 2, cols: 3, ry,
+      frameMat: new THREE.MeshStandardMaterial({ color: 0x5a5048, roughness: 0.9 }),
+      shutterMat: new THREE.MeshStandardMaterial({ color: 0x4a5a32, roughness: 0.9 }),
+    });
+    // door + frame + step
+    const doorX = x + Math.sin(ry) * (w / 2 - 0.6);
+    const doorZ = z + Math.cos(ry) * (d / 2 + 0.1);
+    const door = this.box(new THREE.MeshStandardMaterial({ color: 0x4a3320, roughness: 0.9 }), 1.1, 2, 0.12, doorX, 0, doorZ, ry + Math.PI);
     this.scene.add(door);
+    const frameMat = new THREE.MeshStandardMaterial({ color: 0x5a5048, roughness: 0.9 });
+    this.scene.add(this.mesh(frameMat, new RoundedBoxGeometry(1.35, 0.14, 0.16, 2, 0.03), doorX, 2.12, doorZ + Math.cos(ry) * 0.08, ry));
+    this.scene.add(this.mesh(frameMat, new RoundedBoxGeometry(0.16, 2.2, 0.16, 2, 0.03), doorX + Math.sin(ry) * 0.75, 1.1, doorZ + Math.cos(ry) * 0.08, ry));
+    this.scene.add(this.mesh(frameMat, new RoundedBoxGeometry(0.16, 2.2, 0.16, 2, 0.03), doorX - Math.sin(ry) * 0.75, 1.1, doorZ + Math.cos(ry) * 0.08, ry));
+    const step = this.mesh(new THREE.MeshStandardMaterial({ color: 0x6a6258, roughness: 0.95 }), new RoundedBoxGeometry(1.5, 0.14, 0.4, 3, 0.03), doorX, 0.07, doorZ + Math.cos(ry) * 0.25, ry);
+    this.scene.add(step);
   }
 
   church(x: number, z: number) {
@@ -1511,6 +1842,10 @@ class Kit {
     arch.rotation.x = Math.PI / 2;
     arch.rotation.z = -Math.PI / 2;
     this.scene.add(arch);
+    // window frames on nave + tower
+    const frameStone = new THREE.MeshStandardMaterial({ color: 0xb8b0a0, roughness: 0.95 });
+    this.windowTrim({ x, z, w: 9, d: 13, h: 6, bayW: 3, floorH: 3, rows: 2, cols: 3, ry: 0, frameMat: frameStone, shutterMat: null });
+    this.windowTrim({ x: x + 6, z: z + 4, w: 3.4, d: 3.4, h: 13, bayW: 1.7, floorH: 3, rows: 1, cols: 2, ry: 0, frameMat: frameStone, shutterMat: null });
     // bell (visible opening)
     const bell = this.mesh(new THREE.MeshStandardMaterial({ color: 0xb89a3a, roughness: 0.4, metalness: 0.8 }), new THREE.CylinderGeometry(0.5, 0.75, 0.9, 28, 1, true), x + 6, 11.5, z + 4);
     this.scene.add(bell);
