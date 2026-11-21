@@ -59,6 +59,76 @@ function tex(c: HTMLCanvasElement, rep: number, srgb = true) {
   return t;
 }
 
+/* ---- polish decal textures (transparent backgrounds) ---- */
+function stainCanvas(size: number) {
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const g = c.getContext("2d")!;
+  g.clearRect(0, 0, size, size);
+  for (let i = 0; i < 12; i++) {
+    const x = Math.random() * size;
+    const y = Math.random() * size;
+    const r = size * (0.1 + Math.random() * 0.26);
+    const gr = g.createRadialGradient(x, y, 0, x, y, r);
+    const a = 0.22 + Math.random() * 0.34;
+    gr.addColorStop(0, `rgba(18,15,12,${a})`);
+    gr.addColorStop(0.65, `rgba(18,15,12,${a * 0.35})`);
+    gr.addColorStop(1, "rgba(18,15,12,0)");
+    g.fillStyle = gr;
+    g.fillRect(x - r, y - r, r * 2, r * 2);
+  }
+  return c;
+}
+
+function puddleCanvas(size: number) {
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const g = c.getContext("2d")!;
+  g.clearRect(0, 0, size, size);
+  const gr = g.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size * 0.42);
+  gr.addColorStop(0, "rgba(70,92,120,0.55)");
+  gr.addColorStop(0.7, "rgba(60,80,105,0.3)");
+  gr.addColorStop(1, "rgba(50,70,95,0)");
+  g.fillStyle = gr;
+  g.beginPath();
+  g.arc(size / 2, size / 2, size * 0.42, 0, Math.PI * 2);
+  g.fill();
+  return c;
+}
+
+function crackCanvas(size: number) {
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const g = c.getContext("2d")!;
+  g.clearRect(0, 0, size, size);
+  const branch = (sx: number, sy: number, ang: number, depth: number) => {
+    if (depth <= 0) return;
+    let x = sx;
+    let y = sy;
+    const steps = 6 + Math.floor(Math.random() * 8);
+    for (let i = 0; i < steps; i++) {
+      const len = (size / 24) * (0.6 + Math.random());
+      ang += (Math.random() - 0.5) * 0.9;
+      x += Math.cos(ang) * len;
+      y += Math.sin(ang) * len;
+      g.strokeStyle = `rgba(10,10,12,${0.35 + Math.random() * 0.4})`;
+      g.lineWidth = Math.max(1, depth * 1.4);
+      g.beginPath();
+      g.moveTo(x, y);
+      g.lineTo(x + Math.cos(ang) * len * 0.7, y + Math.sin(ang) * len * 0.7);
+      g.stroke();
+      if (Math.random() < 0.35) branch(x, y, ang + (Math.random() - 0.5) * 2, depth - 1);
+    }
+  };
+  for (let i = 0; i < 3; i++) {
+    const edge = Math.floor(Math.random() * 4);
+    const sx = edge === 0 ? Math.random() * size : edge === 1 ? size : Math.random() * size;
+    const sy = edge === 2 ? Math.random() * size : edge === 3 ? size : Math.random() * size;
+    branch(sx, sy, Math.random() * Math.PI * 2, 4);
+  }
+  return c;
+}
+
 export function buildWorld(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.WebGLRenderer): World {
   /* ---------------- sky + image based lighting (main scene) ---------------- */
   const sunDir = new THREE.Vector3().setFromSphericalCoords(1, THREE.MathUtils.degToRad(90 - 34), THREE.MathUtils.degToRad(215));
@@ -398,6 +468,71 @@ export function buildWorld(content: THREE.Object3D, main: THREE.Scene, renderer:
     }
   });
 
+  /* ---------------- environment polish (visual only, no collision) ---------------- */
+  const deco = (m: THREE.Object3D, cast = true) => {
+    m.castShadow = cast;
+    content.add(m);
+    return m;
+  };
+  const decal = (canvas: HTMLCanvasElement, w: number, h: number, x: number, y: number, z: number, ry = 0) => {
+    const m = new THREE.Mesh(
+      new THREE.PlaneGeometry(w, h),
+      new THREE.MeshStandardMaterial({
+        map: new THREE.CanvasTexture(canvas),
+        transparent: true,
+        roughness: 0.95,
+        polygonOffset: true,
+        polygonOffsetFactor: -4,
+        polygonOffsetUnits: -4,
+        depthWrite: false,
+      }),
+    );
+    m.rotation.set(-Math.PI / 2, ry, 0, "YXZ");
+    m.position.set(x, y, z);
+    m.receiveShadow = true;
+    content.add(m);
+    return m;
+  };
+  // oil/dirt stains + puddles + cracks on the range
+  const stainC = stainCanvas(256);
+  for (let i = 0; i < 5; i++) decal(stainC, 2.4, 2.4, -10 + Math.random() * 20, 0.012, 4 + Math.random() * 44, Math.random() * Math.PI);
+  decal(puddleCanvas(256), 2.6, 1.8, -4, 0.013, 20, 0.2);
+  decal(puddleCanvas(256), 1.9, 1.5, 5, 0.013, 38, -0.3);
+  const crackC = crackCanvas(256);
+  for (let i = 0; i < 4; i++) decal(crackC, 3, 3, -8 + Math.random() * 16, 0.012, -4 + Math.random() * 50, Math.random() * Math.PI);
+  // rocks at the field edges
+  for (let i = 0; i < 5; i++) {
+    const r = 0.5 + Math.random() * 0.6;
+    const rock = new THREE.Mesh(new THREE.IcosahedronGeometry(r, 0), new THREE.MeshStandardMaterial({ color: 0x7a746c, roughness: 0.98, flatShading: true }));
+    rock.position.set(-15 + Math.random() * 30, r * 0.2, -6 + Math.random() * 52);
+    rock.scale.y = 0.6;
+    rock.rotation.set(Math.random() * 3, Math.random() * 3, Math.random() * 3);
+    deco(rock);
+  }
+  // wire strand strung between the flag poles
+  const wp: THREE.Vector3[] = [];
+  for (let i = 0; i <= 8; i++) {
+    const t = i / 8;
+    wp.push(new THREE.Vector3(-11.5, 1.75 - 0.25 * Math.sin(Math.PI * t), 10 + 24 * t));
+  }
+  const wireCurve = new THREE.CatmullRomCurve3(wp);
+  deco(
+    new THREE.Mesh(new THREE.TubeGeometry(wireCurve, 20, 0.012, 6), new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.6, metalness: 0.85 })),
+    false,
+  );
+  // drifting dust motes
+  const moteCount = 70;
+  const motePos = new Float32Array(moteCount * 3);
+  for (let i = 0; i < moteCount; i++) {
+    motePos[i * 3] = (Math.random() - 0.5) * 60;
+    motePos[i * 3 + 1] = 1 + Math.random() * 10;
+    motePos[i * 3 + 2] = (Math.random() - 0.5) * 80;
+  }
+  const moteGeo = new THREE.BufferGeometry();
+  moteGeo.setAttribute("position", new THREE.BufferAttribute(motePos, 3));
+  const motes = new THREE.Points(moteGeo, new THREE.PointsMaterial({ color: 0xd8c8a0, size: 0.05, transparent: true, opacity: 0.3, depthWrite: false }));
+  deco(motes, false);
+
   /* ---------------- update ---------------- */
   const update = (dt: number, focus: THREE.Vector3) => {
     sun.position.copy(focus).addScaledVector(sunDir, 40);
@@ -407,6 +542,14 @@ export function buildWorld(content: THREE.Object3D, main: THREE.Scene, renderer:
       const x = t.spring.update(0, dt);
       t.group.rotation.x = x;
     }
+    // drift dust motes
+    const mp = motes.geometry.attributes.position as THREE.BufferAttribute;
+    for (let i = 0; i < moteCount; i++) {
+      mp.array[i * 3] += Math.sin(i + mp.array[i * 3 + 1] * 0.7) * 0.2 * dt;
+      mp.array[i * 3 + 1] -= 0.15 * dt;
+      if (mp.array[i * 3 + 1] < 0.5) mp.array[i * 3 + 1] = 11;
+    }
+    mp.needsUpdate = true;
   };
 
   const hitTarget = (mesh: THREE.Object3D, impulse: number) => {

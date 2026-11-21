@@ -61,6 +61,179 @@ function toTex(c: HTMLCanvasElement, rep: number, srgb = true) {
   return t;
 }
 
+/* ================= environment polish: decal textures (visual only) ================= */
+
+/** dark organic ground stain (oil/dirt/mud) on transparent background */
+function stainTex(size: number, rng: () => number): THREE.CanvasTexture {
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const g = c.getContext("2d")!;
+  g.clearRect(0, 0, size, size);
+  for (let i = 0; i < 12; i++) {
+    const x = rng() * size;
+    const y = rng() * size;
+    const r = size * (0.1 + rng() * 0.26);
+    const gr = g.createRadialGradient(x, y, 0, x, y, r);
+    const a = 0.22 + rng() * 0.34;
+    gr.addColorStop(0, `rgba(18,15,12,${a})`);
+    gr.addColorStop(0.65, `rgba(18,15,12,${a * 0.35})`);
+    gr.addColorStop(1, "rgba(18,15,12,0)");
+    g.fillStyle = gr;
+    g.fillRect(x - r, y - r, r * 2, r * 2);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+/** puddle: soft blue sheen, transparent edges */
+function puddleTex(size: number, rng: () => number): THREE.CanvasTexture {
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const g = c.getContext("2d")!;
+  g.clearRect(0, 0, size, size);
+  const x = size / 2;
+  const y = size / 2;
+  const r = size * 0.42;
+  const gr = g.createRadialGradient(x, y, 0, x, y, r);
+  gr.addColorStop(0, "rgba(70,92,120,0.55)");
+  gr.addColorStop(0.7, "rgba(60,80,105,0.3)");
+  gr.addColorStop(1, "rgba(50,70,95,0)");
+  g.fillStyle = gr;
+  g.beginPath();
+  g.arc(x, y, r, 0, Math.PI * 2);
+  g.fill();
+  // a few droplets around the main blob
+  for (let i = 0; i < 6; i++) {
+    const ax = rng() * size;
+    const ay = rng() * size;
+    const ar = 6 + rng() * 14;
+    const gr2 = g.createRadialGradient(ax, ay, 0, ax, ay, ar);
+    gr2.addColorStop(0, "rgba(65,85,110,0.4)");
+    gr2.addColorStop(1, "rgba(65,85,110,0)");
+    g.fillStyle = gr2;
+    g.beginPath();
+    g.arc(ax, ay, ar, 0, Math.PI * 2);
+    g.fill();
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+/** asphalt/concrete cracks on transparent background */
+function crackTex(size: number, rng: () => number): THREE.CanvasTexture {
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const g = c.getContext("2d")!;
+  g.clearRect(0, 0, size, size);
+  const branch = (sx: number, sy: number, ang: number, depth: number) => {
+    if (depth <= 0) return;
+    let x = sx;
+    let y = sy;
+    const steps = 6 + Math.floor(rng() * 8);
+    for (let i = 0; i < steps; i++) {
+      const len = (size / 24) * (0.6 + rng());
+      ang += (rng() - 0.5) * 0.9;
+      x += Math.cos(ang) * len;
+      y += Math.sin(ang) * len;
+      g.strokeStyle = `rgba(10,10,12,${0.35 + rng() * 0.4})`;
+      g.lineWidth = Math.max(1, depth * 1.4);
+      g.beginPath();
+      g.moveTo(x, y);
+      g.lineTo(x + Math.cos(ang) * len * 0.7, y + Math.sin(ang) * len * 0.7);
+      g.stroke();
+      if (rng() < 0.35) branch(x, y, ang + (rng() - 0.5) * 2, depth - 1);
+    }
+  };
+  for (let i = 0; i < 3; i++) {
+    const edge = Math.floor(rng() * 4);
+    const sx = edge === 0 ? rng() * size : edge === 1 ? size : rng() * size;
+    const sy = edge === 2 ? rng() * size : edge === 3 ? size : rng() * size;
+    branch(sx, sy, rng() * Math.PI * 2, 4);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+/** vertical grime / rust streaks for wall decals */
+function streakTex(size: number, rng: () => number, rust = false): THREE.CanvasTexture {
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const g = c.getContext("2d")!;
+  g.clearRect(0, 0, size, size);
+  const col = rust ? "74,44,24" : "22,20,18";
+  for (let i = 0; i < 22; i++) {
+    const x = rng() * size;
+    const w = 5 + rng() * 18;
+    const top = rng() * size * 0.3;
+    const h = size * (0.4 + rng() * 0.6);
+    const gr = g.createLinearGradient(x, top, x, top + h);
+    const a = 0.18 + rng() * 0.4;
+    gr.addColorStop(0, `rgba(${col},${a})`);
+    gr.addColorStop(0.6, `rgba(${col},${a * 0.5})`);
+    gr.addColorStop(1, `rgba(${col},0)`);
+    g.fillStyle = gr;
+    g.fillRect(x, top, w, h);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+/** rectangular sign board texture (post sign / billboard face) */
+function signTex(text: string, bg: string, fg: string, rng: () => number): THREE.CanvasTexture {
+  const c = document.createElement("canvas");
+  c.width = 512;
+  c.height = 256;
+  const g = c.getContext("2d")!;
+  g.fillStyle = bg;
+  g.fillRect(0, 0, 512, 256);
+  g.fillStyle = fg;
+  g.font = "bold 64px sans-serif";
+  g.textAlign = "center";
+  g.fillText(text, 256, 150);
+  // weathering: a few scratches/stains
+  for (let i = 0; i < 14; i++) {
+    g.fillStyle = `rgba(0,0,0,${0.05 + rng() * 0.1})`;
+    g.fillRect(rng() * 512, rng() * 256, 20 + rng() * 80, 2 + rng() * 10);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+/** billboard face: ad-style panel with shapes + text */
+function adTex(rng: () => number): THREE.CanvasTexture {
+  const palettes = [
+    ["#c8302a", "#f2e8c0", "#2a3a5a"],
+    ["#2a5a8a", "#e8e0d0", "#c8a82a"],
+    ["#3a6a3a", "#e8e0d0", "#8a3a3a"],
+    ["#5a3a7a", "#e8e0d0", "#2a8a8a"],
+  ];
+  const p = palettes[Math.floor(rng() * palettes.length)];
+  const c = document.createElement("canvas");
+  c.width = 512;
+  c.height = 256;
+  const g = c.getContext("2d")!;
+  g.fillStyle = p[2];
+  g.fillRect(0, 0, 512, 256);
+  g.fillStyle = p[0];
+  g.beginPath();
+  g.arc(128, 128, 70, 0, Math.PI * 2);
+  g.fill();
+  g.fillStyle = p[1];
+  g.font = "bold 58px sans-serif";
+  g.textAlign = "center";
+  g.fillText("MERIDIAN", 340, 120);
+  g.font = "bold 30px sans-serif";
+  g.fillText("GROUP", 340, 168);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
 /** building facade: colour map + emissive glow map, tiled per bay/floor */
 interface FacadeOpts {
   base: string;
@@ -1416,6 +1589,253 @@ class Kit {
     const trim = this.mesh(new THREE.MeshStandardMaterial({ color: 0x6a2418, roughness: 0.9 }), new RoundedBoxGeometry(2.5, 0.05, 2.5, 3, 0.02), x, 1.97, z, ry);
     this.scene.add(trim);
   }
+
+  /* ================= environment polish (visual only — never collides) ================= */
+
+  /** texture cache so repeated decals share one canvas texture */
+  polishTex: Record<string, THREE.Texture> = {};
+  pTex(key: string, make: () => THREE.Texture): THREE.Texture {
+    let t = this.polishTex[key];
+    if (!t) {
+      t = make();
+      this.polishTex[key] = t;
+    }
+    return t;
+  }
+
+  /** add an object that never participates in collision */
+  decor(o: THREE.Object3D, cast = true, receive = true) {
+    o.castShadow = cast;
+    o.receiveShadow = receive;
+    this.scene.add(o);
+    return o;
+  }
+
+  /** flat ground decal: transparent texture plane, z-fighting offset, no collision */
+  decal(tex: THREE.Texture, w: number, h: number, x: number, y: number, z: number, ry = 0) {
+    const mat = new THREE.MeshStandardMaterial({
+      map: tex,
+      transparent: true,
+      roughness: 0.95,
+      metalness: 0,
+      polygonOffset: true,
+      polygonOffsetFactor: -4,
+      polygonOffsetUnits: -4,
+      depthWrite: false,
+    });
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
+    m.rotation.set(-Math.PI / 2, ry, 0, "YXZ");
+    m.position.set(x, y, z);
+    m.receiveShadow = true;
+    this.scene.add(m);
+    return m;
+  }
+
+  /** dark organic ground stain (oil/dirt/mud) */
+  groundStain(x: number, z: number, r: number, key = "stain") {
+    const t = this.pTex(key, () => stainTex(256, this.rng));
+    this.decal(t, r * 2, r * 2, x, 0.012, z, this.rng() * Math.PI);
+  }
+
+  /** puddle on paved/ground surfaces */
+  puddle(x: number, z: number, rx: number, rz: number) {
+    const t = this.pTex("puddle", () => puddleTex(256, this.rng));
+    this.decal(t, rx * 2, rz * 2, x, 0.013, z, this.rng() * Math.PI);
+  }
+
+  /** asphalt/concrete crack patch */
+  cracks(x: number, z: number, s: number) {
+    const t = this.pTex("crack", () => crackTex(256, this.rng));
+    this.decal(t, s, s, x, 0.012, z, this.rng() * Math.PI);
+  }
+
+  /** vertical grime/rust streak decal on a wall (plane faces +Z by default) */
+  wallStreak(x: number, y: number, z: number, w: number, h: number, ry = 0, rust = false) {
+    const t = this.pTex(rust ? "rust" : "grime", () => streakTex(256, this.rng, rust));
+    const mat = new THREE.MeshStandardMaterial({
+      map: t,
+      transparent: true,
+      roughness: 0.95,
+      metalness: 0,
+      polygonOffset: true,
+      polygonOffsetFactor: -4,
+      polygonOffsetUnits: -4,
+      depthWrite: false,
+    });
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
+    m.position.set(x, y, z);
+    m.rotation.y = ry;
+    this.scene.add(m);
+    return m;
+  }
+
+  /** irregular grey rock */
+  rock(x: number, z: number, s = 1) {
+    const mat = new THREE.MeshStandardMaterial({ color: 0x7a746c, roughness: 0.98, flatShading: true });
+    const m = this.mesh(mat, new THREE.IcosahedronGeometry(0.45 * s, 0), x, 0.2 * s, z);
+    m.scale.set(1 + this.rng() * 0.5, 0.6 + this.rng() * 0.3, 1 + this.rng() * 0.5);
+    m.rotation.set(this.rng() * 3, this.rng() * 3, this.rng() * 3);
+    this.decor(m);
+  }
+
+  /** pile of rubble chunks */
+  rubble(x: number, z: number, n = 5) {
+    const mat = new THREE.MeshStandardMaterial({ color: 0x6a6660, roughness: 0.98, flatShading: true });
+    for (let i = 0; i < n; i++) {
+      const s = 0.12 + this.rng() * 0.24;
+      const m = this.mesh(mat, new THREE.BoxGeometry(s, s * 0.8, s), x + (this.rng() - 0.5) * 1.2, s * 0.4, z + (this.rng() - 0.5) * 1.2, this.rng() * 3);
+      m.rotation.x = this.rng() * 0.6;
+      m.rotation.z = this.rng() * 0.6;
+      this.decor(m);
+    }
+  }
+
+  /** traffic cone with white band + base */
+  trafficCone(x: number, z: number, ry = 0) {
+    const orange = new THREE.MeshStandardMaterial({ color: 0xe06a1c, roughness: 0.75 });
+    const white = new THREE.MeshStandardMaterial({ color: 0xf0ece0, roughness: 0.8 });
+    const dark = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.9 });
+    const cone = this.mesh(orange, new THREE.ConeGeometry(0.2, 0.75, 18), x, 0.38, z, ry);
+    this.decor(cone);
+    const band = this.mesh(white, new THREE.CylinderGeometry(0.15, 0.17, 0.12, 18), x, 0.32, z, ry);
+    this.decor(band);
+    const base = this.mesh(dark, new THREE.BoxGeometry(0.5, 0.05, 0.5), x, 0.025, z, ry);
+    this.decor(base, false);
+  }
+
+  /** post-mounted sign board */
+  roadSign(x: number, z: number, ry = 0, text = "DANGER", bg = "#d8a01c", fg = "#1a1a1a") {
+    const steel = new THREE.MeshStandardMaterial({ color: 0x2a2d30, roughness: 0.6, metalness: 0.8 });
+    const post = this.mesh(steel, new THREE.CylinderGeometry(0.05, 0.06, 2.2, 12), x, 1.1, z, ry);
+    this.decor(post);
+    const face = this.mesh(new THREE.MeshStandardMaterial({ map: signTex(text, bg, fg, this.rng), roughness: 0.8, side: THREE.DoubleSide }), new THREE.PlaneGeometry(1.1, 0.55), x, 1.85, z + Math.cos(ry) * 0.55, ry);
+    this.decor(face);
+  }
+
+  /** rooftop billboard: two posts + large ad panel */
+  billboard(x: number, z: number, y: number, ry = 0) {
+    const steel = new THREE.MeshStandardMaterial({ color: 0x2a2d30, roughness: 0.6, metalness: 0.8 });
+    for (const sx of [-1, 1]) {
+      const post = this.mesh(steel, new THREE.CylinderGeometry(0.08, 0.1, 5, 12), x + sx * 1.4, y + 2.5, z, ry);
+      this.decor(post);
+    }
+    const face = this.mesh(new THREE.MeshStandardMaterial({ map: this.pTex("ad", () => adTex(this.rng)), roughness: 0.8, side: THREE.DoubleSide }), new THREE.PlaneGeometry(4.4, 2.2), x, y + 5.6, z + Math.cos(ry) * 0.1, ry);
+    this.decor(face);
+  }
+
+  /** crossed grass blades tuft */
+  grassTuft(x: number, z: number, n = 3) {
+    const mat = new THREE.MeshStandardMaterial({ color: 0x3d5a2a, roughness: 0.95, side: THREE.DoubleSide });
+    for (let i = 0; i < n; i++) {
+      const blade = this.mesh(mat, new THREE.PlaneGeometry(0.12, 0.35), x + (this.rng() - 0.5) * 0.4, 0.17, z + (this.rng() - 0.5) * 0.4, this.rng() * 3);
+      blade.rotation.x = -0.2 + this.rng() * 0.4;
+      this.decor(blade, false);
+    }
+  }
+
+  /** small wildflower patch */
+  flowers(x: number, z: number, n = 5) {
+    const cols = [0xc8403a, 0xe8c83a, 0xf0f0f0, 0xd05a8a, 0x8a6ad8];
+    for (let i = 0; i < n; i++) {
+      const m = this.mesh(new THREE.MeshStandardMaterial({ color: cols[Math.floor(this.rng() * cols.length)], roughness: 0.8 }), new THREE.SphereGeometry(0.06, 8, 6), x + (this.rng() - 0.5) * 0.8, 0.1, z + (this.rng() - 0.5) * 0.8);
+      this.decor(m, false);
+    }
+  }
+
+  /** small dirt mound */
+  dirtMound(x: number, z: number, r = 1) {
+    const mat = new THREE.MeshStandardMaterial({ color: 0x6a5438, roughness: 1, flatShading: true });
+    const m = this.mesh(mat, new THREE.SphereGeometry(r, 12, 10), x, r * 0.25, z);
+    m.scale.y = 0.45;
+    this.decor(m);
+  }
+
+  /** rooftop AC unit: rounded body + louver + fan */
+  acUnit(x: number, z: number, y: number, ry = 0) {
+    const body = new THREE.MeshStandardMaterial({ color: 0xb8bcc0, roughness: 0.7, metalness: 0.4 });
+    const dark = new THREE.MeshStandardMaterial({ color: 0x2a2d30, roughness: 0.7, metalness: 0.6 });
+    const b = this.mesh(body, new RoundedBoxGeometry(1.2, 0.8, 0.9, 4, 0.12), x, y + 0.4, z, ry);
+    this.decor(b);
+    // louver slats on the front face
+    for (let i = 0; i < 4; i++) {
+      const s = this.mesh(dark, new THREE.BoxGeometry(1.0, 0.05, 0.04), x, y + 0.15 + i * 0.15, z + Math.cos(ry) * 0.46 + Math.sin(ry) * 0.46, ry);
+      this.decor(s, false);
+    }
+    // fan ring on the side
+    const fan = this.mesh(dark, new THREE.TorusGeometry(0.28, 0.04, 8, 20), x - Math.sin(ry) * 0.5, y + 0.4, z + Math.cos(ry) * 0.5, ry + Math.PI / 2);
+    fan.rotation.x = Math.PI / 2;
+    this.decor(fan, false);
+  }
+
+  /** rooftop antenna array: masts + crossbars + small dish */
+  antennaArray(x: number, z: number, y: number, ry = 0) {
+    const steel = new THREE.MeshStandardMaterial({ color: 0x8a9098, roughness: 0.5, metalness: 0.85 });
+    for (let i = 0; i < 3; i++) {
+      const h = 1.6 + i * 0.5;
+      const dx = (i - 1) * 0.7;
+      const mast = this.mesh(steel, new THREE.CylinderGeometry(0.03, 0.04, h, 8), x + Math.cos(ry) * dx, y + h / 2, z + Math.sin(ry) * dx, ry);
+      this.decor(mast);
+      for (let k = 0; k < 2; k++) {
+        const bar = this.mesh(steel, new THREE.CylinderGeometry(0.02, 0.02, 0.5, 6), x + Math.cos(ry) * dx, y + h * (0.4 + k * 0.35), z + Math.sin(ry) * dx, ry + Math.PI / 2);
+        bar.rotation.z = Math.PI / 2;
+        this.decor(bar, false);
+      }
+    }
+    // small dish on the tallest mast
+    const dish = this.mesh(steel, new THREE.SphereGeometry(0.4, 20, 12, 0, Math.PI * 2, 0, Math.PI / 2.6), x, y + 2.9, z);
+    dish.rotation.x = -Math.PI / 2.6;
+    this.decor(dish);
+  }
+
+  /** sagging wire strand between two points */
+  wireStrand(x1: number, z1: number, x2: number, z2: number, y: number, sag = 0.6) {
+    const pts: THREE.Vector3[] = [];
+    const n = 10;
+    for (let i = 0; i <= n; i++) {
+      const t = i / n;
+      pts.push(new THREE.Vector3(x1 + (x2 - x1) * t, y - sag * Math.sin(Math.PI * t), z1 + (z2 - z1) * t));
+    }
+    const curve = new THREE.CatmullRomCurve3(pts);
+    const m = this.mesh(new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.6, metalness: 0.85 }), new THREE.TubeGeometry(curve, 24, 0.014, 6), 0, 0, 0);
+    this.decor(m, false);
+  }
+
+  /** dock fender: hanging rubber cylinder at the waterline edge */
+  fender(x: number, z: number, ry = 0) {
+    const rubber = new THREE.MeshStandardMaterial({ color: 0x1a1a1e, roughness: 0.95 });
+    const c = this.mesh(rubber, new THREE.CylinderGeometry(0.14, 0.14, 1.4, 14), x, 1.2, z, ry + Math.PI / 2);
+    this.decor(c);
+    const chain = new THREE.MeshStandardMaterial({ color: 0x4a4a4e, roughness: 0.6, metalness: 0.8 });
+    for (const sx of [-1, 1]) {
+      const ch = this.mesh(chain, new THREE.CylinderGeometry(0.02, 0.02, 0.5, 6), x + sx * 0.5, 0.85, z, ry);
+      this.decor(ch, false);
+    }
+  }
+
+  /** drifting dust motes in a box volume */
+  dustMotes(spreadX: number, spreadZ: number, yMax: number, count: number, color = 0xd8c8a0, speed = 0.25) {
+    const pos = new Float32Array(count * 3);
+    for (let i = 0; i < count; i++) {
+      pos[i * 3] = (this.rng() - 0.5) * spreadX;
+      pos[i * 3 + 1] = 1 + this.rng() * yMax;
+      pos[i * 3 + 2] = (this.rng() - 0.5) * spreadZ;
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+    const points = new THREE.Points(geo, new THREE.PointsMaterial({ color, size: 0.05, transparent: true, opacity: 0.35, depthWrite: false }));
+    this.decor(points, false, false);
+    this.extras.push({
+      update: (dt: number) => {
+        const p = points.geometry.attributes.position as THREE.BufferAttribute;
+        for (let i = 0; i < count; i++) {
+          p.array[i * 3] += Math.sin(i + p.array[i * 3 + 1] * 0.7) * speed * dt;
+          p.array[i * 3 + 1] -= speed * 0.6 * dt;
+          if (p.array[i * 3 + 1] < 0.5) p.array[i * 3 + 1] = yMax;
+        }
+        p.needsUpdate = true;
+      },
+    });
+  }
 }
 
 /* ====================== mission worlds ====================== */
@@ -1548,6 +1968,26 @@ function buildVillage(content: THREE.Object3D, main: THREE.Scene, renderer: THRE
   K.sandbag(4, 30, 0.2, 4);
   K.sandbag(-4, 30, -0.2, 4);
   K.sandbag(6, -20, 0.1, 4);
+
+  // environment polish: weathering + small detail (visual only)
+  for (let i = 0; i < 6; i++) K.groundStain(-2 + (K.rng() - 0.5) * 26, 6 + (K.rng() - 0.5) * 60, 0.6 + K.rng() * 0.8);
+  K.puddle(-2, 22, 1.1, 0.8);
+  K.puddle(3, -8, 0.9, 0.7);
+  K.puddle(-4, 34, 1.0, 0.7);
+  for (let i = 0; i < 4; i++) K.cracks(-12 + K.rng() * 24, 8 + K.rng() * 50, 2.4 + K.rng() * 1.6);
+  for (let i = 0; i < 8; i++) K.rock(-22 + K.rng() * 44, -24 + K.rng() * 66, 0.7 + K.rng() * 0.8);
+  K.rubble(-16, 12, 4);
+  K.rubble(15, 26, 4);
+  K.dirtMound(-10, -18, 1.1);
+  K.dirtMound(18, 20, 0.9);
+  for (let i = 0; i < 14; i++) K.grassTuft(-20 + K.rng() * 40, -26 + K.rng() * 70, 3);
+  K.flowers(6, 24, 6);
+  K.flowers(-6, 30, 5);
+  K.flowers(4, -12, 5);
+  K.wireStrand(-13, -2, -13, 6, 5.2, 0.5);
+  K.wireStrand(13, 4, 14, 16, 5.3, 0.6);
+  K.wireStrand(-14, 18, -14, 30, 5.2, 0.5);
+  K.dustMotes(90, 110, 14, 90, 0xe8d8b0, 0.2);
 
   // hills ring
   const hillMat = new THREE.MeshStandardMaterial({ color: 0x4a5a38, roughness: 1, flatShading: true });
@@ -1726,6 +2166,27 @@ function buildConstruction(content: THREE.Object3D, main: THREE.Scene, renderer:
   K.crate(woodMat, 18, 12, 1.2, 0.3);
   K.crate(woodMat, -18, 14, 1.1, -0.2);
 
+  // environment polish: site weathering + clutter (visual only)
+  for (let i = 0; i < 7; i++) K.groundStain(-26 + K.rng() * 52, -36 + K.rng() * 72, 0.6 + K.rng() * 0.9);
+  K.puddle(-12, 8, 1.3, 1.0);
+  K.puddle(15, 22, 1.1, 0.8);
+  K.puddle(-6, 30, 1.0, 0.7);
+  for (let i = 0; i < 5; i++) K.cracks(-20 + K.rng() * 40, -28 + K.rng() * 56, 2.4 + K.rng() * 1.8);
+  for (let i = 0; i < 7; i++) K.rock(-24 + K.rng() * 48, -34 + K.rng() * 68, 0.6 + K.rng() * 0.9);
+  K.rubble(14, 24, 5);
+  K.rubble(-12, 16, 5);
+  K.dirtMound(6, 12, 1.2);
+  K.dirtMound(-14, -10, 1.0);
+  K.trafficCone(-2, 44, 0.2);
+  K.trafficCone(-1, 44.7, 0.4);
+  K.trafficCone(1, 44.2, -0.2);
+  K.roadSign(-19, 30, 0.3, "SITE", "#d8a01c", "#1a1a1a");
+  K.roadSign(19, -26, -0.3, "DANGER", "#d8302a", "#f0ece0");
+  K.wireStrand(-6, -16, 8, -16, 18.5, 0.8);
+  K.wireStrand(-18, 2, 12, 18, 12.5, 1.0);
+  K.wallStreak(-18, 2.0, -16.86, 5, 3, 0, false);
+  K.dustMotes(110, 120, 18, 110, 0xd0c0a0, 0.3);
+
   return finish(K, ambient);
 }
 
@@ -1840,6 +2301,48 @@ function buildDowntown(content: THREE.Object3D, main: THREE.Scene, renderer: THR
   K.sandbag(7, -16, 0, 4);
   K.crate(new THREE.MeshStandardMaterial({ color: 0x8a6a43, roughness: 0.82 }), 0, 28, 1.1, 0.2);
   K.crate(new THREE.MeshStandardMaterial({ color: 0x8a6a43, roughness: 0.82 }), -3, -20, 1.0, -0.3);
+
+  // environment polish: street weathering + urban clutter (visual only)
+  for (let i = 0; i < 8; i++) K.groundStain(-14 + K.rng() * 28, -26 + K.rng() * 68, 0.6 + K.rng() * 0.9);
+  for (const [px, pz] of [[-6, 29], [6.5, 30], [-6.5, -14], [5.5, 17], [0, 26], [-2, 12]] as const) K.puddle(px, pz, 1.0 + K.rng() * 0.5, 0.7 + K.rng() * 0.4);
+  for (let i = 0; i < 6; i++) K.cracks(-14 + K.rng() * 28, -26 + K.rng() * 68, 2.4 + K.rng() * 1.8);
+  K.trafficCone(-5.2, 30.5, 0.2);
+  K.trafficCone(-4.8, 31.2, 0.5);
+  K.trafficCone(-5.6, 29.8, -0.3);
+  K.trafficCone(6.8, 15.6, -0.2);
+  K.trafficCone(7.2, 16.3, 0.4);
+  K.roadSign(-12.6, 24, 0.2, "NO PARKING", "#d8302a", "#f0ece0");
+  K.roadSign(12.6, -8, -0.2, "STREET", "#2a5a8a", "#f0ece0");
+  K.billboard(-10.5, 40, 12.5, 0.15);
+  K.billboard(10.5, 40, 12.5, -0.15);
+  // rooftop equipment
+  K.acUnit(-13, -0.5, 26.4, 0.1);
+  K.acUnit(-17, -0.5, 26.4, 0.6);
+  K.acUnit(15, -0.5, 30.4, -0.2);
+  K.acUnit(-15, 23.5, 22.4, 0.3);
+  K.acUnit(15, 21.5, 26.4, -0.3);
+  K.acUnit(-15, 39.5, 20.4, 0.2);
+  K.acUnit(15, 39.5, 22.4, -0.2);
+  K.antennaArray(-15, -0.5, 26.4, 0.2);
+  K.antennaArray(15, 21.5, 26.4, -0.2);
+  K.antennaArray(-8, -24.5, 24.4, 0.1);
+  // wall grime + rust streaks
+  K.wallStreak(-15, 6, 1.17, 8, 6, 0, false);
+  K.wallStreak(15, 8, 1.17, 8, 8, 0, false);
+  K.wallStreak(-15, 5, 26.17, 7, 5, 0, true);
+  K.wallStreak(15, 6, 24.17, 7, 6, 0, false);
+  K.wallStreak(-8, 7, -22.83, 7, 7, 0, false);
+  K.wallStreak(8, 6, -22.83, 7, 6, 0, true);
+  // overhead wires between streetlight poles
+  for (let z = -24; z <= 40; z += 12) {
+    K.wireStrand(-9.4, z, -9.4, z + 12, 5.2, 0.4);
+    K.wireStrand(9.4, z, 9.4, z + 12, 5.2, 0.4);
+  }
+  K.wireStrand(-9.4, 24, 9.4, 24, 5.4, 0.5);
+  K.rubble(-3, 30.5, 4);
+  K.rubble(2, -18, 4);
+  K.rock(-12, 26, 0.8);
+  K.rock(12, 22, 0.9);
 
   return finish(K, ambient);
 }
@@ -1970,6 +2473,34 @@ function buildPort(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.W
   K.truck(12, 26, 0.3, 0x3a5a3a);
   K.truck(-12, 30, -0.3, 0x4a4a4a);
 
+  // environment polish: dock weathering + clutter (visual only)
+  for (let i = 0; i < 8; i++) K.groundStain(-24 + K.rng() * 48, -16 + K.rng() * 64, 0.6 + K.rng() * 0.9);
+  for (const [px, pz] of [[-10, 18], [6, 22], [-16, 8], [18, 6], [-2, 34], [4, 28]] as const) K.puddle(px, pz, 1.0 + K.rng() * 0.6, 0.7 + K.rng() * 0.5);
+  for (let i = 0; i < 6; i++) K.cracks(-22 + K.rng() * 44, -14 + K.rng() * 60, 2.4 + K.rng() * 1.8);
+  // waterline fenders along the dock edge
+  for (let x = -22; x <= 22; x += 7) K.fender(x, -12.8, 0.1);
+  for (let i = 0; i < 6; i++) K.rock(-26 + K.rng() * 52, 8 + K.rng() * 50, 0.6 + K.rng() * 0.9);
+  K.rubble(-14, 24, 5);
+  K.rubble(14, 24, 5);
+  K.trafficCone(-12.5, 22, 0.2);
+  K.trafficCone(-13, 22.7, 0.5);
+  K.trafficCone(-12, 22.2, -0.3);
+  K.trafficCone(13, 22, -0.2);
+  K.trafficCone(13.5, 22.7, 0.4);
+  K.roadSign(-20, 30, 0.2, "DOCK", "#2a5a8a", "#f0ece0");
+  K.roadSign(20, 30, -0.2, "NO ENTRY", "#d8302a", "#f0ece0");
+  // rust + grime streaks on warehouses and containers
+  K.wallStreak(-14, 3.2, 28.17, 8, 3.4, 0, true);
+  K.wallStreak(14, 2.6, 27.17, 7, 3, 0, true);
+  K.wallStreak(-14, 4.5, 24.17, 6, 2.5, 0, false);
+  K.wallStreak(-12.98, 1.3, 2, 5, 2.4, Math.PI / 2, true);
+  K.wallStreak(19.02, 1.3, 2, 5, 2.4, -Math.PI / 2, true);
+  K.wallStreak(-15.02, 1.3, 10, 5, 2.4, Math.PI / 2, true);
+  K.wallStreak(21.02, 1.3, 10, 5, 2.4, -Math.PI / 2, true);
+  K.wireStrand(-13, -8.5, 13, -8.5, 17, 0.9);
+  K.wireStrand(-13, -8.5, -13, 8, 16, 0.8);
+  K.wireStrand(13, -8.5, 13, 8, 16, 0.8);
+
   return finish(K, ambient);
 }
 
@@ -2087,6 +2618,37 @@ function buildHQ(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.Web
   K.crate(woodMat, 0, -24.5, 1.0, 0.4);
   K.barrel(new THREE.MeshStandardMaterial({ color: 0x9b2c22, roughness: 0.5, metalness: 0.7 }), -8, -22);
   K.barrel(new THREE.MeshStandardMaterial({ color: 0x2f4b6e, roughness: 0.5, metalness: 0.7 }), 8, -22);
+
+  // environment polish: compound weathering + clutter (visual only)
+  for (let i = 0; i < 7; i++) K.groundStain(-20 + K.rng() * 40, -34 + K.rng() * 60, 0.6 + K.rng() * 0.9);
+  for (const [px, pz] of [[-14, -18], [12, -20], [-6, 20], [8, 14], [0, -14]] as const) K.puddle(px, pz, 1.0 + K.rng() * 0.5, 0.7 + K.rng() * 0.4);
+  for (let i = 0; i < 5; i++) K.cracks(-18 + K.rng() * 36, -32 + K.rng() * 56, 2.4 + K.rng() * 1.8);
+  K.trafficCone(-3.4, -21.4, 0.2);
+  K.trafficCone(-3.8, -22, 0.5);
+  K.trafficCone(3.4, -21.4, -0.2);
+  K.trafficCone(3.8, -22, -0.4);
+  K.roadSign(-22, 14, 0.2, "NO ENTRY", "#d8302a", "#f0ece0");
+  K.roadSign(22, 14, -0.2, "HQ", "#2a5a8a", "#f0ece0");
+  // wall grime/rust on tower + barracks + compound wall
+  K.wallStreak(0, 12, -26.87, 10, 10, 0, false);
+  K.wallStreak(0, 20, -26.87, 8, 8, 0, true);
+  K.wallStreak(-20, 3.2, 14.17, 8, 3.4, 0, false);
+  K.wallStreak(20, 3.2, 14.17, 8, 3.4, 0, true);
+  K.wallStreak(-15, 2.5, -19.42, 20, 3, 0, false);
+  K.wallStreak(15, 2.5, -19.42, 20, 3, 0, false);
+  // rooftop equipment
+  K.acUnit(-20, 12, 5.4, 0.2);
+  K.acUnit(20, 12, 5.4, -0.2);
+  K.acUnit(-20, 13, 5.4, 0.5);
+  K.acUnit(20, 13, 5.4, -0.5);
+  K.antennaArray(0, -32, 42.4, 0.1);
+  // overhead wires along the compound wall top
+  for (let x = -24; x <= 20; x += 8) K.wireStrand(x, -19.7, x + 8, -19.7, 4.9, 0.3);
+  K.wireStrand(-20, 10, 20, 10, 5.6, 0.5);
+  K.rubble(-6, -22, 4);
+  K.rubble(6, -22, 4);
+  K.rock(-22, 12, 0.8);
+  K.rock(22, 12, 0.9);
 
   // helipad (extraction, north of tower)
   K.helipad(0, -44);
