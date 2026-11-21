@@ -8,6 +8,7 @@
 /* ------------------------------------------------------------------ */
 import * as THREE from "three";
 import { Sky } from "three/examples/jsm/objects/Sky.js";
+import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import { buildWorld, World } from "./world";
 import type { SurfaceKind } from "./world";
 
@@ -440,25 +441,49 @@ class Kit {
     for (let i = 0; i < steps; i++) {
       const h = (i + 1) * rise;
       const off = i * run;
-      const m = this.box(stepMat, alongZ ? width : run, h, alongZ ? run : width, x + (alongZ ? 0 : off), 0, z + (alongZ ? off : 0), 0);
+      const m = this.mesh(stepMat, new RoundedBoxGeometry(alongZ ? width : run, h, alongZ ? run : width, 3, Math.min(0.05, h / 3)), x + (alongZ ? 0 : off), h / 2, z + (alongZ ? off : 0), 0);
+      m.castShadow = true;
+      m.receiveShadow = true;
       this.solid(m, "concrete");
       // riser facing the ascending direction (visual highlight on the front face)
-      const fm = this.box(sideMat, alongZ ? width : run, 0.06, alongZ ? 0.12 : 0.12, x + (alongZ ? 0 : off), h - 0.03, z + (alongZ ? off : 0), 0);
+      const fm = this.mesh(sideMat, new RoundedBoxGeometry(alongZ ? width : run, 0.06, 0.12, 2, 0.02), x + (alongZ ? 0 : off), h - 0.03, z + (alongZ ? off : 0) + (alongZ ? 0 : run / 2 - 0.06), 0);
+      fm.castShadow = true;
       this.scene.add(fm);
     }
-    // handrail along the ascending side (visual only)
+    // handrail: posts + continuous top rail + mid rail
     const railMat = new THREE.MeshStandardMaterial({ color: 0x2a2d30, roughness: 0.6, metalness: 0.8 });
+    const rSeg = 20;
     for (let i = 0; i <= steps; i++) {
       const h = i * rise + 0.9;
       const off = i * run;
-      const post = this.mesh(railMat, new THREE.CylinderGeometry(0.04, 0.04, 0.9, 8), x + (alongZ ? 0 : off) + width / 2 + 0.2, h - 0.45, z + (alongZ ? off : 0), 0);
+      const post = this.mesh(railMat, new THREE.CylinderGeometry(0.04, 0.04, 0.9, rSeg, 3), x + (alongZ ? 0 : off) + width / 2 + 0.2, h - 0.45, z + (alongZ ? off : 0), 0);
+      post.castShadow = true;
       this.scene.add(post);
     }
+    // continuous rail bar along the top of the posts
+    const railLen = steps * run;
+    const railBar = this.mesh(railMat, new THREE.CylinderGeometry(0.025, 0.025, railLen, rSeg, 3), x + width / 2 + 0.2, steps * rise / 2 + 0.9, z + (alongZ ? 0 : 0) + (alongZ ? railLen / 2 : 0), 0);
+    if (!alongZ) {
+      railBar.rotation.z = Math.PI / 2;
+      railBar.position.x = x + width / 2 + 0.2;
+      railBar.position.z = steps * run / 2;
+    } else {
+      railBar.rotation.x = Math.PI / 2;
+      railBar.position.x = x + width / 2 + 0.2;
+      railBar.position.z = z + railLen / 2;
+    }
+    railBar.castShadow = true;
+    this.scene.add(railBar);
   }
 
   roof(x: number, z: number, w: number, d: number, h: number, kind: string, mat: THREE.Material) {
     if (kind === "flat") {
-      this.box(mat, w + 0.6, 0.4, d + 0.6, x, h, z);
+      // rounded slab + raised cap + edge fascia
+      this.scene.add(this.mesh(mat, new RoundedBoxGeometry(w + 0.6, 0.4, d + 0.6, 4, 0.1), x, h + 0.2, z));
+      this.scene.add(this.mesh(mat, new RoundedBoxGeometry(w + 0.3, 0.12, d + 0.3, 3, 0.04), x, h + 0.42, z));
+      const fascia = new THREE.MeshStandardMaterial({ color: 0x3a3a40, roughness: 0.8, metalness: 0.4 });
+      this.scene.add(this.mesh(fascia, new RoundedBoxGeometry(w + 0.64, 0.14, 0.16, 3, 0.03), x, h + 0.1, z + d / 2 + 0.08));
+      this.scene.add(this.mesh(fascia, new RoundedBoxGeometry(w + 0.64, 0.14, 0.16, 3, 0.03), x, h + 0.1, z - d / 2 - 0.08));
     } else if (kind === "tile") {
       const shape = new THREE.Shape();
       const rise = Math.min(2.2, d * 0.35);
@@ -467,10 +492,17 @@ class Kit {
       shape.lineTo(w / 2, rise);
       shape.lineTo(-w / 2, rise);
       shape.closePath();
-      const g = new THREE.ExtrudeGeometry(shape, { depth: 0.35, bevelEnabled: false });
+      const g = new THREE.ExtrudeGeometry(shape, { depth: 0.35, bevelEnabled: true, bevelThickness: 0.04, bevelSize: 0.04, bevelSegments: 2 });
       g.translate(0, 0, -d / 2);
       const m = this.mesh(mat, g, x, h + rise / 2, z);
       this.scene.add(m);
+      // tile ridge cap along the peak
+      const ridge = new THREE.MeshStandardMaterial({ color: 0x6a2a1a, roughness: 0.9 });
+      this.scene.add(this.mesh(ridge, new RoundedBoxGeometry(w + 0.4, 0.14, 0.3, 3, 0.04), x, h + rise + 0.05, z));
+      // tile ridge rolls at the gable ends
+      for (const sx of [-1, 1]) {
+        this.scene.add(this.mesh(ridge, new THREE.CylinderGeometry(0.16, 0.16, 0.35, 16), x + sx * (w / 2 + 0.15), h + rise * 0.5, z, Math.PI / 2));
+      }
     } else if (kind === "gable") {
       const shape = new THREE.Shape();
       const rise = Math.min(3.2, d * 0.45);
@@ -479,25 +511,40 @@ class Kit {
       shape.lineTo(d / 2, rise);
       shape.lineTo(-d / 2, rise);
       shape.closePath();
-      const g = new THREE.ExtrudeGeometry(shape, { depth: w, bevelEnabled: false });
+      const g = new THREE.ExtrudeGeometry(shape, { depth: w, bevelEnabled: true, bevelThickness: 0.05, bevelSize: 0.05, bevelSegments: 2 });
       g.translate(0, 0, -w / 2);
       const m = this.mesh(mat, g, x, h + rise / 2, z);
       this.scene.add(m);
-    } else { // metal: shallow pitched corrugated sheet
-      const m = this.box(mat, w + 0.5, 0.25, d + 0.5, x, h + 0.05, z);
+      // roof ridge beam
+      const ridge = new THREE.MeshStandardMaterial({ color: 0x4a4a50, roughness: 0.85 });
+      this.scene.add(this.mesh(ridge, new RoundedBoxGeometry(w + 0.5, 0.2, 0.32, 3, 0.05), x, h + rise + 0.08, z));
+    } else { // metal: shallow pitched corrugated sheet + ridge
+      const m = this.mesh(mat, new RoundedBoxGeometry(w + 0.5, 0.25, d + 0.5, 4, 0.06), x, h + 0.05 + 0.125, z);
       this.scene.add(m);
+      const ridge = new THREE.MeshStandardMaterial({ color: 0x5a5a60, roughness: 0.7, metalness: 0.6 });
+      this.scene.add(this.mesh(ridge, new THREE.CylinderGeometry(0.1, 0.1, w + 0.5, 18), x, h + 0.25, z, Math.PI / 2));
     }
   }
 
   parapet(x: number, z: number, w: number, d: number, h: number, mat: THREE.Material) {
     const t = 0.25;
     const H = 0.9;
+    // rounded merlon caps along the long edges
+    const cap = new THREE.MeshStandardMaterial({ color: 0x6a6a70, roughness: 0.85 });
     // long sides (along z)
-    this.scene.add(this.box(mat, t, H, d + 0.5, x - w / 2, h - 0.2, z));
-    this.scene.add(this.box(mat, t, H, d + 0.5, x + w / 2, h - 0.2, z));
+    this.scene.add(this.mesh(mat, new RoundedBoxGeometry(t, H, d + 0.5, 3, 0.05), x - w / 2, h - 0.2 + H / 2, z));
+    this.scene.add(this.mesh(mat, new RoundedBoxGeometry(t, H, d + 0.5, 3, 0.05), x + w / 2, h - 0.2 + H / 2, z));
     // short sides (along x)
-    this.scene.add(this.box(mat, w + 0.5, H, t, x, h - 0.2, z - d / 2));
-    this.scene.add(this.box(mat, w + 0.5, H, t, x, h - 0.2, z + d / 2));
+    this.scene.add(this.mesh(mat, new RoundedBoxGeometry(w + 0.5, H, t, 3, 0.05), x, h - 0.2 + H / 2, z - d / 2));
+    this.scene.add(this.mesh(mat, new RoundedBoxGeometry(w + 0.5, H, t, 3, 0.05), x, h - 0.2 + H / 2, z + d / 2));
+    // crenellated cap stones on the two long sides
+    const step = 1.2;
+    const n = Math.max(1, Math.floor((d + 0.5) / step));
+    for (let i = 0; i <= n; i++) {
+      const zc = z - (d + 0.5) / 2 + i * step;
+      this.scene.add(this.mesh(cap, new RoundedBoxGeometry(t + 0.14, 0.16, step * 0.6, 3, 0.03), x - w / 2, h + H - 0.04, zc));
+      this.scene.add(this.mesh(cap, new RoundedBoxGeometry(t + 0.14, 0.16, step * 0.6, 3, 0.03), x + w / 2, h + H - 0.04, zc));
+    }
   }
 
   roofDetails(x: number, z: number, w: number, d: number, h: number, mat: THREE.Material) {
@@ -526,54 +573,139 @@ class Kit {
 
   /* ---------------- props ---------------- */
   crate(mat: THREE.Material, x: number, z: number, s: number, ry = 0, y = 0) {
-    return this.solid(this.box(mat, s, s, s, x, y, z, ry), "wood");
+    // collision = plain box (stable AABB); visual = rounded box + metal banding
+    const col = this.solid(this.box(mat, s, s, s, x, y, z, ry), "wood");
+    const vis = this.mesh(
+      mat,
+      new RoundedBoxGeometry(s, s, s, 4, Math.min(0.08, s / 5)),
+      x,
+      y + s / 2,
+      z,
+      ry,
+    );
+    vis.castShadow = true;
+    vis.receiveShadow = true;
+    this.scene.add(vis);
+    // corner posts
+    const postMat = new THREE.MeshStandardMaterial({ color: 0x3a2a16, roughness: 0.85 });
+    const pr = s * 0.1;
+    for (const [px, pz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+      const p = this.mesh(postMat, new THREE.CylinderGeometry(pr, pr, s * 1.04, 10), x + px * (s / 2 - pr * 0.6), y + s / 2, z + pz * (s / 2 - pr * 0.6), ry);
+      this.scene.add(p);
+    }
+    // horizontal metal straps
+    const strapMat = new THREE.MeshStandardMaterial({ color: 0x6a6a6e, roughness: 0.5, metalness: 0.8 });
+    for (const sy of [y + s * 0.28, y + s * 0.72]) {
+      const band = this.mesh(strapMat, new THREE.BoxGeometry(s + 0.04, s * 0.05, s + 0.04), x, sy, z, ry);
+      band.castShadow = true;
+      this.scene.add(band);
+    }
+    return col;
   }
 
   barrel(mat: THREE.Material, x: number, z: number, color = 0x9b2c22) {
     const m = this.solid(
-      this.mesh(mat, new THREE.CylinderGeometry(0.3, 0.3, 0.9, 28), x, 0.45, z),
+      this.mesh(mat, new THREE.CylinderGeometry(0.3, 0.3, 0.9, 40), x, 0.45, z),
       "metal",
     );
     const ringMat = new THREE.MeshStandardMaterial({ color, roughness: 0.5, metalness: 0.7 });
-    [-0.28, 0, 0.28].forEach((y) => {
-      const r = new THREE.Mesh(new THREE.TorusGeometry(0.302, 0.012, 8, 28), ringMat);
+    // steel hoops (more, finer) + rims
+    [-0.3, -0.13, 0.04, 0.21, 0.34].forEach((y) => {
+      const r = new THREE.Mesh(new THREE.TorusGeometry(0.304, 0.014, 12, 40), ringMat);
       r.rotation.x = Math.PI / 2;
       r.position.y = y;
       m.add(r);
     });
+    // chime ring at the top + base ring
+    [0.36, -0.36].forEach((y) => {
+      const r = new THREE.Mesh(new THREE.TorusGeometry(0.3, 0.022, 12, 40), new THREE.MeshStandardMaterial({ color: 0x8a8a8e, roughness: 0.4, metalness: 0.85 }));
+      r.rotation.x = Math.PI / 2;
+      r.position.y = y;
+      m.add(r);
+    });
+    // bung cap on the side
+    const bung = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.05, 16), new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.6, metalness: 0.7 }));
+    bung.position.set(0.3, 0.2, 0);
+    m.add(bung);
   }
 
   sandbag(x: number, z: number, ry = 0, count = 5) {
     const mat = new THREE.MeshStandardMaterial({ color: 0x8d8163, roughness: 0.95 });
     for (let i = 0; i < count; i++) {
-      const b = this.box(mat, 0.65, 0.28, 0.35, x + (i % 3) * 0.55 - 0.55, 0.12 + Math.floor(i / 3) * 0.28, z, ry);
+      const col = Math.floor(i / 3);
+      const b = this.mesh(mat, new RoundedBoxGeometry(0.65, 0.28, 0.35, 4, 0.08), x + (i % 3) * 0.55 - 0.55, 0.12 + col * 0.28, z, ry);
       b.castShadow = true;
+      b.receiveShadow = true;
       this.scene.add(b);
+      // stitching seam for detail
+      const seam = this.mesh(new THREE.MeshStandardMaterial({ color: 0x5a5240, roughness: 1 }), new THREE.BoxGeometry(0.6, 0.012, 0.3), 0, 0, 0, 0);
+      b.add(seam);
     }
   }
 
   car(x: number, z: number, ry = 0, color = 0x2e5a8c, scale = 1) {
     const body = new THREE.MeshStandardMaterial({ color, roughness: 0.4, metalness: 0.5 });
     const glass = new THREE.MeshStandardMaterial({ color: 0x14181c, roughness: 0.15, metalness: 0.9 });
+    const tire = new THREE.MeshStandardMaterial({ color: 0x111, roughness: 0.9 });
+    const chrome = new THREE.MeshStandardMaterial({ color: 0x9aa0a8, roughness: 0.3, metalness: 0.95 });
     const grp = new THREE.Group();
     grp.position.set(x, 0, z);
     grp.rotation.y = ry;
-    const b = new THREE.Mesh(new THREE.BoxGeometry(2 * scale, 0.7 * scale, 4.6 * scale), body);
+    // lower body (rounded)
+    const b = new THREE.Mesh(new RoundedBoxGeometry(2 * scale, 0.7 * scale, 4.6 * scale, 4, 0.12 * scale), body);
     b.position.y = 0.55 * scale;
     b.castShadow = true;
     grp.add(b);
-    const c = new THREE.Mesh(new THREE.BoxGeometry(1.7 * scale, 0.65 * scale, 2.2 * scale), glass);
+    // upper cabin glass (rounded)
+    const c = new THREE.Mesh(new RoundedBoxGeometry(1.7 * scale, 0.65 * scale, 2.2 * scale, 4, 0.1 * scale), glass);
     c.position.y = 1.1 * scale;
     c.position.z = -0.1 * scale;
     c.castShadow = true;
     grp.add(c);
+    // roof + door cut lines
+    const roof = new THREE.Mesh(new RoundedBoxGeometry(1.75 * scale, 0.06 * scale, 2.25 * scale, 3, 0.02 * scale), body);
+    roof.position.y = 1.42 * scale;
+    roof.position.z = -0.1 * scale;
+    grp.add(roof);
+    for (const sx of [-0.45, 0.45]) {
+      const line = new THREE.Mesh(new THREE.BoxGeometry(0.02 * scale, 0.5 * scale, 2.2 * scale), new THREE.MeshStandardMaterial({ color: 0x0a0a0a, roughness: 0.6 }));
+      line.position.set(sx * scale, 0.95 * scale, -0.1 * scale);
+      grp.add(line);
+    }
+    // headlights + taillights
+    const lightMat = new THREE.MeshStandardMaterial({ color: 0xfff4c0, emissive: 0xfff0b0, emissiveIntensity: 0.6 });
+    const tailMat = new THREE.MeshStandardMaterial({ color: 0xff2222, emissive: 0xcc1111, emissiveIntensity: 0.5 });
+    for (const sx of [-0.7, 0.7]) {
+      const hl = new THREE.Mesh(new THREE.BoxGeometry(0.28 * scale, 0.14 * scale, 0.08 * scale), lightMat);
+      hl.position.set(sx * scale, 0.62 * scale, 2.3 * scale);
+      grp.add(hl);
+      const tl = new THREE.Mesh(new THREE.BoxGeometry(0.26 * scale, 0.13 * scale, 0.08 * scale), tailMat);
+      tl.position.set(sx * scale, 0.62 * scale, -2.3 * scale);
+      grp.add(tl);
+    }
+    // mirrors
+    for (const sx of [-1, 1]) {
+      const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.03 * scale, 0.03 * scale, 0.22 * scale, 10), chrome);
+      arm.rotation.z = Math.PI / 2;
+      arm.position.set(sx * (1.0 * scale), 1.05 * scale, 0.5 * scale);
+      grp.add(arm);
+      const cap = new THREE.Mesh(new RoundedBoxGeometry(0.18 * scale, 0.12 * scale, 0.06 * scale, 3, 0.02 * scale), body);
+      cap.position.set(sx * (1.1 * scale), 1.05 * scale, 0.58 * scale);
+      grp.add(cap);
+    }
+    // wheels with hubs
     for (const [wx, wz] of [[-0.8, 1.2], [0.8, 1.2], [-0.8, -1.4], [0.8, -1.4]]) {
-      const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.38 * scale, 0.38 * scale, 0.25 * scale, 16), new THREE.MeshStandardMaterial({ color: 0x111, roughness: 0.9 }));
+      const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.38 * scale, 0.38 * scale, 0.25 * scale, 28), tire);
       wheel.rotation.z = Math.PI / 2;
       wheel.position.set(wx * scale, 0.38 * scale, wz * scale);
       grp.add(wheel);
+      const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.18 * scale, 0.18 * scale, 0.27 * scale, 16), chrome);
+      hub.rotation.z = Math.PI / 2;
+      hub.position.set(wx * scale, 0.38 * scale, wz * scale);
+      grp.add(hub);
     }
     this.scene.add(grp);
+    // collision stays a stable box
     const col = this.box(body, 2 * scale, 0.7 * scale, 4.6 * scale, x, 0, z, ry);
     this.colliders.push(col);
     this.aabbs.push(new THREE.Box3().setFromObject(col));
@@ -582,13 +714,49 @@ class Kit {
   truck(x: number, z: number, ry = 0, color = 0x3a5a3a) {
     const body = new THREE.MeshStandardMaterial({ color, roughness: 0.5, metalness: 0.4 });
     const cab = new THREE.MeshStandardMaterial({ color: 0x2c4a2c, roughness: 0.4, metalness: 0.6 });
+    const tire = new THREE.MeshStandardMaterial({ color: 0x111, roughness: 0.9 });
+    const chrome = new THREE.MeshStandardMaterial({ color: 0x9aa0a8, roughness: 0.3, metalness: 0.95 });
     const b = this.box(body, 2.4, 2.2, 7, x, 0, z, ry);
     const c = this.box(cab, 2.4, 1.6, 2.6, x + Math.sin(ry) * 3.3, 0, z + Math.cos(ry) * 3.3, ry);
+    // rounded visual bodies on top of collision boxes
+    const visBody = this.mesh(body, new RoundedBoxGeometry(2.4, 2.2, 7, 4, 0.18), x, 1.1, z, ry);
+    visBody.castShadow = true;
+    visBody.receiveShadow = true;
+    this.scene.add(visBody);
+    const visCab = this.mesh(cab, new RoundedBoxGeometry(2.4, 1.6, 2.6, 4, 0.14), x + Math.sin(ry) * 3.3, 0.8, z + Math.cos(ry) * 3.3, ry);
+    visCab.castShadow = true;
+    this.scene.add(visCab);
+    // cab windshield + mirrors
+    const glass = new THREE.MeshStandardMaterial({ color: 0x14181c, roughness: 0.15, metalness: 0.9 });
+    const ws = this.mesh(glass, new RoundedBoxGeometry(2.1, 0.7, 0.06, 3, 0.03), x + Math.sin(ry) * 3.3, 1.2, z + Math.cos(ry) * 4.6, ry);
+    this.scene.add(ws);
+    for (const sx of [-1, 1]) {
+      const arm = this.mesh(chrome, new THREE.CylinderGeometry(0.04, 0.04, 0.4, 10), x + Math.sin(ry) * 3.3 + sx * 1.3, 1.1, z + Math.cos(ry) * 3.6, ry);
+      arm.rotation.z = Math.PI / 2;
+      this.scene.add(arm);
+    }
+    // cargo bed slats + stacked crates
+    const slatMat = new THREE.MeshStandardMaterial({ color: 0x5a4a30, roughness: 0.9 });
+    for (let i = -2; i <= 2; i++) {
+      const slat = this.mesh(slatMat, new THREE.BoxGeometry(2.2, 0.06, 0.1), x + i * 1.2, 2.3, z, ry);
+      slat.rotation.y = ry;
+      this.scene.add(slat);
+    }
+    const crateMat = new THREE.MeshStandardMaterial({ color: 0x8a6a43, roughness: 0.82 });
+    for (const [dx, dz, h] of [[-0.6, 0.4, 0.8], [0.6, -0.3, 0.6]] as const) {
+      const cr = this.mesh(crateMat, new THREE.BoxGeometry(1.0, h, 1.0), x + dx, 2.3 + h / 2, z + dz, ry);
+      this.scene.add(cr);
+    }
+    // wheels with hubs
     for (const [wx, wz] of [[-1, 2.2], [1, 2.2], [-1, -2.5], [1, -2.5]] as const) {
-      const w = this.mesh(new THREE.MeshStandardMaterial({ color: 0x111, roughness: 0.9 }), new THREE.CylinderGeometry(0.5, 0.5, 0.3, 16), x + wx * Math.cos(ry) + wz * Math.sin(ry), 0.5, z - wx * Math.sin(ry) + wz * Math.cos(ry));
+      const w = this.mesh(tire, new THREE.CylinderGeometry(0.5, 0.5, 0.3, 28), x + wx * Math.cos(ry) + wz * Math.sin(ry), 0.5, z - wx * Math.sin(ry) + wz * Math.cos(ry));
       w.rotation.z = Math.PI / 2;
       w.rotation.y = ry;
       this.scene.add(w);
+      const hub = this.mesh(chrome, new THREE.CylinderGeometry(0.24, 0.24, 0.32, 16), x + wx * Math.cos(ry) + wz * Math.sin(ry), 0.5, z - wx * Math.sin(ry) + wz * Math.cos(ry));
+      hub.rotation.z = Math.PI / 2;
+      hub.rotation.y = ry;
+      this.scene.add(hub);
     }
     this.scene.add(b, c);
     this.colliders.push(b, c);
@@ -601,18 +769,46 @@ class Kit {
   container(x: number, y: number, z: number, ry = 0, color = 0x8a6a3a) {
     const c = new THREE.Color(color);
     const mat = new THREE.MeshStandardMaterial({ color: c, roughness: 0.65, metalness: 0.35 });
-    const m = this.box(mat, 6, 2.6, 2.5, x, y, z, ry);
-    // corrugation lines via thin ribs
+    const col = this.box(mat, 6, 2.6, 2.5, x, y, z, ry);
+    // rounded visual shell + corrugation + end frames + doors
+    const vis = this.mesh(mat, new RoundedBoxGeometry(6, 2.6, 2.5, 4, 0.14), x, y + 1.3, z, ry);
+    vis.castShadow = true;
+    vis.receiveShadow = true;
+    this.scene.add(vis);
     const ribMat = new THREE.MeshStandardMaterial({ color: c.clone().multiplyScalar(0.75), roughness: 0.7 });
     for (let i = -2; i <= 2; i++) {
       const rib = new THREE.Mesh(new THREE.BoxGeometry(0.05, 2.6, 2.5), ribMat);
       rib.position.set(i * 1.15, 1.3, 0);
       rib.rotation.y = ry;
-      m.add(rib);
+      vis.add(rib);
     }
-    this.scene.add(m);
-    this.colliders.push(m);
-    return m;
+    // vertical corrugation on the ends
+    for (let i = -1; i <= 1; i++) {
+      const end = new THREE.Mesh(new THREE.BoxGeometry(0.04, 2.6, 0.04), ribMat);
+      end.position.set(i * 0.7, 1.3, 1.25);
+      vis.add(end);
+    }
+    // corner posts
+    const postMat = new THREE.MeshStandardMaterial({ color: c.clone().multiplyScalar(0.55), roughness: 0.7, metalness: 0.5 });
+    for (const [px, pz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+      const p = new THREE.Mesh(new THREE.BoxGeometry(0.1, 2.6, 0.1), postMat);
+      p.position.set(px * 2.95, 1.3, pz * 1.2);
+      p.rotation.y = ry;
+      vis.add(p);
+    }
+    // door lines + handles
+    const doorMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.6, metalness: 0.6 });
+    for (const dz of [-0.6, 0.6]) {
+      const line = new THREE.Mesh(new THREE.BoxGeometry(0.02, 2.4, 0.02), ribMat);
+      line.position.set(0, 1.3, dz);
+      vis.add(line);
+      const handle = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.06, 0.08), doorMat);
+      handle.position.set(0.5, 0.9, dz);
+      vis.add(handle);
+    }
+    this.scene.add(col);
+    this.colliders.push(col);
+    return col;
   }
 
   containerRow(x: number, z: number, count: number, ry = 0, colors = [0x8a6a3a, 0x3a6a8a, 0x5a7a3a, 0x8a8a8a]) {
@@ -628,16 +824,22 @@ class Kit {
     const len = Math.hypot(x2 - x1, z2 - z1);
     const ux = (x2 - x1) / len;
     const uz = (z2 - z1) / len;
-    const n = Math.max(2, Math.floor(len / 2.2));
+    const ang = Math.atan2(ux, uz) - Math.PI / 2;
+    const n = Math.max(2, Math.floor(len / 1.4));
     for (let i = 0; i <= n; i++) {
       const t = i / n;
       const px = x1 + (x2 - x1) * t;
       const pz = z1 + (z2 - z1) * t;
-      const post = this.box(wood, 0.12, 1.4, 0.12, px, 0, pz, Math.atan2(ux, uz) - Math.PI / 2);
+      const post = this.mesh(wood, new RoundedBoxGeometry(0.13, 1.4, 0.13, 3, 0.03), px, 0, pz, ang);
+      post.castShadow = true;
       this.scene.add(post);
+      // post foot
+      const foot = this.mesh(wood, new THREE.BoxGeometry(0.2, 0.1, 0.2), px, 0.05, pz, ang);
+      this.scene.add(foot);
     }
-    for (const y of [0.7, 1.2]) {
-      const rail = this.box(wood, len, 0.1, 0.06, (x1 + x2) / 2, y, (z1 + z2) / 2, Math.atan2(ux, uz) - Math.PI / 2);
+    for (const y of [0.7, 1.2, 1.32]) {
+      const rail = this.mesh(wood, new RoundedBoxGeometry(len, 0.1, 0.07, 3, 0.02), (x1 + x2) / 2, y, (z1 + z2) / 2, ang);
+      rail.castShadow = true;
       this.scene.add(rail);
     }
   }
@@ -645,28 +847,55 @@ class Kit {
   tree(x: number, z: number, s = 1) {
     const trunkMat = new THREE.MeshStandardMaterial({ color: 0x5a3d22, roughness: 0.9 });
     const leafMat = new THREE.MeshStandardMaterial({ color: 0x3d5a2a, roughness: 0.9 });
-    const trunk = this.mesh(trunkMat, new THREE.CylinderGeometry(0.2 * s, 0.32 * s, 2.4 * s, 8), x, 1.2 * s, z);
+    const trunk = this.mesh(trunkMat, new THREE.CylinderGeometry(0.2 * s, 0.32 * s, 2.4 * s, 16, 4), x, 1.2 * s, z);
     this.scene.add(trunk);
-    for (let i = 0; i < 4; i++) {
-      const leaf = this.mesh(leafMat, new THREE.SphereGeometry((0.9 + this.rng() * 0.5) * s, 10, 8), x + (this.rng() - 0.5) * 1.4 * s, (2.6 + i * 0.45 + this.rng() * 0.5) * s, z + (this.rng() - 0.5) * 1.4 * s);
+    // branch stubs
+    for (const [by, bx, bz] of [[2.0, 0.3, 0], [1.8, -0.3, 0.1], [2.2, 0.1, -0.3]]) {
+      const br = this.mesh(trunkMat, new THREE.CylinderGeometry(0.04 * s, 0.07 * s, 0.5 * s, 8), x + bx * s, by * s, z + bz * s);
+      br.rotation.z = bx * 0.6;
+      br.rotation.x = bz * 0.6;
+      this.scene.add(br);
+    }
+    // multi-layer canopy
+    for (let i = 0; i < 7; i++) {
+      const leaf = this.mesh(leafMat, new THREE.SphereGeometry((0.85 + this.rng() * 0.55) * s, 18, 14), x + (this.rng() - 0.5) * 1.5 * s, (2.4 + i * 0.4 + this.rng() * 0.5) * s, z + (this.rng() - 0.5) * 1.5 * s);
       this.scene.add(leaf);
+    }
+    // small under-foliage
+    for (let i = 0; i < 3; i++) {
+      const low = this.mesh(leafMat, new THREE.SphereGeometry((0.5 + this.rng() * 0.3) * s, 14, 10), x + (this.rng() - 0.5) * 1.2 * s, 1.5 * s + this.rng() * 0.3, z + (this.rng() - 0.5) * 1.2 * s);
+      this.scene.add(low);
     }
   }
 
   haystack(x: number, z: number) {
     const mat = new THREE.MeshStandardMaterial({ color: 0xc9a84a, roughness: 1 });
-    const m = this.mesh(mat, new THREE.SphereGeometry(1.6, 12, 10), x, 1.1, z);
+    const m = this.mesh(mat, new THREE.SphereGeometry(1.6, 28, 22), x, 1.1, z);
     m.scale.y = 0.8;
     this.scene.add(m);
+    // bale wrap ridges
+    const ridge = new THREE.MeshStandardMaterial({ color: 0xb5963c, roughness: 1 });
+    for (let i = 0; i < 3; i++) {
+      const r = this.mesh(ridge, new THREE.TorusGeometry(1.5 - i * 0.25, 0.04, 8, 28), x, 1.0 + i * 0.12, z);
+      r.rotation.x = Math.PI / 2;
+      r.scale.y = 0.8;
+      this.scene.add(r);
+    }
   }
 
   streetlight(x: number, z: number, ry = 0) {
     const poleMat = new THREE.MeshStandardMaterial({ color: 0x2a2d30, roughness: 0.6, metalness: 0.8 });
-    const pole = this.mesh(poleMat, new THREE.CylinderGeometry(0.09, 0.12, 5, 10), x, 2.5, z, ry);
+    const pole = this.mesh(poleMat, new THREE.CylinderGeometry(0.09, 0.12, 5, 24, 4), x, 2.5, z, ry);
     this.scene.add(pole);
-    const arm = this.mesh(poleMat, new THREE.CylinderGeometry(0.05, 0.05, 1.6, 8), x + Math.sin(ry) * 0.9, 5, z + Math.cos(ry) * 0.9, ry + Math.PI / 2);
+    // access panel on the pole
+    const panel = this.mesh(new THREE.MeshStandardMaterial({ color: 0x1a1c1f, roughness: 0.7, metalness: 0.5 }), new THREE.BoxGeometry(0.2, 0.5, 0.06), x + Math.sin(ry) * 0.1, 1.2, z + Math.cos(ry) * 0.1);
+    this.scene.add(panel);
+    const arm = this.mesh(poleMat, new THREE.CylinderGeometry(0.05, 0.05, 1.6, 16), x + Math.sin(ry) * 0.9, 5, z + Math.cos(ry) * 0.9, ry + Math.PI / 2);
     this.scene.add(arm);
-    const bulb = this.mesh(new THREE.MeshStandardMaterial({ color: 0xffe9b0, emissive: 0xffd98a, emissiveIntensity: 2.2 }), new THREE.SphereGeometry(0.14, 10, 8), x + Math.sin(ry) * 1.7, 4.95, z + Math.cos(ry) * 1.7);
+    // lamp housing + bulb
+    const housing = this.mesh(new THREE.MeshStandardMaterial({ color: 0x1a1c1f, roughness: 0.5, metalness: 0.7 }), new THREE.CylinderGeometry(0.16, 0.12, 0.18, 20), x + Math.sin(ry) * 1.7, 4.9, z + Math.cos(ry) * 1.7);
+    this.scene.add(housing);
+    const bulb = this.mesh(new THREE.MeshStandardMaterial({ color: 0xffe9b0, emissive: 0xffd98a, emissiveIntensity: 2.2 }), new THREE.SphereGeometry(0.14, 20, 16), x + Math.sin(ry) * 1.7, 4.8, z + Math.cos(ry) * 1.7);
     this.scene.add(bulb);
   }
 
@@ -674,23 +903,41 @@ class Kit {
   craneTower(x: number, z: number, h: number, ry = 0) {
     const yellow = new THREE.MeshStandardMaterial({ color: 0xd8a81c, roughness: 0.5, metalness: 0.5 });
     const dark = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.6, metalness: 0.7 });
-    // mast
-    const mast = this.box(yellow, 1.3, h, 1.3, x, 0, z, ry);
-    // jib (long horizontal arm)
+    // mast (rounded) + lattice cross-braces
+    const mast = this.mesh(yellow, new RoundedBoxGeometry(1.3, h, 1.3, 4, 0.2), x, h / 2, z, ry);
+    mast.castShadow = true;
+    this.scene.add(mast);
+    const braceMat = new THREE.MeshStandardMaterial({ color: 0xb89018, roughness: 0.6, metalness: 0.6 });
+    for (let yy = 1; yy < h; yy += 1.5) {
+      const br1 = this.mesh(braceMat, new THREE.BoxGeometry(1.4, 0.05, 0.05), x - 0.6, yy, z, ry);
+      const br2 = this.mesh(braceMat, new THREE.BoxGeometry(0.05, 0.05, 1.4), x + 0.6, yy, z, ry);
+      this.scene.add(br1, br2);
+    }
+    // jib (long horizontal arm) + counter-jib (rounded)
     const jibLen = 22;
-    const jib = this.box(yellow, 0.8, 0.9, jibLen, x, h, z + Math.cos(ry) * 9, ry);
-    const counter = this.box(yellow, 0.8, 0.9, 9, x, h, z - Math.cos(ry) * 4.5, ry);
-    const cw = this.box(dark, 2.2, 1.6, 1.6, x - Math.sin(ry) * 4.5, h - 0.6, z - Math.cos(ry) * 4.5, ry);
-    // cab
-    const cab = this.box(yellow, 2, 2, 2.4, x + Math.sin(ry) * 1.6, h - 0.8, z + Math.cos(ry) * 1.6, ry);
-    // hook cable + block
+    const jib = this.mesh(yellow, new RoundedBoxGeometry(0.8, 0.9, jibLen, 4, 0.18), x, h, z + Math.cos(ry) * 9, ry);
+    jib.castShadow = true;
+    const counter = this.mesh(yellow, new RoundedBoxGeometry(0.8, 0.9, 9, 4, 0.18), x, h, z - Math.cos(ry) * 4.5, ry);
+    const cw = this.mesh(dark, new RoundedBoxGeometry(2.2, 1.6, 1.6, 4, 0.3), x - Math.sin(ry) * 4.5, h - 0.6, z - Math.cos(ry) * 4.5, ry);
+    const cab = this.mesh(yellow, new RoundedBoxGeometry(2, 2, 2.4, 4, 0.3), x + Math.sin(ry) * 1.6, h - 0.8, z + Math.cos(ry) * 1.6, ry);
+    cab.castShadow = true;
+    // jib truss detail (diagonals)
+    const trussMat = new THREE.MeshStandardMaterial({ color: 0x9a7214, roughness: 0.6, metalness: 0.6 });
+    for (let i = 0; i < 6; i++) {
+      const zz = -jibLen / 2 + i * (jibLen / 5);
+      const diag = this.mesh(trussMat, new THREE.BoxGeometry(0.06, 0.85, 0.06), x, h, z + Math.cos(ry) * 9 + zz, ry);
+      diag.rotation.z = 0.4;
+      this.scene.add(diag);
+    }
+    // hook cable (tapered, high segment) + block
     const hookX = x + Math.sin(ry) * 10;
     const hookZ = z + Math.cos(ry) * 10;
-    const cable = this.mesh(dark, new THREE.CylinderGeometry(0.03, 0.03, 6, 6), hookX, h - 3, hookZ);
-    const block = this.box(dark, 0.7, 0.7, 0.7, hookX, h - 6.2, hookZ);
-    this.scene.add(mast, jib, counter, cw, cab, cable, block);
+    const cable = this.mesh(dark, new THREE.CylinderGeometry(0.02, 0.04, 6, 12), hookX, h - 3, hookZ);
+    const block = this.mesh(dark, new RoundedBoxGeometry(0.7, 0.7, 0.7, 3, 0.12), hookX, h - 6.2, hookZ);
+    block.castShadow = true;
+    this.scene.add(jib, counter, cw, cab, cable, block);
     this.colliders.push(mast);
-    const beacon = this.mesh(new THREE.MeshStandardMaterial({ color: 0xff2222, emissive: 0xff0000, emissiveIntensity: 3 }), new THREE.SphereGeometry(0.1, 8, 6), x, h + 0.3, z);
+    const beacon = this.mesh(new THREE.MeshStandardMaterial({ color: 0xff2222, emissive: 0xff0000, emissiveIntensity: 3 }), new THREE.SphereGeometry(0.12, 16, 12), x, h + 0.3, z);
     this.scene.add(beacon);
     this.beacon(beacon, 3, this.rng() * 6);
     return { mast, x, z, h, ry };
@@ -700,26 +947,67 @@ class Kit {
     const yellow = new THREE.MeshStandardMaterial({ color: 0xd8a81c, roughness: 0.5, metalness: 0.5 });
     const dark = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.6, metalness: 0.7 });
     for (const sx of [-1, 1]) {
-      const leg = this.box(yellow, 0.7, h, 0.7, x + sx * span / 2, 0, z, 0);
-      const leg2 = this.box(yellow, 0.7, h, 0.7, x + sx * span / 2, 0, z + 1.6, 0);
+      const leg = this.mesh(yellow, new RoundedBoxGeometry(0.7, h, 0.7, 4, 0.15), x + sx * span / 2, h / 2, z, 0);
+      leg.castShadow = true;
+      const leg2 = this.mesh(yellow, new RoundedBoxGeometry(0.7, h, 0.7, 4, 0.15), x + sx * span / 2, h / 2, z + 1.6, 0);
+      leg2.castShadow = true;
       this.scene.add(leg, leg2);
       this.colliders.push(leg, leg2);
+      // diagonal brace
+      const brace = this.mesh(dark, new THREE.BoxGeometry(0.1, Math.hypot(h, 1.6), 0.1), x + sx * span / 2, h / 2, z + 0.8, 0);
+      brace.rotation.z = Math.atan2(1.6, h);
+      this.scene.add(brace);
     }
-    const beam = this.box(yellow, 0.8, 0.9, span + 1, x, h, z + 0.8, 0);
-    const cross = this.box(yellow, span + 1, 0.8, 0.8, x, h, z + 1.6, 0);
+    const beam = this.mesh(yellow, new RoundedBoxGeometry(0.8, 0.9, span + 1, 4, 0.18), x, h, z + 0.8, 0);
+    beam.castShadow = true;
+    const cross = this.mesh(yellow, new RoundedBoxGeometry(span + 1, 0.8, 0.8, 4, 0.18), x, h, z + 1.6, 0);
     this.scene.add(beam, cross);
-    const trolley = this.box(dark, 1, 0.6, 0.8, x + 3, h - 0.8, z + 0.8, 0);
+    // trolley + hoist cable
+    const trolley = this.mesh(dark, new RoundedBoxGeometry(1, 0.6, 0.8, 3, 0.12), x + 3, h - 0.8, z + 0.8, 0);
     this.scene.add(trolley);
+    const cable = this.mesh(dark, new THREE.CylinderGeometry(0.02, 0.02, 3, 10), x + 3, h - 2.3, z + 0.8);
+    this.scene.add(cable);
   }
 
   excavator(x: number, z: number, ry = 0) {
     const yellow = new THREE.MeshStandardMaterial({ color: 0xd8a81c, roughness: 0.5, metalness: 0.4 });
     const dark = new THREE.MeshStandardMaterial({ color: 0x222, roughness: 0.9 });
-    const b = this.box(yellow, 2.4, 1, 3.6, x, 0.7, z, ry);
-    const c = this.box(yellow, 1.8, 1.4, 1.6, x + Math.sin(ry) * 1.4, 1.4, z + Math.cos(ry) * 1.4, ry);
-    const arm = this.box(yellow, 0.6, 0.6, 3.4, x + Math.sin(ry) * 2.4, 2.2, z + Math.cos(ry) * 2.4, ry);
-    const bucket = this.box(dark, 1, 0.9, 1.2, x + Math.sin(ry) * 3.8, 1.2, z + Math.cos(ry) * 3.8, ry);
-    this.scene.add(b, c, arm, bucket);
+    const track = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.95 });
+    // tracks (rounded, high segment)
+    for (const sx of [-1, 1]) {
+      const t = this.mesh(track, new THREE.CylinderGeometry(0.5, 0.5, 2.4, 28), x + sx * 1.2, 0.5, z, ry + Math.PI / 2);
+      t.castShadow = true;
+      this.scene.add(t);
+      // track tread links
+      for (let i = -1; i <= 1; i++) {
+        const link = this.mesh(dark, new THREE.BoxGeometry(2.4, 0.16, 0.12), x + sx * 1.2, 0.5 + Math.cos(i * 0.6) * 0.4, z + Math.sin(i * 0.6) * 0.4, ry);
+        this.scene.add(link);
+      }
+    }
+    // body + cab (rounded)
+    const b = this.mesh(yellow, new RoundedBoxGeometry(2.4, 1, 3.6, 4, 0.2), x, 0.7, z, ry);
+    b.castShadow = true;
+    b.receiveShadow = true;
+    const c = this.mesh(yellow, new RoundedBoxGeometry(1.8, 1.4, 1.6, 4, 0.25), x + Math.sin(ry) * 1.4, 1.4, z + Math.cos(ry) * 1.4, ry);
+    c.castShadow = true;
+    // cab window
+    const glass = new THREE.MeshStandardMaterial({ color: 0x101418, roughness: 0.2, metalness: 0.8 });
+    const win = this.mesh(glass, new THREE.BoxGeometry(1.5, 0.6, 0.06), x + Math.sin(ry) * 1.4, 1.7, z + Math.cos(ry) * 2.2, ry);
+    this.scene.add(win);
+    // arm (rounded, two segments) + bucket
+    const arm = this.mesh(yellow, new RoundedBoxGeometry(0.6, 0.6, 3.4, 4, 0.15), x + Math.sin(ry) * 2.4, 2.2, z + Math.cos(ry) * 2.4, ry);
+    arm.castShadow = true;
+    const arm2 = this.mesh(yellow, new RoundedBoxGeometry(0.5, 0.5, 2.2, 4, 0.13), x + Math.sin(ry) * 3.6, 1.6, z + Math.cos(ry) * 3.6, ry);
+    arm2.castShadow = true;
+    const bucket = this.mesh(dark, new RoundedBoxGeometry(1, 0.9, 1.2, 4, 0.2), x + Math.sin(ry) * 4.4, 1.2, z + Math.cos(ry) * 4.4, ry);
+    bucket.castShadow = true;
+    // bucket teeth
+    for (let i = 0; i < 4; i++) {
+      const tooth = this.mesh(dark, new THREE.ConeGeometry(0.08, 0.25, 8), x + Math.sin(ry) * 4.4 + (i - 1.5) * 0.25, 1.0, z + Math.cos(ry) * 4.4 + 0.6, 0);
+      tooth.rotation.x = Math.PI / 2;
+      this.scene.add(tooth);
+    }
+    this.scene.add(b, c, arm, arm2, bucket);
   }
 
 
@@ -736,15 +1024,22 @@ class Kit {
     let guard = 0;
     while (y < h - stepH && guard++ < 40) {
       for (let i = 0; i < perFlight && y < h - stepH; i++) {
-        const s = this.box(stepMat, stepW, stepH, stepD, lat + dir * i * stepW, y, z0, 0);
+        const s = this.mesh(stepMat, new RoundedBoxGeometry(stepW, stepH, stepD, 3, 0.05), lat + dir * i * stepW, y + stepH / 2, z0, 0);
+        s.castShadow = true;
+        s.receiveShadow = true;
         this.scene.add(s);
         this.colliders.push(s);
         this.aabbs.push(new THREE.Box3().setFromObject(s));
+        // step nosing highlight
+        const nose = this.mesh(new THREE.MeshStandardMaterial({ color: 0x5a5a62, roughness: 0.6, metalness: 0.6 }), new RoundedBoxGeometry(stepW, 0.04, 0.06, 2, 0.01), lat + dir * i * stepW, y + stepH, z0 + stepD / 2 - 0.03, 0);
+        this.scene.add(nose);
         y += stepH;
       }
       // landing platform projecting from the wall at the flight top
       const landX = lat + dir * (perFlight - 1) * stepW + dir * stepW / 2;
-      const land = this.box(metal, stepW + 0.5, 0.12, stepD + 0.35, landX, y, z0 + 0.05, 0);
+      const land = this.mesh(metal, new RoundedBoxGeometry(stepW + 0.5, 0.12, stepD + 0.35, 3, 0.04), landX, y + 0.06, z0 + 0.05, 0);
+      land.castShadow = true;
+      land.receiveShadow = true;
       this.scene.add(land);
       this.colliders.push(land);
       this.aabbs.push(new THREE.Box3().setFromObject(land));
@@ -773,30 +1068,52 @@ class Kit {
     const hullMat = new THREE.MeshStandardMaterial({ color: 0x2c4a66, roughness: 0.6, metalness: 0.5 });
     const superMat = new THREE.MeshStandardMaterial({ color: 0xe8e6e0, roughness: 0.5, metalness: 0.3 });
     const glass = new THREE.MeshStandardMaterial({ color: 0x101418, roughness: 0.2, metalness: 0.8 });
-    // hull (long in z, bow north): box + tapered bow
-    const hull = this.box(hullMat, 10, 7, 44, x, 0, z, 0);
-    const bow = this.mesh(hullMat, new THREE.CylinderGeometry(3.2, 5, 14, 18), x, 0, z - 25, 0);
+    // hull (long in z, bow north): rounded box + tapered, rounded bow
+    const hull = this.mesh(hullMat, new RoundedBoxGeometry(10, 7, 44, 5, 0.6), x, 0, z, 0);
+    hull.castShadow = true;
+    hull.receiveShadow = true;
+    const bow = this.mesh(hullMat, new THREE.CylinderGeometry(3.2, 5, 14, 32, 3, false), x, 0, z - 25, 0);
     bow.rotation.x = Math.PI / 2;
-    this.scene.add(hull, bow);
-    // red waterline stripe
-    const stripe = this.mesh(new THREE.MeshStandardMaterial({ color: 0x8a1c1c, roughness: 0.6, metalness: 0.4 }), new THREE.BoxGeometry(10.04, 0.45, 44.04), x, 0.05, z);
+    bow.castShadow = true;
+    // bow bulb
+    const bulb = this.mesh(hullMat, new THREE.SphereGeometry(3.2, 24, 16), x, -2.2, z - 30, 0);
+    bulb.scale.set(1, 0.5, 1.6);
+    this.scene.add(hull, bow, bulb);
+    // red waterline stripe + boot topping
+    const stripe = this.mesh(new THREE.MeshStandardMaterial({ color: 0x8a1c1c, roughness: 0.6, metalness: 0.4 }), new THREE.BoxGeometry(10.2, 0.45, 44.2), x, 0.05, z);
     this.scene.add(stripe);
+    const boot = this.mesh(new THREE.MeshStandardMaterial({ color: 0x1a1a1e, roughness: 0.7, metalness: 0.4 }), new THREE.BoxGeometry(10.1, 0.3, 44.1), x, -0.75, z);
+    this.scene.add(boot);
     // waterline collider — blocks walking through the hull, shots at deck pass over
     this.colliders.push(this.box(hullMat, 14, 2.9, 44, x, -1.45, z, 0));
-    // deck — walkable surface (top at y = 3.5)
-    const deck = this.box(new THREE.MeshStandardMaterial({ color: 0x4a4036, roughness: 0.9 }), 14, 0.4, 42, x, 3.1, z, 0);
+    // deck — walkable surface (top at y = 3.5), rounded slab + planking lines
+    const deck = this.mesh(new THREE.MeshStandardMaterial({ color: 0x4a4036, roughness: 0.9 }), new RoundedBoxGeometry(14, 0.4, 42, 4, 0.1), x, 3.3, z, 0);
+    deck.castShadow = true;
+    deck.receiveShadow = true;
     this.scene.add(deck);
-    this.colliders.push(deck);
-    this.aabbs.push(new THREE.Box3().setFromObject(deck));
-    // superstructure at stern (south end)
-    const sup = this.box(superMat, 7, 4.5, 6, x, 3.5, z + 10, 0);
+    const plankMat = new THREE.MeshStandardMaterial({ color: 0x3a3228, roughness: 0.95 });
+    for (let px = -6; px <= 6; px += 1.4) {
+      const plank = this.mesh(plankMat, new THREE.BoxGeometry(0.05, 0.02, 40), x + px, 3.52, z);
+      this.scene.add(plank);
+    }
+    this.colliders.push(this.box(new THREE.MeshStandardMaterial({ color: 0x4a4036, roughness: 0.9 }), 14, 0.4, 42, x, 3.1, z, 0));
+    this.aabbs.push(new THREE.Box3(new THREE.Vector3(x - 7, 3.1, z - 21), new THREE.Vector3(x + 7, 3.5, z + 21)));
+    // superstructure at stern (south end) — rounded, with window band
+    const sup = this.mesh(superMat, new RoundedBoxGeometry(7, 4.5, 6, 5, 0.4), x, 3.5 + 2.25, z + 10, 0);
+    sup.castShadow = true;
+    sup.receiveShadow = true;
     this.scene.add(sup);
-    this.colliders.push(sup);
-    this.aabbs.push(new THREE.Box3().setFromObject(sup));
-    const bridge = this.box(glass, 7.4, 2.2, 5, x, 8, z + 10, 0);
+    const supCol = this.box(superMat, 7, 4.5, 6, x, 3.5, z + 10, 0);
+    this.colliders.push(supCol);
+    this.aabbs.push(new THREE.Box3().setFromObject(supCol));
+    const winBand = this.mesh(glass, new THREE.BoxGeometry(7.05, 1.2, 6.05), x, 5.2, z + 10);
+    this.scene.add(winBand);
+    const bridge = this.mesh(glass, new RoundedBoxGeometry(7.4, 2.2, 5, 5, 0.2), x, 8 + 1.1, z + 10, 0);
+    bridge.castShadow = true;
     this.scene.add(bridge);
-    this.colliders.push(bridge);
-    this.aabbs.push(new THREE.Box3().setFromObject(bridge));
+    const bridgeCol = this.box(glass, 7.4, 2.2, 5, x, 8, z + 10, 0);
+    this.colliders.push(bridgeCol);
+    this.aabbs.push(new THREE.Box3().setFromObject(bridgeCol));
     // containers on deck (edges, centre lane left clear for the boss)
     for (const [cx, cz] of [[-4, -6], [-4, -12], [4, -6], [4, -12]] as const) {
       for (let row = 0; row < 2; row++) {
@@ -907,21 +1224,44 @@ class Kit {
 
   relayTower(x: number, z: number, h: number) {
     const steel = new THREE.MeshStandardMaterial({ color: 0x9aa0a8, roughness: 0.5, metalness: 0.8 });
-    const pole = this.mesh(steel, new THREE.CylinderGeometry(0.12, 0.22, h, 10), x, h / 2, z);
+    const pole = this.mesh(steel, new THREE.CylinderGeometry(0.12, 0.22, h, 24, 4), x, h / 2, z);
+    pole.castShadow = true;
     this.scene.add(pole);
     this.colliders.push(pole);
-    // lattice ribs
+    // triangular lattice cross-braces
+    const braceMat = new THREE.MeshStandardMaterial({ color: 0x7a8088, roughness: 0.6, metalness: 0.8 });
     for (let i = 1; i <= 6; i++) {
+      const yy = (i / 6) * h;
       const r = 0.35 + (i / 6) * 0.5;
-      const ring = this.mesh(steel, new THREE.TorusGeometry(r, 0.04, 6, 14), x, (i / 6) * h, z);
+      const ring = this.mesh(steel, new THREE.TorusGeometry(r, 0.04, 8, 28), x, yy, z);
       ring.rotation.x = Math.PI / 2;
       this.scene.add(ring);
+      // vertical corner struts
+      for (let a = 0; a < 3; a++) {
+        const ang = a * (Math.PI * 2 / 3);
+        const sx = Math.cos(ang) * r;
+        const sz = Math.sin(ang) * r;
+        const strut = this.mesh(braceMat, new THREE.CylinderGeometry(0.03, 0.03, (i === 6 ? h - yy : 1.6), 8), x + sx, yy + (i === 6 ? (h - yy) / 2 : 0.8), z + sz);
+        this.scene.add(strut);
+      }
     }
-    const dish = this.mesh(steel, new THREE.SphereGeometry(1.1, 16, 12, 0, Math.PI * 2, 0, Math.PI / 2.4), x, h, z);
+    const dish = this.mesh(steel, new THREE.SphereGeometry(1.1, 32, 20, 0, Math.PI * 2, 0, Math.PI / 2.4), x, h, z);
     dish.rotation.x = -Math.PI / 2.4;
     dish.position.y = h + 0.3;
+    dish.castShadow = true;
     this.scene.add(dish);
-    const beacon = this.mesh(new THREE.MeshStandardMaterial({ color: 0xff2020, emissive: 0xff0000, emissiveIntensity: 4 }), new THREE.SphereGeometry(0.16, 8, 6), x, h + 1.6, z);
+    // dish support struts
+    for (let a = 0; a < 3; a++) {
+      const ang = a * (Math.PI * 2 / 3) + Math.PI / 6;
+      const strut = this.mesh(steel, new THREE.CylinderGeometry(0.03, 0.03, 1.4, 8), x + Math.cos(ang) * 0.4, h + 0.5, z + Math.sin(ang) * 0.4);
+      strut.rotation.z = Math.cos(ang) * 0.7;
+      strut.rotation.x = -Math.sin(ang) * 0.7;
+      this.scene.add(strut);
+    }
+    // feed horn at dish focus
+    const horn = this.mesh(steel, new THREE.CylinderGeometry(0.08, 0.12, 0.4, 16), x, h + 0.9, z);
+    this.scene.add(horn);
+    const beacon = this.mesh(new THREE.MeshStandardMaterial({ color: 0xff2020, emissive: 0xff0000, emissiveIntensity: 4 }), new THREE.SphereGeometry(0.16, 16, 12), x, h + 1.6, z);
     this.scene.add(beacon);
     this.beacon(beacon, 2, this.rng() * 6);
   }
@@ -948,60 +1288,133 @@ class Kit {
   church(x: number, z: number) {
     const stoneMat = new THREE.MeshStandardMaterial({ color: 0xd8d2c4, roughness: 0.95 });
     const roofMat = new THREE.MeshStandardMaterial({ color: 0x5a5a60, roughness: 0.8 });
-    // nave
+    // nave (collision box) + rounded visual shell
     this.solid(this.box(stoneMat, 9, 6, 13, x, 0, z), "concrete");
-    // bell tower (east side)
+    const naveVis = this.mesh(stoneMat, new RoundedBoxGeometry(9, 6, 13, 5, 0.4), x, 3, z);
+    naveVis.castShadow = true;
+    naveVis.receiveShadow = true;
+    this.scene.add(naveVis);
+    // buttresses along the nave sides
+    for (const sx of [-1, 1]) {
+      for (const zz of [-3, 0, 3]) {
+        const but = this.mesh(stoneMat, new RoundedBoxGeometry(0.7, 4.5, 1.2, 3, 0.15), x + sx * 4.8, 2.2, z + zz, 0);
+        but.castShadow = true;
+        this.scene.add(but);
+      }
+    }
+    // bell tower (east side): collision box + rounded visual + belfry
     this.solid(this.box(stoneMat, 3.4, 13, 3.4, x + 6, 0, z + 4), "concrete");
-    // pyramid tower roof
-    const towerRoof = this.mesh(roofMat, new THREE.ConeGeometry(2.8, 2.6, 4), x + 6, 14.3, z + 4);
+    const towerVis = this.mesh(stoneMat, new RoundedBoxGeometry(3.4, 13, 3.4, 5, 0.35), x + 6, 6.5, z + 4);
+    towerVis.castShadow = true;
+    towerVis.receiveShadow = true;
+    this.scene.add(towerVis);
+    // belfry opening ring (stone collar)
+    const collar = this.mesh(stoneMat, new THREE.TorusGeometry(1.7, 0.35, 10, 28), x + 6, 11.2, z + 4);
+    collar.rotation.x = Math.PI / 2;
+    this.scene.add(collar);
+    // pyramid tower roof (higher segment)
+    const towerRoof = this.mesh(roofMat, new THREE.ConeGeometry(2.8, 2.6, 8, 1), x + 6, 14.3, z + 4);
     towerRoof.rotation.y = Math.PI / 4;
+    towerRoof.castShadow = true;
     this.scene.add(towerRoof);
+    // spire + finial ball
+    const spire = this.mesh(roofMat, new THREE.ConeGeometry(0.3, 1.2, 12), x + 6, 15.9, z + 4);
+    this.scene.add(spire);
+    const finial = this.mesh(new THREE.MeshStandardMaterial({ color: 0xb89a3a, roughness: 0.4, metalness: 0.8 }), new THREE.SphereGeometry(0.12, 16, 12), x + 6, 16.75, z + 4);
+    this.scene.add(finial);
     // cross
-    const cross1 = this.box(new THREE.MeshStandardMaterial({ color: 0x3a3328, roughness: 0.9 }), 0.15, 1.1, 0.15, x + 6, 16.3, z + 4);
-    const cross1b = this.box(new THREE.MeshStandardMaterial({ color: 0x3a3328, roughness: 0.9 }), 0.7, 0.15, 0.15, x + 6, 16.6, z + 4);
+    const crossMat = new THREE.MeshStandardMaterial({ color: 0x3a3328, roughness: 0.9 });
+    const cross1 = this.mesh(crossMat, new THREE.BoxGeometry(0.15, 1.1, 0.15), x + 6, 17.4, z + 4);
+    const cross1b = this.mesh(crossMat, new THREE.BoxGeometry(0.7, 0.15, 0.15), x + 6, 17.7, z + 4);
     this.scene.add(cross1, cross1b);
     // main roof (gable)
     this.roof(x, z, 9.4, 13.4, 6, "gable", roofMat);
     // door
-    const door = this.box(new THREE.MeshStandardMaterial({ color: 0x3a2a1a, roughness: 0.9 }), 1.4, 2.4, 0.15, x, 0, z + 6.7);
+    const door = this.mesh(new THREE.MeshStandardMaterial({ color: 0x3a2a1a, roughness: 0.9 }), new RoundedBoxGeometry(1.4, 2.4, 0.15, 3, 0.03), x, 1.2, z + 6.75);
+    door.castShadow = true;
     this.scene.add(door);
+    // door arch keystone
+    const arch = this.mesh(stoneMat, new THREE.TorusGeometry(0.85, 0.12, 8, 20, Math.PI), x, 2.4, z + 6.85);
+    arch.rotation.x = Math.PI / 2;
+    arch.rotation.z = -Math.PI / 2;
+    this.scene.add(arch);
     // bell (visible opening)
-    const bell = this.mesh(new THREE.MeshStandardMaterial({ color: 0xb89a3a, roughness: 0.4, metalness: 0.8 }), new THREE.CylinderGeometry(0.5, 0.75, 0.9, 12), x + 6, 11.5, z + 4);
+    const bell = this.mesh(new THREE.MeshStandardMaterial({ color: 0xb89a3a, roughness: 0.4, metalness: 0.8 }), new THREE.CylinderGeometry(0.5, 0.75, 0.9, 28, 1, true), x + 6, 11.5, z + 4);
     this.scene.add(bell);
+    const bellKnob = this.mesh(new THREE.MeshStandardMaterial({ color: 0xb89a3a, roughness: 0.4, metalness: 0.8 }), new THREE.SphereGeometry(0.14, 16, 12), x + 6, 12.0, z + 4);
+    this.scene.add(bellKnob);
     // graveyard wall
     this.fence(x - 8, z + 8, x + 14, z + 8);
   }
 
   well(x: number, z: number) {
     const stone = new THREE.MeshStandardMaterial({ color: 0x9a9084, roughness: 0.95 });
-    const ring = this.mesh(stone, new THREE.TorusGeometry(1.1, 0.22, 10, 20), x, 0.8, z);
+    // well housing stone base (rounded)
+    const base = this.mesh(stone, new RoundedBoxGeometry(2.4, 0.9, 2.4, 4, 0.2), x, 0.45, z);
+    base.castShadow = true;
+    base.receiveShadow = true;
+    this.scene.add(base);
+    // well opening ring (stone)
+    const ring = this.mesh(stone, new THREE.TorusGeometry(1.0, 0.24, 12, 28), x, 0.8, z);
     ring.rotation.x = Math.PI / 2;
+    ring.castShadow = true;
     this.scene.add(ring);
-    const roof = this.mesh(new THREE.MeshStandardMaterial({ color: 0x5a4030, roughness: 0.9 }), new THREE.ConeGeometry(1.6, 0.9, 8), x, 1.7, z);
+    // inner dark well mouth
+    const mouth = this.mesh(new THREE.MeshStandardMaterial({ color: 0x14100c, roughness: 1 }), new THREE.CylinderGeometry(0.85, 0.85, 0.6, 28, 1, true), x, 0.78, z);
+    this.scene.add(mouth);
+    // roof (high-segment cone) + finial
+    const roof = this.mesh(new THREE.MeshStandardMaterial({ color: 0x5a4030, roughness: 0.9 }), new THREE.ConeGeometry(1.6, 0.9, 16, 1), x, 1.7, z);
+    roof.castShadow = true;
     this.scene.add(roof);
-    const post1 = this.box(stone, 0.2, 1.7, 0.2, x + 1, 0, z + 1.1);
-    const post2 = this.box(stone, 0.2, 1.7, 0.2, x - 1, 0, z + 1.1);
-    this.scene.add(post1, post2);
+    const finial = this.mesh(stone, new THREE.SphereGeometry(0.12, 16, 12), x, 2.18, z);
+    this.scene.add(finial);
+    // support posts (rounded) + crossbeam
+    const beam = this.mesh(stone, new RoundedBoxGeometry(2.6, 0.14, 0.16, 3, 0.04), x, 1.5, z + 1.15, 0);
+    beam.castShadow = true;
+    this.scene.add(beam);
+    for (const sx of [-1, 1]) {
+      const post = this.mesh(stone, new RoundedBoxGeometry(0.2, 1.7, 0.2, 3, 0.04), x + sx, 0.85, z + 1.1, 0);
+      post.castShadow = true;
+      this.scene.add(post);
+    }
+    // diagonal brace struts
+    for (const sx of [-1, 1]) {
+      const brace = this.mesh(stone, new THREE.BoxGeometry(0.1, 0.9, 0.1), x + sx, 1.3, z + 0.6, 0);
+      this.scene.add(brace);
+    }
   }
 
   stall(x: number, z: number, ry = 0) {
     const wood = new THREE.MeshStandardMaterial({ color: 0x6b4f30, roughness: 0.9 });
     const awn = new THREE.MeshStandardMaterial({ color: 0x9a3b2a, roughness: 0.85 });
-    this.box(wood, 2.4, 0.08, 2.4, x, 0.8, z, ry);
+    // counter (rounded)
+    const counter = this.mesh(wood, new RoundedBoxGeometry(2.4, 0.08, 2.4, 4, 0.04), x, 0.84, z, ry);
+    counter.castShadow = true;
+    counter.receiveShadow = true;
+    this.scene.add(counter);
+    // counter base
+    const base = this.mesh(wood, new RoundedBoxGeometry(2.2, 0.5, 2.2, 4, 0.08), x, 0.55, z, ry);
+    this.scene.add(base);
     for (const [px, pz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]] as const) {
-      const post = this.box(wood, 0.1, 2, 0.1, x + px, 0, z + pz, ry);
+      const post = this.mesh(wood, new RoundedBoxGeometry(0.1, 2, 0.1, 3, 0.03), x + px, 1.0, z + pz, ry);
+      post.castShadow = true;
       this.scene.add(post);
     }
+    // awning (high-segment extruded, with scalloped edge)
     const shape = new THREE.Shape();
     shape.moveTo(-1.3, 0);
     shape.lineTo(1.3, 0);
     shape.lineTo(1.3, 0.4);
     shape.lineTo(-1.3, 0.4);
     shape.closePath();
-    const g = new THREE.ExtrudeGeometry(shape, { depth: 2.4, bevelEnabled: false });
+    const g = new THREE.ExtrudeGeometry(shape, { depth: 2.4, bevelEnabled: true, bevelThickness: 0.03, bevelSize: 0.03, bevelSegments: 2 });
     g.translate(0, 0, -1.2);
     const roofM = this.mesh(awn, g, x, 2, z, ry);
+    roofM.castShadow = true;
     this.scene.add(roofM);
+    // awning trim
+    const trim = this.mesh(new THREE.MeshStandardMaterial({ color: 0x6a2418, roughness: 0.9 }), new RoundedBoxGeometry(2.5, 0.05, 2.5, 3, 0.02), x, 1.97, z, ry);
+    this.scene.add(trim);
   }
 }
 

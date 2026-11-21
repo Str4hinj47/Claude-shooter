@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import soldierUrl from "../assets/soldier.glb?url";
 import { buildRifle, RIFLE, type Rifle } from "./rifle";
+import { buildEquipment, type SoldierEquipment } from "./equipment";
 import { Spring, clamp, damp, dampAngle, easeInOut, lerp, smoothstep, wrapAngle } from "./math";
 
 /* ------------------------------------------------------------------ */
@@ -115,6 +116,8 @@ export class SoldierRig {
   private bones: Record<string, THREE.Object3D> = {};
   private handBind = {} as Record<Side, HandBind>;
   readonly rifle: Rifle;
+  /** tactical loadout parented to the rig (adds detail on top of the .glb) */
+  equipment: SoldierEquipment | null = null;
   events: RigEvents = {};
 
   // calibrated locomotion data
@@ -268,6 +271,10 @@ export class SoldierRig {
 
     this.captureBind();
 
+    // attach the tactical loadout to the spine so it follows the animations;
+    // built in model-local units and scaled to match the normalised rig
+    this.buildEquipment();
+
     this.mixer = new THREE.AnimationMixer(model);
     const find = (n: string) => {
       const exact = gltf.animations.find((a) => a.name === n);
@@ -319,6 +326,20 @@ export class SoldierRig {
       });
       this.handBind[side] = { f0, p0, bindQ, fingers };
     });
+  }
+
+  /** Attach the procedural tactical loadout to the spine bone so it tracks the
+   *  character's animations. Built in model-local units, scaled to the rig. */
+  private buildEquipment() {
+    if (!this.model || this.equipment) return;
+    const eq = buildEquipment();
+    // match the rig's normalised scale so the loadout sits at the right size
+    const s = this.model.scale.x || 1;
+    eq.group.scale.setScalar(s);
+    // parent to the spine (fall back to the model root if bones are missing)
+    const spine = this.bones["Spine"] ?? this.bones["Hips"] ?? this.model;
+    spine.add(eq.group);
+    this.equipment = eq;
   }
 
   /** Measure ground speed + phase of the walk/run clips so feet don't skate. */
@@ -1214,6 +1235,8 @@ export class SoldierRig {
   setTint(bodyHex: number, visorHex?: number) {
     if (!this.model) return;
     const body = new THREE.Color(bodyHex);
+    // tint the equipment loadout to match the faction
+    this.equipment?.tint(bodyHex, bodyHex);
     this.model.traverse((o) => {
       const m = o as THREE.Mesh;
       if (!m.isMesh) return;

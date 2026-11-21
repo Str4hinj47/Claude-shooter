@@ -357,10 +357,19 @@ export class Game {
       this.missionRoot.add(this.extractRing);
     }
     if (mission.rescue) {
-      const beaconGeo = new THREE.ConeGeometry(0.5, 1.6, 8);
+      const beaconGeo = new THREE.ConeGeometry(0.5, 1.6, 24, 1);
       const beaconMat = new THREE.MeshStandardMaterial({ color: 0xffd060, emissive: 0xffaa20, emissiveIntensity: 1.6 });
       this.rescueBeacon = new THREE.Mesh(beaconGeo, beaconMat);
       this.rescueBeacon.position.set(mission.rescue[0], 2.2, mission.rescue[1]);
+      // base ring + collar for the beacon
+      const ringGeo = new THREE.TorusGeometry(0.5, 0.04, 10, 24);
+      const ringMesh = new THREE.Mesh(ringGeo, beaconMat);
+      ringMesh.rotation.x = Math.PI / 2;
+      ringMesh.position.set(mission.rescue[0], 0.1, mission.rescue[1]);
+      this.missionRoot.add(ringMesh);
+      const collar = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.4, 0.12, 24), beaconMat);
+      collar.position.set(mission.rescue[0], 1.5, mission.rescue[1]);
+      this.missionRoot.add(collar);
       this.missionRoot.add(this.rescueBeacon);
     }
 

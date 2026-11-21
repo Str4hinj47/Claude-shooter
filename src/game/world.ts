@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { Sky } from "three/examples/jsm/objects/Sky.js";
+import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import { Spring } from "../character/math";
 
 export type SurfaceKind = "dirt" | "metal" | "wood" | "concrete";
@@ -168,19 +169,35 @@ export function buildWorld(content: THREE.Object3D, main: THREE.Scene, renderer:
     return m;
   };
 
-  // concrete berm (backstop)
+  // concrete berm (backstop) — rounded slabs + fascia + buttresses
   const concrete = new THREE.MeshStandardMaterial({ map: tex(noiseCanvas(512, "#a09c94", [["rgba(0,0,0,0.25)", 5000], ["rgba(255,255,255,0.15)", 3000]]), 6), roughness: 0.92 });
-  const wall = new THREE.Mesh(new THREE.BoxGeometry(80, 7, 3), concrete);
+  const wall = new THREE.Mesh(new RoundedBoxGeometry(80, 7, 3, 5, 0.5), concrete);
   wall.position.set(0, 3.5, 52);
+  wall.castShadow = true;
+  wall.receiveShadow = true;
   add(wall, "concrete");
-  const sideL = new THREE.Mesh(new THREE.BoxGeometry(3, 5, 70), concrete);
+  // wall fascia strip
+  const fascia = new THREE.MeshStandardMaterial({ color: 0x8a8880, roughness: 0.92 });
+  const wallCap = new THREE.Mesh(new RoundedBoxGeometry(80.4, 0.3, 3.4, 3, 0.1), fascia);
+  wallCap.position.set(0, 6.85, 52);
+  add(wallCap, "concrete");
+  const sideL = new THREE.Mesh(new RoundedBoxGeometry(3, 5, 70, 5, 0.5), concrete);
   sideL.position.set(-26, 2.5, 18);
+  sideL.castShadow = true;
+  sideL.receiveShadow = true;
   add(sideL, "concrete");
   const sideR = sideL.clone();
   sideR.position.x = 26;
   add(sideR, "concrete");
+  // buttress piers along the backstop face
+  const pierMat = new THREE.MeshStandardMaterial({ color: 0x96948c, roughness: 0.92 });
+  for (let px = -36; px <= 36; px += 12) {
+    const pier = new THREE.Mesh(new RoundedBoxGeometry(1.2, 2.4, 0.8, 3, 0.15), pierMat);
+    pier.position.set(px, 1.2, 53.2);
+    add(pier, "concrete");
+  }
 
-  // crates
+  // crates (rounded + corner posts + straps)
   const wc = noiseCanvas(512, "#8a6a43", [["rgba(40,25,10,0.35)", 6000], ["rgba(255,220,160,0.12)", 2500]]);
   const wg = wc.getContext("2d")!;
   wg.strokeStyle = "rgba(30,18,8,0.7)";
@@ -197,11 +214,30 @@ export function buildWorld(content: THREE.Object3D, main: THREE.Scene, renderer:
   wg.lineTo(506, 506);
   wg.stroke();
   const woodMat = new THREE.MeshStandardMaterial({ map: tex(wc, 1), roughness: 0.82 });
+  const postMat = new THREE.MeshStandardMaterial({ color: 0x3a2a16, roughness: 0.85 });
+  const strapMat = new THREE.MeshStandardMaterial({ color: 0x6a6a6e, roughness: 0.5, metalness: 0.8 });
   const crate = (x: number, z: number, s: number, ry = 0, y = 0) => {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(s, s, s), woodMat);
+    const m = new THREE.Mesh(new RoundedBoxGeometry(s, s, s, 4, Math.min(0.08, s / 5)), woodMat);
     m.position.set(x, y + s / 2, z);
     m.rotation.y = ry;
+    m.castShadow = true;
+    m.receiveShadow = true;
     add(m, "wood");
+    const pr = s * 0.1;
+    for (const [px, pz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+      const p = new THREE.Mesh(new THREE.CylinderGeometry(pr, pr, s * 1.04, 12), postMat);
+      p.position.set(x + px * (s / 2 - pr * 0.6), y + s / 2, z + pz * (s / 2 - pr * 0.6));
+      p.rotation.y = ry;
+      p.castShadow = true;
+      content.add(p);
+    }
+    for (const sy of [y + s * 0.28, y + s * 0.72]) {
+      const band = new THREE.Mesh(new THREE.BoxGeometry(s + 0.04, s * 0.05, s + 0.04), strapMat);
+      band.position.set(x, sy, z);
+      band.rotation.y = ry;
+      band.castShadow = true;
+      content.add(band);
+    }
   };
   crate(-6.5, 8, 1.1, 0.3);
   crate(-6.9, 9.3, 0.9, -0.2);
@@ -210,24 +246,35 @@ export function buildWorld(content: THREE.Object3D, main: THREE.Scene, renderer:
   crate(8.8, 14.6, 1.0, 0.2);
   crate(-8, 20, 1.3, 0.5);
 
-  // barrels
+  // barrels (rounded, extra hoops + chime + bung)
   const barrelMat = new THREE.MeshStandardMaterial({ color: 0x9b2c22, roughness: 0.5, metalness: 0.7 });
   const barrel = (x: number, z: number, mat = barrelMat) => {
-    const m = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.9, 28), mat);
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.9, 40), mat);
     m.position.set(x, 0.45, z);
+    m.castShadow = true;
+    m.receiveShadow = true;
     add(m, "metal");
-    [-0.28, 0, 0.28].forEach((y) => {
-      const r = new THREE.Mesh(new THREE.TorusGeometry(0.302, 0.012, 8, 28), mat);
+    [-0.3, -0.13, 0.04, 0.21, 0.34].forEach((y) => {
+      const r = new THREE.Mesh(new THREE.TorusGeometry(0.304, 0.014, 12, 40), mat);
       r.rotation.x = Math.PI / 2;
       r.position.y = y;
       m.add(r);
     });
+    [0.36, -0.36].forEach((y) => {
+      const r = new THREE.Mesh(new THREE.TorusGeometry(0.3, 0.022, 12, 40), new THREE.MeshStandardMaterial({ color: 0x8a8a8e, roughness: 0.4, metalness: 0.85 }));
+      r.rotation.x = Math.PI / 2;
+      r.position.y = y;
+      m.add(r);
+    });
+    const bung = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.05, 16), new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.6, metalness: 0.7 }));
+    bung.position.set(0.3, 0.2, 0);
+    m.add(bung);
   };
   barrel(5.5, 8);
   barrel(6.2, 8.6);
   barrel(-4.5, 15, new THREE.MeshStandardMaterial({ color: 0x2f4b6e, roughness: 0.5, metalness: 0.7 }));
 
-  // jersey barriers
+  // jersey barriers (bevelled extrusion + end caps)
   const barrier = (x: number, z: number, ry = 0) => {
     const shape = new THREE.Shape();
     shape.moveTo(-0.4, 0);
@@ -237,12 +284,19 @@ export function buildWorld(content: THREE.Object3D, main: THREE.Scene, renderer:
     shape.lineTo(-0.13, 0.8);
     shape.lineTo(-0.22, 0.28);
     shape.closePath();
-    const g = new THREE.ExtrudeGeometry(shape, { depth: 2.2, bevelEnabled: false });
+    const g = new THREE.ExtrudeGeometry(shape, { depth: 2.2, bevelEnabled: true, bevelThickness: 0.04, bevelSize: 0.04, bevelSegments: 2 });
     g.translate(0, 0, -1.1);
     const m = new THREE.Mesh(g, concrete);
     m.position.set(x, 0, z);
     m.rotation.y = ry + Math.PI / 2;
+    m.castShadow = true;
+    m.receiveShadow = true;
     add(m, "concrete");
+    // barrier reflective strip
+    const strip = new THREE.Mesh(new THREE.BoxGeometry(2.25, 0.08, 0.04), new THREE.MeshStandardMaterial({ color: 0xd8b01c, emissive: 0x6a4a08, emissiveIntensity: 0.3, roughness: 0.6 }));
+    strip.position.set(x, 0.4, z + Math.sin(ry) * 0.2);
+    strip.rotation.y = ry + Math.PI / 2;
+    content.add(strip);
   };
   barrier(3, 5.5, 0.1);
   barrier(-3.2, 11, -0.1);
@@ -278,21 +332,35 @@ export function buildWorld(content: THREE.Object3D, main: THREE.Scene, renderer:
     hinge.add(disc);
     // faceMat sits on cylinder top cap (index 1) – we want it facing -Z (toward shooter)
     disc.rotation.x = -Math.PI / 2;
-    const post = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.9, 0.05), steel);
+    // rim ring around the disc
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(r, 0.012, 10, 40), steel);
+    rim.rotation.x = Math.PI / 2;
+    rim.position.y = 0.55 + r - 0.3;
+    rim.castShadow = true;
+    hinge.add(rim);
+    // rounded posts + crossbar + base with feet
+    const post = new THREE.Mesh(new RoundedBoxGeometry(0.05, 0.9, 0.05, 3, 0.012), steel);
     post.position.set(-r - 0.08, 0.45, 0.06);
     post.castShadow = true;
     grp.add(post);
     const post2 = post.clone();
     post2.position.x = r + 0.08;
     grp.add(post2);
-    const bar = new THREE.Mesh(new THREE.BoxGeometry(2 * r + 0.21, 0.05, 0.05), steel);
+    const bar = new THREE.Mesh(new RoundedBoxGeometry(2 * r + 0.21, 0.05, 0.05, 3, 0.012), steel);
     bar.position.set(0, 0.88, 0.06);
     bar.castShadow = true;
     grp.add(bar);
-    const base = new THREE.Mesh(new THREE.BoxGeometry(2 * r + 0.4, 0.04, 0.5), steel);
-    base.position.y = 0.02;
+    const base = new THREE.Mesh(new RoundedBoxGeometry(2 * r + 0.4, 0.05, 0.5, 3, 0.012), steel);
+    base.position.y = 0.025;
     base.receiveShadow = true;
     grp.add(base);
+    // base feet
+    for (const fx of [-1, 1]) {
+      const foot = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.05, 0.06, 12), steel);
+      foot.position.set(fx * (r + 0.12), 0.01, 0.18);
+      foot.castShadow = true;
+      grp.add(foot);
+    }
     content.add(grp);
     colliders.push(disc);
     targets.push({ group: hinge as unknown as THREE.Group, spring: new Spring(60, 3.5), spin: new Spring(0, 0), baseRotX: 0 });
@@ -304,17 +372,30 @@ export function buildWorld(content: THREE.Object3D, main: THREE.Scene, renderer:
   plate(-5.5, 32, 0.36);
   plate(1.6, 36, 0.4);
 
-  // flags / range signs for scale
+  // flags / range signs for scale (rounded posts, crossarm, feet)
   const signMat = new THREE.MeshStandardMaterial({ color: 0xe8b814, roughness: 0.6 });
   [10, 18, 26, 34].forEach((z) => {
-    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 1.6, 8), steel);
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.04, 1.6, 16, 3), steel);
     post.position.set(-11.5, 0.8, z);
     post.castShadow = true;
     content.add(post);
-    const sign = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.35, 0.03), signMat);
-    sign.position.set(-11.5, 1.55, z);
+    const foot = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.07, 0.05, 12), steel);
+    foot.position.set(-11.5, 0.025, z);
+    content.add(foot);
+    const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.3, 10), steel);
+    arm.rotation.z = Math.PI / 2;
+    arm.position.set(-11.5, 1.5, z + 0.22);
+    content.add(arm);
+    const sign = new THREE.Mesh(new RoundedBoxGeometry(0.5, 0.35, 0.03, 3, 0.01), signMat);
+    sign.position.set(-11.5, 1.55, z + 0.35);
     sign.castShadow = true;
     content.add(sign);
+    // sign brackets
+    for (const sx of [-1, 1]) {
+      const br = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.06, 0.04), steel);
+      br.position.set(-11.5 + sx * 0.2, 1.55, z + 0.35);
+      content.add(br);
+    }
   });
 
   /* ---------------- update ---------------- */
