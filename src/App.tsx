@@ -89,6 +89,10 @@ export default function App() {
   const healthPct = Math.max(0, hud.health);
   const spreadPx = 6 + hud.spread * 1800;
   const playing = screen === "playing";
+  // M1 (First Light) is always unlocked — no practice-range gate. Missions
+  // unlock sequentially from there: completing M1 unlocks M2, etc.
+  const unlockThreshold = Math.max(saved, 1);
+  const unlockedCount = MISSIONS.filter((m) => !m.practice && m.id <= unlockThreshold).length;
 
   return (
     <div className="relative h-screen w-screen select-none overflow-hidden bg-black font-sans text-zinc-100">
@@ -120,7 +124,7 @@ export default function App() {
                 <h3 className="text-xs font-bold uppercase tracking-[0.4em] text-zinc-300">Campaign</h3>
                 <div className="flex items-center gap-3">
                   <span className="font-mono text-xs text-zinc-500">
-                    Progress: {saved} / {MISSIONS.length - 1} missions unlocked
+                    Progress: {unlockedCount} / {MISSIONS.length - 1} missions unlocked
                   </span>
                   <button
                     onClick={() => {
@@ -136,7 +140,7 @@ export default function App() {
               </div>
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                 {MISSIONS.map((m) => {
-                  const locked = !m.practice && m.id > saved;
+                  const locked = !m.practice && m.id > unlockThreshold;
                   return (
                     <button
                       key={m.id}
