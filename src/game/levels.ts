@@ -273,8 +273,10 @@ class Kit {
     return m;
   }
 
-  box(mat: THREE.Material, w: number, h: number, d: number, x: number, y: number, z: number, ry = 0) {
-    return this.mesh(mat, new THREE.BoxGeometry(w, h, d), x, y + h / 2, z, ry);
+  box(mat: THREE.Material, w: number, h: number, d: number, x: number, y: number, z: number, ry = 0, label = "") {
+    const m = this.mesh(mat, new THREE.BoxGeometry(w, h, d), x, y + h / 2, z, ry);
+    if (label) m.userData.label = label;
+    return m;
   }
 
   flagMesh: THREE.Object3D | null = null;
@@ -340,6 +342,118 @@ class Kit {
     if (o.parapet) this.parapet(x, z, w, d, h, o.roofMat);
     if (o.details) this.roofDetails(x, z, w, d, h, o.roofMat);
     return wall;
+  }
+
+  /* hollow building with a doorway on the +z face — player can walk inside.
+     Walls are separate solid segments so the interior is open; the rooftop stays
+     walkable (short collider) for rooftop combat. */
+  enterable(o: {
+    x: number;
+    z: number;
+    w: number;
+    d: number;
+    h: number;
+    facade: ReturnType<typeof facade>;
+    roof?: "flat" | "tile" | "metal" | "gable" | "none";
+    roofMat: THREE.Material;
+    doorW?: number;
+    doorH?: number;
+    emissive?: number;
+    ry?: number;
+    inner?: THREE.Material;
+  }) {
+    const { x, z, w, d, h } = o;
+    const t = 0.3;
+    const doorW = o.doorW ?? 1.8;
+    const doorH = o.doorH ?? 2.4;
+    const ry = o.ry ?? 0;
+    const wallMat = new THREE.MeshStandardMaterial({
+      map: o.facade.map.clone(),
+      bumpMap: o.facade.map.clone(),
+      bumpScale: 0.06,
+      roughness: 0.85,
+      metalness: 0.02,
+      emissive: 0xffffff,
+      emissiveMap: o.facade.glow.clone(),
+      emissiveIntensity: o.emissive ?? 0,
+    });
+    wallMat.map!.wrapS = wallMat.map!.wrapT = THREE.RepeatWrapping;
+    wallMat.map!.repeat.set(Math.max(1, w / o.facade.tileW), Math.max(1, h / o.facade.tileH));
+    wallMat.map!.needsUpdate = true;
+    wallMat.emissiveMap!.wrapS = wallMat.emissiveMap!.wrapT = THREE.RepeatWrapping;
+    wallMat.emissiveMap!.repeat.copy(wallMat.map!.repeat);
+    wallMat.emissiveMap!.needsUpdate = true;
+    wallMat.bumpMap!.wrapS = wallMat.bumpMap!.wrapT = THREE.RepeatWrapping;
+    wallMat.bumpMap!.repeat.copy(wallMat.map!.repeat);
+    wallMat.bumpMap!.needsUpdate = true;
+
+    // north + south walls (full span, along X)
+    this.solid(this.box(wallMat, w, h, t, x, 0, z - d / 2, ry), "concrete");
+    this.solid(this.box(wallMat, w, h, t, x, 0, z + d / 2, ry), "concrete");
+    // west + east walls (along Z)
+    const sideSpan = d - 2 * t;
+    const doorInset = doorW / 2 + t;
+    for (const sx of [-1, 1]) {
+      const cx = x + sx * (w / 2);
+      this.solid(this.box(wallMat, t, h, sideSpan, cx, 0, z, ry), "concrete");
+    }
+    // lintel above the door on the south wall (keeps the opening head solid)
+    this.solid(this.box(wallMat, doorW, h - doorH, t, x, 0, z + d / 2, ry), "concrete");
+    // door reveal on the south wall (two jamb returns)
+    for (const sx of [-1, 1]) {
+      this.solid(this.box(wallMat, doorW / 2, doorH, t, x + sx * doorInset, 0, z + d / 2, ry), "concrete");
+    }
+
+    // interior floor slab (visual + walkable top)
+    const innerMat = o.inner ?? new THREE.MeshStandardMaterial({ color: 0x6b6258, roughness: 0.95 });
+    const floor = this.box(innerMat, w - 2 * t, 0.12, d - 2 * t, x, 0.06, z, ry);
+    floor.receiveShadow = true;
+    this.scene.add(floor);
+    this.colliders.push(floor);
+    this.aabbs.push(new THREE.Box3().setFromObject(floor));
+
+    // door threshold (visual)
+    const door = this.box(new THREE.MeshStandardMaterial({ color: 0x3a2a1a, roughness: 0.9 }), doorW, doorH, 0.08, x, 0, z + d / 2 + 0.02, ry);
+    this.scene.add(door);
+
+    if (o.roof !== "none") this.roof(x, z, w, d, h, o.roof ?? "flat", o.roofMat);
+    return { x, z, w, d, h };
+  }
+
+  /* flight of steps ascending along +X (or +Z when alongZ). Each step is a solid
+     block; the player auto-steps up the risers (see resolveCircleAABBs + groundHeightAt). */
+  stairs(o: {
+    x: number;
+    z: number;
+    steps: number;
+    rise: number;
+    run: number;
+    width: number;
+    alongZ?: boolean;
+    mat: THREE.Material;
+    sideMat?: THREE.Material;
+  }) {
+    const { x, z, steps, rise, run, width } = o;
+    const alongZ = o.alongZ ?? false;
+    const stepMat = o.mat;
+    const sideMat = o.sideMat ?? stepMat;
+    for (let i = 0; i < steps; i++) {
+      const h = (i + 1) * rise;
+      const off = i * run;
+      const m = this.box(stepMat, alongZ ? width : run, h, alongZ ? run : width, x + (alongZ ? 0 : off), 0, z + (alongZ ? off : 0), 0);
+      this.solid(m, "concrete");
+      // riser facing the ascending direction (visual highlight on the front face)
+      const fm = this.box(sideMat, alongZ ? width : run, 0.06, alongZ ? 0.12 : 0.12, x + (alongZ ? 0 : off), h - 0.03, z + (alongZ ? off : 0), 0);
+      this.scene.add(fm);
+    }
+    // handrail along the ascending side (visual only)
+    const railMat = new THREE.MeshStandardMaterial({ color: 0x2a2d30, roughness: 0.6, metalness: 0.8 });
+    for (let i = 0; i <= steps; i++) {
+      const h = i * rise + 0.9;
+      const off = i * run;
+      const post = this.mesh(railMat, new THREE.CylinderGeometry(0.04, 0.04, 0.9, 8), x + (alongZ ? 0 : off) + width / 2 + 0.2, h - 0.45, z + (alongZ ? off : 0), 0);
+      this.scene.add(post);
+    }
   }
 
   roof(x: number, z: number, w: number, d: number, h: number, kind: string, mat: THREE.Material) {
@@ -901,7 +1015,19 @@ function buildRange(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.
     c.updateWorldMatrix(true, false);
     aabbs.push(new THREE.Box3().setFromObject(c));
   }
-  return { ...w, aabbs, destroyables: [] as THREE.Mesh[] };
+  const groundHeightAt = (x: number, z: number, y: number): number => {
+    let best = 0;
+    for (const box of aabbs) {
+      // small forward tolerance so a step's top is caught as the player reaches its riser
+      if (x < box.min.x - 0.3 || x > box.max.x + 0.3) continue;
+      if (z < box.min.z - 0.3 || z > box.max.z + 0.3) continue;
+      const top = box.max.y;
+      if (top > y + 0.6) continue;
+      if (top > best) best = top;
+    }
+    return best;
+  };
+  return { ...w, aabbs, destroyables: [] as THREE.Mesh[], groundHeightAt };
 }
 
 /* ---------------- M1: Gornja Luka village ---------------- */
@@ -948,8 +1074,36 @@ function buildVillage(content: THREE.Object3D, main: THREE.Scene, renderer: THRE
   K.houseVillage(14, 28, 8, 8, 4, -0.15);
   K.houseVillage(-10, -26, 7, 7, 3.8, 0.15);
 
+  // enterable houses (hollow walls + doorways) for interior & corner ambush play
+  const villageStone = facade({
+    base: "#8a8074",
+    glass: "#2a2620",
+    frame: "#5a5048",
+    glow: "#ffcf7a",
+    bayW: 1.6,
+    floorH: 3,
+    cols: 3,
+    rows: 2,
+    rng: K.rng,
+  });
+  const tileRoof = new THREE.MeshStandardMaterial({ color: 0x8a3b2a, roughness: 0.9, metalness: 0 });
+  // a cluster of enterable houses flanking the road — enemies can pop out of doorways
+  K.enterable({ x: -16, z: 18, w: 7, d: 8, h: 4.2, facade: villageStone, roof: "tile", roofMat: tileRoof, emissive: 0.4 });
+  K.enterable({ x: 16, z: 18, w: 7, d: 8, h: 4.2, facade: villageStone, roof: "tile", roofMat: tileRoof, emissive: 0.4, ry: 0.2 });
+  K.enterable({ x: -14, z: 38, w: 7, d: 8, h: 4, facade: villageStone, roof: "tile", roofMat: tileRoof, emissive: 0.35, ry: -0.2 });
+  K.enterable({ x: 14, z: 38, w: 7, d: 8, h: 4, facade: villageStone, roof: "tile", roofMat: tileRoof, emissive: 0.35, ry: 0.2 });
+
   // church + square
   K.church(-8, -18);
+  // staircase up the church tower (climbable, rooftop vantage over the square)
+  K.stairs({ x: -8, z: -10.5, steps: 6, rise: 0.3, run: 0.7, width: 1.4, mat: new THREE.MeshStandardMaterial({ color: 0xc8c2b4, roughness: 0.95 }) });
+
+  // corner ambush cover: low walls along the road approaches (kept clear of spawn/patrol lanes)
+  const lowWall = new THREE.MeshStandardMaterial({ color: 0x9a9288, roughness: 0.95 });
+  K.solid(K.box(lowWall, 6, 1.1, 0.4, -2, 0, 26, 0.1), "concrete");
+  K.solid(K.box(lowWall, 6, 1.1, 0.4, 2, 0, 26, -0.1), "concrete");
+  K.solid(K.box(lowWall, 0.4, 1.1, 6, -16, 0, 2, 0.2), "concrete");
+  K.solid(K.box(lowWall, 0.4, 1.1, 6, 16, 0, 2, -0.2), "concrete");
 
   // props
   K.well(4, -14);
@@ -1079,14 +1233,23 @@ function buildConstruction(content: THREE.Object3D, main: THREE.Scene, renderer:
     }
   }
 
-  // site office (rescue target)
-  K.building({
+  // site office (rescue target) — enterable so the player can clear it room by room
+  K.enterable({
     x: -18, z: -20, w: 8, d: 6, h: 3.4,
     facade: facade({ base: "#d8d2c4", glass: "#2a3a4a", frame: "#5a5048", glow: "#ffd98a", bayW: 1.8, floorH: 3, cols: 3, rows: 1, rng: K.rng, sign: "SITE OFFICE" }),
     roof: "flat",
     roofMat: new THREE.MeshStandardMaterial({ color: 0x4a5a3a, roughness: 0.9 }),
     emissive: 0.5,
   });
+
+  // staircase up to the scaffold platform (covered ambush vantage over the site)
+  K.stairs({ x: 7.6, z: -29, steps: 8, rise: 0.3, run: 0.6, width: 1.2, alongZ: false, mat: new THREE.MeshStandardMaterial({ color: 0xb0a830, roughness: 0.7, metalness: 0.4 }) });
+
+  // stacked concrete barriers forming corner cover / lanes through the site
+  const wedgeMat = new THREE.MeshStandardMaterial({ color: 0xc8b020, roughness: 0.7, metalness: 0.3 });
+  for (const [wx, wz, ry] of [[0, 18, 0.4], [0, -14, -0.4], [-14, 26, 0.2], [14, 26, -0.2]] as const) {
+    K.solid(K.box(wedgeMat, 4, 1.2, 1.6, wx, 0, wz, ry), "concrete");
+  }
 
   // containers
   K.containerRow(-18, 2, 4);
@@ -1216,6 +1379,16 @@ function buildDowntown(content: THREE.Object3D, main: THREE.Scene, renderer: THR
   B(-8, -28, 10, 10, 24, glassF, 22.4); // rooftop sniper — trimmed
   B(8, -28, 10, 10, 24, glassF);
 
+  // enterable street-level shops (hollow, doorways) — interior & corner ambush play
+  K.enterable({ x: -5, z: 20, w: 6, d: 8, h: 5, facade: brickF, roof: "flat", roofMat: roofSlab, emissive: 0.7 });
+  K.enterable({ x: 5, z: -16, w: 6, d: 8, h: 5, facade: glassF, roof: "flat", roofMat: roofSlab, emissive: 0.9, ry: 0.2 });
+  K.enterable({ x: 6, z: 30, w: 6, d: 8, h: 4.5, facade: concreteF, roof: "flat", roofMat: roofSlab, emissive: 0.6 });
+  K.enterable({ x: -6, z: -18, w: 6, d: 8, h: 4.5, facade: concreteF, roof: "flat", roofMat: roofSlab, emissive: 0.6, ry: -0.2 });
+
+  // staircase up the side of a mid-rise for a rooftop vantage over the avenue
+  K.stairs({ x: -10.4, z: 30, steps: 14, rise: 0.28, run: 0.6, width: 1.3, mat: new THREE.MeshStandardMaterial({ color: 0x6a6a70, roughness: 0.9 }) });
+  K.stairs({ x: 10.4, z: 18, steps: 12, rise: 0.3, run: 0.6, width: 1.3, mat: new THREE.MeshStandardMaterial({ color: 0x6a6a70, roughness: 0.9 }) });
+
   // rooftop relay cache (objective) — mast in the street at (18, -26)
   K.relayTower(18, -26, 13);
 
@@ -1324,11 +1497,21 @@ function buildPort(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.W
   K.craneGantry(-13, -8.5, 16, 20);
   K.craneGantry(13, -8.5, 16, 20);
 
+  // enterable dockside warehouse + guard hut (interior clearing + corner ambush)
+  const warehouseF = facade({ base: "#5a5a60", glass: "#1a2430", frame: "#3a3a40", glow: "#ffca7a", bayW: 2, floorH: 3.4, cols: 3, rows: 2, rng: K.rng });
+  const roofSlabP = new THREE.MeshStandardMaterial({ color: 0x3a3a40, roughness: 0.85 });
+  K.enterable({ x: -14, z: 24, w: 10, d: 8, h: 5, facade: warehouseF, roof: "flat", roofMat: roofSlabP, emissive: 0.6 });
+  K.enterable({ x: 14, z: 24, w: 8, d: 6, h: 3.6, facade: warehouseF, roof: "flat", roofMat: roofSlabP, emissive: 0.5, ry: 0.2 });
+
   // container stacks on dock
   K.containerRow(-16, -2, 3);
   K.containerRow(16, -2, 3);
   K.containerRow(-18, 10, 3, 0.1);
   K.containerRow(18, 10, 3, -0.1);
+
+  // staircase up a container stack for an elevated vantage over the dock
+  K.stairs({ x: -15.4, z: 2, steps: 5, rise: 0.5, run: 0.7, width: 1.4, mat: new THREE.MeshStandardMaterial({ color: 0x8a6a3a, roughness: 0.7, metalness: 0.3 }) });
+  K.stairs({ x: 15.4, z: 2, steps: 5, rise: 0.5, run: 0.7, width: 1.4, mat: new THREE.MeshStandardMaterial({ color: 0x3a6a8a, roughness: 0.7, metalness: 0.3 }) });
 
   // floodlight towers
   const poleMat = new THREE.MeshStandardMaterial({ color: 0x2a2d30, roughness: 0.6, metalness: 0.7 });
@@ -1463,6 +1646,21 @@ function buildHQ(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.Web
   // courtyard props
   K.sandbag(-6, -22, 0, 6);
   K.sandbag(6, -22, 0, 6);
+
+  // enterable barracks (interior clearing + corner ambush) flanking the approach
+  const barracksF = facade({ base: "#4a5058", glass: "#161c24", frame: "#33383f", glow: "#ffca7a", bayW: 2, floorH: 3.4, cols: 3, rows: 2, rng: K.rng });
+  const hqRoof = new THREE.MeshStandardMaterial({ color: 0x2a2e33, roughness: 0.85 });
+  K.enterable({ x: -20, z: 10, w: 10, d: 8, h: 5, facade: barracksF, roof: "flat", roofMat: hqRoof, emissive: 0.5 });
+  K.enterable({ x: 20, z: 10, w: 10, d: 8, h: 5, facade: barracksF, roof: "flat", roofMat: hqRoof, emissive: 0.5, ry: 0.2 });
+
+  // staircase up the side of a compound building for a covered vantage over the gate
+  K.stairs({ x: -20.4, z: 6, steps: 12, rise: 0.3, run: 0.6, width: 1.3, mat: new THREE.MeshStandardMaterial({ color: 0x55565a, roughness: 0.9 }) });
+
+  // low corner cover / barricades in the courtyard
+  const bqMat = new THREE.MeshStandardMaterial({ color: 0x5a5c60, roughness: 0.9 });
+  K.solid(K.box(bqMat, 5, 1.1, 0.5, -10, 0, -16, 0.1), "concrete");
+  K.solid(K.box(bqMat, 5, 1.1, 0.5, 10, 0, -16, -0.1), "concrete");
+  K.solid(K.box(bqMat, 0.5, 1.1, 8, 0, 0, -18, 0), "concrete");
   for (const [fx, fz] of [[-14, -25], [14, -25]] as const) {
     K.solid(K.mesh(new THREE.MeshStandardMaterial({ color: 0x8a8a2a, roughness: 0.6, metalness: 0.4 }), new THREE.CylinderGeometry(1.2, 1.2, 3, 12), fx, 1.5, fz), "metal");
   }
@@ -1531,6 +1729,8 @@ function buildHQ(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.Web
 export interface LevelResult extends World {
   aabbs: THREE.Box3[];
   destroyables: THREE.Mesh[];
+  /** highest walkable surface top at (x, z) that is at/below y (within step range) */
+  groundHeightAt: (x: number, z: number, y: number) => number;
 }
 
 function finish(K: Kit, ambient: ReturnType<typeof setupAmbient>): LevelResult {
@@ -1542,6 +1742,18 @@ function finish(K: Kit, ambient: ReturnType<typeof setupAmbient>): LevelResult {
     });
     K.extras.forEach((e) => e.update(_dt));
   };
+  const groundHeightAt = (x: number, z: number, y: number): number => {
+    let best = 0;
+    for (const box of K.aabbs) {
+      // small forward tolerance so a step's top is caught as the player reaches its riser
+      if (x < box.min.x - 0.3 || x > box.max.x + 0.3) continue;
+      if (z < box.min.z - 0.3 || z > box.max.z + 0.3) continue;
+      const top = box.max.y;
+      if (top > y + 0.6) continue; // surface too high to be the ground we stand on
+      if (top > best) best = top;
+    }
+    return best;
+  };
   return {
     colliders: K.colliders,
     targets: [],
@@ -1551,6 +1763,7 @@ function finish(K: Kit, ambient: ReturnType<typeof setupAmbient>): LevelResult {
     hitTarget: () => {},
     aabbs: K.aabbs,
     destroyables: K.destroyables,
+    groundHeightAt,
   };
 }
 

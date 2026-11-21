@@ -139,6 +139,9 @@ export class SoldierRig {
   vel = new THREE.Vector3();
   grounded = true;
   vy = 0;
+  groundY = 0;
+  stepHeight = 0.55; // max ledge height the player auto-steps up (stairs)
+  private lastGroundY = 0;
   bodyYaw = 0;
   private turning = false;
   private sprinting = false;
@@ -490,6 +493,8 @@ export class SoldierRig {
     this.vel.set(0, 0, 0);
     this.vy = 0;
     this.grounded = true;
+    this.groundY = 0;
+    this.lastGroundY = 0;
     this.mag = MAG_SIZE;
     this.reserve = 120;
     this.weaponAttached = true;
@@ -509,13 +514,14 @@ export class SoldierRig {
   /* ---------------------------------------------------------------- */
   /*  Frame update                                                     */
   /* ---------------------------------------------------------------- */
-  update(dtRaw: number) {
+  update(dtRaw: number, groundY = 0) {
     if (!this.model) return;
     const dt = Math.min(dtRaw, 1 / 20);
     this.time += dt;
     this.fireCd = Math.max(0, this.fireCd - dt);
     this.hitT = Math.max(0, this.hitT - dt);
 
+    this.groundY = groundY;
     this.updateLocomotion(dt);
     this.updateAnimBase(dt);
     this.model.updateMatrixWorld(true);
@@ -565,17 +571,40 @@ export class SoldierRig {
     this.root.position.z = clamp(this.root.position.z + this.vel.z * dt, -260, 260);
 
     // vertical
+    const groundLevel = this.groundY;
+    const onGround = this.root.position.y <= groundLevel + 0.001;
+    const step = this.stepHeight > 0 && wantMove && !this.dead;
     if (!this.grounded) {
       this.vy -= 15 * dt;
       this.root.position.y += this.vy * dt;
-      if (this.root.position.y <= 0) {
-        this.root.position.y = 0;
+      if (this.root.position.y <= groundLevel) {
+        this.root.position.y = groundLevel;
         const impact = -this.vy;
         this.grounded = true;
         this.vy = 0;
         this.sLand.kick(impact * 0.5);
         this.events.onLand?.(clamp(impact / 6, 0.2, 1));
       }
+    } else if (onGround) {
+      // walking on the current surface: follow its height
+      this.root.position.y = groundLevel;
+      this.vy = 0;
+      // step-up: a small ledge ahead is lifted over smoothly instead of blocking
+      if (step && this.stepHeight > 0) {
+        const dY = Math.max(0, groundLevel - (this.lastGroundY ?? groundLevel));
+        if (dY > 0 && dY <= this.stepHeight) {
+          this.root.position.y = groundLevel;
+          this.lastGroundY = groundLevel;
+          this.events.onLand?.(clamp(dY / this.stepHeight * 0.5, 0.1, 0.8));
+        }
+      }
+      if (Math.abs(groundLevel - (this.lastGroundY ?? groundLevel)) > 0.25) {
+        this.events.onLand?.(0.5);
+      }
+      this.lastGroundY = groundLevel;
+    } else {
+      // grounded state but surface dropped below (fell off a ledge)
+      this.grounded = false;
     }
 
     // body yaw

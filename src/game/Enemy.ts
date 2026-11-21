@@ -14,6 +14,7 @@ import { BOSS_HP } from "./story";
 export interface CombatHost {
   colliders: THREE.Object3D[];
   aabbs: THREE.Box3[];
+  groundHeightAt: (x: number, z: number, y: number) => number;
   fx: CombatFX;
   sfx: Sfx;
   playerPos: (out: THREE.Vector3) => THREE.Vector3;
@@ -25,8 +26,10 @@ export interface CombatHost {
   mission: MissionDef;
 }
 
-/** circle-vs-AABB push-out used for player & enemy movement */
-export function resolveCircleAABBs(pos: THREE.Vector3, radius: number, aabbs: THREE.Box3[]) {
+/** circle-vs-AABB push-out used for player & enemy movement.
+ *  When a body bumps a surface whose top is within `step` metres above the feet,
+ *  the body is lifted onto it (stairs / low ledges) instead of being shoved back. */
+export function resolveCircleAABBs(pos: THREE.Vector3, radius: number, aabbs: THREE.Box3[], step = 0) {
   const bodyTop = pos.y + 1.8;
   for (const b of aabbs) {
     if (bodyTop < b.min.y || pos.y > b.max.y) continue; // no vertical overlap
@@ -37,6 +40,15 @@ export function resolveCircleAABBs(pos: THREE.Vector3, radius: number, aabbs: TH
     const d2 = dx * dx + dz * dz;
     if (d2 >= radius * radius || d2 < 1e-6) continue;
     const d = Math.sqrt(d2);
+    // step-up: a low ledge in front — lift the body onto its top rather than blocking
+    if (step > 0) {
+      const top = b.max.y;
+      const rise = top - pos.y;
+      if (rise > 0.02 && rise <= step + 0.1) {
+        pos.y = top;
+        continue; // consumed this AABB (standing on it); no horizontal push
+      }
+    }
     const push = (radius - d) / d;
     pos.x += dx * push;
     pos.z += dz * push;
@@ -267,8 +279,9 @@ export class Fighter {
     rig.input.sprint = this.state === "attack" && dist > 16;
     rig.input.crouch = this.state === "attack" && dist < 22;
     rig.input.ads = this.state === "attack";
-    rig.update(dt);
-    resolveCircleAABBs(my, 0.55, host.aabbs);
+    const gy = host.groundHeightAt(my.x, my.z, my.y);
+    rig.update(dt, gy);
+    resolveCircleAABBs(my, 0.55, host.aabbs, rig.stepHeight);
   }
 }
 
@@ -377,8 +390,9 @@ export class Ally extends Fighter {
       rig.aimPoint.set(p.x, 1.4, p.z);
     }
 
-    rig.update(dt);
-    resolveCircleAABBs(my, 0.55, host.aabbs);
+    const gy = host.groundHeightAt(my.x, my.z, my.y);
+    rig.update(dt, gy);
+    resolveCircleAABBs(my, 0.55, host.aabbs, rig.stepHeight);
   }
 
   protected onShoot(muzzle: THREE.Vector3) {

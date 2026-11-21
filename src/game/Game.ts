@@ -296,6 +296,7 @@ export class Game {
     const host: CombatHost = {
       colliders: this.level.colliders,
       aabbs: this.level.aabbs,
+      groundHeightAt: (x, z, y) => (this.level ? this.level.groundHeightAt(x, z, y) : 0),
       fx: this.fx,
       sfx: this.sfx,
       playerPos: (out: THREE.Vector3) => {
@@ -874,8 +875,9 @@ export class Game {
       this.updateAimPoint();
 
       /* ---- character ---- */
-      rig.update(dt);
-      resolveCircleAABBs(rig.root.position, 0.55, this.level!.aabbs);
+      const gy = this.level!.groundHeightAt(rig.root.position.x, rig.root.position.z, rig.root.position.y);
+      rig.update(dt, gy);
+      resolveCircleAABBs(rig.root.position, 0.55, this.level!.aabbs, rig.stepHeight);
 
       /* ---- firing ---- */
       const wantFire = (this.mouseL && (this.locked || this.lockFailed)) || k.has("KeyF") || this.uiHeld.fire;

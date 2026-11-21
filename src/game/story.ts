@@ -179,7 +179,7 @@ export const MISSIONS: MissionDef[] = [
       { x: 10, z: -10, mode: "patrol", patrol: [[10, -10], [10, 10], [-10, 10]] },
       { x: -12, z: 8, mode: "guard" },
       { x: 14, z: 16, mode: "guard" },
-      { x: -8, z: -28, mode: "patrol", patrol: [[-8, -28], [8, -28]] },
+      { x: -8, z: -28, mode: "patrol", patrol: [[-8, -28], [-14, -28]] },
       { x: 16, z: -24, mode: "guard" },
       { x: -16, z: -30, mode: "guard" },
       { x: 4, z: 24, mode: "advance" },
