@@ -8,6 +8,7 @@ import * as THREE from "three";
 import { SoldierRig } from "../character/SoldierRig";
 import { CombatFX, Sfx } from "./fx";
 import { clamp } from "../character/math";
+import { createVolumetricBeamMaterial } from "./shaders";
 import type { EnemySpawn, MissionDef } from "./story";
 import { BOSS_HP } from "./story";
 
@@ -96,6 +97,11 @@ export class Fighter {
   private prevPos = new THREE.Vector3();
   private stuckTimer = 0;
   private steerBias = 1;
+  private flashlightMount: THREE.Object3D | null = null;
+  private flashlightLens: THREE.Mesh | null = null;
+  private flashlightBeam: THREE.Mesh | null = null;
+  private flashlightMat: THREE.ShaderMaterial | null = null;
+  private beamTime = Math.random() * 10;
 
   constructor(host: CombatHost, spawn: EnemySpawn, mission: MissionDef, hp: number, boss: boolean) {
     this.host = host;
@@ -131,6 +137,49 @@ export class Fighter {
         this.rig.reload();
       }
     };
+    if (this.mission.night && !(this instanceof Ally)) {
+      this.attachFlashlight();
+    }
+  }
+
+  private attachFlashlight() {
+    const mount = new THREE.Group();
+    mount.position.set(-0.032, 0.112, 0.54);
+    const body = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.014, 0.015, 0.11, 10),
+      new THREE.MeshStandardMaterial({ color: 0x16191e, roughness: 0.45, metalness: 0.8 }),
+    );
+    body.rotation.x = Math.PI / 2;
+    mount.add(body);
+
+    const lens = new THREE.Mesh(
+      new THREE.CircleGeometry(0.013, 12),
+      new THREE.MeshStandardMaterial({ color: 0xe6f4ff, emissive: 0xd8f0ff, emissiveIntensity: 4.5, roughness: 0.15 }),
+    );
+    lens.position.set(0, 0, 0.056);
+    mount.add(lens);
+
+    const beamMat = createVolumetricBeamMaterial(0xcfe8ff, 0.17, 1.9);
+    const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.032, 2.1, 1, 20, 1, true), beamMat);
+    beam.scale.set(1, 14.5, 1);
+    beam.rotation.x = -Math.PI / 2;
+    beam.position.set(0, 0, 7.3);
+    beam.renderOrder = 2;
+    mount.add(beam);
+
+    this.rig.rifle.group.add(mount);
+    this.flashlightMount = mount;
+    this.flashlightLens = lens;
+    this.flashlightBeam = beam;
+    this.flashlightMat = beamMat;
+  }
+
+  getFlashlightWorld(originOut: THREE.Vector3, targetOut: THREE.Vector3): boolean {
+    if (this.dead || !this.flashlightMount) return false;
+    this.flashlightMount.getWorldPosition(originOut);
+    const dir = this.tmp2.set(0, 0, 1).applyQuaternion(this.flashlightMount.getWorldQuaternion(new THREE.Quaternion()));
+    targetOut.copy(originOut).addScaledVector(dir, 14);
+    return true;
   }
 
   get isDead() {
@@ -151,6 +200,10 @@ export class Fighter {
       this.dead = true;
       this.state = "dead";
       this.suspicion = 0;
+      if (this.flashlightBeam) this.flashlightBeam.visible = false;
+      if (this.flashlightLens) {
+        (this.flashlightLens.material as THREE.MeshStandardMaterial).emissiveIntensity = 0;
+      }
       this.rig.die(Math.random() < 0.5 ? "back" : "front");
       this.hitbox.visible = false;
       this.hitbox.position.y = -50; // belt-and-braces off the raycast path
@@ -460,12 +513,19 @@ export class Fighter {
       rig.aimPoint.set(aimTarget.x, aimTarget.y, aimTarget.z);
       this.aimPoint.set(aimTarget.x, aimTarget.y, aimTarget.z);
     } else if (this.state === "patrol" && (mvx !== 0 || mvz !== 0)) {
-      rig.aimYaw = Math.atan2(mvx, mvz);
-      rig.aimPitch = 0;
+      this.yawSweep += dt * 1.1;
+      rig.aimYaw = Math.atan2(mvx, mvz) + Math.sin(this.yawSweep) * 0.24;
+      rig.aimPitch = -0.05;
+      rig.aimPoint.set(my.x + Math.sin(rig.aimYaw) * 18, my.y + 1.25, my.z + Math.cos(rig.aimYaw) * 18);
     } else {
       this.yawSweep += dt * 0.65;
       rig.aimYaw = this.baseYaw + Math.sin(this.yawSweep) * 0.65;
-      rig.aimPitch = 0;
+      rig.aimPitch = -0.05;
+      rig.aimPoint.set(my.x + Math.sin(rig.aimYaw) * 18, my.y + 1.25, my.z + Math.cos(rig.aimYaw) * 18);
+    }
+    if (this.flashlightMat) {
+      this.beamTime += dt;
+      this.flashlightMat.uniforms.uTime.value = this.beamTime;
     }
 
     const mv = rig.input.move;

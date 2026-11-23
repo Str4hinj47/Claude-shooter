@@ -82,19 +82,19 @@ const initial: HudState = {
 
 const KEYS: [string, string][] = [
   ["W A S D", "Move"],
-  ["Mouse", "Aim / look"],
-  ["LMB / F", "Fire (silenced)"],
-  ["RMB / Z", "Aim down sights"],
-  ["Scroll / 1-4", "Switch weapon"],
-  ["RMB + Scroll", "Zoom in / out"],
-  ["C / Ctrl", "Crouch (silent)"],
-  ["V", "Silent takedown"],
-  ["Shift", "Sprint (loud)"],
+  ["Mouse", "Aim / Look"],
+  ["Left Click", "Fire (silenced)"],
+  ["Right Click", "Aim Down Sights"],
+  ["Scroll Wheel", "Zoom Optic (ADS)"],
+  ["1 – 4", "Switch Weapon"],
+  ["C", "Crouch (silent)"],
+  ["V", "Silent Takedown"],
+  ["Left Shift", "Sprint (loud)"],
   ["Space", "Jump"],
   ["R", "Reload"],
-  ["Q / E", "Lean"],
+  ["Q / E", "Lean Left / Right"],
+  ["Tab", "Showcase Orbit"],
   ["Esc", "Pause"],
-  ["Tab", "Showcase orbit"],
 ];
 
 const UPGRADE_TABS: { id: UpgradeCategory; label: string }[] = [
@@ -1069,22 +1069,108 @@ export default function App() {
             />
           )}
 
-          {/* crosshair */}
-          {hud.phase !== "loading" && !hud.dead && !hud.showcase && (
-            <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
-              <div className="relative" style={{ width: spreadPx * 2, height: spreadPx * 2 }}>
-                {[0, 90, 180, 270].map((r) => (
-                  <div key={r} className="absolute left-1/2 top-1/2" style={{ transform: `rotate(${r}deg) translateY(-${spreadPx}px)` }}>
-                    <div className="-ml-px h-2.5 w-0.5 bg-white/90 shadow-[0_0_2px_rgba(0,0,0,0.9)]" />
-                  </div>
-                ))}
-                <div className="absolute left-1/2 top-1/2 h-[3px] w-[3px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow-[0_0_3px_rgba(0,0,0,1)]" />
-                {hud.hitMarker > 0 && (
-                  <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-xl font-black text-red-500 drop-shadow">✕</div>
-                )}
+          {/* modern tactical crosshair */}
+          {hud.phase !== "loading" && !hud.dead && !hud.showcase && (() => {
+            const gap = Math.max(5, Math.min(26, spreadPx * 0.55));
+            const len = hud.ads ? 10 : 7;
+            const accent = hud.takedownReady ? "#34d399" : hud.ads ? "#22d3ee" : "#f8fafc";
+            const circ = 2 * Math.PI * 16;
+            return (
+              <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+                <svg
+                  width="96"
+                  height="96"
+                  viewBox="-48 -48 96 96"
+                  className="overflow-visible drop-shadow-[0_0_3px_rgba(0,0,0,0.95)]"
+                >
+                  {/* ADS precision ring + mil ticks */}
+                  {hud.ads && (
+                    <g opacity="0.88">
+                      <circle cx="0" cy="0" r="22" fill="none" stroke="#22d3ee" strokeWidth="0.9" strokeDasharray="10 6" opacity="0.55" />
+                      <circle cx="0" cy="0" r="32" fill="none" stroke="#ffffff" strokeWidth="0.7" strokeDasharray="4 46.3" opacity="0.35" />
+                      <line x1="-16" y1="0" x2="-6" y2="0" stroke="#22d3ee" strokeWidth="1.2" strokeLinecap="round" />
+                      <line x1="6" y1="0" x2="16" y2="0" stroke="#22d3ee" strokeWidth="1.2" strokeLinecap="round" />
+                      <line x1="0" y1="6" x2="0" y2="16" stroke="#22d3ee" strokeWidth="1.2" strokeLinecap="round" />
+                      <line x1="0" y1="-16" x2="0" y2="-6" stroke="#22d3ee" strokeWidth="1.2" strokeLinecap="round" />
+                      <circle cx="-11" cy="0" r="0.9" fill="#22d3ee" opacity="0.7" />
+                      <circle cx="11" cy="0" r="0.9" fill="#22d3ee" opacity="0.7" />
+                      <circle cx="0" cy="11" r="0.9" fill="#22d3ee" opacity="0.7" />
+                    </g>
+                  )}
+
+                  {/* Dynamic hip-fire tapered tactical bars */}
+                  {!hud.ads && (
+                    <g>
+                      <line x1={-gap - len} y1="0" x2={-gap} y2="0" stroke={accent} strokeWidth="1.7" strokeLinecap="round" opacity="0.92" />
+                      <line x1={gap} y1="0" x2={gap + len} y2="0" stroke={accent} strokeWidth="1.7" strokeLinecap="round" opacity="0.92" />
+                      <line x1="0" y1={-gap - len} x2="0" y2={-gap} stroke={accent} strokeWidth="1.7" strokeLinecap="round" opacity="0.92" />
+                      <line x1="0" y1={gap} x2="0" y2={gap + len} stroke={accent} strokeWidth="1.7" strokeLinecap="round" opacity="0.92" />
+                      {/* Subtle outer tactical corner ticks */}
+                      <path
+                        d={`M ${-gap - 6} ${-gap - 2} L ${-gap - 6} ${-gap - 6} L ${-gap - 2} ${-gap - 6}`}
+                        fill="none"
+                        stroke={accent}
+                        strokeWidth="1"
+                        opacity="0.38"
+                      />
+                      <path
+                        d={`M ${gap + 6} ${-gap - 2} L ${gap + 6} ${-gap - 6} L ${gap + 2} ${-gap - 6}`}
+                        fill="none"
+                        stroke={accent}
+                        strokeWidth="1"
+                        opacity="0.38"
+                      />
+                      <path
+                        d={`M ${-gap - 6} ${gap + 2} L ${-gap - 6} ${gap + 6} L ${-gap - 2} ${gap + 6}`}
+                        fill="none"
+                        stroke={accent}
+                        strokeWidth="1"
+                        opacity="0.38"
+                      />
+                      <path
+                        d={`M ${gap + 6} ${gap + 2} L ${gap + 6} ${gap + 6} L ${gap + 2} ${gap + 6}`}
+                        fill="none"
+                        stroke={accent}
+                        strokeWidth="1"
+                        opacity="0.38"
+                      />
+                    </g>
+                  )}
+
+                  {/* Radial reload arc */}
+                  {hud.reloading && (
+                    <g transform="rotate(-90)">
+                      <circle cx="0" cy="0" r="16" fill="none" stroke="rgba(255,255,255,0.16)" strokeWidth="2" />
+                      <circle
+                        cx="0"
+                        cy="0"
+                        r="16"
+                        fill="none"
+                        stroke="#fbbf24"
+                        strokeWidth="2.2"
+                        strokeLinecap="round"
+                        strokeDasharray={circ}
+                        strokeDashoffset={circ * (1 - hud.reloadProgress)}
+                      />
+                    </g>
+                  )}
+
+                  {/* Precision center dot */}
+                  <circle cx="0" cy="0" r={hud.ads ? "1.6" : "1.8"} fill={accent} />
+
+                  {/* Crisp hit-confirm diagonal burst */}
+                  {hud.hitMarker > 0 && (
+                    <g stroke="#ef4444" strokeWidth="2" strokeLinecap="round" opacity={Math.min(1, hud.hitMarker * 6)}>
+                      <line x1="-11" y1="-11" x2="-5" y2="-5" />
+                      <line x1="11" y1="-11" x2="5" y2="-5" />
+                      <line x1="-11" y1="11" x2="-5" y2="5" />
+                      <line x1="11" y1="11" x2="5" y2="5" />
+                    </g>
+                  )}
+                </svg>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* mission header + objectives (top-left) */}
           {hud.mission && (() => {

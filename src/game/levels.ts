@@ -27,6 +27,7 @@ import {
   scatterInstances,
 } from "./kit/geom";
 import { materialFor } from "./kit/surface";
+import { createLightPoolMaterial, createVolumetricBeamMaterial } from "./shaders";
 
 /* ====================== seeded RNG ====================== */
 function mulberry32(seed: number) {
@@ -399,6 +400,7 @@ interface AmbientCfg {
   exposure: number;
   stars?: boolean;
   shadowFar?: number;
+  nightSky?: { zenith: number; horizon: number; moonColor?: number };
 }
 function setupAmbient(scene: THREE.Scene, renderer: THREE.WebGLRenderer, c: AmbientCfg) {
   renderer.toneMappingExposure = c.exposure;
@@ -408,15 +410,53 @@ function setupAmbient(scene: THREE.Scene, renderer: THREE.WebGLRenderer, c: Ambi
     THREE.MathUtils.degToRad(c.sunAzim),
   );
   const skyScene = new THREE.Scene();
-  const sky = new Sky();
-  sky.scale.setScalar(10000);
-  const u = sky.material.uniforms;
-  u["turbidity"].value = c.turbidity;
-  u["rayleigh"].value = c.rayleigh;
-  u["mieCoefficient"].value = 0.004;
-  u["mieDirectionalG"].value = 0.82;
-  u["sunPosition"].value.copy(sunDir);
-  skyScene.add(sky);
+  if (c.nightSky) {
+    const dome = new THREE.Mesh(
+      new THREE.SphereGeometry(5000, 32, 20),
+      new THREE.ShaderMaterial({
+        side: THREE.BackSide,
+        depthWrite: false,
+        uniforms: {
+          uZenith: { value: new THREE.Color(c.nightSky.zenith) },
+          uHorizon: { value: new THREE.Color(c.nightSky.horizon) },
+          uMoonDir: { value: sunDir.clone().normalize() },
+          uMoonCol: { value: new THREE.Color(c.nightSky.moonColor ?? 0x9bbcff) },
+        },
+        vertexShader: /* glsl */ `
+          varying vec3 vDir;
+          void main() {
+            vDir = normalize(position);
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }
+        `,
+        fragmentShader: /* glsl */ `
+          uniform vec3 uZenith;
+          uniform vec3 uHorizon;
+          uniform vec3 uMoonDir;
+          uniform vec3 uMoonCol;
+          varying vec3 vDir;
+          void main() {
+            float h = clamp(vDir.y, 0.0, 1.0);
+            vec3 col = mix(uHorizon, uZenith, pow(h, 0.52));
+            float m = max(0.0, dot(normalize(vDir), uMoonDir));
+            col += uMoonCol * (pow(m, 36.0) * 0.42 + pow(m, 640.0) * 2.2);
+            gl_FragColor = vec4(col, 1.0);
+          }
+        `,
+      }),
+    );
+    skyScene.add(dome);
+  } else {
+    const sky = new Sky();
+    sky.scale.setScalar(10000);
+    const u = sky.material.uniforms;
+    u["turbidity"].value = c.turbidity;
+    u["rayleigh"].value = c.rayleigh;
+    u["mieCoefficient"].value = 0.004;
+    u["mieDirectionalG"].value = 0.82;
+    u["sunPosition"].value.copy(sunDir);
+    skyScene.add(sky);
+  }
   const cubeRT = new THREE.WebGLCubeRenderTarget(256, { type: THREE.HalfFloatType });
   const cubeCam = new THREE.CubeCamera(1, 10000, cubeRT);
   cubeCam.update(renderer, skyScene);
@@ -473,11 +513,19 @@ interface Beacon {
   phase: number;
 }
 
+interface StreetLampInfo {
+  head: THREE.Vector3;
+  ground: THREE.Vector3;
+  color: number;
+}
+
 class Kit {
   colliders: THREE.Object3D[] = [];
   aabbs: THREE.Box3[] = [];
   destroyables: THREE.Mesh[] = [];
   beacons: Beacon[] = [];
+  streetLamps: StreetLampInfo[] = [];
+  lampCones: THREE.ShaderMaterial[] = [];
   extras: { update: (dt: number) => void }[] = [];
   rng: () => number;
   scene: THREE.Object3D;
@@ -1342,7 +1390,7 @@ class Kit {
     }
   }
 
-  streetlight(x: number, z: number, ry = 0) {
+  streetlight(x: number, z: number, ry = 0, lit = true, color = 0xffbe6b) {
     const poleMat = materialFor(0x2a2d30, { roughness: 0.55, metalness: 0.82 });
     const darkMat = materialFor(0x1a1c1f, { roughness: 0.55, metalness: 0.65 });
     const grp = new THREE.Group();
@@ -1362,12 +1410,44 @@ class Kit {
     grp.add(
       part(
         new THREE.SphereGeometry(0.15, 14, 10),
-        new THREE.MeshStandardMaterial({ color: 0xffe9b0, emissive: 0xffd98a, emissiveIntensity: 2.2, roughness: 0.3 }),
+        new THREE.MeshStandardMaterial({
+          color: lit ? color : 0x555b62,
+          emissive: lit ? color : 0x000000,
+          emissiveIntensity: lit ? 3.8 : 0,
+          roughness: 0.25,
+        }),
         [0, 4.86, 1.62],
         [0, 0, 0],
-        false
-      )
+        false,
+      ),
     );
+
+    if (lit) {
+      // volumetric light cone + ground pool
+      const coneMat = createVolumetricBeamMaterial(color, 0.13, 1.75);
+      const cone = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 2.75, 1, 20, 1, true), coneMat);
+      cone.scale.set(1, 4.86, 1);
+      cone.position.set(0, 2.43, 1.62);
+      cone.renderOrder = 2;
+      grp.add(cone);
+      this.lampCones.push(coneMat);
+
+      const pool = new THREE.Mesh(new THREE.PlaneGeometry(7.0, 7.0), createLightPoolMaterial(color, 0.24));
+      pool.rotation.x = -Math.PI / 2;
+      pool.position.set(0, 0.024, 1.62);
+      pool.renderOrder = 1;
+      grp.add(pool);
+
+      const sinR = Math.sin(ry);
+      const cosR = Math.cos(ry);
+      const wx = x + sinR * 1.62;
+      const wz = z + cosR * 1.62;
+      this.streetLamps.push({
+        head: new THREE.Vector3(wx, 4.82, wz),
+        ground: new THREE.Vector3(wx, 0, wz),
+        color,
+      });
+    }
   }
 
   /* ---------------- industry ---------------- */
@@ -1958,12 +2038,12 @@ class Kit {
   }
 
   /** flat ground decal: transparent texture plane, z-fighting offset, no collision */
-  decal(tex: THREE.Texture, w: number, h: number, x: number, y: number, z: number, ry = 0) {
+  decal(tex: THREE.Texture, w: number, h: number, x: number, y: number, z: number, ry = 0, roughness = 0.95, metalness = 0) {
     const mat = new THREE.MeshStandardMaterial({
       map: tex,
       transparent: true,
-      roughness: 0.95,
-      metalness: 0,
+      roughness,
+      metalness,
       polygonOffset: true,
       polygonOffsetFactor: -4,
       polygonOffsetUnits: -4,
@@ -1983,10 +2063,10 @@ class Kit {
     this.decal(t, r * 2, r * 2, x, 0.012, z, this.rng() * Math.PI);
   }
 
-  /** puddle on paved/ground surfaces */
+  /** puddle on paved/ground surfaces (wet glossy specular reflection) */
   puddle(x: number, z: number, rx: number, rz: number) {
     const t = this.pTex("puddle", () => puddleTex(256, this.rng));
-    this.decal(t, rx * 2, rz * 2, x, 0.013, z, this.rng() * Math.PI);
+    this.decal(t, rx * 2, rz * 2, x, 0.013, z, this.rng() * Math.PI, 0.08, 0.55);
   }
 
   /** asphalt/concrete crack patch */
@@ -2230,18 +2310,18 @@ function buildRange(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.
 function buildVillage(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.WebGLRenderer): LevelResult {
   const K = new Kit(content, 1337);
   const ambient = setupAmbient(main, renderer, {
-    sunElev: 9,
+    sunElev: 10,
     sunAzim: 62,
-    turbidity: 4.5,
-    rayleigh: 1.6,
+    turbidity: 4.2,
+    rayleigh: 1.5,
     fogColor: 0xd9b48f,
-    fogDensity: 0.006,
-    hemiSky: 0x9db4c8,
-    hemiGround: 0x55462f,
-    hemiIntensity: 0.58,
-    sunColor: 0xffd9a0,
-    sunIntensity: 3.4,
-    envIntensity: 0.52,
+    fogDensity: 0.0055,
+    hemiSky: 0xa6bed4,
+    hemiGround: 0x5c4b32,
+    hemiIntensity: 0.65,
+    sunColor: 0xffd79b,
+    sunIntensity: 3.8,
+    envIntensity: 0.65,
     exposure: 1.05,
     shadowFar: 100,
   });
@@ -2497,20 +2577,20 @@ function buildVillage(content: THREE.Object3D, main: THREE.Scene, renderer: THRE
 function buildConstruction(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.WebGLRenderer): LevelResult {
   const K = new Kit(content, 4242);
   const ambient = setupAmbient(main, renderer, {
-    sunElev: 48,
+    sunElev: 46,
     sunAzim: 210,
-    turbidity: 8,
-    rayleigh: 0.8,
-    fogColor: 0xb8bdbf,
-    fogDensity: 0.006,
-    hemiSky: 0xc9ccd2,
-    hemiGround: 0x6a6258,
-    hemiIntensity: 0.75,
-    sunColor: 0xf4f2ec,
-    sunIntensity: 2.4,
-    envIntensity: 0.4,
-    exposure: 1.0,
-    shadowFar: 90,
+    turbidity: 6.5,
+    rayleigh: 0.9,
+    fogColor: 0xb4bac0,
+    fogDensity: 0.0055,
+    hemiSky: 0xcbd2dc,
+    hemiGround: 0x625a50,
+    hemiIntensity: 0.78,
+    sunColor: 0xf8f4ea,
+    sunIntensity: 2.9,
+    envIntensity: 0.55,
+    exposure: 1.02,
+    shadowFar: 95,
   });
   content.add(ambient.sun, ambient.hemi);
   if (ambient.stars) content.add(ambient.stars);
@@ -2741,20 +2821,22 @@ function buildConstruction(content: THREE.Object3D, main: THREE.Scene, renderer:
 function buildDowntown(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.WebGLRenderer): LevelResult {
   const K = new Kit(content, 90210);
   const ambient = setupAmbient(main, renderer, {
-    sunElev: 7,
-    sunAzim: 265,
-    turbidity: 6,
-    rayleigh: 1.8,
-    fogColor: 0xa87b5a,
-    fogDensity: 0.0065,
-    hemiSky: 0x8a9ab0,
-    hemiGround: 0x4a3a2c,
-    hemiIntensity: 0.6,
-    sunColor: 0xff9a5a,
-    sunIntensity: 3.0,
-    envIntensity: 0.45,
-    exposure: 1.0,
-    shadowFar: 100,
+    sunElev: 22,
+    sunAzim: 255,
+    turbidity: 4,
+    rayleigh: 0.8,
+    fogColor: 0x090e1a,
+    fogDensity: 0.0082,
+    hemiSky: 0x263858,
+    hemiGround: 0x0c1018,
+    hemiIntensity: 0.44,
+    sunColor: 0x7ba4ff,
+    sunIntensity: 0.92,
+    envIntensity: 0.36,
+    exposure: 1.15,
+    stars: true,
+    shadowFar: 110,
+    nightSky: { zenith: 0x040712, horizon: 0x15223a, moonColor: 0x8fb4ff },
   });
   content.add(ambient.sun, ambient.hemi);
   if (ambient.stars) content.add(ambient.stars);
@@ -2831,10 +2913,11 @@ function buildDowntown(content: THREE.Object3D, main: THREE.Scene, renderer: THR
   // rooftop relay cache (objective) — mast in the street at (18, -26)
   K.relayTower(18, -26, 13);
 
-  // streetlights (arms reach inward over the avenue)
+  // streetlights (warm sodium avenue lamps + cool accent near relay)
   for (let z = -28; z <= 44; z += 12) {
-    K.streetlight(-9.4, z, Math.PI / 2);
-    K.streetlight(9.4, z, -Math.PI / 2);
+    const col = z < -18 ? 0x9cd8ff : 0xffb866;
+    K.streetlight(-9.4, z, Math.PI / 2, true, col);
+    K.streetlight(9.4, z, -Math.PI / 2, true, col);
   }
 
   // cars (parked along the avenue center lanes, keeping shop doorways & skybridge stairs clear!)
@@ -2915,21 +2998,22 @@ function buildDowntown(content: THREE.Object3D, main: THREE.Scene, renderer: THR
 function buildPort(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.WebGLRenderer): LevelResult {
   const K = new Kit(content, 5150);
   const ambient = setupAmbient(main, renderer, {
-    sunElev: 3,
+    sunElev: 20,
     sunAzim: 235,
     turbidity: 5,
     rayleigh: 1.0,
-    fogColor: 0x05070d,
-    fogDensity: 0.011,
-    hemiSky: 0x1a2436,
-    hemiGround: 0x05080c,
-    hemiIntensity: 0.3,
-    sunColor: 0x2a3850,
-    sunIntensity: 0.35,
-    envIntensity: 0.15,
-    exposure: 1.15,
+    fogColor: 0x060a14,
+    fogDensity: 0.009,
+    hemiSky: 0x24344c,
+    hemiGround: 0x080c14,
+    hemiIntensity: 0.42,
+    sunColor: 0x6f98f2,
+    sunIntensity: 0.88,
+    envIntensity: 0.34,
+    exposure: 1.18,
     stars: true,
-    shadowFar: 90,
+    shadowFar: 100,
+    nightSky: { zenith: 0x03060f, horizon: 0x101c30, moonColor: 0x7da4ff },
   });
   content.add(ambient.sun, ambient.hemi);
   if (ambient.stars) content.add(ambient.stars);
@@ -3049,6 +3133,14 @@ function buildPort(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.W
   K.truck(12, 34, 0.3, 0x3a5a3a);
   K.truck(-14, 38, -0.25, 0x4a4a4a);
 
+  // dock & pier streetlights
+  for (let z = 6; z <= 42; z += 12) {
+    K.streetlight(-22, z, Math.PI / 2, true, 0x9cd8ff);
+    K.streetlight(22, z, -Math.PI / 2, true, 0xffbe6b);
+  }
+  K.streetlight(-10, -10, 0, true, 0x9cd8ff);
+  K.streetlight(10, -10, 0, true, 0x9cd8ff);
+
   // environment polish: dock weathering + clutter (visual only)
   for (let i = 0; i < 8; i++) K.groundStain(-24 + K.rng() * 48, -16 + K.rng() * 64, 0.6 + K.rng() * 0.9);
   for (const [px, pz] of [[-10, 18], [6, 22], [-16, 8], [18, 6], [-2, 34], [4, 28]] as const) K.puddle(px, pz, 1.0 + K.rng() * 0.6, 0.7 + K.rng() * 0.5);
@@ -3102,21 +3194,22 @@ function stripeLabel(): THREE.Texture {
 function buildHQ(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.WebGLRenderer): LevelResult {
   const K = new Kit(content, 700013);
   const ambient = setupAmbient(main, renderer, {
-    sunElev: 2,
-    sunAzim: 100,
-    turbidity: 10,
-    rayleigh: 0.5,
-    fogColor: 0x0a0c10,
-    fogDensity: 0.014,
-    hemiSky: 0x222831,
-    hemiGround: 0x0a0c10,
-    hemiIntensity: 0.22,
-    sunColor: 0x2a3040,
-    sunIntensity: 0.18,
-    envIntensity: 0.1,
-    exposure: 1.05,
+    sunElev: 24,
+    sunAzim: 115,
+    turbidity: 8,
+    rayleigh: 0.6,
+    fogColor: 0x080b12,
+    fogDensity: 0.0105,
+    hemiSky: 0x263244,
+    hemiGround: 0x080a0f,
+    hemiIntensity: 0.4,
+    sunColor: 0x6e84b8,
+    sunIntensity: 0.78,
+    envIntensity: 0.32,
+    exposure: 1.16,
     stars: true,
-    shadowFar: 100,
+    shadowFar: 105,
+    nightSky: { zenith: 0x03050b, horizon: 0x111724, moonColor: 0x8aa2d8 },
   });
   content.add(ambient.sun, ambient.hemi);
   if (ambient.stars) content.add(ambient.stars);
@@ -3259,11 +3352,15 @@ function buildHQ(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.Web
   // helipad (extraction, north of tower)
   K.helipad(0, -44);
 
-  // streetlights (dim) along approach, arms oriented inward over road
+  // streetlights along approach & courtyard perimeter
   for (let z = 44; z >= 16; z -= 12) {
-    K.streetlight(-9, z, Math.PI / 2);
-    K.streetlight(9, z, -Math.PI / 2);
+    K.streetlight(-9, z, Math.PI / 2, true, 0xffbd68);
+    K.streetlight(9, z, -Math.PI / 2, true, 0xffbd68);
   }
+  K.streetlight(-18, -14, Math.PI / 2, true, 0x9cd8ff);
+  K.streetlight(18, -14, -Math.PI / 2, true, 0x9cd8ff);
+  K.streetlight(-12, -38, Math.PI / 2, true, 0x9cd8ff);
+  K.streetlight(12, -38, -Math.PI / 2, true, 0x9cd8ff);
 
   // rain
   const rainGeo = new THREE.BufferGeometry();
@@ -3310,21 +3407,22 @@ function buildHQ(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.Web
 function buildCitadel(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.WebGLRenderer): LevelResult {
   const K = new Kit(content, 900017);
   const ambient = setupAmbient(main, renderer, {
-    sunElev: 4,
+    sunElev: 25,
     sunAzim: 145,
-    turbidity: 8,
+    turbidity: 7,
     rayleigh: 0.7,
-    fogColor: 0x090b12,
-    fogDensity: 0.0085,
-    hemiSky: 0x252d3f,
-    hemiGround: 0x090c10,
-    hemiIntensity: 0.34,
-    sunColor: 0x4b5c80,
-    sunIntensity: 0.32,
-    envIntensity: 0.16,
-    exposure: 1.12,
+    fogColor: 0x080b15,
+    fogDensity: 0.0072,
+    hemiSky: 0x28334a,
+    hemiGround: 0x0a0d14,
+    hemiIntensity: 0.44,
+    sunColor: 0x7898e8,
+    sunIntensity: 0.88,
+    envIntensity: 0.36,
+    exposure: 1.18,
     stars: true,
     shadowFar: 160,
+    nightSky: { zenith: 0x03050d, horizon: 0x13192b, moonColor: 0x9eb8ff },
   });
   content.add(ambient.sun, ambient.hemi);
   if (ambient.stars) content.add(ambient.stars);
@@ -3463,9 +3561,12 @@ function buildCitadel(content: THREE.Object3D, main: THREE.Scene, renderer: THRE
 
   // Atmospheric streetlights & heavy alpine rain
   for (let z = 76; z >= -76; z -= 18) {
-    K.streetlight(-22, z, Math.PI / 2);
-    K.streetlight(22, z, -Math.PI / 2);
+    const col = z < -40 ? 0xa3c8ff : 0xffbe6b;
+    K.streetlight(-22, z, Math.PI / 2, true, col);
+    K.streetlight(22, z, -Math.PI / 2, true, col);
   }
+  K.streetlight(-12, -78, Math.PI / 2, true, 0xa3c8ff);
+  K.streetlight(12, -78, -Math.PI / 2, true, 0xa3c8ff);
   const rainGeo = new THREE.BufferGeometry();
   const rainCount = 1100;
   const rainPos = new Float32Array(rainCount * 3);
@@ -3500,8 +3601,41 @@ export interface LevelResult extends World {
 }
 
 function finish(K: Kit, ambient: ReturnType<typeof setupAmbient>): LevelResult {
+  // Pooled real SpotLights for the closest lit streetlights (respects WebGL uniform limits)
+  const lampPoolCount = Math.min(4, K.streetLamps.length);
+  const lampLights: THREE.SpotLight[] = [];
+  for (let i = 0; i < lampPoolCount; i++) {
+    const sl = new THREE.SpotLight(0xffbe6b, 28, 22, 0.72, 0.75, 1.55);
+    sl.castShadow = false;
+    K.scene.add(sl, sl.target);
+    lampLights.push(sl);
+  }
+  let lampTime = 0;
+
   const update = (_dt: number, focus: THREE.Vector3) => {
     ambient.update(_dt, focus);
+    lampTime += _dt;
+    for (const m of K.lampCones) m.uniforms.uTime.value = lampTime;
+
+    if (lampLights.length > 0 && K.streetLamps.length > 0) {
+      const sorted = K.streetLamps
+        .map((l) => ({ l, d2: l.ground.distanceToSquared(focus) }))
+        .sort((a, b) => a.d2 - b.d2);
+      for (let i = 0; i < lampLights.length; i++) {
+        const sl = lampLights[i];
+        const pick = sorted[i];
+        if (pick && pick.d2 < 3600) {
+          sl.visible = true;
+          sl.color.setHex(pick.l.color);
+          sl.position.copy(pick.l.head);
+          sl.target.position.copy(pick.l.ground);
+          sl.target.updateMatrixWorld();
+        } else {
+          sl.visible = false;
+        }
+      }
+    }
+
     K.beacons.forEach((b) => {
       b.phase += b.speed * _dt;
       b.mesh.visible = Math.sin(b.phase) > 0;

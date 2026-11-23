@@ -1,9 +1,16 @@
 import * as THREE from "three";
+import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
+import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
+import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
+import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
+import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { SoldierRig, MAG_SIZE, type RigStatus } from "../character/SoldierRig";
 import { WEAPONS } from "../character/rifle";
 import { type World, type SurfaceKind } from "./world";
 import { buildLevel, type LevelResult } from "./levels";
 import { CombatFX, Sfx } from "./fx";
+import { CinematicPostShader } from "./shaders";
 import { Spring, clamp, damp, lerp } from "../character/math";
 import { Ally, Enemy, Fighter, RescueNPC, resolveCircleAABBs, type CombatHost } from "./Enemy";
 import { MISSIONS, type DialogueLine, type MissionDef, type ObjectiveDef } from "./story";
@@ -155,8 +162,14 @@ export class Game {
   private weaponIdx = 0;
   private weaponAmmo = WEAPONS.map((w) => ({ mag: w.magSize, reserve: w.reserveMax, adsFov: w.adsFovDefault }));
   private adsFovSmooth = WEAPONS[0].adsFovDefault;
-  private wheelAcc = 0;
-  private lastWheelSwitch = 0;
+  private composer: EffectComposer;
+  private bloomPass: UnrealBloomPass;
+  private gradePass: ShaderPass;
+  private hangarEnv: THREE.Texture | null = null;
+  private guardFlashlights: THREE.SpotLight[] = [];
+  private tmpFlashOrigin = new THREE.Vector3();
+  private tmpFlashTarget = new THREE.Vector3();
+  private postTime = 0;
 
   /* mission state */
   private cb: GameCallbacks | null = null;
@@ -196,12 +209,27 @@ export class Game {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 0.78;
+    this.renderer.toneMappingExposure = 1.0;
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.domElement.style.display = "block";
     this.renderer.domElement.tabIndex = 0;
     container.appendChild(this.renderer.domElement);
+
+    const w0 = container.clientWidth || window.innerWidth;
+    const h0 = container.clientHeight || window.innerHeight;
+    const rt = new THREE.WebGLRenderTarget(w0, h0, {
+      type: THREE.HalfFloatType,
+      samples: this.renderer.capabilities.isWebGL2 ? 2 : 0,
+    });
+    this.composer = new EffectComposer(this.renderer, rt);
+    this.composer.addPass(new RenderPass(this.scene, this.camera));
+    this.bloomPass = new UnrealBloomPass(new THREE.Vector2(w0, h0), 0.34, 0.55, 0.86);
+    this.composer.addPass(this.bloomPass);
+    this.gradePass = new ShaderPass(CinematicPostShader);
+    this.composer.addPass(this.gradePass);
+    this.composer.addPass(new OutputPass());
+
     this.camera.position.set(0.6, 1.8, -3);
     this.scene.add(this.missionRoot);
     this.scene.add(this.fx.group);
@@ -219,6 +247,7 @@ export class Game {
     this.paused = false;
     this.enemies = [];
     this.enemyHits = [];
+    this.guardFlashlights = [];
     this.ally = null;
     this.npc = null;
 
@@ -229,8 +258,16 @@ export class Game {
       this.scene.add(this.missionRoot);
     }
 
-    this.scene.background = new THREE.Color(0x080b10);
-    this.scene.fog = new THREE.FogExp2(0x080b10, 0.045);
+    this.renderer.toneMappingExposure = 1.02;
+    this.scene.background = new THREE.Color(0x070a10);
+    this.scene.fog = new THREE.FogExp2(0x070a10, 0.045);
+    if (!this.hangarEnv) {
+      const pmrem = new THREE.PMREMGenerator(this.renderer);
+      this.hangarEnv = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+      pmrem.dispose();
+    }
+    this.scene.environment = this.hangarEnv;
+    this.scene.environmentIntensity = 0.72;
 
     // Tactical studio dais + subtle amber perimeter ring
     const floor = new THREE.Mesh(
@@ -334,7 +371,7 @@ export class Game {
       onFootstep: (_s, i) => {
         this.sfx.step(i);
         if (this.phase === "ready" && !this.rig.dead) {
-          const crouching = this.crouchToggle || this.keys.has("ControlLeft") || this.keys.has("ControlRight");
+          const crouching = this.crouchToggle;
           if (!crouching) {
             const baseR = this.rig.status === "Sprinting" ? 11.5 : 4.2;
             const radius = baseR * this.stats.footstepNoiseMult;
@@ -465,7 +502,7 @@ export class Game {
         return out.set(r.x, r.y + this.rig.eyeHeight, r.z);
       },
       playerAlive: () => !this.rig.dead,
-      playerCrouching: () => this.crouchToggle || this.keys.has("ControlLeft") || this.keys.has("ControlRight"),
+      playerCrouching: () => this.crouchToggle,
       playerSprinting: () => this.rig?.status === "Sprinting",
       playerDetectMult: () => this.stats.enemyDetectSpeedMult,
       playerVisionRangeMult: () => this.stats.enemyVisionRangeMult,
@@ -488,6 +525,19 @@ export class Game {
       built++;
       this.progress = Math.round((built / totalEnemies) * 100);
       this.emitHud();
+    }
+
+    // Pooled SpotLights for closest night guards' tactical flashlights
+    this.guardFlashlights = [];
+    if (mission.night && this.enemies.length > 0) {
+      const count = Math.min(4, this.enemies.length);
+      for (let i = 0; i < count; i++) {
+        const sl = new THREE.SpotLight(0xd9efff, 24, 28, 0.34, 0.65, 1.5);
+        sl.castShadow = false;
+        sl.visible = false;
+        this.missionRoot.add(sl, sl.target);
+        this.guardFlashlights.push(sl);
+      }
     }
 
     // ally (Brick, M5)
@@ -574,7 +624,7 @@ export class Game {
     };
     on(window, "keydown", (e: KeyboardEvent) => {
       this.sfx.init();
-      if (["Space", "ArrowUp", "ArrowDown", "Tab"].includes(e.code)) e.preventDefault();
+      if (["Space", "Tab"].includes(e.code)) e.preventDefault();
       if (e.repeat) return;
       this.keys.add(e.code);
       switch (e.code) {
@@ -589,18 +639,6 @@ export class Game {
           break;
         case "KeyV":
           this.tryTakedown();
-          break;
-        case "KeyH":
-          this.trigger("hit");
-          break;
-        case "KeyK":
-          this.trigger("dieBack");
-          break;
-        case "KeyL":
-          this.trigger("dieFront");
-          break;
-        case "KeyT":
-          this.trigger("respawn");
           break;
         case "Tab":
           this.trigger("showcase");
@@ -663,24 +701,13 @@ export class Game {
         }
         if (this.phase !== "ready" || this.paused) return;
         e.preventDefault();
-        const rmbHeld = this.mouseR || this.uiHeld.ads || this.keys.has("KeyZ");
-        if (rmbHeld) {
+        if (this.mouseR || this.uiHeld.ads) {
           const w = WEAPONS[this.weaponIdx];
           const st = this.weaponAmmo[this.weaponIdx];
           // scroll up (deltaY < 0) zooms IN (smaller FOV), scroll down zooms OUT
           const delta = Math.sign(e.deltaY) * Math.max(2.5, Math.min(8, Math.abs(e.deltaY) * 0.04));
           st.adsFov = clamp(st.adsFov + delta, w.adsFovMin, w.adsFovMax);
           this.emitHud();
-        } else {
-          const now = performance.now();
-          if (now - this.lastWheelSwitch < 95) return;
-          this.wheelAcc += e.deltaY;
-          if (Math.abs(this.wheelAcc) >= 12) {
-            const dir = this.wheelAcc > 0 ? 1 : -1;
-            this.wheelAcc = 0;
-            this.lastWheelSwitch = now;
-            this.selectWeapon((this.weaponIdx + dir + WEAPONS.length) % WEAPONS.length);
-          }
         }
       },
       { passive: false },
@@ -712,6 +739,8 @@ export class Game {
     this.renderer.setSize(w, h, false);
     this.renderer.domElement.style.width = "100%";
     this.renderer.domElement.style.height = "100%";
+    this.composer?.setSize(w, h);
+    this.bloomPass?.setSize(w, h);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     const s = (h * this.renderer.getPixelRatio()) / (2 * Math.tan(THREE.MathUtils.degToRad(this.camera.fov) / 2));
@@ -1135,6 +1164,38 @@ export class Game {
     }
   }
 
+  private renderFrame(rawDt: number) {
+    this.postTime += rawDt;
+    const u = this.gradePass.uniforms;
+    u.uTime.value = this.postTime;
+    u.uNight.value = this.menuHangar ? 0.55 : this.mission?.night ? 1.0 : 0.0;
+    u.uAds.value = this.menuHangar ? 0.0 : this.adsBlend;
+    const hpRatio = this.maxHealth > 0 ? clamp(1 - this.health / this.maxHealth, 0, 1) : 0;
+    u.uDamage.value = this.menuHangar || !this.rig || this.rig.dead ? 0.0 : clamp((hpRatio - 0.35) * 1.5, 0, 1);
+    this.composer.render();
+  }
+
+  private updateGuardFlashlights() {
+    if (this.guardFlashlights.length === 0 || !this.rig) return;
+    const p = this.rig.root.position;
+    const active = this.enemies
+      .filter((e) => !e.isDead)
+      .map((e) => ({ e, d2: e.rig.root.position.distanceToSquared(p) }))
+      .sort((a, b) => a.d2 - b.d2);
+    for (let i = 0; i < this.guardFlashlights.length; i++) {
+      const sl = this.guardFlashlights[i];
+      const pick = active[i];
+      if (pick && pick.d2 < 2400 && pick.e.getFlashlightWorld(this.tmpFlashOrigin, this.tmpFlashTarget)) {
+        sl.visible = true;
+        sl.position.copy(this.tmpFlashOrigin);
+        sl.target.position.copy(this.tmpFlashTarget);
+        sl.target.updateMatrixWorld();
+      } else {
+        sl.visible = false;
+      }
+    }
+  }
+
   /* ------------------------------------------------------------ */
   private frame(rawDt: number) {
     const rig = this.rig;
@@ -1178,7 +1239,7 @@ export class Game {
       this.camera.position.set(-0.72, 1.34, 3.15);
       this.camera.lookAt(-0.54, 1.04, 0);
       this.fx.update(dt);
-      this.renderer.render(this.scene, this.camera);
+      this.renderFrame(rawDt);
       return;
     }
 
@@ -1187,31 +1248,31 @@ export class Game {
       this.updateCamera(rawDt, dt);
       this.world.update(dt, rig.root.position);
       this.fx.update(dt);
-      this.renderer.render(this.scene, this.camera);
+      this.renderFrame(rawDt);
       return;
     }
 
     // ---- paused / dead / complete: render only (+ death anim)
     if (this.paused) {
-      this.renderer.render(this.scene, this.camera);
+      this.renderFrame(rawDt);
       return;
     }
 
     const dead = rig.dead;
     if (this.phase === "ready") {
-      /* ---- input -> rig ---- */
+      /* ---- input -> rig (one control per action) ---- */
       const k = this.keys;
-      const f = (k.has("KeyW") || k.has("ArrowUp") ? 1 : 0) - (k.has("KeyS") || k.has("ArrowDown") ? 1 : 0);
-      const s = (k.has("KeyD") || k.has("ArrowRight") ? 1 : 0) - (k.has("KeyA") || k.has("ArrowLeft") ? 1 : 0);
+      const f = (k.has("KeyW") ? 1 : 0) - (k.has("KeyS") ? 1 : 0);
+      const s = (k.has("KeyD") ? 1 : 0) - (k.has("KeyA") ? 1 : 0);
       const ay = this.camYaw;
       const fwd = new THREE.Vector3(Math.sin(ay), 0, Math.cos(ay));
       const rgt = new THREE.Vector3(-Math.cos(ay), 0, Math.sin(ay));
       const mv = fwd.multiplyScalar(f).addScaledVector(rgt, s);
       if (mv.lengthSq() > 1) mv.normalize();
       rig.input.move.copy(mv);
-      rig.input.sprint = k.has("ShiftLeft") || k.has("ShiftRight") || this.uiHeld.sprint;
-      rig.input.crouch = this.crouchToggle || k.has("ControlLeft") || k.has("ControlRight");
-      rig.input.ads = this.mouseR || this.uiHeld.ads || k.has("KeyZ");
+      rig.input.sprint = k.has("ShiftLeft") || this.uiHeld.sprint;
+      rig.input.crouch = this.crouchToggle;
+      rig.input.ads = this.mouseR || this.uiHeld.ads;
       rig.input.lean = (k.has("KeyQ") ? 1 : 0) - (k.has("KeyE") ? 1 : 0);
       rig.aimYaw = this.yaw;
       rig.aimPitch = this.pitch;
@@ -1226,7 +1287,7 @@ export class Game {
       resolveCircleAABBs(rig.root.position, 0.55, this.level!.aabbs, rig.stepHeight);
 
       /* ---- firing ---- */
-      const wantFire = (this.mouseL && (this.locked || this.lockFailed)) || k.has("KeyF") || this.uiHeld.fire;
+      const wantFire = this.mouseL || this.uiHeld.fire;
       if (wantFire && !dead) {
         if (rig.mag <= 0 && rig.reserve > 0 && !rig.isReloading) {
           rig.fire(); // dry click
@@ -1244,6 +1305,7 @@ export class Game {
       for (const e of this.enemies) e.update(dt);
       this.ally?.update(dt);
       this.npc?.update(dt);
+      this.updateGuardFlashlights();
       this.checkProximityObjectives(dt);
       this.updateObjectives();
     }
@@ -1255,7 +1317,7 @@ export class Game {
     /* ---- world / fx ---- */
     this.world.update(dt, rig.root.position);
     this.fx.update(dt);
-    this.renderer.render(this.scene, this.camera);
+    this.renderFrame(rawDt);
   }
 
   private updateCamera(rawDt: number, dt: number) {
@@ -1381,7 +1443,7 @@ export class Game {
       locked: this.locked,
       dead: r?.dead ?? false,
       crouch: this.crouchToggle,
-      ads: this.uiHeld.ads || this.mouseR || this.keys.has("KeyZ"),
+      ads: this.uiHeld.ads || this.mouseR,
       sprint: this.uiHeld.sprint,
       showcase: this.showcase,
       fps: this.fps,
@@ -1414,6 +1476,8 @@ export class Game {
     this.cleanup.forEach((c) => c());
     this.ro?.disconnect();
     if (document.pointerLockElement) document.exitPointerLock();
+    this.composer.dispose();
+    this.hangarEnv?.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();
   }

@@ -65,6 +65,8 @@ export interface MissionDef {
   onExtraction?: DialogueLine[];
   /** practice range: no enemies, free play */
   practice?: boolean;
+  /** night mission: guard flashlights + illuminated streetlamps */
+  night?: boolean;
   /** difficulty tuning */
   enemyHp: number;
   enemyDamage: [number, number];
@@ -222,7 +224,8 @@ export const MISSIONS: MissionDef[] = [
     codename: "ROOFTOPS",
     name: "Downtown District",
     location: "Downtown Westgate — city block & rooftop relay",
-    timeOfDay: "Dusk",
+    timeOfDay: "Night",
+    night: true,
     tint: [0x2a2c30, 0xff3333],
     tintName: "Meridian Elite (black)",
     briefing: [
@@ -279,6 +282,7 @@ export const MISSIONS: MissionDef[] = [
     name: "Westgate Port",
     location: "Westgate Port — docks & cargo ship",
     timeOfDay: "Night",
+    night: true,
     tint: [0x2e3d55, 0x66d9ff],
     tintName: "Dock Security (navy)",
     briefing: [
@@ -341,6 +345,7 @@ export const MISSIONS: MissionDef[] = [
     name: "Meridian HQ",
     location: "Meridian HQ — compound & tower",
     timeOfDay: "Night, storm",
+    night: true,
     tint: [0x1e2024, 0xff3333],
     tintName: "HQ Guard (black)",
     briefing: [
@@ -398,6 +403,7 @@ export const MISSIONS: MissionDef[] = [
     name: "Ironridge Fortress",
     location: "Mount Ironridge — Meridian Black-Site Citadel (260m)",
     timeOfDay: "Midnight, alpine storm",
+    night: true,
     tint: [0x1b1e26, 0xa855f7],
     tintName: "Omega Guard (obsidian/violet)",
     briefing: [

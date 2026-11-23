@@ -150,25 +150,26 @@ export function buildWorld(content: THREE.Object3D, main: THREE.Scene, renderer:
   const pmrem = new THREE.PMREMGenerator(renderer);
   main.environment = pmrem.fromCubemap(cubeRT.texture).texture;
   pmrem.dispose();
-  main.environmentIntensity = 0.45;
-  main.fog = new THREE.FogExp2(0xc9cfd2, 0.0045);
+  main.environmentIntensity = 0.58;
+  main.fog = new THREE.FogExp2(0xc9cfd2, 0.0042);
+  renderer.toneMappingExposure = 0.92;
 
   /* ---------------- lights ---------------- */
-  const sun = new THREE.DirectionalLight(0xffe9cc, 4.2);
+  const sun = new THREE.DirectionalLight(0xffe9cc, 3.8);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
   const sc = sun.shadow.camera;
-  sc.left = -9;
-  sc.right = 9;
-  sc.top = 9;
-  sc.bottom = -9;
+  sc.left = -16;
+  sc.right = 16;
+  sc.top = 16;
+  sc.bottom = -16;
   sc.near = 1;
-  sc.far = 80;
+  sc.far = 85;
   sun.shadow.bias = -0.00025;
   sun.shadow.normalBias = 0.03;
-  sun.shadow.radius = 2.5;
+  sun.shadow.radius = 3.2;
   content.add(sun, sun.target);
-  const hemi = new THREE.HemisphereLight(0xdfe6ee, 0x6a5c48, 0.18);
+  const hemi = new THREE.HemisphereLight(0xd2e2f2, 0x6a5c48, 0.42);
   content.add(hemi);
 
   const colliders: THREE.Object3D[] = [];
