@@ -7,4 +7,6 @@ export * from "./OpenWorldEngine";
 export * from "./WestgateTerrain";
 export * from "./WestgateRoads";
 export * from "./WestgateWater";
+export * from "./CityBuildingKit";
+export * from "./DowntownDistrict";
 export * from "./WestgateWorld";

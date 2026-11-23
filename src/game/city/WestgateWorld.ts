@@ -4,6 +4,8 @@ import { OpenWorldEngine } from "./OpenWorldEngine";
 import { buildWestgateTerrainFn, buildWestgateTerrainMesh, getDistrictAt } from "./WestgateTerrain";
 import { buildWestgateRoadLandmarks, populateWestgateRoads } from "./WestgateRoads";
 import { buildWestgateWater } from "./WestgateWater";
+import { CityChunkDispatcher } from "./CityBuildingKit";
+import { registerDowntownDistrict } from "./DowntownDistrict";
 
 export interface WestgateTeleportSpot {
   id: string;
@@ -13,10 +15,13 @@ export interface WestgateTeleportSpot {
   yawDeg: number;
 }
 
-export const WESTGATE_SPAWN: [number, number, number] = [24, -82, 85];
+export const WESTGATE_SPAWN: [number, number, number] = [24, -82, -25];
 
 export const WESTGATE_TELEPORTS: WestgateTeleportSpot[] = [
-  { id: "downtown", label: "Downtown Civic Roundabout", x: 24, z: -82, yawDeg: 85 },
+  { id: "downtown", label: "Downtown Civic Roundabout", x: 24, z: -82, yawDeg: -22 },
+  { id: "legion_square", label: "Legion Square & Skyline", x: 38, z: -165, yawDeg: -65 },
+  { id: "city_hall", label: "City Hall & Reserve Bank", x: 112, z: -162, yawDeg: 90 },
+  { id: "parking_deck", label: "Police HQ & Parking Deck", x: 196, z: 48, yawDeg: 95 },
   { id: "arch_bridge", label: "Downtown Arch Bridge", x: 385, z: -56, yawDeg: 85 },
   { id: "bay_bridge", label: "Westgate Bay Bridge", x: 350, z: 595, yawDeg: 72 },
   { id: "midtown_skyway", label: "Midtown Skyway & Roundabout", x: -292, z: -140, yawDeg: 90 },
@@ -116,14 +121,27 @@ export function buildWestgateWorld(
   const hemi = new THREE.HemisphereLight(0x9bc8ef, 0x564e3e, 0.68);
   content.add(hemi);
 
-  // 3. OpenWorldEngine + 4-Tier Curved Road Skeleton
-  const engine = new OpenWorldEngine();
+  // 3. OpenWorldEngine + District Chunk Dispatcher + 4-Tier Curved Road Skeleton
+  const dispatcher = new CityChunkDispatcher();
+  let terrainAt: (x: number, z: number) => number = () => 4.5;
+  const engine = new OpenWorldEngine({
+    chunkBuilder: (chunk) => dispatcher.buildChunk(chunk, terrainAt, engine.roads),
+    chunkOptions: {
+      nearRadius: 280,
+      lodRadius: 1150,
+      hysteresis: 28,
+      maxBuildsPerFrame: 3,
+    },
+  });
   populateWestgateRoads(engine.roads);
   engine.roads.compile();
 
   // 4. Terrain heightfield graded seamlessly around roads & roundabouts
-  const terrainAt = buildWestgateTerrainFn(engine.roads);
+  terrainAt = buildWestgateTerrainFn(engine.roads);
   engine.setTerrainFn(terrainAt);
+
+  // Register Downtown & Civic Core (Phase 2)
+  registerDowntownDistrict(dispatcher, engine.roads, engine.heightSystem);
 
   const terrainMesh = buildWestgateTerrainMesh(terrainAt, 2400, 160);
   content.add(terrainMesh);
