@@ -100,6 +100,7 @@ function validateMission(m) {
   if (m.rescue) ok(!pointInAABBs(m.rescue[0], 0, m.rescue[1], 0.6), `${m.id} rescue spot inside AABB`);
   if (m.ally) ok(!pointInAABBs(m.ally[0], 0, m.ally[1], 0.6), `${m.id} ally spawn inside AABB`);
   for (const d of m.destroyables ?? []) ok(!pointInAABBs(d[0], 0, d[1], 0.6), `${m.id} destroyable (${d}) inside AABB`);
+  for (const it of m.interactables ?? []) ok(!pointInAABBs(it.x, it.y ?? 0, it.z, 0.45), `${m.id} interactable ${it.id} (${it.x},${it.z}) inside AABB`);
 
   // 5. destroyable meshes present
   if (m.destroyables) ok(level.destroyables.length === m.destroyables.length, `${m.id} destroyables ${level.destroyables.length} vs ${m.destroyables.length}`);
@@ -138,8 +139,12 @@ for (const m of MISSIONS) {
   ok(m.enemies.length > 0 || m.practice, `M${m.id} no enemies and not practice`);
   ok(m.spawn.length === 3, `M${m.id} bad spawn`);
   ok(m.extraction.length === 3, `M${m.id} bad extraction`);
-  const eliminateCount = m.objectives.find((o) => o.kind === "eliminate")?.count ?? 0;
-  ok(eliminateCount === m.enemies.filter((e) => !e.boss).length, `M${m.id} eliminate count ${eliminateCount} vs actual ${m.enemies.filter((e) => !e.boss).length}`);
+  const elimObj = m.objectives.find((o) => o.kind === "eliminate");
+  if (elimObj) ok(elimObj.count === m.enemies.filter((e) => !e.boss).length, `M${m.id} eliminate count ${elimObj.count} vs actual ${m.enemies.filter((e) => !e.boss).length}`);
+  for (const o of m.objectives.filter((x) => x.kind === "interact")) {
+    const cnt = (m.interactables ?? []).filter((it) => it.objId === o.id).length;
+    ok(o.count === cnt, `M${m.id} interact objective ${o.id} count ${o.count} vs actual ${cnt}`);
+  }
 }
 
 console.log("\n===== PROBLEMS =====");

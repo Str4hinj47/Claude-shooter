@@ -537,4 +537,11 @@ export class Sfx {
     this.burst({ dur: 0.35, freq: 350, type: "lowpass", gain: 0.6, delay: 0.55 });
     this.tone(70, 35, 0.4, 0.6, "sine", 0.55);
   }
+  interactTick() {
+    this.tone(1100 + Math.random() * 250, 900, 0.035, 0.14, "triangle");
+  }
+  interactDone() {
+    this.tone(580, 880, 0.12, 0.24, "sine");
+    this.tone(880, 1320, 0.16, 0.22, "sine", 0.09);
+  }
 }

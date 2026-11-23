@@ -122,7 +122,15 @@ export class Fighter {
 
   async build(scene: THREE.Object3D, tint: [number, number], heightScale = 1) {
     this.rig = await SoldierRig.load(scene);
-    this.rig.setTint(tint[0], tint[1]);
+    if (!(this instanceof Ally)) {
+      const wId = this.boss ? this.mission.bossWeapon : this.mission.enemyWeapon;
+      if (wId) this.rig.setWeaponModel(wId);
+      const app = this.boss ? this.mission.bossAppearance : this.mission.enemyAppearance;
+      if (app) this.rig.setAppearance(app);
+      else this.rig.setTint(tint[0], tint[1]);
+    } else {
+      this.rig.setTint(tint[0], tint[1]);
+    }
     this.rig.setHeightScale(heightScale);
     this.rig.root.position.set(this.spawn.x, this.spawn.y ?? 0, this.spawn.z);
     // Point idle guards toward the center/player approach initially, with natural sentinel sweep

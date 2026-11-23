@@ -14,6 +14,7 @@ import { CinematicPostShader } from "./shaders";
 import { Spring, clamp, damp, lerp } from "../character/math";
 import { Ally, Enemy, Fighter, RescueNPC, resolveCircleAABBs, type CombatHost } from "./Enemy";
 import { MISSIONS, type DialogueLine, type MissionDef, type ObjectiveDef } from "./story";
+import { createInteractableProp, type InteractableInstance } from "./interactables";
 import {
   awardMissionReward,
   getPlayerStats,
@@ -86,6 +87,10 @@ export interface HudState {
   stealthKills: number;
   alerts: number;
   takedownReady: boolean;
+  interact: { label: string; kind: string; progress: number; holding: boolean } | null;
+  extractReady: boolean;
+  extractDist: number | null;
+  extractDirAngle: number | null;
   weapons: { slot: number; shortName: string; category: string; mag: number; reserve: number }[];
 }
 
@@ -197,7 +202,12 @@ export class Game {
   private progress = 0;
   private phase: HudState["phase"] = "idle";
   private extractRing: THREE.Mesh | null = null;
+  private extractBeacon: THREE.Mesh | null = null;
   private rescueBeacon: THREE.Group | null = null;
+  private interactables: InteractableInstance[] = [];
+  private activeInteract: InteractableInstance | null = null;
+  private interactHoldT = 0;
+  private interactTickCd = 0;
   private destroyableHp = new Map<THREE.Object3D, number>();
   private practiceRespawnT = 0;
 
@@ -429,6 +439,10 @@ export class Game {
     this.enemyHits = [];
     this.ally = null;
     this.npc = null;
+    this.interactables = [];
+    this.activeInteract = null;
+    this.interactHoldT = 0;
+    this.interactTickCd = 0;
     this.dialogueQueue = [];
     this.dialogue = null;
     this.destroyableHp.clear();
@@ -437,6 +451,12 @@ export class Game {
       this.extractRing.geometry.dispose();
       (this.extractRing.material as THREE.Material).dispose();
       this.extractRing = null;
+    }
+    if (this.extractBeacon) {
+      this.missionRoot.remove(this.extractBeacon);
+      this.extractBeacon.geometry.dispose();
+      (this.extractBeacon.material as THREE.Material).dispose();
+      this.extractBeacon = null;
     }
     if (this.rescueBeacon) {
       this.missionRoot.remove(this.rescueBeacon);
@@ -561,7 +581,14 @@ export class Game {
     // destroyables hp
     for (const m of this.level.destroyables) this.destroyableHp.set(m, 100);
 
-    // extraction ring + rescue beacon
+    // interactive heist/espionage props (terminals, files, diamonds, bullion)
+    for (const idef of mission.interactables ?? []) {
+      const inst = createInteractableProp(idef);
+      this.missionRoot.add(inst.group);
+      this.interactables.push(inst);
+    }
+
+    // extraction ring + vertical exfil beacon + rescue beacon
     if (!mission.practice) {
       const ex = mission.extraction;
       const ringGeo = new THREE.RingGeometry(ex[2] - 0.35, ex[2], 48);
@@ -570,6 +597,22 @@ export class Game {
       this.extractRing.rotation.x = -Math.PI / 2;
       this.extractRing.position.set(ex[0], 0.08, ex[1]);
       this.missionRoot.add(this.extractRing);
+
+      const exBeam = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.28, 1.15, 16, 16, 1, true),
+        new THREE.MeshBasicMaterial({
+          color: 0x34d399,
+          transparent: true,
+          opacity: 0.16,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+        }),
+      );
+      exBeam.position.set(ex[0], 8.0, ex[1]);
+      exBeam.visible = false;
+      this.extractBeacon = exBeam;
+      this.missionRoot.add(exBeam);
     }
     if (mission.rescue) {
       const grp = new THREE.Group();
@@ -924,8 +967,66 @@ export class Game {
       } else if (kind === "rescue") {
         o.progress = this.rescued ? 1 : 0;
         if (o.progress >= o.total) o.done = true;
+      } else if (kind === "interact") {
+        o.progress = this.interactables.filter((x) => x.def.objId === o.id && x.done).length;
+        if (o.total > 0 && o.progress >= o.total) o.done = true;
       }
       // kind "reach" handled by proximity checks in frame
+    }
+  }
+
+  private checkAllNonExtractDone() {
+    if (!this.objectiveDialoguePlayed && this.mission?.onObjective) {
+      const allNonExtract = this.objectives.filter((o) => o.id !== "extract").every((o) => o.done);
+      if (allNonExtract) {
+        this.objectiveDialoguePlayed = true;
+        this.queueDialogue(this.mission.onObjective);
+      }
+    }
+  }
+
+  private updateInteractables(dt: number) {
+    if (!this.mission || !this.rig || this.rig.dead) {
+      this.activeInteract = null;
+      this.interactHoldT = 0;
+      return;
+    }
+    const p = this.rig.root.position;
+    let nearest: InteractableInstance | null = null;
+    let bestD = 2.65;
+    for (const inst of this.interactables) {
+      inst.update(dt);
+      if (inst.done) continue;
+      if (Math.abs(p.y - inst.pos.y) > 2.2) continue;
+      const d = Math.hypot(p.x - inst.pos.x, p.z - inst.pos.z);
+      if (d < bestD) {
+        bestD = d;
+        nearest = inst;
+      }
+    }
+    if (nearest !== this.activeInteract) {
+      this.activeInteract = nearest;
+      this.interactHoldT = 0;
+      this.interactTickCd = 0;
+    }
+    if (nearest && this.keys.has("KeyF")) {
+      this.interactHoldT += dt;
+      this.interactTickCd -= dt;
+      if (this.interactTickCd <= 0) {
+        if (nearest.def.kind === "terminal") this.sfx.interactTick();
+        this.interactTickCd = 0.22;
+      }
+      if (this.interactHoldT >= nearest.def.duration) {
+        nearest.setDone();
+        this.sfx.interactDone();
+        this.interactHoldT = 0;
+        this.activeInteract = null;
+        this.updateObjectives();
+        this.checkAllNonExtractDone();
+        this.emitHud();
+      }
+    } else {
+      this.interactHoldT = Math.max(0, this.interactHoldT - dt * 2.5);
     }
   }
 
@@ -972,14 +1073,20 @@ export class Game {
         this.emitHud();
       }
     }
-    // extract ring fade in/out
+    // extract ring fade in/out + vertical exfil beam
     if (this.extractRing) {
       const ex = this.mission.extraction;
       const d = Math.hypot(p.x - ex[0], p.z - ex[1]);
       const mat = this.extractRing.material as THREE.MeshBasicMaterial;
       const allDone = this.objectives.filter((o) => o.id !== "extract").every((o) => o.done);
       mat.opacity = 0.35 + Math.max(0, 0.25 - d / 20) + (allDone ? 0.25 : 0);
-      mat.color.setHex(allDone ? 0x66ff99 : 0xffcc44);
+      mat.color.setHex(allDone ? 0x34d399 : 0xffcc44);
+      if (this.extractBeacon) {
+        this.extractBeacon.visible = allDone;
+        if (allDone) {
+          (this.extractBeacon.material as THREE.MeshBasicMaterial).opacity = 0.14 + Math.sin(this.postTime * 3.5) * 0.05;
+        }
+      }
     }
     if (this.rescueBeacon) {
       this.rescueBeacon.rotation.y += dt * 1.5;
@@ -1300,12 +1407,13 @@ export class Game {
       this.updateCamera(rawDt, dt);
     }
 
-    /* ---- AI ---- */
+    /* ---- AI & Objectives ---- */
     if (this.phase === "ready") {
       for (const e of this.enemies) e.update(dt);
       this.ally?.update(dt);
       this.npc?.update(dt);
       this.updateGuardFlashlights();
+      this.updateInteractables(dt);
       this.checkProximityObjectives(dt);
       this.updateObjectives();
     }
@@ -1417,6 +1525,30 @@ export class Game {
     }
     const stealthState: HudState["stealthState"] = compromised ? "compromised" : caution || maxSusp >= 0.12 ? "caution" : "hidden";
     const takedownReady = this.findTakedownTarget() !== null;
+    const interact = this.activeInteract && !this.activeInteract.done
+      ? {
+          label: this.activeInteract.def.label,
+          kind: this.activeInteract.def.kind,
+          progress: clamp(this.interactHoldT / Math.max(0.1, this.activeInteract.def.duration), 0, 1),
+          holding: this.keys.has("KeyF") && this.interactHoldT > 0.01,
+        }
+      : null;
+    const extractReady =
+      !!mission &&
+      !mission.practice &&
+      this.objectives.some((o) => o.id === "extract") &&
+      this.objectives.filter((o) => o.id !== "extract").every((o) => o.done) &&
+      !this.objectives.find((o) => o.id === "extract")?.done;
+    let extractDist: number | null = null;
+    let extractDirAngle: number | null = null;
+    if (extractReady && mission && r) {
+      const dx = mission.extraction[0] - r.root.position.x;
+      const dz = mission.extraction[1] - r.root.position.z;
+      extractDist = Math.round(Math.hypot(dx, dz));
+      const dotFwd = dx * Math.sin(this.camYaw) + dz * Math.cos(this.camYaw);
+      const dotRgt = dx * -Math.cos(this.camYaw) + dz * Math.sin(this.camYaw);
+      extractDirAngle = Math.atan2(dotRgt, dotFwd);
+    }
     const boss = this.bossEntity && !this.bossEntity.isDead && this.bossEntity.alerted
       ? { name: this.bossEntity.name || "Boss", hp: Math.max(1, this.bossEntity.hp), maxHp: this.bossEntity.maxHp }
       : null;
@@ -1460,6 +1592,10 @@ export class Game {
       stealthKills: this.stealthKills,
       alerts: this.alerts,
       takedownReady,
+      interact,
+      extractReady,
+      extractDist,
+      extractDirAngle,
       weapons: WEAPONS.map((spec, i) => ({
         slot: spec.slot,
         shortName: spec.shortName,

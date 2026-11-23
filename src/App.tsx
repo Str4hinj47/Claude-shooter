@@ -71,6 +71,10 @@ const initial: HudState = {
   stealthKills: 0,
   alerts: 0,
   takedownReady: false,
+  interact: null,
+  extractReady: false,
+  extractDist: null,
+  extractDirAngle: null,
   weapons: WEAPONS.map((w) => ({
     slot: w.slot,
     shortName: w.shortName,
@@ -87,6 +91,7 @@ const KEYS: [string, string][] = [
   ["Right Click", "Aim Down Sights"],
   ["Scroll Wheel", "Zoom Optic (ADS)"],
   ["1 – 4", "Switch Weapon"],
+  ["F (hold)", "Scrub / Steal / Take"],
   ["C", "Crouch (silent)"],
   ["V", "Silent Takedown"],
   ["Left Shift", "Sprint (loud)"],
@@ -301,12 +306,12 @@ export default function App() {
                 </button>
               )}
               <div className="flex items-baseline gap-3">
-                <span className="text-lg font-black uppercase tracking-[0.22em] text-white">VANGUARD</span>
+                <span className="text-lg font-black uppercase tracking-[0.22em] text-white">VOSS</span>
                 <span className="hidden text-[11px] font-bold uppercase tracking-[0.35em] text-amber-400/90 sm:inline">
                   {screen === "home"
-                    ? "Blackout Protocol"
+                    ? "Black Contract"
                     : screen === "missions"
-                      ? "Operations"
+                      ? "Client Contracts"
                       : screen === "upgrades"
                         ? "Armory & Upgrades"
                         : screen === "customize"
@@ -329,13 +334,13 @@ export default function App() {
               <div className="pointer-events-auto flex w-full max-w-md flex-col gap-7">
                 <div>
                   <div className="font-mono text-[10px] font-bold uppercase tracking-[0.4em] text-amber-400">
-                    Westgate · 2029
+                    Thief · Spy · Assassin · Westgate
                   </div>
                   <h1 className="mt-2 text-4xl font-black uppercase tracking-[0.12em] text-white">
-                    Blackout Protocol
+                    Black Contract
                   </h1>
                   <p className="mt-2 text-xs leading-relaxed text-zinc-400">
-                    Infiltrate Meridian sectors silently. Eliminate targets unseen, collect intel &amp; salvage, and upgrade your stealth rig.
+                    High-paying clients hire you to scrub servers, steal diamonds and ledgers, silence rivals, and leave the area before anyone catches on.
                   </p>
                 </div>
 
@@ -348,21 +353,21 @@ export default function App() {
                     }}
                     className="group flex items-center justify-between rounded-lg border border-amber-400/50 bg-amber-400 px-5 py-3.5 text-left text-black transition hover:bg-amber-300"
                   >
-                    <div>
-                      <div className="text-[10px] font-black uppercase tracking-[0.28em] text-black/70">
-                        Next Operation · M{nextMission.id}
+                      <div>
+                        <div className="text-[10px] font-black uppercase tracking-[0.28em] text-black/70">
+                          Next Contract · C{nextMission.id}
+                        </div>
+                        <div className="text-sm font-black uppercase tracking-[0.16em]">{nextMission.codename}</div>
                       </div>
-                      <div className="text-sm font-black uppercase tracking-[0.16em]">{nextMission.codename}</div>
-                    </div>
-                    <span className="text-base font-black transition-transform group-hover:translate-x-1">→</span>
-                  </button>
+                      <span className="text-base font-black transition-transform group-hover:translate-x-1">→</span>
+                    </button>
 
-                  <button
-                    onClick={() => setScreen("missions")}
-                    className="flex items-center justify-between rounded-lg border border-white/12 bg-white/[0.04] px-5 py-3 text-left transition hover:border-white/30 hover:bg-white/[0.09]"
-                  >
-                    <div>
-                      <div className="text-xs font-bold uppercase tracking-[0.2em] text-white">Missions</div>
+                    <button
+                      onClick={() => setScreen("missions")}
+                      className="flex items-center justify-between rounded-lg border border-white/12 bg-white/[0.04] px-5 py-3 text-left transition hover:border-white/30 hover:bg-white/[0.09]"
+                    >
+                      <div>
+                        <div className="text-xs font-bold uppercase tracking-[0.2em] text-white">Contracts</div>
                       <div className="text-[11px] text-zinc-400">
                         {Math.min(MISSIONS.length - 1, unlockThreshold)} / {MISSIONS.length - 1} unlocked · {ghostCount} Ghost
                       </div>
@@ -502,13 +507,14 @@ export default function App() {
                 <div className="space-y-5">
                   <div className="border-b border-white/10 pb-4">
                     <div className="font-mono text-[10px] font-bold uppercase tracking-[0.35em]" style={{ color: selectedMission.accent }}>
-                      {selectedMission.id === 0 ? "Practice Range" : `Mission ${selectedMission.id} · ${selectedMission.codename}`}
+                      {selectedMission.id === 0 ? "Safehouse Range" : `Contract ${selectedMission.id} · ${selectedMission.codename}`}
                     </div>
                     <h2 className="mt-1 text-3xl font-black uppercase tracking-wide text-white">{selectedMission.name}</h2>
-                    <div className="mt-2 flex flex-wrap gap-4 text-xs text-zinc-400">
+                    <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-400">
+                      <span>Client: <b className="text-amber-300">{selectedMission.client}</b></span>
                       <span>Sector: <b className="text-zinc-200">{selectedMission.location}</b></span>
                       <span>Time: <b className="text-zinc-200">{selectedMission.timeOfDay}</b></span>
-                      <span>Hostiles: <b className="text-zinc-200">{selectedMission.enemies.length}</b></span>
+                      <span>Guards: <b className="text-zinc-200">{selectedMission.enemies.length} · {selectedMission.tintName}</b></span>
                     </div>
                   </div>
 
@@ -1242,6 +1248,57 @@ export default function App() {
             <div className="pointer-events-none absolute bottom-44 left-1/2 -translate-x-1/2">
               <div className="rounded-full border border-emerald-400/60 bg-emerald-950/80 px-4 py-1.5 text-xs font-black uppercase tracking-[0.22em] text-emerald-200 backdrop-blur">
                 [V] Silent Takedown
+              </div>
+            </div>
+          )}
+
+          {/* [F] interactive prop prompt (scrub terminal / steal diamond / take files) */}
+          {hud.interact && !hud.dead && (
+            <div className="pointer-events-none absolute bottom-56 left-1/2 -translate-x-1/2">
+              <div className="flex min-w-[260px] flex-col items-center gap-2 rounded-xl border border-cyan-400/60 bg-black/80 px-5 py-3 text-center shadow-[0_0_24px_rgba(34,211,238,0.22)] backdrop-blur-md">
+                <div className="font-mono text-[10px] font-bold uppercase tracking-[0.28em] text-cyan-300">
+                  {hud.interact.holding
+                    ? hud.interact.kind === "terminal"
+                      ? "Scrubbing Computer…"
+                      : hud.interact.kind === "diamond"
+                        ? "Stealing Diamond…"
+                        : hud.interact.kind === "relic"
+                          ? "Recovering Gold…"
+                          : "Taking Files…"
+                    : `Hold [F] · ${
+                        hud.interact.kind === "terminal"
+                          ? "Scrub Computer"
+                          : hud.interact.kind === "diamond"
+                            ? "Steal Diamond"
+                            : hud.interact.kind === "relic"
+                              ? "Recover Gold"
+                              : "Take Files"
+                      }`}
+                </div>
+                <div className="text-xs font-black uppercase tracking-wider text-white">{hud.interact.label}</div>
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/15">
+                  <div
+                    className="h-full rounded-full bg-cyan-400 transition-all duration-75"
+                    style={{ width: `${Math.round(hud.interact.progress * 100)}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Mandatory exfiltration compass banner once contract goals are finished */}
+          {hud.extractReady && !hud.dead && hud.extractDist !== null && (
+            <div className="pointer-events-none absolute left-1/2 top-24 -translate-x-1/2">
+              <div className="flex items-center gap-3 rounded-full border border-emerald-400/70 bg-emerald-950/80 px-5 py-1.5 shadow-[0_0_25px_rgba(16,185,129,0.28)] backdrop-blur-md">
+                <span
+                  className="inline-block text-sm font-black text-emerald-300"
+                  style={{ transform: `rotate(${Math.round(((hud.extractDirAngle ?? 0) * 180) / Math.PI)}deg)` }}
+                >
+                  ▲
+                </span>
+                <span className="font-mono text-[11px] font-black uppercase tracking-[0.24em] text-emerald-200">
+                  Contract Done · Leave Area · {hud.extractDist}m
+                </span>
               </div>
             </div>
           )}

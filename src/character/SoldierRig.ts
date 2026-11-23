@@ -229,6 +229,20 @@ export class SoldierRig {
     scene.add(this.root);
   }
 
+  /** Swap to a single weapon model (used by mission-specific enemy factions). */
+  setWeaponModel(id: WeaponId) {
+    if (id === "carbine") return;
+    if (!this.weapons.has(id)) {
+      const model = buildWeapon(id);
+      model.group.scale.setScalar(WS);
+      this.scene.add(model.group);
+      this.weapons.set(id, model);
+    }
+    this.rifle.group.visible = false;
+    this.rifle = this.weapons.get(id)!;
+    this.rifle.group.visible = true;
+  }
+
   /** Pre-build all 4 player weapon models for instant 0ms switching. */
   initArsenal() {
     for (const w of WEAPONS) {
