@@ -10,6 +10,7 @@ import { registerMidtownDistrict } from "./MidtownDistrict";
 import { registerOldQuarterDistrict } from "./OldQuarterDistrict";
 import { registerWestCoastDistrict } from "./WestCoastDistrict";
 import { registerFoothillsDistrict } from "./FoothillsDistrict";
+import { registerPortAirportDistrict } from "./PortAirportDistrict";
 
 export interface WestgateTeleportSpot {
   id: string;
@@ -41,7 +42,9 @@ export const WESTGATE_TELEPORTS: WestgateTeleportSpot[] = [
   { id: "observatory", label: "Observatory Foothills Summit", x: -120, z: -974, yawDeg: 180 },
   { id: "vinewood_crest", label: "Vinewood Crest Estates", x: -220, z: -820, yawDeg: 170 },
   { id: "east_industrial", label: "East Industrial Bascule Bridge", x: 370, z: 268, yawDeg: 86 },
-  { id: "south_airport", label: "South Airport Terminal Loop", x: -120, z: 850, yawDeg: 180 },
+  { id: "seaport_docks", label: "Seaport Container Terminal", x: 635, z: 432, yawDeg: 0 },
+  { id: "sports_arena", label: "Westgate Sports Arena", x: -415, z: 615, yawDeg: 0 },
+  { id: "south_airport", label: "South Airport Terminal Loop", x: -120, z: 850, yawDeg: 0 },
 ];
 
 export interface WestgateLevelResult extends LevelResult {
@@ -152,12 +155,13 @@ export function buildWestgateWorld(
   terrainAt = buildWestgateTerrainFn(engine.roads);
   engine.setTerrainFn(terrainAt);
 
-  // Register Downtown (P2), Midtown (P3), Old Quarter (P4), West Coast (P5), Foothills (P6)
+  // Register Downtown (P2), Midtown (P3), Old Quarter (P4), West Coast (P5), Foothills (P6), Port/Airport (P7)
   registerDowntownDistrict(dispatcher, engine.roads, engine.heightSystem);
   registerMidtownDistrict(dispatcher, engine.roads, engine.heightSystem);
   registerOldQuarterDistrict(dispatcher, engine.roads);
   registerWestCoastDistrict(dispatcher, engine.roads, engine.heightSystem);
   registerFoothillsDistrict(dispatcher, engine.roads, engine.heightSystem);
+  registerPortAirportDistrict(dispatcher, engine.roads);
 
   const terrainMesh = buildWestgateTerrainMesh(terrainAt, 2400, 160);
   content.add(terrainMesh);
