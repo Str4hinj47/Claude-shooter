@@ -244,6 +244,12 @@ export class SoldierRig {
     this.rifle.group.visible = true;
   }
 
+  /** Show/hide both character body and active weapon model together (e.g. while driving a vehicle). */
+  setVisible(visible: boolean) {
+    this.root.visible = visible;
+    this.rifle.group.visible = visible;
+  }
+
   /** Pre-build all 4 player weapon models for instant 0ms switching. */
   initArsenal() {
     for (const w of WEAPONS) {

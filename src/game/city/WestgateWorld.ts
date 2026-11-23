@@ -12,6 +12,7 @@ import { registerWestCoastDistrict } from "./WestCoastDistrict";
 import { registerFoothillsDistrict } from "./FoothillsDistrict";
 import { registerPortAirportDistrict } from "./PortAirportDistrict";
 import { populateWestgateProps } from "./WestgateProps";
+import { WestgateVehicleManager } from "./VehicleSystem";
 
 export interface WestgateTeleportSpot {
   id: string;
@@ -50,6 +51,7 @@ export const WESTGATE_TELEPORTS: WestgateTeleportSpot[] = [
 
 export interface WestgateLevelResult extends LevelResult {
   openWorld: OpenWorldEngine;
+  vehicles: WestgateVehicleManager;
   getDistrictAt: typeof getDistrictAt;
 }
 
@@ -186,6 +188,9 @@ export function buildWestgateWorld(
   engine.finalizeStaticWorld(WESTGATE_SPAWN[0], WESTGATE_SPAWN[1]);
   content.add(engine.root);
 
+  // 9. Spawn driveable hero fleet & ambient NPC road traffic (Phase 10)
+  const vehicles = new WestgateVehicleManager(engine, content);
+
   const update = (dt: number, focus: THREE.Vector3) => {
     sun.position.copy(focus).addScaledVector(sunDir, 150);
     sun.target.position.copy(focus);
@@ -208,6 +213,7 @@ export function buildWestgateWorld(
     spatialColliders: engine.spatialColliders,
     heightSystem: engine.heightSystem,
     openWorld: engine,
+    vehicles,
     getDistrictAt,
   };
 }

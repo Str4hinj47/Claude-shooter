@@ -93,6 +93,7 @@ export interface HudState {
   extractDirAngle: number | null;
   isOpenWorld: boolean;
   district: { id: string; name: string; subtitle: string } | null;
+  vehicle: { active: boolean; name: string; kind: string; speedKmh: number; nearbyName: string | null } | null;
   weapons: { slot: number; shortName: string; category: string; mag: number; reserve: number }[];
 }
 
@@ -213,6 +214,8 @@ export class Game {
   private interactTickCd = 0;
   private destroyableHp = new Map<THREE.Object3D, number>();
   private practiceRespawnT = 0;
+  private nearbyVehicleName: string | null = null;
+  private lastMouseLookT = 0;
 
   constructor(
     private container: HTMLElement,
@@ -264,7 +267,10 @@ export class Game {
     this.ally = null;
     this.npc = null;
 
+    if (this.rig) this.rig.setVisible(true);
+    this.nearbyVehicleName = null;
     if (this.level?.openWorld) {
+      this.level.vehicles?.dispose();
       this.level.openWorld.dispose();
       this.level = null;
     }
@@ -488,7 +494,9 @@ export class Game {
     }
 
     // dispose previous mission content
+    if (this.rig) this.rig.setVisible(true);
     if (this.level?.openWorld) {
+      this.level.vehicles?.dispose();
       this.level.openWorld.dispose();
       this.level = null;
     }
@@ -717,6 +725,9 @@ export class Game {
         case "KeyV":
           this.tryTakedown();
           break;
+        case "KeyF":
+          this.tryToggleVehicle();
+          break;
         case "Tab":
           this.trigger("showcase");
           break;
@@ -763,6 +774,7 @@ export class Game {
       const s = 0.0022 * fovScale;
       this.camYaw -= e.movementX * s;
       this.camPitch = clamp(this.camPitch - e.movementY * s, -1.2, 1.25);
+      this.lastMouseLookT = performance.now();
       if (!this.showcase) {
         this.yaw = this.camYaw;
         this.pitch = this.camPitch;
@@ -1414,43 +1426,79 @@ export class Game {
     }
 
     const dead = rig.dead;
+    const vehicles = this.level?.vehicles;
     if (this.phase === "ready") {
-      /* ---- input -> rig (one control per action) ---- */
       const k = this.keys;
-      const f = (k.has("KeyW") ? 1 : 0) - (k.has("KeyS") ? 1 : 0);
-      const s = (k.has("KeyD") ? 1 : 0) - (k.has("KeyA") ? 1 : 0);
-      const ay = this.camYaw;
-      const fwd = new THREE.Vector3(Math.sin(ay), 0, Math.cos(ay));
-      const rgt = new THREE.Vector3(-Math.cos(ay), 0, Math.sin(ay));
-      const mv = fwd.multiplyScalar(f).addScaledVector(rgt, s);
-      if (mv.lengthSq() > 1) mv.normalize();
-      rig.input.move.copy(mv);
-      rig.input.sprint = k.has("ShiftLeft") || this.uiHeld.sprint;
-      rig.input.crouch = this.crouchToggle;
-      rig.input.ads = this.mouseR || this.uiHeld.ads;
-      rig.input.lean = (k.has("KeyQ") ? 1 : 0) - (k.has("KeyE") ? 1 : 0);
-      rig.aimYaw = this.yaw;
-      rig.aimPitch = this.pitch;
+      const activeVeh = vehicles?.activeVehicle ?? null;
+      if (activeVeh && !dead) {
+        /* ---- driving vehicle ---- */
+        const throttle = (k.has("KeyW") ? 1 : 0) - (k.has("KeyS") ? 1 : 0);
+        const steer = (k.has("KeyA") ? 1 : 0) - (k.has("KeyD") ? 1 : 0);
+        const handbrake = k.has("Space");
+        vehicles!.update(dt, { throttle, steer, handbrake }, activeVeh.pos);
+        rig.setVisible(false);
+        rig.root.position.copy(activeVeh.pos);
+        rig.groundY = activeVeh.pos.y;
+        this.nearbyVehicleName = null;
 
-      /* ---- camera + aim ---- */
-      this.updateCamera(rawDt, dt);
-      this.updateAimPoint();
+        // Smoothly align chase camera behind moving vehicle when player isn't actively looking around
+        if (Math.abs(activeVeh.speed) > 2.2 && performance.now() - this.lastMouseLookT > 950) {
+          let diff = activeVeh.yaw - this.camYaw;
+          while (diff > Math.PI) diff -= Math.PI * 2;
+          while (diff < -Math.PI) diff += Math.PI * 2;
+          this.camYaw += diff * Math.min(1, dt * 3.2);
+          this.camPitch = damp(this.camPitch, 0.14, 4, rawDt);
+        }
 
-      /* ---- character ---- */
-      const gy = this.level!.groundHeightAt(rig.root.position.x, rig.root.position.z, rig.root.position.y);
-      rig.update(dt, gy);
-      resolveCircleAABBs(rig.root.position, 0.55, this.level!.spatial ?? this.level!.aabbs, rig.stepHeight);
+        this.updateCamera(rawDt, dt);
+      } else {
+        /* ---- on-foot input -> rig ---- */
+        rig.setVisible(true);
+        const f = (k.has("KeyW") ? 1 : 0) - (k.has("KeyS") ? 1 : 0);
+        const s = (k.has("KeyD") ? 1 : 0) - (k.has("KeyA") ? 1 : 0);
+        const ay = this.camYaw;
+        const fwd = new THREE.Vector3(Math.sin(ay), 0, Math.cos(ay));
+        const rgt = new THREE.Vector3(-Math.cos(ay), 0, Math.sin(ay));
+        const mv = fwd.multiplyScalar(f).addScaledVector(rgt, s);
+        if (mv.lengthSq() > 1) mv.normalize();
+        rig.input.move.copy(mv);
+        rig.input.sprint = k.has("ShiftLeft") || this.uiHeld.sprint;
+        rig.input.crouch = this.crouchToggle;
+        rig.input.ads = this.mouseR || this.uiHeld.ads;
+        rig.input.lean = (k.has("KeyQ") ? 1 : 0) - (k.has("KeyE") ? 1 : 0);
+        rig.aimYaw = this.yaw;
+        rig.aimPitch = this.pitch;
 
-      /* ---- firing ---- */
-      const wantFire = this.mouseL || this.uiHeld.fire;
-      if (wantFire && !dead) {
-        if (rig.mag <= 0 && rig.reserve > 0 && !rig.isReloading) {
-          rig.fire(); // dry click
-          if (rig.mag <= 0) setTimeout(() => this.rig?.reload(), 250);
-        } else rig.fire();
+        /* ---- camera + aim ---- */
+        this.updateCamera(rawDt, dt);
+        this.updateAimPoint();
+
+        /* ---- character ---- */
+        const gy = this.level!.groundHeightAt(rig.root.position.x, rig.root.position.z, rig.root.position.y);
+        rig.update(dt, gy);
+        resolveCircleAABBs(rig.root.position, 0.55, this.level!.spatial ?? this.level!.aabbs, rig.stepHeight);
+
+        /* ---- ambient NPC traffic & nearby driveable check ---- */
+        if (vehicles) {
+          vehicles.update(dt, { throttle: 0, steer: 0, handbrake: false }, rig.root.position);
+          const nearV = vehicles.findNearestEnterable(rig.root.position);
+          this.nearbyVehicleName = nearV ? nearV.spec.name : null;
+        } else {
+          this.nearbyVehicleName = null;
+        }
+
+        /* ---- firing ---- */
+        const wantFire = this.mouseL || this.uiHeld.fire;
+        if (wantFire && !dead) {
+          if (rig.mag <= 0 && rig.reserve > 0 && !rig.isReloading) {
+            rig.fire(); // dry click
+            if (rig.mag <= 0) setTimeout(() => this.rig?.reload(), 250);
+          } else rig.fire();
+        }
       }
     } else {
       /* dead / complete: keep the character animating */
+      rig.setVisible(true);
       rig.update(dt);
       this.updateCamera(rawDt, dt);
     }
@@ -1479,6 +1527,29 @@ export class Game {
   private updateCamera(rawDt: number, dt: number) {
     const rig = this.rig;
     const cam = this.camera;
+    const activeVeh = this.level?.vehicles?.activeVehicle ?? null;
+    if (activeVeh) {
+      const spdRatio = clamp(Math.abs(activeVeh.speed) / Math.max(1, activeVeh.spec.maxSpeed), 0, 1);
+      cam.fov = lerp(64, 76, spdRatio);
+      cam.updateProjectionMatrix();
+      const pivot = new THREE.Vector3(activeVeh.pos.x, activeVeh.pos.y + 1.65, activeVeh.pos.z);
+      const yaw = this.camYaw;
+      const p = clamp(this.camPitch, -0.35, 0.85);
+      const dist = 6.2 + spdRatio * 1.4;
+      const fwd = new THREE.Vector3(Math.sin(yaw) * Math.cos(p), Math.sin(p), Math.cos(yaw) * Math.cos(p));
+      const desired = pivot.clone().addScaledVector(fwd, -dist);
+      desired.y += 0.35;
+      const minCamY = (this.level ? this.level.groundHeightAt(desired.x, desired.z, activeVeh.pos.y + 1.4) : 0) + 0.35;
+      if (desired.y < minCamY) desired.y = minCamY;
+      cam.position.copy(desired);
+      cam.rotation.order = "YXZ";
+      cam.rotation.y = yaw + Math.PI;
+      cam.rotation.x = p;
+      cam.rotation.z = 0;
+      cam.updateMatrixWorld(true);
+      return;
+    }
+
     const ads = rig.input.ads && !rig.dead;
     this.adsBlend = damp(this.adsBlend, ads ? 1 : 0, 12, rawDt);
     const sprinting = rig.status === "Sprinting";
@@ -1560,8 +1631,42 @@ export class Game {
     else rig.aimPoint.copy(origin).addScaledVector(dir, 120);
   }
 
+  private tryToggleVehicle() {
+    if (this.phase !== "ready" || this.paused || !this.rig || this.rig.dead) return;
+    const vehicles = this.level?.vehicles;
+    if (!vehicles) return;
+    // Don't hijack [F] when holding/standing over a mission interactable
+    if (this.activeInteract && !this.activeInteract.done) return;
+
+    if (vehicles.activeVehicle) {
+      const exitPos = vehicles.exitVehicle();
+      this.rig.setVisible(true);
+      if (exitPos) {
+        this.rig.root.position.copy(exitPos);
+        this.rig.groundY = exitPos.y;
+      }
+      this.emitHud();
+      return;
+    }
+
+    const nearV = vehicles.findNearestEnterable(this.rig.root.position);
+    if (nearV) {
+      vehicles.enterVehicle(nearV);
+      this.rig.setVisible(false);
+      this.crouchToggle = false;
+      this.camYaw = nearV.yaw;
+      this.camPitch = 0.14;
+      this.lastMouseLookT = 0;
+      this.emitHud();
+    }
+  }
+
   teleportTo(x: number, z: number, yawDeg?: number) {
     if (!this.rig || !this.level) return;
+    if (this.level.vehicles?.activeVehicle) {
+      this.level.vehicles.exitVehicle();
+      this.rig.setVisible(true);
+    }
     if (this.level.openWorld) this.level.openWorld.chunks.prewarm(x, z);
     const gy = this.level.groundHeightAt(x, z, 250);
     this.rig.root.position.set(x, gy, z);
@@ -1627,6 +1732,18 @@ export class Game {
     const district = isOpenWorld && r && this.level?.getDistrictAt
       ? this.level.getDistrictAt(r.root.position.x, r.root.position.z)
       : null;
+    const av = this.level?.vehicles?.activeVehicle ?? null;
+    const vehicle = av
+      ? {
+          active: true,
+          name: av.spec.name,
+          kind: av.spec.cls,
+          speedKmh: Math.round(Math.abs(av.speed) * 3.6),
+          nearbyName: null,
+        }
+      : this.nearbyVehicleName
+        ? { active: false, name: this.nearbyVehicleName, kind: "", speedKmh: 0, nearbyName: this.nearbyVehicleName }
+        : null;
     this.onHud({
       loading: this.phase === "loading",
       progress: this.progress,
@@ -1673,6 +1790,7 @@ export class Game {
       extractDirAngle,
       isOpenWorld,
       district,
+      vehicle,
       weapons: WEAPONS.map((spec, i) => ({
         slot: spec.slot,
         shortName: spec.shortName,
@@ -1688,6 +1806,7 @@ export class Game {
     cancelAnimationFrame(this.raf);
     this.cleanup.forEach((c) => c());
     this.ro?.disconnect();
+    this.level?.vehicles?.dispose();
     this.level?.openWorld?.dispose();
     if (document.pointerLockElement) document.exitPointerLock();
     this.composer.dispose();

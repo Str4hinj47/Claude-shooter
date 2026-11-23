@@ -78,6 +78,7 @@ const initial: HudState = {
   extractDirAngle: null,
   isOpenWorld: false,
   district: null,
+  vehicle: null,
   weapons: WEAPONS.map((w) => ({
     slot: w.slot,
     shortName: w.shortName,
@@ -94,7 +95,7 @@ const KEYS: [string, string][] = [
   ["Right Click", "Aim Down Sights"],
   ["Scroll Wheel", "Zoom Optic (ADS)"],
   ["1 – 4", "Switch Weapon"],
-  ["F (hold)", "Scrub / Steal / Take"],
+  ["F (hold / press)", "Interact / Drive Vehicle"],
   ["C", "Crouch (silent)"],
   ["V", "Silent Takedown"],
   ["Left Shift", "Sprint (loud)"],
@@ -1092,7 +1093,7 @@ export default function App() {
           )}
 
           {/* modern tactical crosshair */}
-          {hud.phase !== "loading" && !hud.dead && !hud.showcase && (() => {
+          {hud.phase !== "loading" && !hud.dead && !hud.showcase && !hud.vehicle?.active && (() => {
             const gap = Math.max(5, Math.min(26, spreadPx * 0.55));
             const len = hud.ads ? 10 : 7;
             const accent = hud.takedownReady ? "#34d399" : hud.ads ? "#22d3ee" : "#f8fafc";
@@ -1352,7 +1353,7 @@ export default function App() {
           {hud.dialogue && (
             <div
               key={hud.dialogue.text}
-              className="pointer-events-none absolute bottom-28 left-1/2 w-[min(640px,80vw)] -translate-x-1/2 animate-[fadeIn_0.3s_ease] text-center"
+              className="pointer-events-none absolute bottom-32 left-1/2 w-[min(520px,68vw)] -translate-x-1/2 animate-[fadeIn_0.3s_ease] text-center"
             >
               <div className="rounded-lg border border-white/15 bg-black/70 px-5 py-3 backdrop-blur-md">
                 <div className="text-[10px] font-bold uppercase tracking-[0.3em] text-amber-400">{hud.dialogue.speaker}</div>
@@ -1370,56 +1371,85 @@ export default function App() {
             </div>
           )}
 
-          {/* right: weapons + ammo + health */}
+          {/* [F] enter nearby vehicle prompt */}
+          {hud.vehicle && !hud.vehicle.active && hud.vehicle.nearbyName && !hud.interact && !hud.dead && (
+            <div className="pointer-events-none absolute bottom-24 left-1/2 -translate-x-1/2">
+              <div className="flex items-center gap-2.5 rounded-full border border-sky-400/60 bg-black/80 px-5 py-2 text-xs font-black uppercase tracking-[0.2em] text-sky-200 shadow-[0_0_24px_rgba(56,189,248,0.22)] backdrop-blur-md">
+                <span className="rounded bg-sky-400/20 px-2 py-0.5 font-mono text-sky-300">[F]</span>
+                <span>Drive {hud.vehicle.nearbyName}</span>
+              </div>
+            </div>
+          )}
+
+          {/* right: weapons + ammo + health (or speedometer when driving) */}
           {hud.phase !== "loading" && (
             <div className="pointer-events-none absolute bottom-5 right-5 w-72 space-y-2 text-right">
-              {hud.ads && (
-                <div className="ml-auto inline-flex items-center gap-2 rounded border border-amber-400/35 bg-black/70 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.2em] text-amber-300 backdrop-blur">
-                  <span>{hud.zoomFactor.toFixed(1)}× ZOOM</span>
-                  <span className="text-zinc-400">· Scroll</span>
-                </div>
-              )}
-              <div className="flex justify-end gap-1.5">
-                {hud.weapons.map((w, idx) => {
-                  const active = idx === hud.weaponIndex;
-                  return (
-                    <div
-                      key={w.slot}
-                      className={`rounded border px-2 py-1 text-left transition ${
-                        active
-                          ? "border-amber-400/70 bg-amber-400/15 text-white shadow-[0_0_12px_rgba(251,191,36,0.2)]"
-                          : "border-white/10 bg-black/55 text-zinc-400"
-                      }`}
-                    >
-                      <div className="flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider">
-                        <span className={active ? "text-amber-300" : "text-zinc-500"}>{w.slot}</span>
-                        <span>{w.shortName}</span>
-                      </div>
+              {hud.vehicle?.active ? (
+                <>
+                  <div className="text-[11px] font-bold uppercase tracking-[0.22em] text-sky-300">
+                    {hud.vehicle.name}
+                  </div>
+                  <div className="font-mono leading-none">
+                    <span className="text-6xl font-black tabular-nums text-white drop-shadow-lg">
+                      {String(hud.vehicle.speedKmh).padStart(2, "0")}
+                    </span>
+                    <span className="ml-1.5 text-lg font-bold uppercase text-sky-300">km/h</span>
+                  </div>
+                  <div className="font-mono text-[10px] uppercase tracking-wider text-zinc-400">
+                    W/S Drive · A/D Steer · Space Brake · [F] Exit
+                  </div>
+                </>
+              ) : (
+                <>
+                  {hud.ads && (
+                    <div className="ml-auto inline-flex items-center gap-2 rounded border border-amber-400/35 bg-black/70 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.2em] text-amber-300 backdrop-blur">
+                      <span>{hud.zoomFactor.toFixed(1)}× ZOOM</span>
+                      <span className="text-zinc-400">· Scroll</span>
                     </div>
-                  );
-                })}
-              </div>
-              <div className="flex items-center justify-end gap-2 text-[11px] font-bold uppercase tracking-[0.2em] text-zinc-300">
-                {hud.suppressed && (
-                  <span className="rounded border border-emerald-400/40 bg-emerald-400/10 px-1.5 py-0.5 text-[9px] font-bold tracking-widest text-emerald-300">
-                    SILENCED
-                  </span>
-                )}
-                <span>
-                  <span className="text-amber-400">{hud.weaponCategory}</span> · {hud.weaponName}
-                </span>
-              </div>
-              {hud.reloading && (
-                <div className="ml-auto h-1.5 w-48 overflow-hidden rounded bg-white/15">
-                  <div className="h-full bg-amber-400" style={{ width: `${hud.reloadProgress * 100}%` }} />
-                </div>
+                  )}
+                  <div className="flex justify-end gap-1.5">
+                    {hud.weapons.map((w, idx) => {
+                      const active = idx === hud.weaponIndex;
+                      return (
+                        <div
+                          key={w.slot}
+                          className={`rounded border px-2 py-1 text-left transition ${
+                            active
+                              ? "border-amber-400/70 bg-amber-400/15 text-white shadow-[0_0_12px_rgba(251,191,36,0.2)]"
+                              : "border-white/10 bg-black/55 text-zinc-400"
+                          }`}
+                        >
+                          <div className="flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider">
+                            <span className={active ? "text-amber-300" : "text-zinc-500"}>{w.slot}</span>
+                            <span>{w.shortName}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="flex items-center justify-end gap-2 text-[11px] font-bold uppercase tracking-[0.2em] text-zinc-300">
+                    {hud.suppressed && (
+                      <span className="rounded border border-emerald-400/40 bg-emerald-400/10 px-1.5 py-0.5 text-[9px] font-bold tracking-widest text-emerald-300">
+                        SILENCED
+                      </span>
+                    )}
+                    <span>
+                      <span className="text-amber-400">{hud.weaponCategory}</span> · {hud.weaponName}
+                    </span>
+                  </div>
+                  {hud.reloading && (
+                    <div className="ml-auto h-1.5 w-48 overflow-hidden rounded bg-white/15">
+                      <div className="h-full bg-amber-400" style={{ width: `${hud.reloadProgress * 100}%` }} />
+                    </div>
+                  )}
+                  <div className="font-mono leading-none">
+                    <span className={`text-6xl font-black tabular-nums drop-shadow-lg ${hud.ammo <= (hud.weaponIndex === 2 ? 2 : hud.weaponIndex === 3 ? 3 : 8) ? "text-red-400" : "text-white"}`}>
+                      {String(hud.ammo).padStart(2, "0")}
+                    </span>
+                    <span className="ml-1 text-2xl font-bold text-zinc-400">/ {hud.reserve}</span>
+                  </div>
+                </>
               )}
-              <div className="font-mono leading-none">
-                <span className={`text-6xl font-black tabular-nums drop-shadow-lg ${hud.ammo <= (hud.weaponIndex === 2 ? 2 : hud.weaponIndex === 3 ? 3 : 8) ? "text-red-400" : "text-white"}`}>
-                  {String(hud.ammo).padStart(2, "0")}
-                </span>
-                <span className="ml-1 text-2xl font-bold text-zinc-400">/ {hud.reserve}</span>
-              </div>
               <div className="flex items-center justify-end gap-2">
                 <span className="text-[10px] font-semibold uppercase tracking-[0.3em] text-zinc-400">HP</span>
                 <div className="h-2.5 w-44 overflow-hidden rounded-sm border border-white/15 bg-black/60">

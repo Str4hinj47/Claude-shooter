@@ -35,6 +35,7 @@ import {
   SpatialColliderGrid,
   WorldHeightSystem,
   type DistrictInfo,
+  type WestgateVehicleManager,
 } from "./city";
 
 /* ====================== seeded RNG ====================== */
@@ -3616,6 +3617,7 @@ export interface LevelResult extends World {
   spatialColliders?: SpatialColliderGrid;
   heightSystem?: WorldHeightSystem;
   openWorld?: OpenWorldEngine;
+  vehicles?: WestgateVehicleManager;
   getDistrictAt?: (x: number, z: number) => DistrictInfo;
 }
 
