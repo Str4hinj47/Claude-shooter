@@ -1254,8 +1254,8 @@ export default function App() {
 
           {/* [F] interactive prop prompt (scrub terminal / steal diamond / take files) */}
           {hud.interact && !hud.dead && (
-            <div className="pointer-events-none absolute bottom-56 left-1/2 -translate-x-1/2">
-              <div className="flex min-w-[260px] flex-col items-center gap-2 rounded-xl border border-cyan-400/60 bg-black/80 px-5 py-3 text-center shadow-[0_0_24px_rgba(34,211,238,0.22)] backdrop-blur-md">
+            <div className="pointer-events-none absolute bottom-24 left-1/2 -translate-x-1/2">
+              <div className="flex min-w-[250px] flex-col items-center gap-1.5 rounded-xl border border-cyan-400/60 bg-black/80 px-5 py-2.5 text-center shadow-[0_0_24px_rgba(34,211,238,0.22)] backdrop-blur-md">
                 <div className="font-mono text-[10px] font-bold uppercase tracking-[0.28em] text-cyan-300">
                   {hud.interact.holding
                     ? hud.interact.kind === "terminal"

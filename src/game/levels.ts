@@ -11,7 +11,6 @@ import { Sky } from "three/examples/jsm/objects/Sky.js";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import { buildWorld, World } from "./world";
 import type { SurfaceKind } from "./world";
-import { createEscapeBoat, createExtractionHeli, createGetawayCar, type AnimatedAsset } from "./extractionAssets";
 import {
   bevelledBox,
   craftedBarrel,
@@ -1779,81 +1778,32 @@ class Kit {
     return t;
   }
 
-  mountAsset(asset: AnimatedAsset) {
-    this.scene.add(asset.group);
-    for (const c of asset.colliders) {
-      c.updateWorldMatrix(true, false);
-      this.colliders.push(c);
-      const b = new THREE.Box3().setFromObject(c);
-      if (!b.isEmpty()) this.aabbs.push(b);
-    }
-    this.extras.push({ update: asset.update });
-  }
-
   helipad(x: number, z: number) {
     const c = document.createElement("canvas");
-    c.width = c.height = 512;
+    c.width = c.height = 256;
     const g = c.getContext("2d")!;
-    g.clearRect(0, 0, 512, 512);
-    // dark weathered pad disk
-    g.fillStyle = "rgba(26,30,36,0.92)";
-    g.beginPath();
-    g.arc(256, 256, 246, 0, Math.PI * 2);
-    g.fill();
-    // dashed outer amber/yellow safety ring
-    g.strokeStyle = "rgba(245,158,11,0.92)";
+    g.fillStyle = "rgba(0,0,0,0)";
+    g.fillRect(0, 0, 256, 256);
+    g.strokeStyle = "rgba(240,240,240,0.9)";
     g.lineWidth = 14;
-    g.setLineDash([34, 22]);
     g.beginPath();
-    g.arc(256, 256, 224, 0, Math.PI * 2);
+    g.arc(128, 128, 110, 0, Math.PI * 2);
     g.stroke();
-    g.setLineDash([]);
-    // crisp inner white circle + H
-    g.strokeStyle = "rgba(240,244,248,0.95)";
-    g.lineWidth = 18;
-    g.beginPath();
-    g.arc(256, 256, 178, 0, Math.PI * 2);
-    g.stroke();
-    g.fillStyle = "rgba(240,244,248,0.96)";
-    g.font = "bold 240px sans-serif";
+    g.fillStyle = "rgba(240,240,240,0.95)";
+    g.font = "bold 150px sans-serif";
     g.textAlign = "center";
-    g.textBaseline = "middle";
-    g.fillText("H", 256, 266);
+    g.fillText("H", 128, 185);
     const t = new THREE.CanvasTexture(c);
     t.colorSpace = THREE.SRGBColorSpace;
-
-    // chamfered pad curb ring
-    const curb = this.mesh(materialFor(0x3a404a, { roughness: 0.72, metalness: 0.35 }), new THREE.CylinderGeometry(11.3, 11.7, 0.08, 36), x, 0.04, z);
-    curb.receiveShadow = true;
-    this.scene.add(curb);
-
-    const m = this.mesh(new THREE.MeshStandardMaterial({ map: t, transparent: true, roughness: 0.78 }), new THREE.PlaneGeometry(22, 22), x, 0.085, z);
+    const m = this.mesh(new THREE.MeshStandardMaterial({ map: t, transparent: true, roughness: 0.8 }), new THREE.PlaneGeometry(22, 22), x, 0.04, z);
     m.rotation.x = -Math.PI / 2;
     m.receiveShadow = true;
     this.scene.add(m);
-
-    // 8 raised aluminum perimeter approach beacons
-    const housingMat = materialFor(0x262a32, { roughness: 0.4, metalness: 0.8 });
-    for (let i = 0; i < 8; i++) {
-      const ang = (i / 8) * Math.PI * 2 + Math.PI / 8;
-      const lx = x + Math.cos(ang) * 11.1;
-      const lz = z + Math.sin(ang) * 11.1;
-      const base = this.mesh(housingMat, new THREE.CylinderGeometry(0.24, 0.3, 0.14, 12), lx, 0.07, lz);
-      this.scene.add(base);
-      const col = i % 2 === 0 ? 0x34d399 : 0xfbbf24;
-      const light = this.mesh(
-        new THREE.MeshStandardMaterial({ color: col, emissive: col, emissiveIntensity: 3.2 }),
-        new THREE.SphereGeometry(0.14, 10, 8),
-        lx,
-        0.18,
-        lz,
-      );
+    for (const [lx, lz] of [[-10, -10], [10, -10], [-10, 10], [10, 10]] as const) {
+      const light = this.mesh(new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xfff2c0, emissiveIntensity: 2.5 }), new THREE.SphereGeometry(0.22, 8, 6), x + lx, 0.12, z + lz);
       this.scene.add(light);
-      this.beacon(light, 2.0, i * 0.65);
+      this.beacon(light, 1.6, (lx + lz) * 0.3);
     }
-
-    // Extraction stealth helicopter waiting on the pad with spinning rotors
-    this.mountAsset(createExtractionHeli(x, 0, z - 5.6, Math.PI * 0.72, 0x34d399));
   }
 
   relayTower(x: number, z: number, h: number) {
@@ -2620,9 +2570,6 @@ function buildVillage(content: THREE.Object3D, main: THREE.Scene, renderer: THRE
     content.add(hill);
   }
 
-  // Sleek black getaway sedan waiting at the south village road extraction point
-  K.mountAsset(createGetawayCar({ variant: "sedan", x: -4.4, z: 44.5, ry: Math.PI - 0.32, headlights: false }));
-
   return finish(K, ambient);
 }
 
@@ -2867,9 +2814,6 @@ function buildConstruction(content: THREE.Object3D, main: THREE.Scene, renderer:
   K.wallStreak(-18, 2.0, -16.86, 5, 3, 0, false);
   K.dustMotes(110, 120, 18, 110, 0xd0c0a0, 0.3);
 
-  // Matte tactical getaway SUV parked inside the construction gate extraction zone
-  K.mountAsset(createGetawayCar({ variant: "suv", x: -4.8, z: 44.0, ry: Math.PI - 0.3, headlights: false }));
-
   return finish(K, ambient);
 }
 
@@ -3047,9 +2991,6 @@ function buildDowntown(content: THREE.Object3D, main: THREE.Scene, renderer: THR
   K.rock(-12, 26, 0.8);
   K.rock(12, 22, 0.9);
 
-  // Sleek midnight luxury getaway coupe idling with LED headlights at the south avenue
-  K.mountAsset(createGetawayCar({ variant: "coupe", x: -4.5, z: 46.5, ry: Math.PI - 0.34, headlights: true }));
-
   return finish(K, ambient);
 }
 
@@ -3077,25 +3018,13 @@ function buildPort(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.W
   content.add(ambient.sun, ambient.hemi);
   if (ambient.stars) content.add(ambient.stars);
 
-  // dock concrete deck (ends at z = 50 so south harbor water opens directly behind the escape pier)
+  // dock concrete deck (south half)
   const dc = noiseCanvas(1024, "#6a6a64", [["rgba(0,0,0,0.2)", 8000], ["rgba(255,255,255,0.05)", 4000]], K.rng);
-  const deck = K.mesh(new THREE.MeshStandardMaterial({ map: toTex(dc, 40), bumpMap: toTex(dc, 40, false), bumpScale: 1, roughness: 0.93 }), new THREE.PlaneGeometry(90, 64), 0, 0, 18);
+  const deck = K.mesh(new THREE.MeshStandardMaterial({ map: toTex(dc, 40), bumpMap: toTex(dc, 40, false), bumpScale: 1, roughness: 0.93 }), new THREE.PlaneGeometry(90, 70), 0, 0, 21);
   deck.rotation.x = -Math.PI / 2;
   deck.receiveShadow = true;
   K.scene.add(deck);
   K.colliders.push(deck);
-
-  // south pier timber bumper + mooring bollards + green dock lantern + escape cigarette boat on open water
-  const southEdge = K.mesh(new THREE.MeshStandardMaterial({ color: 0x3b2f24, roughness: 0.88 }), new THREE.BoxGeometry(16, 0.32, 0.55), 0, 0.16, 49.9);
-  K.scene.add(southEdge);
-  for (const bx of [-3.6, 3.6]) {
-    K.solid(K.mesh(new THREE.MeshStandardMaterial({ color: 0xd8b01c, roughness: 0.55, metalness: 0.5 }), new THREE.CylinderGeometry(0.22, 0.26, 0.8, 10), bx, 0.4, 49.4), "concrete");
-    const pierLight = K.mesh(new THREE.MeshStandardMaterial({ color: 0x34d399, emissive: 0x10b981, emissiveIntensity: 3.0 }), new THREE.SphereGeometry(0.12, 8, 6), bx, 0.88, 49.4);
-    K.scene.add(pierLight);
-    K.beacon(pierLight, 1.8, bx);
-  }
-  K.mountAsset(createEscapeBoat(0, -0.35, 53.8, Math.PI / 2 - 0.06));
-  K.streetlight(-5.6, 47.6, Math.PI * 0.85, true, 0xbbe6ff);
 
   // water (north half) + dock edge line
   K.water(400);

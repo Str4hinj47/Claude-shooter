@@ -1005,12 +1005,14 @@ export class Game {
       }
     }
     if (nearest !== this.activeInteract) {
+      if (this.activeInteract && !this.activeInteract.done) this.activeInteract.setProgress(0);
       this.activeInteract = nearest;
       this.interactHoldT = 0;
       this.interactTickCd = 0;
     }
     if (nearest && this.keys.has("KeyF")) {
       this.interactHoldT += dt;
+      nearest.setProgress(this.interactHoldT / Math.max(0.1, nearest.def.duration));
       this.interactTickCd -= dt;
       if (this.interactTickCd <= 0) {
         if (nearest.def.kind === "terminal") this.sfx.interactTick();
@@ -1027,6 +1029,9 @@ export class Game {
       }
     } else {
       this.interactHoldT = Math.max(0, this.interactHoldT - dt * 2.5);
+      if (nearest && !nearest.done) {
+        nearest.setProgress(this.interactHoldT / Math.max(0.1, nearest.def.duration));
+      }
     }
   }
 
