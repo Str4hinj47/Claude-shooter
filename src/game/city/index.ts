@@ -9,4 +9,5 @@ export * from "./WestgateRoads";
 export * from "./WestgateWater";
 export * from "./CityBuildingKit";
 export * from "./DowntownDistrict";
+export * from "./MidtownDistrict";
 export * from "./WestgateWorld";
