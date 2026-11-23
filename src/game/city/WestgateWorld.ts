@@ -7,6 +7,7 @@ import { buildWestgateWater } from "./WestgateWater";
 import { CityChunkDispatcher } from "./CityBuildingKit";
 import { registerDowntownDistrict } from "./DowntownDistrict";
 import { registerMidtownDistrict } from "./MidtownDistrict";
+import { registerOldQuarterDistrict } from "./OldQuarterDistrict";
 
 export interface WestgateTeleportSpot {
   id: string;
@@ -26,6 +27,8 @@ export const WESTGATE_TELEPORTS: WestgateTeleportSpot[] = [
   { id: "midtown_mall", label: "Midtown Grand Mall", x: -402, z: -86, yawDeg: 0 },
   { id: "medical_center", label: "St. Jude's Medical Center", x: -146, z: -206, yawDeg: 180 },
   { id: "university", label: "Westgate University Campus", x: -165, z: -332, yawDeg: 180 },
+  { id: "mirror_park", label: "Mirror Central Park", x: -115, z: 342, yawDeg: 0 },
+  { id: "old_townhouses", label: "Old Quarter & Suburbs", x: -240, z: 295, yawDeg: 120 },
   { id: "arch_bridge", label: "Downtown Arch Bridge", x: 385, z: -56, yawDeg: 85 },
   { id: "bay_bridge", label: "Westgate Bay Bridge", x: 350, z: 595, yawDeg: 72 },
   { id: "midtown_skyway", label: "Midtown Skyway & Roundabout", x: -292, z: -140, yawDeg: 90 },
@@ -144,9 +147,10 @@ export function buildWestgateWorld(
   terrainAt = buildWestgateTerrainFn(engine.roads);
   engine.setTerrainFn(terrainAt);
 
-  // Register Downtown & Civic Core (Phase 2) + Midtown & Commercial (Phase 3)
+  // Register Downtown (Phase 2), Midtown (Phase 3), Old Quarter & Suburbs (Phase 4)
   registerDowntownDistrict(dispatcher, engine.roads, engine.heightSystem);
   registerMidtownDistrict(dispatcher, engine.roads, engine.heightSystem);
+  registerOldQuarterDistrict(dispatcher, engine.roads);
 
   const terrainMesh = buildWestgateTerrainMesh(terrainAt, 2400, 160);
   content.add(terrainMesh);
