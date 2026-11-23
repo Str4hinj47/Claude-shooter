@@ -92,39 +92,44 @@ function buildDelSolPier(chunk: CityChunk, groundY: number, heightSystem: WorldH
   addSolidBox(chunk, dx, deckY + 0.1, z + 2.2, 14, 4.6, 8.0, stucco, 0, "concrete");
   addSolidBox(chunk, dx, deckY + 4.7, z + 2.2, 15, 0.7, 9.0, neonPink, 0, "metal");
 
-  // Iconic Del Sol Ferris Wheel (`xStart - 92, z`)
+  // Iconic Del Sol Ferris Wheel (`xStart - 92, z`), facing East-West so full circle silhouette reads from the beach
   const fx = xStart - 92;
-  const hubY = deckY + 19.5;
+  const wheelGroup = new THREE.Group();
+  wheelGroup.position.set(fx, deckY, z);
+  wheelGroup.rotation.y = Math.PI * 0.5;
+  chunk.nearGroup.add(wheelGroup);
+
+  const hubLocalY = 19.5;
   // A-frame legs
-  for (const dz of [-4.2, 4.2]) {
+  for (const dz of [-3.6, 3.6]) {
     for (const s of [-1, 1]) {
       const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.55, 21.5, 8), wheelMat);
-      leg.position.set(fx + s * 4.4, deckY + 9.8, z + dz);
+      leg.position.set(s * 4.4, 9.8, dz);
       leg.rotation.z = s * 0.4;
       leg.castShadow = true;
-      chunk.nearGroup.add(leg);
+      wheelGroup.add(leg);
     }
   }
   // Wheel ring + 10 spokes + 10 colored gondolas
   const rim = new THREE.Mesh(new THREE.TorusGeometry(14.5, 0.48, 8, 28), neonCyan);
-  rim.position.set(fx, hubY, z);
-  chunk.nearGroup.add(rim);
+  rim.position.set(0, hubLocalY, 0);
+  wheelGroup.add(rim);
   const innerRim = new THREE.Mesh(new THREE.TorusGeometry(9.5, 0.28, 6, 20), wheelMat);
-  innerRim.position.set(fx, hubY, z);
-  chunk.nearGroup.add(innerRim);
+  innerRim.position.set(0, hubLocalY, 0);
+  wheelGroup.add(innerRim);
 
   for (let i = 0; i < 10; i++) {
     const a = (i / 10) * Math.PI * 2;
-    const gx = fx + Math.cos(a) * 14.5;
-    const gy = hubY + Math.sin(a) * 14.5;
+    const gx = Math.cos(a) * 14.5;
+    const gy = hubLocalY + Math.sin(a) * 14.5;
     const spoke = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 29, 6), wheelMat);
-    spoke.position.set(fx, hubY, z);
+    spoke.position.set(0, hubLocalY, 0);
     spoke.rotation.z = a + Math.PI * 0.5;
-    chunk.nearGroup.add(spoke);
-    addVisualBox(chunk.nearGroup, gx, gy - 1.0, z, 2.0, 2.0, 2.0, i % 2 === 0 ? neonPink : neonCyan, 0);
+    wheelGroup.add(spoke);
+    addVisualBox(wheelGroup, gx, gy - 1.0, 0, 2.0, 2.0, 2.0, i % 2 === 0 ? neonPink : neonCyan, 0);
   }
 
-  addLodBox(chunk, fx, deckY, z, 18, 32, 10, 0x38bdf8);
+  addLodBox(chunk, fx, deckY, z, 10, 32, 26, 0x38bdf8);
   addLodBox(chunk, xMid, deckY - 0.5, z, deckW, 2.5, 16, 0x8b623f);
 }
 

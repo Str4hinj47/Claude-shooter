@@ -14,4 +14,5 @@ export * from "./OldQuarterDistrict";
 export * from "./WestCoastDistrict";
 export * from "./FoothillsDistrict";
 export * from "./PortAirportDistrict";
+export * from "./WestgateProps";
 export * from "./WestgateWorld";

@@ -11,6 +11,7 @@ import { registerOldQuarterDistrict } from "./OldQuarterDistrict";
 import { registerWestCoastDistrict } from "./WestCoastDistrict";
 import { registerFoothillsDistrict } from "./FoothillsDistrict";
 import { registerPortAirportDistrict } from "./PortAirportDistrict";
+import { populateWestgateProps } from "./WestgateProps";
 
 export interface WestgateTeleportSpot {
   id: string;
@@ -178,7 +179,10 @@ export function buildWestgateWorld(
     engine.spatialColliders.insert(c);
   }
 
-  // 7. Finalize roads, bridge WalkableSurfaces, props, and prewarm spawn chunks
+  // 7. Populate citywide instanced trees, streetlights, signals, hydrants & parked cars (Phase 8)
+  populateWestgateProps(engine.props, engine.roads, terrainAt, WESTGATE_TELEPORTS);
+
+  // 8. Finalize roads, bridge WalkableSurfaces, props, and prewarm spawn chunks
   engine.finalizeStaticWorld(WESTGATE_SPAWN[0], WESTGATE_SPAWN[1]);
   content.add(engine.root);
 
