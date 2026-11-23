@@ -28,7 +28,14 @@ import {
 } from "./kit/geom";
 import { materialFor } from "./kit/surface";
 import { createLightPoolMaterial, createVolumetricBeamMaterial } from "./shaders";
-import { SpatialAABBGrid, SpatialColliderGrid, WorldHeightSystem } from "./city";
+import {
+  buildWestgateWorld,
+  OpenWorldEngine,
+  SpatialAABBGrid,
+  SpatialColliderGrid,
+  WorldHeightSystem,
+  type DistrictInfo,
+} from "./city";
 
 /* ====================== seeded RNG ====================== */
 function mulberry32(seed: number) {
@@ -3608,6 +3615,8 @@ export interface LevelResult extends World {
   spatial?: SpatialAABBGrid;
   spatialColliders?: SpatialColliderGrid;
   heightSystem?: WorldHeightSystem;
+  openWorld?: OpenWorldEngine;
+  getDistrictAt?: (x: number, z: number) => DistrictInfo;
 }
 
 function finish(K: Kit, ambient: ReturnType<typeof setupAmbient>): LevelResult {
@@ -3672,6 +3681,7 @@ function finish(K: Kit, ambient: ReturnType<typeof setupAmbient>): LevelResult {
 
 export function buildLevel(missionId: number, content: THREE.Object3D, main: THREE.Scene, renderer: THREE.WebGLRenderer): LevelResult {
   switch (missionId) {
+    case -1: return buildWestgateWorld(content, main, renderer);
     case 0: return buildRange(content, main, renderer);
     case 1: return buildVillage(content, main, renderer);
     case 2: return buildConstruction(content, main, renderer);

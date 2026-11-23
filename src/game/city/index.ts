@@ -4,3 +4,7 @@ export * from "./ChunkStreamer";
 export * from "./PropBatcher";
 export * from "./RoadNetwork";
 export * from "./OpenWorldEngine";
+export * from "./WestgateTerrain";
+export * from "./WestgateRoads";
+export * from "./WestgateWater";
+export * from "./WestgateWorld";

@@ -604,6 +604,10 @@ export class RoadNetwork {
     return this.segments;
   }
 
+  getSegment(id: string): CompiledRoadSegment | undefined {
+    return this.segmentById.get(id);
+  }
+
   getLanes(): readonly TrafficLane[] {
     this.ensureCompiled();
     return this.lanes;
@@ -639,7 +643,7 @@ export class RoadNetwork {
    * Fast O(1) spatial query returning road distance, elevation, and tangent at (x, z).
    * Used by terrain carving (Phase 1), building exclusion (Phases 2-8), and minimap overlays.
    */
-  getRoadInfluence(x: number, z: number, maxSearchDist = 28): RoadInfluence | null {
+  getRoadInfluence(x: number, z: number, maxSearchDist = 28, ignoreBridges = false): RoadInfluence | null {
     this.ensureCompiled();
     const cellSpan = Math.ceil(maxSearchDist * this.invCell);
     const cx0 = Math.floor(x * this.invCell);
@@ -661,6 +665,7 @@ export class RoadNetwork {
         for (let i = 0; i < bucket.length; i++) {
           const ref = bucket[i];
           const seg = this.segments[ref.segIdx];
+          if (ignoreBridges && seg.spec.isBridge) continue;
           const a = seg.samples[ref.sampleIdx];
           const b = seg.samples[ref.sampleIdx + 1];
 
@@ -968,7 +973,7 @@ export class RoadNetwork {
           collidersOut?.push(wall);
         }
 
-        // Support piers every ~28m along elevated span
+        // Support piers every ~28m along elevated span (straddle bents over underpass roads)
         let nextPierS = 18;
         for (let i = 0; i < n; i++) {
           const sp = seg.samples[i];
@@ -976,14 +981,43 @@ export class RoadNetwork {
           const groundY = terrainAt(sp.x, sp.z);
           const clearance = sp.y - groundY;
           if (clearance > 2.2) {
-            const pierH = clearance - 0.6;
-            const pier = new THREE.Mesh(new THREE.CylinderGeometry(0.95, 1.15, pierH, 10), pierMat);
-            pier.position.set(sp.x, groundY + pierH * 0.5, sp.z);
-            pier.castShadow = true;
-            pier.receiveShadow = true;
-            pier.userData.kind = "concrete";
-            group.add(pier);
-            collidersOut?.push(pier);
+            const underRoad = this.getRoadInfluence(sp.x, sp.z, 18, true);
+            if (underRoad && underRoad.edgeDist < 2.0) {
+              // Straddle portal bent spanning outside the underpass carriageway
+              const spanHalf = seg.carriagewayWidth * 0.5 + 1.2;
+              const pierH = clearance - 0.7;
+              for (const side of [-1, 1] as const) {
+                const colX = sp.x + sp.rx * side * spanHalf;
+                const colZ = sp.z + sp.rz * side * spanHalf;
+                const colG = terrainAt(colX, colZ);
+                const colH = Math.max(1.5, sp.y - 0.7 - colG);
+                const col = new THREE.Mesh(new THREE.CylinderGeometry(0.65, 0.75, colH, 10), pierMat);
+                col.position.set(colX, colG + colH * 0.5, colZ);
+                col.castShadow = true;
+                col.receiveShadow = true;
+                col.userData.kind = "concrete";
+                group.add(col);
+                collidersOut?.push(col);
+              }
+              const cap = new THREE.Mesh(new THREE.BoxGeometry(spanHalf * 2 + 1.6, 0.9, 1.4), pierMat);
+              cap.position.set(sp.x, sp.y - 1.05, sp.z);
+              cap.rotation.y = Math.atan2(sp.tx, sp.tz);
+              cap.castShadow = true;
+              cap.receiveShadow = true;
+              cap.userData.kind = "concrete";
+              group.add(cap);
+              collidersOut?.push(cap);
+              void pierH;
+            } else {
+              const pierH = clearance - 0.6;
+              const pier = new THREE.Mesh(new THREE.CylinderGeometry(0.95, 1.15, pierH, 10), pierMat);
+              pier.position.set(sp.x, groundY + pierH * 0.5, sp.z);
+              pier.castShadow = true;
+              pier.receiveShadow = true;
+              pier.userData.kind = "concrete";
+              group.add(pier);
+              collidersOut?.push(pier);
+            }
           }
           nextPierS = sp.s + 28;
         }

@@ -13,7 +13,7 @@ import { CombatFX, Sfx } from "./fx";
 import { CinematicPostShader } from "./shaders";
 import { Spring, clamp, damp, lerp } from "../character/math";
 import { Ally, Enemy, Fighter, RescueNPC, resolveCircleAABBs, type CombatHost } from "./Enemy";
-import { MISSIONS, type DialogueLine, type MissionDef, type ObjectiveDef } from "./story";
+import { MISSIONS, OPEN_WORLD_MISSION, type DialogueLine, type MissionDef, type ObjectiveDef } from "./story";
 import { createInteractableProp, type InteractableInstance } from "./interactables";
 import {
   awardMissionReward,
@@ -91,6 +91,8 @@ export interface HudState {
   extractReady: boolean;
   extractDist: number | null;
   extractDirAngle: number | null;
+  isOpenWorld: boolean;
+  district: { id: string; name: string; subtitle: string } | null;
   weapons: { slot: number; shortName: string; category: string; mag: number; reserve: number }[];
 }
 
@@ -262,6 +264,16 @@ export class Game {
     this.ally = null;
     this.npc = null;
 
+    if (this.level?.openWorld) {
+      this.level.openWorld.dispose();
+      this.level = null;
+    }
+    this.camera.far = 400;
+    this.camera.updateProjectionMatrix();
+    this.bloomPass.strength = 0.34;
+    this.bloomPass.radius = 0.55;
+    this.bloomPass.threshold = 0.86;
+
     if (this.missionRoot.children.length > 0) {
       this.scene.remove(this.missionRoot);
       disposeObject(this.missionRoot);
@@ -412,16 +424,26 @@ export class Game {
   /* ------------------------------------------------------------ */
   async startMission(id: number, cb: GameCallbacks) {
     this.menuHangar = false;
-    this.camera.rotation.set(0, 0, 0);
-    this.camera.fov = 62;
-    this.camera.updateProjectionMatrix();
     this.cb = cb;
     this.phase = "loading";
     this.stats = getPlayerStats();
     this.maxHealth = this.stats.maxHp;
     this.emitHud();
-    const mission = MISSIONS.find((m) => m.id === id) ?? MISSIONS[0];
+    const mission = id === -1 ? OPEN_WORLD_MISSION : MISSIONS.find((m) => m.id === id) ?? MISSIONS[0];
     this.mission = mission;
+    this.camera.rotation.set(0, 0, 0);
+    this.camera.fov = 62;
+    this.camera.far = mission.id === -1 ? 1800 : 400;
+    this.camera.updateProjectionMatrix();
+    if (mission.id === -1) {
+      this.bloomPass.strength = 0.14;
+      this.bloomPass.radius = 0.28;
+      this.bloomPass.threshold = 1.15;
+    } else {
+      this.bloomPass.strength = 0.34;
+      this.bloomPass.radius = 0.55;
+      this.bloomPass.threshold = 0.86;
+    }
 
     // reset mission state
     this.firstContact = false;
@@ -466,6 +488,10 @@ export class Game {
     }
 
     // dispose previous mission content
+    if (this.level?.openWorld) {
+      this.level.openWorld.dispose();
+      this.level = null;
+    }
     if (this.missionRoot.children.length > 0) {
       this.scene.remove(this.missionRoot);
       disposeObject(this.missionRoot);
@@ -489,7 +515,10 @@ export class Game {
       this.attachRigEvents();
     }
     const sp = mission.spawn;
-    this.rig.respawn(new THREE.Vector3(sp[0], 0, sp[1]));
+    this.rig.worldBound = mission.id === -1 ? 1185 : 260;
+    const spawnY = this.level.groundHeightAt(sp[0], sp[1], 200);
+    this.rig.respawn(new THREE.Vector3(sp[0], spawnY, sp[1]));
+    this.rig.groundY = spawnY;
     this.rig.setAppearance(loadSave().appearance);
     this.rig.crouchSpeedMult = this.stats.crouchSpeedMult;
     this.rig.aimYaw = THREE.MathUtils.degToRad(sp[2]);
@@ -1500,7 +1529,8 @@ export class Game {
       : this.world.colliders;
     const hits = this.raycaster.intersectObjects(camTargets, false);
     if (hits.length && hits[0].distance < len) desired.copy(pivot).addScaledVector(toCam.normalize(), Math.max(0.35, hits[0].distance - 0.2));
-    if (desired.y < 0.15) desired.y = 0.15;
+    const minCamY = (this.level ? this.level.groundHeightAt(desired.x, desired.z, root.y + 1.0) : 0) + 0.18;
+    if (desired.y < minCamY) desired.y = minCamY;
 
     cam.position.copy(desired);
     cam.rotation.order = "YXZ";
@@ -1528,6 +1558,21 @@ export class Game {
     const h = hits.find((x) => x.distance > minD);
     if (h) rig.aimPoint.copy(h.point);
     else rig.aimPoint.copy(origin).addScaledVector(dir, 120);
+  }
+
+  teleportTo(x: number, z: number, yawDeg?: number) {
+    if (!this.rig || !this.level) return;
+    if (this.level.openWorld) this.level.openWorld.chunks.prewarm(x, z);
+    const gy = this.level.groundHeightAt(x, z, 250);
+    this.rig.root.position.set(x, gy, z);
+    this.rig.groundY = gy;
+    if (yawDeg !== undefined) {
+      const r = THREE.MathUtils.degToRad(yawDeg);
+      this.rig.aimYaw = r;
+      this.yaw = this.camYaw = r;
+    }
+    this.level.update(0.016, this.rig.root.position);
+    this.emitHud();
   }
 
   /* ------------------------------------------------------------ */
@@ -1578,6 +1623,10 @@ export class Game {
     const boss = this.bossEntity && !this.bossEntity.isDead && this.bossEntity.alerted
       ? { name: this.bossEntity.name || "Boss", hp: Math.max(1, this.bossEntity.hp), maxHp: this.bossEntity.maxHp }
       : null;
+    const isOpenWorld = mission?.id === -1;
+    const district = isOpenWorld && r && this.level?.getDistrictAt
+      ? this.level.getDistrictAt(r.root.position.x, r.root.position.z)
+      : null;
     this.onHud({
       loading: this.phase === "loading",
       progress: this.progress,
@@ -1622,6 +1671,8 @@ export class Game {
       extractReady,
       extractDist,
       extractDirAngle,
+      isOpenWorld,
+      district,
       weapons: WEAPONS.map((spec, i) => ({
         slot: spec.slot,
         shortName: spec.shortName,
@@ -1637,6 +1688,7 @@ export class Game {
     cancelAnimationFrame(this.raf);
     this.cleanup.forEach((c) => c());
     this.ro?.disconnect();
+    this.level?.openWorld?.dispose();
     if (document.pointerLockElement) document.exitPointerLock();
     this.composer.dispose();
     this.hangarEnv?.dispose();

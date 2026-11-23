@@ -682,3 +682,31 @@ export const BOSS_HP: Record<string, number> = {
   "Viktor Sorin": 340,
   "General Drago Kovač": 450,
 };
+
+export const OPEN_WORLD_MISSION: MissionDef = {
+  id: -1,
+  codename: "WESTGATE BAY",
+  name: "Open World Free Roam",
+  client: "Free Exploration",
+  location: "Westgate Bay (2.4 km × 2.4 km)",
+  timeOfDay: "Golden Afternoon",
+  tint: [0xd8cdb4, 0x88ccff],
+  tintName: "Voss",
+  briefing: [
+    "Explore Westgate Bay across curved coastal highways, five architectural bridges, canyon switchbacks, river channels, and eight distinct districts.",
+  ],
+  debrief: ["Session ended."],
+  objectives: [{ id: "free", label: "Explore Westgate Bay — press [ESC] for Sector Fast-Travel", kind: "reach", at: [24, -82] }],
+  enemies: [],
+  spawn: [24, -82, 85],
+  extraction: [24, -82, 4],
+  intro: [
+    { speaker: "Broker", text: "Westgate Bay is live. Press ESC anytime for Sector Fast-Travel.", dur: 3.0 },
+  ],
+  practice: true,
+  enemyHp: 100,
+  enemyDamage: [5, 10],
+  enemyAccuracy: 0.5,
+  accent: "#38bdf8",
+};
+

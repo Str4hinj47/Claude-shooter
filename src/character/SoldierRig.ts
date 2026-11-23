@@ -163,6 +163,7 @@ export class SoldierRig {
   vy = 0;
   groundY = 0;
   stepHeight = 0.55; // max ledge height the player auto-steps up (stairs)
+  worldBound = 260;
   private lastGroundY = 0;
   bodyYaw = 0;
   private turning = false;
@@ -656,8 +657,8 @@ export class SoldierRig {
       this.vel.x = damp(this.vel.x, 0, 3, dt);
       this.vel.z = damp(this.vel.z, 0, 3, dt);
     }
-    this.root.position.x = clamp(this.root.position.x + this.vel.x * dt, -260, 260);
-    this.root.position.z = clamp(this.root.position.z + this.vel.z * dt, -260, 260);
+    this.root.position.x = clamp(this.root.position.x + this.vel.x * dt, -this.worldBound, this.worldBound);
+    this.root.position.z = clamp(this.root.position.z + this.vel.z * dt, -this.worldBound, this.worldBound);
 
     // vertical
     const groundLevel = this.groundY;
