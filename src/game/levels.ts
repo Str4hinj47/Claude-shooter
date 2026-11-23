@@ -28,6 +28,7 @@ import {
 } from "./kit/geom";
 import { materialFor } from "./kit/surface";
 import { createLightPoolMaterial, createVolumetricBeamMaterial } from "./shaders";
+import { SpatialAABBGrid, SpatialColliderGrid, WorldHeightSystem } from "./city";
 
 /* ====================== seeded RNG ====================== */
 function mulberry32(seed: number) {
@@ -2283,27 +2284,33 @@ class Kit {
 /* ====================== mission worlds ====================== */
 
 /* ---------------- M0: range (existing world) ---------------- */
-function buildRange(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.WebGLRenderer) {
+function indexLevelSpatial(colliders: THREE.Object3D[], aabbs: THREE.Box3[]) {
+  const spatial = new SpatialAABBGrid(32);
+  spatial.insertMany(aabbs);
+  const spatialColliders = new SpatialColliderGrid(32);
+  const tmpBox = new THREE.Box3();
+  const tmpSize = new THREE.Vector3();
+  for (const c of colliders) {
+    c.updateWorldMatrix(true, false);
+    tmpBox.setFromObject(c);
+    tmpBox.getSize(tmpSize);
+    if (tmpSize.x > 128 || tmpSize.z > 128) spatialColliders.addGlobal(c);
+    else spatialColliders.insert(c, tmpBox);
+  }
+  const heightSystem = new WorldHeightSystem(() => 0, spatial);
+  return { spatial, spatialColliders, heightSystem };
+}
+
+function buildRange(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.WebGLRenderer): LevelResult {
   const w = buildWorld(content, main, renderer);
   const aabbs: THREE.Box3[] = [];
   for (const c of w.colliders) {
     c.updateWorldMatrix(true, false);
     aabbs.push(new THREE.Box3().setFromObject(c));
   }
-  const groundHeightAt = (x: number, z: number, y: number): number => {
-    let best = 0;
-    for (const box of aabbs) {
-      const top = box.max.y;
-      if (top > y + 0.6) continue;
-      // larger forward catch when stepping up stairs/risers; tighter margin when walking off edges
-      const pad = top > y + 0.05 && top <= y + 0.58 ? 0.52 : 0.22;
-      if (x < box.min.x - pad || x > box.max.x + pad) continue;
-      if (z < box.min.z - pad || z > box.max.z + pad) continue;
-      if (top > best) best = top;
-    }
-    return best;
-  };
-  return { ...w, aabbs, destroyables: [] as THREE.Mesh[], groundHeightAt };
+  const { spatial, spatialColliders, heightSystem } = indexLevelSpatial(w.colliders, aabbs);
+  const groundHeightAt = (x: number, z: number, y: number): number => heightSystem.groundHeightAt(x, z, y);
+  return { ...w, aabbs, destroyables: [] as THREE.Mesh[], groundHeightAt, spatial, spatialColliders, heightSystem };
 }
 
 /* ---------------- M1: Highland Village ---------------- */
@@ -3598,6 +3605,9 @@ export interface LevelResult extends World {
   destroyables: THREE.Mesh[];
   /** highest walkable surface top at (x, z) that is at/below y (within step range) */
   groundHeightAt: (x: number, z: number, y: number) => number;
+  spatial?: SpatialAABBGrid;
+  spatialColliders?: SpatialColliderGrid;
+  heightSystem?: WorldHeightSystem;
 }
 
 function finish(K: Kit, ambient: ReturnType<typeof setupAmbient>): LevelResult {
@@ -3642,18 +3652,8 @@ function finish(K: Kit, ambient: ReturnType<typeof setupAmbient>): LevelResult {
     });
     K.extras.forEach((e) => e.update(_dt));
   };
-  const groundHeightAt = (x: number, z: number, y: number): number => {
-    let best = 0;
-    for (const box of K.aabbs) {
-      const top = box.max.y;
-      if (top > y + 0.6) continue; // surface too high to be the ground we stand on
-      const pad = top > y + 0.05 && top <= y + 0.58 ? 0.52 : 0.22;
-      if (x < box.min.x - pad || x > box.max.x + pad) continue;
-      if (z < box.min.z - pad || z > box.max.z + pad) continue;
-      if (top > best) best = top;
-    }
-    return best;
-  };
+  const { spatial, spatialColliders, heightSystem } = indexLevelSpatial(K.colliders, K.aabbs);
+  const groundHeightAt = (x: number, z: number, y: number): number => heightSystem.groundHeightAt(x, z, y);
   return {
     colliders: K.colliders,
     targets: [],
@@ -3664,6 +3664,9 @@ function finish(K: Kit, ambient: ReturnType<typeof setupAmbient>): LevelResult {
     aabbs: K.aabbs,
     destroyables: K.destroyables,
     groundHeightAt,
+    spatial,
+    spatialColliders,
+    heightSystem,
   };
 }
 

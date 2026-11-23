@@ -174,6 +174,7 @@ export class Game {
   private guardFlashlights: THREE.SpotLight[] = [];
   private tmpFlashOrigin = new THREE.Vector3();
   private tmpFlashTarget = new THREE.Vector3();
+  private rayScratch: THREE.Object3D[] = [];
   private postTime = 0;
 
   /* mission state */
@@ -514,6 +515,10 @@ export class Game {
     const host: CombatHost = {
       colliders: this.level.colliders,
       aabbs: this.level.aabbs,
+      spatialAABBs: this.level.spatial,
+      rayQuery: this.level.spatialColliders
+        ? (origin, dir, maxDist) => this.level!.spatialColliders!.queryRay(origin, dir, maxDist, this.rayScratch)
+        : undefined,
       groundHeightAt: (x, z, y) => (this.level ? this.level.groundHeightAt(x, z, y) : 0),
       fx: this.fx,
       sfx: this.sfx,
@@ -1187,7 +1192,8 @@ export class Game {
     const spread = Math.max(0.0003, rawSpread * this.stats.spreadMult);
     this.spread = spread;
     const r = () => (Math.random() - 0.5) * 2;
-    const targets = [...this.enemyHits, ...this.level!.colliders];
+    const useSpatialRay = !!this.level?.spatialColliders;
+    const fallbackTargets = useSpatialRay ? null : [...this.enemyHits, ...this.level!.colliders];
     let hitEnemy = false;
     const shotDamage = w.damage * this.stats.damageMult;
 
@@ -1199,6 +1205,14 @@ export class Game {
       dir.normalize();
       this.raycaster.set(muzzle, dir);
       this.raycaster.far = 300;
+      let targets: THREE.Object3D[];
+      if (useSpatialRay) {
+        const list = this.level!.spatialColliders!.queryRay(muzzle, dir, 300, this.rayScratch);
+        for (let ei = 0; ei < this.enemyHits.length; ei++) list.push(this.enemyHits[ei]);
+        targets = list;
+      } else {
+        targets = fallbackTargets!;
+      }
       const hits = this.raycaster.intersectObjects(targets, false);
       let end = muzzle.clone().addScaledVector(dir, 150);
       if (hits.length) {
@@ -1396,7 +1410,7 @@ export class Game {
       /* ---- character ---- */
       const gy = this.level!.groundHeightAt(rig.root.position.x, rig.root.position.z, rig.root.position.y);
       rig.update(dt, gy);
-      resolveCircleAABBs(rig.root.position, 0.55, this.level!.aabbs, rig.stepHeight);
+      resolveCircleAABBs(rig.root.position, 0.55, this.level!.spatial ?? this.level!.aabbs, rig.stepHeight);
 
       /* ---- firing ---- */
       const wantFire = this.mouseL || this.uiHeld.fire;
@@ -1478,9 +1492,13 @@ export class Game {
     // camera collision
     const toCam = desired.clone().sub(pivot);
     const len = toCam.length();
-    this.raycaster.set(pivot, toCam.clone().normalize());
+    const camDir = toCam.clone().normalize();
+    this.raycaster.set(pivot, camDir);
     this.raycaster.far = len;
-    const hits = this.raycaster.intersectObjects(this.world.colliders, false);
+    const camTargets = this.level?.spatialColliders
+      ? this.level.spatialColliders.queryRay(pivot, camDir, len, this.rayScratch)
+      : this.world.colliders;
+    const hits = this.raycaster.intersectObjects(camTargets, false);
     if (hits.length && hits[0].distance < len) desired.copy(pivot).addScaledVector(toCam.normalize(), Math.max(0.35, hits[0].distance - 0.2));
     if (desired.y < 0.15) desired.y = 0.15;
 
@@ -1502,7 +1520,10 @@ export class Game {
     const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
     this.raycaster.set(origin, dir);
     this.raycaster.far = 200;
-    const hits = this.raycaster.intersectObjects(this.world.colliders, false);
+    const aimTargets = this.level?.spatialColliders
+      ? this.level.spatialColliders.queryRay(origin, dir, 200, this.rayScratch)
+      : this.world.colliders;
+    const hits = this.raycaster.intersectObjects(aimTargets, false);
     const minD = origin.distanceTo(rig.root.position.clone().setY(1.2)) + 0.6;
     const h = hits.find((x) => x.distance > minD);
     if (h) rig.aimPoint.copy(h.point);

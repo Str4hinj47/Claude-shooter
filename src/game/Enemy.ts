@@ -11,10 +11,13 @@ import { clamp } from "../character/math";
 import { createVolumetricBeamMaterial } from "./shaders";
 import type { EnemySpawn, MissionDef } from "./story";
 import { BOSS_HP } from "./story";
+import { SpatialAABBGrid } from "./city/SpatialIndex";
 
 export interface CombatHost {
   colliders: THREE.Object3D[];
   aabbs: THREE.Box3[];
+  spatialAABBs?: SpatialAABBGrid;
+  rayQuery?: (origin: THREE.Vector3, dir: THREE.Vector3, maxDist: number) => THREE.Object3D[];
   groundHeightAt: (x: number, z: number, y: number) => number;
   fx: CombatFX;
   sfx: Sfx;
@@ -31,12 +34,20 @@ export interface CombatHost {
   mission: MissionDef;
 }
 
+const _resolveScratch: THREE.Box3[] = [];
+
 /** circle-vs-AABB push-out used for player & enemy movement.
  *  When a body bumps a surface whose top is within `step` metres above the feet,
  *  the body is lifted onto it (stairs / low ledges) instead of being shoved back. */
-export function resolveCircleAABBs(pos: THREE.Vector3, radius: number, aabbs: THREE.Box3[], step = 0) {
+export function resolveCircleAABBs(
+  pos: THREE.Vector3,
+  radius: number,
+  aabbs: THREE.Box3[] | SpatialAABBGrid,
+  step = 0,
+) {
+  const list = Array.isArray(aabbs) ? aabbs : aabbs.queryPoint(pos.x, pos.z, radius + 0.15, _resolveScratch);
   const bodyTop = pos.y + 1.8;
-  for (const b of aabbs) {
+  for (const b of list) {
     if (bodyTop <= b.min.y + 0.02 || pos.y >= b.max.y - 0.03) continue; // no vertical overlap (standing on/above top)
     const cx = clamp(pos.x, b.min.x, b.max.x);
     const cz = clamp(pos.z, b.min.z, b.max.z);
@@ -261,7 +272,8 @@ export class Fighter {
     const dir = this.tmp2.set(dirX, 0, dirZ).normalize();
     this.raycaster.set(origin, dir);
     this.raycaster.far = range;
-    return this.raycaster.intersectObjects(this.host.colliders, false).length === 0;
+    const list = this.host.rayQuery ? this.host.rayQuery(origin, dir, range) : this.host.colliders;
+    return this.raycaster.intersectObjects(list, false).length === 0;
   }
 
   private steerAroundWalls(my: THREE.Vector3, vx: number, vz: number): [number, number] {
@@ -297,7 +309,8 @@ export class Fighter {
     dir.divideScalar(dist);
     this.raycaster.set(from, dir);
     this.raycaster.far = dist + 0.5;
-    const hits = this.raycaster.intersectObjects(this.host.colliders, false);
+    const list = this.host.rayQuery ? this.host.rayQuery(from, dir, dist + 0.5) : this.host.colliders;
+    const hits = this.raycaster.intersectObjects(list, false);
     return hits.length === 0;
   }
 
@@ -547,7 +560,7 @@ export class Fighter {
     rig.input.ads = this.state === "attack" || this.state === "alert";
     const gy = host.groundHeightAt(my.x, my.z, my.y);
     rig.update(dt, gy);
-    resolveCircleAABBs(my, 0.55, host.aabbs, rig.stepHeight);
+    resolveCircleAABBs(my, 0.55, host.spatialAABBs ?? host.aabbs, rig.stepHeight);
   }
 }
 
@@ -658,7 +671,7 @@ export class Ally extends Fighter {
 
     const gy = host.groundHeightAt(my.x, my.z, my.y);
     rig.update(dt, gy);
-    resolveCircleAABBs(my, 0.55, host.aabbs, rig.stepHeight);
+    resolveCircleAABBs(my, 0.55, host.spatialAABBs ?? host.aabbs, rig.stepHeight);
   }
 
   protected onShoot(muzzle: THREE.Vector3) {
