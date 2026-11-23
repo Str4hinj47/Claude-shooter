@@ -1,3 +1,5 @@
+import { CARS, isCarId, type CarId } from "./vehicles/catalog";
+
 export type CurrencyKey = "credits" | "intel" | "salvage";
 
 export type Currencies = Record<CurrencyKey, number>;
@@ -60,6 +62,9 @@ export interface SaveData {
   records: Record<number, MissionRecord>;
   selectedWeapon: number;
   appearance: SoldierAppearance;
+  ownedCars: CarId[];
+  selectedCar: CarId;
+  carPaints: Partial<Record<CarId, string>>;
 }
 
 export const SAVE_KEY = "vanguard_blackout_save_v1";
@@ -236,6 +241,9 @@ const DEFAULT_SAVE = (): SaveData => ({
   records: {},
   selectedWeapon: 0,
   appearance: { ...DEFAULT_APPEARANCE },
+  ownedCars: ["golf"],
+  selectedCar: "golf",
+  carPaints: {},
 });
 
 export function loadSave(): SaveData {
@@ -243,6 +251,20 @@ export function loadSave(): SaveData {
     const raw = localStorage.getItem(SAVE_KEY);
     if (!raw) return DEFAULT_SAVE();
     const p = JSON.parse(raw) as Partial<SaveData>;
+    const rawOwned = Array.isArray(p.ownedCars) ? p.ownedCars.filter((c): c is CarId => typeof c === "string" && isCarId(c)) : [];
+    const ownedCars: CarId[] = ["golf", ...rawOwned.filter((c) => c !== "golf")];
+    const selectedCar: CarId =
+      typeof p.selectedCar === "string" && isCarId(p.selectedCar) && ownedCars.includes(p.selectedCar)
+        ? p.selectedCar
+        : "golf";
+    const carPaints: Partial<Record<CarId, string>> = {};
+    if (p.carPaints && typeof p.carPaints === "object") {
+      for (const [k, v] of Object.entries(p.carPaints)) {
+        if (isCarId(k) && typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v)) {
+          carPaints[k] = v;
+        }
+      }
+    }
     return {
       unlocked: Math.max(1, Number(p.unlocked ?? 1)),
       currencies: {
@@ -257,6 +279,9 @@ export function loadSave(): SaveData {
         ...DEFAULT_APPEARANCE,
         ...(p.appearance && typeof p.appearance === "object" ? p.appearance : {}),
       },
+      ownedCars,
+      selectedCar,
+      carPaints,
     };
   } catch {
     return DEFAULT_SAVE();
@@ -300,6 +325,39 @@ export function purchaseUpgrade(id: string): SaveData | null {
   save.currencies.salvage -= cost.salvage ?? 0;
   save.upgrades[id] = lvl + 1;
   writeSave(save);
+  return save;
+}
+
+export function purchaseCar(carId: CarId): SaveData | null {
+  const spec = CARS.find((c) => c.id === carId);
+  if (!spec) return null;
+  const save = loadSave();
+  if (save.ownedCars.includes(carId)) return null;
+  if (save.currencies.credits < spec.price) return null;
+  save.currencies.credits -= spec.price;
+  save.ownedCars.push(carId);
+  save.selectedCar = carId;
+  writeSave(save);
+  return save;
+}
+
+export function selectOwnedCar(carId: CarId, paintHex?: string | null): SaveData | null {
+  const save = loadSave();
+  if (!save.ownedCars.includes(carId)) return null;
+  save.selectedCar = carId;
+  if (paintHex === null) delete save.carPaints[carId];
+  else if (typeof paintHex === "string" && /^#[0-9a-fA-F]{6}$/.test(paintHex)) save.carPaints[carId] = paintHex;
+  writeSave(save);
+  return save;
+}
+
+export function awardDrivingCredits(credits: number): SaveData {
+  const save = loadSave();
+  const gain = Math.max(0, Math.floor(credits));
+  if (gain > 0) {
+    save.currencies.credits += gain;
+    writeSave(save);
+  }
   return save;
 }
 

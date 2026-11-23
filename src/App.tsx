@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Game, type HudState, type ObjectiveState } from "./game/Game";
+import {
+  CAMERA_ORDER,
+  Game,
+  type CameraPreset,
+  type HudState,
+  type ObjectiveState,
+} from "./game/Game";
 import { MISSIONS, OPEN_WORLD_MISSION, type MissionDef } from "./game/story";
 import { WESTGATE_TELEPORTS } from "./game/city";
 import {
@@ -9,8 +15,10 @@ import {
   getUpgradeLevel,
   loadSave,
   previewMissionBaseReward,
+  purchaseCar,
   purchaseUpgrade,
   resetSave,
+  selectOwnedCar,
   UPGRADES,
   writeSave,
   type ArmorFinish,
@@ -22,6 +30,8 @@ import {
   type UpgradeCategory,
   type WeaponFinish,
 } from "./game/progression";
+import { CARS, PAINT_COLORS, type CarId } from "./game/vehicles/catalog";
+import { WEATHER_MODES, type WeatherMode } from "./game/vehicles/weather";
 import { WEAPONS } from "./character/rifle";
 import soldierUrl from "./assets/soldier.glb?url";
 import creditsIcon from "./assets/currencies/credits.png";
@@ -78,6 +88,10 @@ const initial: HudState = {
   extractDirAngle: null,
   isOpenWorld: false,
   district: null,
+  weatherMode: "auto",
+  weatherLabel: "Clear",
+  cameraPreset: "close",
+  credits: 180,
   vehicle: null,
   weapons: WEAPONS.map((w) => ({
     slot: w.slot,
@@ -95,8 +109,9 @@ const KEYS: [string, string][] = [
   ["Right Click", "Aim Down Sights"],
   ["Scroll Wheel", "Zoom Optic (ADS)"],
   ["1 – 4", "Switch Weapon"],
-  ["F (hold / press)", "Interact / Drive Vehicle"],
-  ["C", "Crouch (silent)"],
+  ["F (hold / press)", "Interact / Enter & Exit Car"],
+  ["C", "Crouch (on foot) / Cycle Camera (driving)"],
+  ["B", "Cycle Weather (Auto / Clear / Rain / Snow)"],
   ["V", "Silent Takedown"],
   ["Left Shift", "Sprint (loud)"],
   ["Space", "Jump"],
@@ -150,7 +165,7 @@ const WEAPON_FINISH_OPTIONS: { id: WeaponFinish; label: string; swatch: string }
   { id: "gold", label: "Gold-Trim", swatch: "#c29336" },
 ];
 
-type Screen = "home" | "missions" | "upgrades" | "customize" | "controls" | "playing";
+type Screen = "home" | "missions" | "upgrades" | "customize" | "garage" | "controls" | "playing";
 
 function CurrencyBadge({ kind, amount, compact = false }: { kind: CurrencyKey; amount: number; compact?: boolean }) {
   const m = CURRENCY_META[kind];
@@ -181,7 +196,24 @@ export default function App() {
   });
   const [upgradeTab, setUpgradeTab] = useState<UpgradeCategory>("weapons");
   const [customTab, setCustomTab] = useState<"colors" | "gear">("colors");
+  const [, setCamTick] = useState(0);
   const [endInfo, setEndInfo] = useState<{ mission: MissionDef; success: boolean; reward?: MissionReward } | null>(null);
+
+  const handleBuyCar = (carId: CarId) => {
+    const updated = purchaseCar(carId);
+    if (updated) {
+      setSave(updated);
+      game.current?.summonSelectedCar(carId, updated.carPaints[carId]);
+    }
+  };
+
+  const handleSelectCar = (carId: CarId, paintHex?: string | null) => {
+    const updated = selectOwnedCar(carId, paintHex);
+    if (updated) {
+      setSave(updated);
+      game.current?.summonSelectedCar(carId, updated.carPaints[carId]);
+    }
+  };
 
   useEffect(() => {
     if (!host.current) return;
@@ -292,7 +324,7 @@ export default function App() {
           {/* Backdrop gradient: clear on right for 3D soldier on Home/Upgrades, deeper on Missions/Controls */}
           <div
             className={`absolute inset-0 -z-0 transition-colors duration-300 ${
-              screen === "missions" || screen === "controls"
+              screen === "missions" || screen === "controls" || screen === "garage"
                 ? "bg-[#07090e]/88 backdrop-blur-sm"
                 : "bg-gradient-to-r from-[#07090e]/95 via-[#07090e]/55 to-transparent"
             }`}
@@ -320,7 +352,9 @@ export default function App() {
                         ? "Armory & Upgrades"
                         : screen === "customize"
                           ? "Operative Customizer"
-                          : "Field Manual"}
+                          : screen === "garage"
+                            ? "Dealership & Garage"
+                            : "Field Manual"}
                 </span>
               </div>
             </div>
@@ -416,10 +450,25 @@ export default function App() {
                   >
                     <div>
                       <div className="text-xs font-bold uppercase tracking-[0.2em] text-sky-200">Westgate Bay · Free Roam</div>
-                      <div className="text-[11px] text-sky-300/75">2.4 km open world · highways, 5 bridges, coast &amp; hills</div>
+                      <div className="text-[11px] text-sky-300/75">2.4 km open world · 8 cars + Range Rover, rain &amp; snow</div>
                     </div>
                     <span className="rounded-full bg-sky-400/20 px-2.5 py-0.5 font-mono text-[10px] font-bold uppercase text-sky-200">
                       Open World
+                    </span>
+                  </button>
+
+                  <button
+                    onClick={() => setScreen("garage")}
+                    className="flex items-center justify-between rounded-lg border border-emerald-400/35 bg-emerald-500/10 px-5 py-2.5 text-left transition hover:border-emerald-300/70 hover:bg-emerald-500/18"
+                  >
+                    <div>
+                      <div className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-200">Car Dealership &amp; Garage</div>
+                      <div className="text-[11px] text-emerald-300/75">
+                        Buy &amp; customize Overtake cars &amp; Range Rover ({save.ownedCars.length}/{CARS.length} owned)
+                      </div>
+                    </div>
+                    <span className="font-mono text-[10px] font-bold uppercase tracking-wider text-emerald-300">
+                      {CARS.find((c) => c.id === save.selectedCar)?.name ?? "Golf"}
                     </span>
                   </button>
 
@@ -1022,6 +1071,143 @@ export default function App() {
             </div>
           )}
 
+          {/* ================= GARAGE / CAR DEALERSHIP SCREEN ================= */}
+          {screen === "garage" && (
+            <div className="pointer-events-auto relative z-10 mx-auto flex w-full max-w-6xl flex-1 flex-col gap-5 overflow-y-auto px-8 py-6">
+              <div className="flex flex-wrap items-center justify-between gap-4 border-b border-white/10 pb-4">
+                <div>
+                  <h2 className="text-xl font-black uppercase tracking-[0.16em] text-white">
+                    Westgate Motor Dealership
+                  </h2>
+                  <p className="text-xs text-zinc-400">
+                    Buy &amp; select any Overtake car or Range Rover. Your active car spawns curbside in Westgate Bay — press [F] to drive.
+                  </p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <CurrencyBadge kind="credits" amount={save.currencies.credits} />
+                  <button
+                    onClick={() => startMission(OPEN_WORLD_MISSION)}
+                    className="rounded-md bg-sky-400 px-4 py-2 text-xs font-black uppercase tracking-widest text-black transition hover:bg-sky-300"
+                  >
+                    Drive in Westgate Bay →
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
+                {CARS.map((car) => {
+                  const owned = save.ownedCars.includes(car.id);
+                  const active = save.selectedCar === car.id;
+                  const affordable = save.currencies.credits >= car.price;
+                  const currentPaint = save.carPaints[car.id] ?? car.color;
+                  return (
+                    <div
+                      key={car.id}
+                      className={`flex flex-col justify-between rounded-xl border p-4 backdrop-blur-md transition ${
+                        active
+                          ? "border-emerald-400/70 bg-emerald-950/25 shadow-[0_0_24px_rgba(52,211,153,0.14)]"
+                          : owned
+                            ? "border-white/15 bg-black/60"
+                            : "border-white/10 bg-black/50"
+                      }`}
+                    >
+                      <div className="space-y-2.5">
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <div className="font-mono text-[10px] font-bold uppercase tracking-[0.22em] text-zinc-400">
+                              {car.maker} · {car.klass}
+                            </div>
+                            <div className="mt-0.5 text-base font-black uppercase tracking-wide text-white">
+                              {car.name}
+                            </div>
+                          </div>
+                          <span
+                            className="mt-1 h-4 w-4 shrink-0 rounded-full border border-white/35"
+                            style={{ background: currentPaint }}
+                            title="Paint color"
+                          />
+                        </div>
+                        <p className="text-[11px] leading-relaxed text-zinc-400">{car.tagline}</p>
+
+                        <div className="space-y-1.5 pt-1 font-mono text-[10px] uppercase tracking-wider text-zinc-400">
+                          {(
+                            [
+                              ["Top Speed", car.stats.speed, "bg-sky-400"],
+                              ["Handling", car.stats.handling, "bg-amber-400"],
+                              ["All-Weather Grip", car.stats.grip, "bg-emerald-400"],
+                            ] as [string, number, string][]
+                          ).map(([label, val, col]) => (
+                            <div key={label} className="flex items-center justify-between gap-2">
+                              <span>{label}</span>
+                              <div className="flex gap-1">
+                                {[1, 2, 3, 4, 5].map((n) => (
+                                  <span
+                                    key={n}
+                                    className={`h-1.5 w-3.5 rounded-sm ${n <= val ? col : "bg-white/10"}`}
+                                  />
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+
+                        {owned && (
+                          <div className="pt-1">
+                            <div className="mb-1 text-[9px] font-bold uppercase tracking-widest text-zinc-500">
+                              Paint Finish
+                            </div>
+                            <div className="flex flex-wrap gap-1.5">
+                              {PAINT_COLORS.slice(0, 8).map((p) => (
+                                <button
+                                  key={p.hex}
+                                  onClick={() => handleSelectCar(car.id, p.hex)}
+                                  title={p.name}
+                                  className={`h-4 w-4 rounded-full border transition ${
+                                    currentPaint.toLowerCase() === p.hex.toLowerCase()
+                                      ? "scale-125 border-white"
+                                      : "border-white/25 hover:scale-110"
+                                  }`}
+                                  style={{ background: p.hex }}
+                                />
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="mt-4 pt-3 border-t border-white/10">
+                        {owned ? (
+                          <button
+                            onClick={() => handleSelectCar(car.id)}
+                            className={`w-full rounded-md py-2 text-xs font-black uppercase tracking-widest transition ${
+                              active
+                                ? "bg-emerald-400 text-black"
+                                : "border border-emerald-400/50 bg-emerald-400/15 text-emerald-200 hover:bg-emerald-400/25"
+                            }`}
+                          >
+                            {active ? "✓ Selected Curbside" : "Select Car"}
+                          </button>
+                        ) : (
+                          <button
+                            disabled={!affordable}
+                            onClick={() => handleBuyCar(car.id)}
+                            className={`w-full rounded-md py-2 text-xs font-black uppercase tracking-widest transition ${
+                              affordable
+                                ? "bg-amber-400 text-black hover:bg-amber-300"
+                                : "cursor-not-allowed border border-white/10 bg-white/[0.03] text-zinc-500"
+                            }`}
+                          >
+                            Buy · {car.price} Credits
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {/* ================= CONTROLS / FIELD MANUAL SCREEN ================= */}
           {screen === "controls" && (
             <div className="pointer-events-auto relative z-10 mx-auto grid w-full max-w-5xl flex-1 grid-cols-1 gap-6 overflow-y-auto px-8 py-8 md:grid-cols-2">
@@ -1338,8 +1524,28 @@ export default function App() {
             </div>
           )}
 
-          {/* top-right pause button + FPS */}
+          {/* top-right pause button + weather/camera + FPS */}
           <div className="absolute right-5 top-5 flex items-center gap-2">
+            {hud.isOpenWorld && (
+              <>
+                <button
+                  onClick={() => game.current?.cycleWeatherMode()}
+                  className="rounded-md border border-sky-400/30 bg-black/55 px-2.5 py-1.5 font-mono text-[10px] font-bold uppercase tracking-widest text-sky-200 backdrop-blur transition hover:bg-black/80"
+                  title="Cycle weather [B]"
+                >
+                  [B] {hud.weatherLabel}
+                </button>
+                {hud.vehicle?.active && (
+                  <button
+                    onClick={() => game.current?.cycleCamera()}
+                    className="rounded-md border border-amber-400/30 bg-black/55 px-2.5 py-1.5 font-mono text-[10px] font-bold uppercase tracking-widest text-amber-200 backdrop-blur transition hover:bg-black/80"
+                    title="Cycle camera [C]"
+                  >
+                    [C] {hud.cameraPreset}
+                  </button>
+                )}
+              </>
+            )}
             <span className="pointer-events-none font-mono text-[11px] text-zinc-500">{Math.round(hud.fps)} FPS</span>
             <button
               onClick={() => game.current?.setPaused(!hud.paused)}
@@ -1396,7 +1602,7 @@ export default function App() {
                     <span className="ml-1.5 text-lg font-bold uppercase text-sky-300">km/h</span>
                   </div>
                   <div className="font-mono text-[10px] uppercase tracking-wider text-zinc-400">
-                    W/S Drive · A/D Steer · Space Brake · [F] Exit
+                    W/S Drive · A/D Steer · [C] Cam ({hud.cameraPreset}) · [B] {hud.weatherLabel} · [F] Exit
                   </div>
                 </>
               ) : (
@@ -1581,66 +1787,231 @@ export default function App() {
           )}
 
           {/* pause */}
-          {hud.paused && hud.phase === "ready" && (
-            <div className="absolute inset-0 flex items-center justify-center bg-black/75 backdrop-blur-sm">
-              <div className="w-[26rem] max-w-[92vw] space-y-3 rounded-2xl border border-white/15 bg-[#0e1015] p-6 text-center shadow-2xl">
-                <div className="text-xl font-black uppercase tracking-[0.25em] text-white">Paused</div>
-                <div className="text-xs text-zinc-500">
-                  {hud.isOpenWorld
-                    ? `${hud.district?.name ?? "Westgate Bay"} · Open World`
-                    : `${hud.mission?.codename} · ${hud.kills} eliminated · ${hud.stealthKills} stealth`}
-                </div>
-                {hud.isOpenWorld && (
-                  <div className="rounded-xl border border-sky-400/20 bg-sky-950/20 p-3 text-left">
-                    <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.25em] text-sky-300">
-                      Sector Fast-Travel
-                    </div>
-                    <div className="grid max-h-44 grid-cols-2 gap-1.5 overflow-y-auto pr-1">
-                      {WESTGATE_TELEPORTS.map((spot) => (
-                        <button
-                          key={spot.id}
-                          onClick={() => {
-                            game.current?.teleportTo(spot.x, spot.z, spot.yawDeg);
-                            game.current?.setPaused(false);
-                          }}
-                          className="rounded border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-left text-[11px] font-semibold text-zinc-200 transition hover:border-sky-400/50 hover:bg-sky-500/15"
-                        >
-                          {spot.label}
-                        </button>
-                      ))}
-                    </div>
+          {hud.paused && hud.phase === "ready" && (() => {
+            const camCfg = game.current?.getCameraSettings();
+            const freeCfg = game.current?.getFreeCameraSettings();
+            return (
+              <div className="absolute inset-0 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
+                <div className="max-h-[90vh] w-[32rem] max-w-[95vw] space-y-3 overflow-y-auto rounded-2xl border border-white/15 bg-[#0e1015] p-6 text-center shadow-2xl">
+                  <div className="text-xl font-black uppercase tracking-[0.25em] text-white">Paused</div>
+                  <div className="text-xs text-zinc-500">
+                    {hud.isOpenWorld
+                      ? `${hud.district?.name ?? "Westgate Bay"} · Credits: ${hud.credits}`
+                      : `${hud.mission?.codename} · ${hud.kills} eliminated · ${hud.stealthKills} stealth`}
                   </div>
-                )}
-                <button
-                  onClick={() => game.current?.setPaused(false)}
-                  className="w-full rounded-md bg-amber-400 py-2.5 text-xs font-black uppercase tracking-widest text-black transition hover:bg-amber-300"
-                >
-                  Resume
-                </button>
-                <button
-                  onClick={() => {
-                    game.current?.setPaused(false);
-                    game.current?.respawn();
-                  }}
-                  className="w-full rounded-md border border-white/15 py-2.5 text-xs font-bold uppercase tracking-widest text-zinc-200 transition hover:bg-white/10"
-                >
-                  Restart mission
-                </button>
-                <button
-                  onClick={() => exitToScreen("upgrades")}
-                  className="w-full rounded-md border border-amber-400/30 py-2.5 text-xs font-bold uppercase tracking-widest text-amber-300 transition hover:bg-amber-400/10"
-                >
-                  Armory &amp; Upgrades
-                </button>
-                <button
-                  onClick={() => exitToScreen("home")}
-                  className="w-full rounded-md border border-white/10 py-2.5 text-xs font-bold uppercase tracking-widest text-zinc-400 transition hover:bg-white/10"
-                >
-                  Quit to menu
-                </button>
+                  {hud.isOpenWorld && (
+                    <div className="space-y-3 text-left">
+                      {/* Weather (Auto / Clear / Rain / Snow) */}
+                      <div className="rounded-xl border border-cyan-400/20 bg-cyan-950/15 p-3">
+                        <div className="mb-2 flex items-center justify-between text-[10px] font-bold uppercase tracking-[0.25em] text-cyan-300">
+                          <span>Weather (Snow &amp; Rain)</span>
+                          <span className="font-mono text-zinc-300">{hud.weatherLabel}</span>
+                        </div>
+                        <div className="grid grid-cols-4 gap-1.5">
+                          {(WEATHER_MODES as WeatherMode[]).map((m) => (
+                            <button
+                              key={m}
+                              onClick={() => game.current?.setWeatherMode(m)}
+                              className={`rounded border py-1.5 text-[11px] font-bold uppercase transition ${
+                                hud.weatherMode === m
+                                  ? "border-cyan-400 bg-cyan-400/20 text-cyan-200"
+                                  : "border-white/10 bg-white/[0.04] text-zinc-300 hover:bg-white/10"
+                              }`}
+                            >
+                              {m}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Overtake Camera Settings */}
+                      {camCfg && freeCfg && (
+                        <div className="rounded-xl border border-amber-400/20 bg-amber-950/10 p-3 space-y-2.5">
+                          <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-amber-300">
+                            Vehicle Camera Settings
+                          </div>
+                          <div className="grid grid-cols-6 gap-1">
+                            {(CAMERA_ORDER as CameraPreset[]).map((p) => (
+                              <button
+                                key={p}
+                                onClick={() => {
+                                  game.current?.setCameraPreset(p);
+                                  setCamTick((t) => t + 1);
+                                }}
+                                className={`rounded border py-1 text-[10px] font-bold uppercase transition ${
+                                  camCfg.preset === p
+                                    ? "border-amber-400 bg-amber-400/20 text-amber-200"
+                                    : "border-white/10 bg-white/[0.04] text-zinc-400 hover:text-white"
+                                }`}
+                              >
+                                {p}
+                              </button>
+                            ))}
+                          </div>
+                          <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-[10px] text-zinc-300">
+                            {(
+                              [
+                                ["Distance", "distance", 1, 14, 0.2, camCfg.distance],
+                                ["Height", "height", 0.4, 6, 0.1, camCfg.height],
+                                ["FOV", "fov", 45, 95, 1, camCfg.fov],
+                                ["Look Ahead", "lookAhead", 3, 40, 1, camCfg.lookAhead],
+                              ] as [string, "distance" | "height" | "fov" | "lookAhead", number, number, number, number][]
+                            ).map(([label, key, min, max, step, val]) => (
+                              <label key={key} className="space-y-0.5">
+                                <div className="flex justify-between font-mono">
+                                  <span>{label}</span>
+                                  <span className="text-amber-300">{val.toFixed(key === "fov" || key === "lookAhead" ? 0 : 1)}</span>
+                                </div>
+                                <input
+                                  type="range"
+                                  min={min}
+                                  max={max}
+                                  step={step}
+                                  value={val}
+                                  onChange={(e) => {
+                                    game.current?.setCameraValue(key, Number(e.target.value));
+                                    setCamTick((t) => t + 1);
+                                  }}
+                                  className="w-full accent-amber-400"
+                                />
+                              </label>
+                            ))}
+                          </div>
+                          <div className="flex items-center justify-between gap-3 pt-1 text-[10px] text-zinc-300">
+                            <label className="flex flex-1 items-center gap-2 font-mono">
+                              <span>Free Sens</span>
+                              <input
+                                type="range"
+                                min={0.25}
+                                max={3}
+                                step={0.1}
+                                value={freeCfg.sensitivity}
+                                onChange={(e) => {
+                                  game.current?.setFreeCameraSettings({ sensitivity: Number(e.target.value) });
+                                  setCamTick((t) => t + 1);
+                                }}
+                                className="w-full accent-amber-400"
+                              />
+                              <span className="text-amber-300">{freeCfg.sensitivity.toFixed(1)}×</span>
+                            </label>
+                            <label className="flex items-center gap-1.5 font-mono">
+                              <input
+                                type="checkbox"
+                                checked={freeCfg.autoCenter}
+                                onChange={(e) => {
+                                  game.current?.setFreeCameraSettings({ autoCenter: e.target.checked });
+                                  setCamTick((t) => t + 1);
+                                }}
+                                className="accent-amber-400"
+                              />
+                              <span>Auto-Center</span>
+                            </label>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Buy & Summon Cars (Overtake + Range Rover) */}
+                      <div className="rounded-xl border border-emerald-400/20 bg-emerald-950/15 p-3">
+                        <div className="mb-2 flex items-center justify-between text-[10px] font-bold uppercase tracking-[0.25em] text-emerald-300">
+                          <span>Dealership &amp; Summon Car</span>
+                          <span className="font-mono text-amber-300">{hud.credits} CR</span>
+                        </div>
+                        <div className="grid max-h-36 grid-cols-2 gap-1.5 overflow-y-auto pr-1">
+                          {CARS.map((car) => {
+                            const owned = save.ownedCars.includes(car.id);
+                            const canBuy = hud.credits >= car.price;
+                            return (
+                              <button
+                                key={car.id}
+                                disabled={!owned && !canBuy}
+                                onClick={() => {
+                                  if (owned) {
+                                    handleSelectCar(car.id);
+                                    game.current?.setPaused(false);
+                                  } else {
+                                    handleBuyCar(car.id);
+                                    game.current?.setPaused(false);
+                                  }
+                                }}
+                                className={`flex items-center justify-between rounded border px-2.5 py-1.5 text-left text-[11px] font-semibold transition ${
+                                  owned
+                                    ? save.selectedCar === car.id
+                                      ? "border-emerald-400 bg-emerald-400/20 text-emerald-100"
+                                      : "border-white/15 bg-white/[0.05] text-zinc-100 hover:border-emerald-400/50"
+                                    : canBuy
+                                      ? "border-amber-400/45 bg-amber-400/12 text-amber-200 hover:bg-amber-400/25"
+                                      : "cursor-not-allowed border-white/5 bg-white/[0.02] text-zinc-500"
+                                }`}
+                              >
+                                <span className="truncate">{car.name}</span>
+                                <span className="ml-1 shrink-0 font-mono text-[9px] uppercase">
+                                  {owned ? "Summon" : `${car.price}CR`}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Sector Fast-Travel */}
+                      <div className="rounded-xl border border-sky-400/20 bg-sky-950/20 p-3">
+                        <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.25em] text-sky-300">
+                          Sector Fast-Travel
+                        </div>
+                        <div className="grid max-h-32 grid-cols-2 gap-1.5 overflow-y-auto pr-1">
+                          {WESTGATE_TELEPORTS.map((spot) => (
+                            <button
+                              key={spot.id}
+                              onClick={() => {
+                                game.current?.teleportTo(spot.x, spot.z, spot.yawDeg);
+                                game.current?.setPaused(false);
+                              }}
+                              className="rounded border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-left text-[11px] font-semibold text-zinc-200 transition hover:border-sky-400/50 hover:bg-sky-500/15"
+                            >
+                              {spot.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  <button
+                    onClick={() => game.current?.setPaused(false)}
+                    className="w-full rounded-md bg-amber-400 py-2.5 text-xs font-black uppercase tracking-widest text-black transition hover:bg-amber-300"
+                  >
+                    Resume
+                  </button>
+                  <button
+                    onClick={() => {
+                      game.current?.setPaused(false);
+                      game.current?.respawn();
+                    }}
+                    className="w-full rounded-md border border-white/15 py-2.5 text-xs font-bold uppercase tracking-widest text-zinc-200 transition hover:bg-white/10"
+                  >
+                    Restart mission
+                  </button>
+                  <button
+                    onClick={() => exitToScreen("garage")}
+                    className="w-full rounded-md border border-emerald-400/35 py-2.5 text-xs font-bold uppercase tracking-widest text-emerald-300 transition hover:bg-emerald-400/10"
+                  >
+                    Car Dealership &amp; Garage
+                  </button>
+                  <button
+                    onClick={() => exitToScreen("upgrades")}
+                    className="w-full rounded-md border border-amber-400/30 py-2.5 text-xs font-bold uppercase tracking-widest text-amber-300 transition hover:bg-amber-400/10"
+                  >
+                    Armory &amp; Upgrades
+                  </button>
+                  <button
+                    onClick={() => exitToScreen("home")}
+                    className="w-full rounded-md border border-white/10 py-2.5 text-xs font-bold uppercase tracking-widest text-zinc-400 transition hover:bg-white/10"
+                  >
+                    Quit to menu
+                  </button>
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
         </>
       )}
     </div>

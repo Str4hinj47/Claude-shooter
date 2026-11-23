@@ -37,6 +37,7 @@ import {
   type DistrictInfo,
   type WestgateVehicleManager,
 } from "./city";
+import type { WeatherMode, WeatherState } from "./vehicles/weather";
 
 /* ====================== seeded RNG ====================== */
 function mulberry32(seed: number) {
@@ -3619,6 +3620,21 @@ export interface LevelResult extends World {
   openWorld?: OpenWorldEngine;
   vehicles?: WestgateVehicleManager;
   getDistrictAt?: (x: number, z: number) => DistrictInfo;
+  weather?: WeatherState;
+  setWeatherMode?: (mode: WeatherMode) => void;
+  getWeatherLabel?: () => string;
+  getWeatherGrip?: () => number;
+  updateWeatherFx?: (
+    dt: number,
+    camPos: THREE.Vector3,
+    camera: THREE.Camera,
+    speed: number,
+    vehPos?: THREE.Vector3,
+    vehYaw?: number,
+    vehWidth?: number,
+    vehLength?: number,
+  ) => void;
+  disposeExtra?: () => void;
 }
 
 function finish(K: Kit, ambient: ReturnType<typeof setupAmbient>): LevelResult {

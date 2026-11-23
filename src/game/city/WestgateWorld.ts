@@ -13,6 +13,16 @@ import { registerFoothillsDistrict } from "./FoothillsDistrict";
 import { registerPortAirportDistrict } from "./PortAirportDistrict";
 import { populateWestgateProps } from "./WestgateProps";
 import { WestgateVehicleManager } from "./VehicleSystem";
+import {
+  createWeatherState,
+  stepWeather,
+  weatherGrip,
+  weatherLabel,
+  type WeatherMode,
+  type WeatherState,
+} from "../vehicles/weather";
+import { Precipitation } from "../vehicles/Precipitation";
+import { RoadSpray } from "../vehicles/RoadSpray";
 
 export interface WestgateTeleportSpot {
   id: string;
@@ -53,6 +63,20 @@ export interface WestgateLevelResult extends LevelResult {
   openWorld: OpenWorldEngine;
   vehicles: WestgateVehicleManager;
   getDistrictAt: typeof getDistrictAt;
+  weather: WeatherState;
+  setWeatherMode: (mode: WeatherMode) => void;
+  getWeatherLabel: () => string;
+  getWeatherGrip: () => number;
+  updateWeatherFx: (
+    dt: number,
+    camPos: THREE.Vector3,
+    camera: THREE.Camera,
+    speed: number,
+    vehPos?: THREE.Vector3,
+    vehYaw?: number,
+    vehWidth?: number,
+    vehLength?: number,
+  ) => void;
 }
 
 function buildCoastalDaySky(sunDir: THREE.Vector3): THREE.Mesh {
@@ -188,8 +212,61 @@ export function buildWestgateWorld(
   engine.finalizeStaticWorld(WESTGATE_SPAWN[0], WESTGATE_SPAWN[1]);
   content.add(engine.root);
 
-  // 9. Spawn driveable hero fleet & ambient NPC road traffic (Phase 10)
-  const vehicles = new WestgateVehicleManager(engine, content);
+  // 9. Spawn driveable Overtake car fleet & ambient NPC road traffic
+  const vehicles = new WestgateVehicleManager(engine);
+  content.add(vehicles.root);
+
+  // 10. Rain & snow precipitation + tire road spray
+  const weather = createWeatherState("auto");
+  const precipitation = new Precipitation(main);
+  const spray = new RoadSpray(main);
+  const baseFogColor = new THREE.Color(0xadd0e8);
+  const stormFogColor = new THREE.Color(0x6b7c8e);
+  const snowFogColor = new THREE.Color(0xcbd6e2);
+  const bgWeatherColor = new THREE.Color();
+  let weatherElapsed = 0;
+
+  const updateWeatherFx = (
+    dt: number,
+    camPos: THREE.Vector3,
+    _camera: THREE.Camera,
+    speed: number,
+    vehPos?: THREE.Vector3,
+    vehYaw?: number,
+    vehWidth?: number,
+    vehLength?: number,
+  ) => {
+    weatherElapsed += dt;
+    // Slight temperature gradient: northern foothills cooler (more snow), coast milder
+    const temp = camPos.z < -600 ? 0.22 : 0.42;
+    stepWeather(weather, dt, temp);
+    precipitation.update(dt, camPos, speed, weather, weatherElapsed);
+
+    if (vehPos && vehYaw !== undefined && vehWidth && vehLength) {
+      spray.update(dt, vehPos, vehYaw, vehWidth, vehLength, speed, weather.wet, weather.snowCover);
+    } else {
+      spray.update(dt, camPos, 0, 1.8, 4.2, 0, 0, 0);
+    }
+
+    // Subtle atmospheric fog, overcast sky & sun attenuation for rain / snow
+    const storm = Math.max(weather.rain, weather.snow);
+    const fog = main.fog as THREE.FogExp2 | null;
+    if (fog) {
+      fog.color
+        .copy(baseFogColor)
+        .lerp(stormFogColor, Math.min(1, weather.rain * 1.35))
+        .lerp(snowFogColor, Math.min(1, weather.snow * 1.35));
+      fog.density = 0.00038 + weather.rain * 0.0022 + weather.snow * 0.0032;
+    }
+    if (storm > 0.12 && fog) {
+      bgWeatherColor.copy(fog.color).multiplyScalar(weather.rain > weather.snow ? 0.8 : 0.96);
+      main.background = bgWeatherColor;
+    } else {
+      main.background = cubeRT.texture;
+    }
+    sun.intensity = 2.25 * (1 - storm * 0.55);
+    hemi.intensity = 0.68 + weather.snow * 0.25 - weather.rain * 0.12;
+  };
 
   const update = (dt: number, focus: THREE.Vector3) => {
     sun.position.copy(focus).addScaledVector(sunDir, 150);
@@ -215,5 +292,29 @@ export function buildWestgateWorld(
     openWorld: engine,
     vehicles,
     getDistrictAt,
+    weather,
+    setWeatherMode: (mode: WeatherMode) => {
+      weather.mode = mode;
+      weather.timer = 0;
+      if (mode === "rain") {
+        weather.snow = 0;
+        weather.rain = Math.max(weather.rain, 0.52);
+        weather.wet = Math.max(weather.wet, 0.36);
+      } else if (mode === "snow") {
+        weather.rain = 0;
+        weather.snow = Math.max(weather.snow, 0.52);
+        weather.snowCover = Math.max(weather.snowCover, 0.25);
+      } else if (mode === "clear") {
+        weather.rain = 0;
+        weather.snow = 0;
+      }
+    },
+    getWeatherLabel: () => weatherLabel(weather),
+    getWeatherGrip: () => weatherGrip(weather),
+    updateWeatherFx,
+    disposeExtra: () => {
+      precipitation.dispose();
+      spray.dispose();
+    },
   };
 }

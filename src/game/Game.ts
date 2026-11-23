@@ -16,6 +16,7 @@ import { Ally, Enemy, Fighter, RescueNPC, resolveCircleAABBs, type CombatHost } 
 import { MISSIONS, OPEN_WORLD_MISSION, type DialogueLine, type MissionDef, type ObjectiveDef } from "./story";
 import { createInteractableProp, type InteractableInstance } from "./interactables";
 import {
+  awardDrivingCredits,
   awardMissionReward,
   getPlayerStats,
   loadSave,
@@ -24,7 +25,30 @@ import {
   type PlayerStats,
   type SoldierAppearance,
 } from "./progression";
+import { type CarId } from "./vehicles/catalog";
+import { WEATHER_MODES, type WeatherMode } from "./vehicles/weather";
 export { loadSave, SAVE_KEY };
+
+export type CameraPreset = "close" | "chase" | "far" | "hood" | "bumper" | "free";
+
+export interface CameraSettings {
+  preset: CameraPreset;
+  distance: number;
+  height: number;
+  fov: number;
+  lookAhead: number;
+}
+
+export const CAMERA_PRESETS: Record<CameraPreset, Omit<CameraSettings, "preset">> = {
+  close: { distance: 5.2, height: 2.0, fov: 62, lookAhead: 7 },
+  chase: { distance: 7.0, height: 2.6, fov: 60, lookAhead: 9 },
+  far: { distance: 10.0, height: 3.8, fov: 56, lookAhead: 12 },
+  hood: { distance: 1.15, height: 1.12, fov: 68, lookAhead: 30 },
+  bumper: { distance: 2.25, height: 0.55, fov: 70, lookAhead: 30 },
+  free: { distance: 7.0, height: 2.6, fov: 60, lookAhead: 9 },
+};
+
+export const CAMERA_ORDER: CameraPreset[] = ["close", "chase", "far", "hood", "bumper", "free"];
 
 export interface ObjectiveState {
   id: string;
@@ -93,6 +117,10 @@ export interface HudState {
   extractDirAngle: number | null;
   isOpenWorld: boolean;
   district: { id: string; name: string; subtitle: string } | null;
+  weatherMode: WeatherMode;
+  weatherLabel: string;
+  cameraPreset: CameraPreset;
+  credits: number;
   vehicle: { active: boolean; name: string; kind: string; speedKmh: number; nearbyName: string | null } | null;
   weapons: { slot: number; shortName: string; category: string; mag: number; reserve: number }[];
 }
@@ -203,6 +231,7 @@ export class Game {
   private objectiveDialoguePlayed = false;
   private halfwayPlayed = false;
   private paused = false;
+  private pausedRendered = false;
   private progress = 0;
   private phase: HudState["phase"] = "idle";
   private extractRing: THREE.Mesh | null = null;
@@ -215,7 +244,12 @@ export class Game {
   private destroyableHp = new Map<THREE.Object3D, number>();
   private practiceRespawnT = 0;
   private nearbyVehicleName: string | null = null;
-  private lastMouseLookT = 0;
+  private vehCam: CameraSettings = { preset: "close", ...CAMERA_PRESETS.close };
+  private freeCamera = { sensitivity: 1, autoCenter: true };
+  private freeYaw = 0;
+  private freePitch = 0;
+  private freeIdle = 0;
+  private driveDistAcc = 0;
 
   constructor(
     private container: HTMLElement,
@@ -249,6 +283,7 @@ export class Game {
     this.camera.position.set(0.6, 1.8, -3);
     this.scene.add(this.missionRoot);
     this.scene.add(this.fx.group);
+    this.loadVehicleCameraSettings();
     this.bind();
     this.resize();
     this.emitHud();
@@ -270,6 +305,7 @@ export class Game {
     if (this.rig) this.rig.setVisible(true);
     this.nearbyVehicleName = null;
     if (this.level?.openWorld) {
+      this.level.disposeExtra?.();
       this.level.vehicles?.dispose();
       this.level.openWorld.dispose();
       this.level = null;
@@ -691,6 +727,10 @@ export class Game {
     if (this.raf) return;
     this.last = performance.now();
     const loop = (t: number) => {
+      if (this.paused && this.pausedRendered) {
+        this.raf = 0;
+        return;
+      }
       this.raf = requestAnimationFrame(loop);
       const dt = Math.min(0.05, (t - this.last) / 1000);
       this.last = t;
@@ -720,7 +760,11 @@ export class Game {
           this.trigger("reload");
           break;
         case "KeyC":
-          this.crouchToggle = !this.crouchToggle;
+          if (this.level?.vehicles?.activeVehicle) this.cycleCamera();
+          else this.crouchToggle = !this.crouchToggle;
+          break;
+        case "KeyB":
+          if (this.mission?.id === -1 && this.phase === "ready") this.cycleWeatherMode();
           break;
         case "KeyV":
           this.tryTakedown();
@@ -744,7 +788,9 @@ export class Game {
           this.selectWeapon(3);
           break;
         case "Escape":
-          if (this.phase === "ready" || this.phase === "dead") this.paused = !this.paused;
+          if (this.phase === "ready" || this.phase === "dead") {
+            this.setPaused(!this.paused);
+          }
           break;
       }
     });
@@ -772,9 +818,14 @@ export class Game {
       if (!this.locked && !drag) return;
       const fovScale = clamp(this.camera.fov / 62, 0.2, 1.0);
       const s = 0.0022 * fovScale;
-      this.camYaw -= e.movementX * s;
-      this.camPitch = clamp(this.camPitch - e.movementY * s, -1.2, 1.25);
-      this.lastMouseLookT = performance.now();
+      if (this.level?.vehicles?.activeVehicle && this.vehCam.preset === "free") {
+        this.freeYaw -= e.movementX * 0.006 * this.freeCamera.sensitivity;
+        this.freePitch = clamp(this.freePitch + e.movementY * 0.004 * this.freeCamera.sensitivity, -0.42, 1.12);
+        this.freeIdle = 0;
+      } else {
+        this.camYaw -= e.movementX * s;
+        this.camPitch = clamp(this.camPitch - e.movementY * s, -1.2, 1.25);
+      }
       if (!this.showcase) {
         this.yaw = this.camYaw;
         this.pitch = this.camPitch;
@@ -850,7 +901,10 @@ export class Game {
   }
   setPaused(v: boolean) {
     this.paused = v;
+    this.pausedRendered = false;
     if (v && document.pointerLockElement) document.exitPointerLock();
+    this.startLoop();
+    this.emitHud();
   }
   getPhase() {
     return this.phase;
@@ -940,6 +994,9 @@ export class Game {
 
   exitToMenu() {
     if (document.pointerLockElement) document.exitPointerLock();
+    this.paused = false;
+    this.pausedRendered = false;
+    this.startLoop();
     void this.enterMenuHangar();
   }
 
@@ -1419,14 +1476,22 @@ export class Game {
       return;
     }
 
-    // ---- paused / dead / complete: render only (+ death anim)
+    // ---- paused / dead / complete: render once per state change so pause menu stays snappy
     if (this.paused) {
-      this.renderFrame(rawDt);
+      if (!this.pausedRendered) {
+        this.pausedRendered = true;
+        this.renderFrame(rawDt);
+      }
       return;
     }
+    this.pausedRendered = false;
 
     const dead = rig.dead;
     const vehicles = this.level?.vehicles;
+    const gripScale = this.level?.getWeatherGrip?.() ?? 1.0;
+    const darkness = this.level?.weather
+      ? Math.max(this.level.weather.rain * 0.55, this.level.weather.snow * 0.45)
+      : 0;
     if (this.phase === "ready") {
       const k = this.keys;
       const activeVeh = vehicles?.activeVehicle ?? null;
@@ -1435,22 +1500,41 @@ export class Game {
         const throttle = (k.has("KeyW") ? 1 : 0) - (k.has("KeyS") ? 1 : 0);
         const steer = (k.has("KeyA") ? 1 : 0) - (k.has("KeyD") ? 1 : 0);
         const handbrake = k.has("Space");
-        vehicles!.update(dt, { throttle, steer, handbrake }, activeVeh.pos);
+        vehicles!.update(dt, { throttle, steer, handbrake }, activeVeh.pos, gripScale, this.camera, darkness);
         rig.setVisible(false);
         rig.root.position.copy(activeVeh.pos);
         rig.groundY = activeVeh.pos.y;
         this.nearbyVehicleName = null;
 
-        // Smoothly align chase camera behind moving vehicle when player isn't actively looking around
-        if (Math.abs(activeVeh.speed) > 2.2 && performance.now() - this.lastMouseLookT > 950) {
-          let diff = activeVeh.yaw - this.camYaw;
-          while (diff > Math.PI) diff -= Math.PI * 2;
-          while (diff < -Math.PI) diff += Math.PI * 2;
-          this.camYaw += diff * Math.min(1, dt * 3.2);
-          this.camPitch = damp(this.camPitch, 0.14, 4, rawDt);
+        // Earn driving credits every 500 m explored in Westgate Bay
+        if (this.mission?.id === -1 && Math.abs(activeVeh.speed) > 2) {
+          this.driveDistAcc += Math.abs(activeVeh.speed) * dt;
+          if (this.driveDistAcc >= 500) {
+            this.driveDistAcc -= 500;
+            awardDrivingCredits(35);
+          }
+        }
+
+        if (this.vehCam.preset === "free") {
+          this.freeIdle += rawDt;
+          if (this.freeCamera.autoCenter && this.freeIdle > 2.5) {
+            const ease = 1 - Math.exp(-3 * rawDt);
+            this.freeYaw -= Math.atan2(Math.sin(this.freeYaw), Math.cos(this.freeYaw)) * ease;
+            this.freePitch *= 1 - ease;
+          }
         }
 
         this.updateCamera(rawDt, dt);
+        this.level?.updateWeatherFx?.(
+          dt,
+          this.camera.position,
+          this.camera,
+          activeVeh.speed,
+          activeVeh.pos,
+          activeVeh.yaw,
+          activeVeh.width,
+          activeVeh.length,
+        );
       } else {
         /* ---- on-foot input -> rig ---- */
         rig.setVisible(true);
@@ -1480,12 +1564,13 @@ export class Game {
 
         /* ---- ambient NPC traffic & nearby driveable check ---- */
         if (vehicles) {
-          vehicles.update(dt, { throttle: 0, steer: 0, handbrake: false }, rig.root.position);
+          vehicles.update(dt, { throttle: 0, steer: 0, handbrake: false }, rig.root.position, gripScale, this.camera, darkness);
           const nearV = vehicles.findNearestEnterable(rig.root.position);
           this.nearbyVehicleName = nearV ? nearV.spec.name : null;
         } else {
           this.nearbyVehicleName = null;
         }
+        this.level?.updateWeatherFx?.(dt, this.camera.position, this.camera, rig.speed);
 
         /* ---- firing ---- */
         const wantFire = this.mouseL || this.uiHeld.fire;
@@ -1529,23 +1614,40 @@ export class Game {
     const cam = this.camera;
     const activeVeh = this.level?.vehicles?.activeVehicle ?? null;
     if (activeVeh) {
-      const spdRatio = clamp(Math.abs(activeVeh.speed) / Math.max(1, activeVeh.spec.maxSpeed), 0, 1);
-      cam.fov = lerp(64, 76, spdRatio);
+      // Overtake Camera Settings (+Z vehicle forward convention)
+      const fx = Math.sin(activeVeh.yaw);
+      const fz = Math.cos(activeVeh.yaw);
+      const { preset, distance, height, lookAhead, fov } = this.vehCam;
+      cam.fov = fov;
       cam.updateProjectionMatrix();
-      const pivot = new THREE.Vector3(activeVeh.pos.x, activeVeh.pos.y + 1.65, activeVeh.pos.z);
-      const yaw = this.camYaw;
-      const p = clamp(this.camPitch, -0.35, 0.85);
-      const dist = 6.2 + spdRatio * 1.4;
-      const fwd = new THREE.Vector3(Math.sin(yaw) * Math.cos(p), Math.sin(p), Math.cos(yaw) * Math.cos(p));
-      const desired = pivot.clone().addScaledVector(fwd, -dist);
-      desired.y += 0.35;
-      const minCamY = (this.level ? this.level.groundHeightAt(desired.x, desired.z, activeVeh.pos.y + 1.4) : 0) + 0.35;
-      if (desired.y < minCamY) desired.y = minCamY;
-      cam.position.copy(desired);
-      cam.rotation.order = "YXZ";
-      cam.rotation.y = yaw + Math.PI;
-      cam.rotation.x = p;
-      cam.rotation.z = 0;
+
+      if (preset === "free") {
+        const angle = activeVeh.yaw + this.freeYaw;
+        const basePitch = Math.atan2(height - 0.9, distance);
+        const pitch = clamp(basePitch + this.freePitch, -0.15, 1.4);
+        const radius = Math.hypot(distance, height - 0.9);
+        const horizontal = Math.cos(pitch) * radius;
+        cam.position.set(
+          activeVeh.pos.x - Math.sin(angle) * horizontal,
+          activeVeh.pos.y + 0.9 + Math.sin(pitch) * radius,
+          activeVeh.pos.z - Math.cos(angle) * horizontal,
+        );
+        const minCamY = (this.level ? this.level.groundHeightAt(cam.position.x, cam.position.z, activeVeh.pos.y + 1.4) : 0) + 0.35;
+        if (cam.position.y < minCamY) cam.position.y = minCamY;
+        cam.lookAt(activeVeh.pos.x, activeVeh.pos.y + 0.9, activeVeh.pos.z);
+      } else if (preset === "hood" || preset === "bumper") {
+        cam.position.set(activeVeh.pos.x + fx * distance, activeVeh.pos.y + height, activeVeh.pos.z + fz * distance);
+        cam.lookAt(
+          activeVeh.pos.x + fx * lookAhead,
+          activeVeh.pos.y + (preset === "bumper" ? 0.5 : 0.9),
+          activeVeh.pos.z + fz * lookAhead,
+        );
+      } else {
+        cam.position.set(activeVeh.pos.x - fx * distance, activeVeh.pos.y + height, activeVeh.pos.z - fz * distance);
+        const minCamY = (this.level ? this.level.groundHeightAt(cam.position.x, cam.position.z, activeVeh.pos.y + 1.4) : 0) + 0.35;
+        if (cam.position.y < minCamY) cam.position.y = minCamY;
+        cam.lookAt(activeVeh.pos.x + fx * lookAhead, activeVeh.pos.y + 0.9, activeVeh.pos.z + fz * lookAhead);
+      }
       cam.updateMatrixWorld(true);
       return;
     }
@@ -1631,6 +1733,102 @@ export class Game {
     else rig.aimPoint.copy(origin).addScaledVector(dir, 120);
   }
 
+  private loadVehicleCameraSettings() {
+    try {
+      const raw = localStorage.getItem("overtake-camera");
+      if (raw) {
+        const s = JSON.parse(raw) as CameraSettings;
+        if (s.preset && CAMERA_PRESETS[s.preset]) {
+          this.vehCam = { ...CAMERA_PRESETS[s.preset], ...s };
+        }
+      }
+      const free = JSON.parse(localStorage.getItem("overtake-free-camera") || "{}");
+      if (typeof free.sensitivity === "number" && Number.isFinite(free.sensitivity)) {
+        this.freeCamera.sensitivity = clamp(free.sensitivity, 0.25, 3);
+      }
+      if (typeof free.autoCenter === "boolean") {
+        this.freeCamera.autoCenter = free.autoCenter;
+      }
+    } catch {}
+  }
+
+  private saveVehicleCameraSettings() {
+    try {
+      localStorage.setItem("overtake-camera", JSON.stringify(this.vehCam));
+    } catch {}
+  }
+
+  getCameraSettings(): CameraSettings {
+    return { ...this.vehCam };
+  }
+
+  setCameraPreset(preset: CameraPreset) {
+    this.vehCam = { preset, ...CAMERA_PRESETS[preset] };
+    this.freeYaw = 0;
+    this.freePitch = 0;
+    this.freeIdle = 0;
+    this.saveVehicleCameraSettings();
+    this.pausedRendered = false;
+    this.startLoop();
+    this.emitHud();
+  }
+
+  setCameraValue(key: "distance" | "height" | "fov" | "lookAhead", value: number) {
+    const limits = {
+      distance: [1.0, 14],
+      height: [0.4, 6],
+      fov: [45, 95],
+      lookAhead: [3, 40],
+    } as const;
+    const [lo, hi] = limits[key];
+    this.vehCam[key] = clamp(value, lo, hi);
+    this.saveVehicleCameraSettings();
+    this.pausedRendered = false;
+    this.startLoop();
+  }
+
+  cycleCamera() {
+    const i = CAMERA_ORDER.indexOf(this.vehCam.preset);
+    this.setCameraPreset(CAMERA_ORDER[(i + 1) % CAMERA_ORDER.length]);
+  }
+
+  getFreeCameraSettings() {
+    return { ...this.freeCamera };
+  }
+
+  setFreeCameraSettings(value: Partial<{ sensitivity: number; autoCenter: boolean }>) {
+    if (typeof value.sensitivity === "number" && Number.isFinite(value.sensitivity)) {
+      this.freeCamera.sensitivity = clamp(value.sensitivity, 0.25, 3);
+    }
+    if (typeof value.autoCenter === "boolean") {
+      this.freeCamera.autoCenter = value.autoCenter;
+    }
+    try {
+      localStorage.setItem("overtake-free-camera", JSON.stringify(this.freeCamera));
+    } catch {}
+  }
+
+  setWeatherMode(mode: WeatherMode) {
+    this.level?.setWeatherMode?.(mode);
+    this.pausedRendered = false;
+    this.startLoop();
+    this.emitHud();
+  }
+
+  cycleWeatherMode() {
+    const cur = this.level?.weather?.mode ?? "auto";
+    const idx = WEATHER_MODES.indexOf(cur);
+    this.setWeatherMode(WEATHER_MODES[(idx + 1) % WEATHER_MODES.length]);
+  }
+
+  summonSelectedCar(carId: CarId, paintHex?: string | null) {
+    if (!this.level?.vehicles || !this.rig) return;
+    this.level.vehicles.summonPlayerCar(carId, paintHex, this.rig.root.position, this.camYaw);
+    this.pausedRendered = false;
+    this.startLoop();
+    this.emitHud();
+  }
+
   private tryToggleVehicle() {
     if (this.phase !== "ready" || this.paused || !this.rig || this.rig.dead) return;
     const vehicles = this.level?.vehicles;
@@ -1656,7 +1854,6 @@ export class Game {
       this.crouchToggle = false;
       this.camYaw = nearV.yaw;
       this.camPitch = 0.14;
-      this.lastMouseLookT = 0;
       this.emitHud();
     }
   }
@@ -1737,13 +1934,16 @@ export class Game {
       ? {
           active: true,
           name: av.spec.name,
-          kind: av.spec.cls,
+          kind: av.spec.klass,
           speedKmh: Math.round(Math.abs(av.speed) * 3.6),
           nearbyName: null,
         }
       : this.nearbyVehicleName
         ? { active: false, name: this.nearbyVehicleName, kind: "", speedKmh: 0, nearbyName: this.nearbyVehicleName }
         : null;
+    const weatherMode = this.level?.weather?.mode ?? "auto";
+    const weatherLabel = this.level?.getWeatherLabel?.() ?? "Clear";
+    const credits = loadSave().currencies.credits;
     this.onHud({
       loading: this.phase === "loading",
       progress: this.progress,
@@ -1790,6 +1990,10 @@ export class Game {
       extractDirAngle,
       isOpenWorld,
       district,
+      weatherMode,
+      weatherLabel,
+      cameraPreset: this.vehCam.preset,
+      credits,
       vehicle,
       weapons: WEAPONS.map((spec, i) => ({
         slot: spec.slot,
@@ -1806,6 +2010,7 @@ export class Game {
     cancelAnimationFrame(this.raf);
     this.cleanup.forEach((c) => c());
     this.ro?.disconnect();
+    this.level?.disposeExtra?.();
     this.level?.vehicles?.dispose();
     this.level?.openWorld?.dispose();
     if (document.pointerLockElement) document.exitPointerLock();
