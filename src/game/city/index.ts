@@ -11,4 +11,5 @@ export * from "./CityBuildingKit";
 export * from "./DowntownDistrict";
 export * from "./MidtownDistrict";
 export * from "./OldQuarterDistrict";
+export * from "./WestCoastDistrict";
 export * from "./WestgateWorld";

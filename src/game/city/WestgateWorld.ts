@@ -8,6 +8,7 @@ import { CityChunkDispatcher } from "./CityBuildingKit";
 import { registerDowntownDistrict } from "./DowntownDistrict";
 import { registerMidtownDistrict } from "./MidtownDistrict";
 import { registerOldQuarterDistrict } from "./OldQuarterDistrict";
+import { registerWestCoastDistrict } from "./WestCoastDistrict";
 
 export interface WestgateTeleportSpot {
   id: string;
@@ -33,6 +34,8 @@ export const WESTGATE_TELEPORTS: WestgateTeleportSpot[] = [
   { id: "bay_bridge", label: "Westgate Bay Bridge", x: 350, z: 595, yawDeg: 72 },
   { id: "midtown_skyway", label: "Midtown Skyway & Roundabout", x: -292, z: -140, yawDeg: 90 },
   { id: "west_coast", label: "West Coast & Canals", x: -670, z: -110, yawDeg: -105 },
+  { id: "del_sol_pier", label: "Del Sol Pier & Ferris Wheel", x: -706, z: 40, yawDeg: -90 },
+  { id: "venice_canals", label: "Venice Canals Footbridges", x: -648, z: 164, yawDeg: 0 },
   { id: "north_canyon", label: "North Gorge Truss Bridge", x: 265, z: -635, yawDeg: 86 },
   { id: "observatory", label: "Observatory Foothills Summit", x: -120, z: -965, yawDeg: 175 },
   { id: "east_industrial", label: "East Industrial Bascule Bridge", x: 370, z: 268, yawDeg: 86 },
@@ -147,10 +150,11 @@ export function buildWestgateWorld(
   terrainAt = buildWestgateTerrainFn(engine.roads);
   engine.setTerrainFn(terrainAt);
 
-  // Register Downtown (Phase 2), Midtown (Phase 3), Old Quarter & Suburbs (Phase 4)
+  // Register Downtown (Phase 2), Midtown (Phase 3), Old Quarter (Phase 4), West Coast (Phase 5)
   registerDowntownDistrict(dispatcher, engine.roads, engine.heightSystem);
   registerMidtownDistrict(dispatcher, engine.roads, engine.heightSystem);
   registerOldQuarterDistrict(dispatcher, engine.roads);
+  registerWestCoastDistrict(dispatcher, engine.roads, engine.heightSystem);
 
   const terrainMesh = buildWestgateTerrainMesh(terrainAt, 2400, 160);
   content.add(terrainMesh);
