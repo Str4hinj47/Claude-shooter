@@ -1,11 +1,22 @@
 import * as THREE from "three";
 import { SoldierRig, MAG_SIZE, type RigStatus } from "../character/SoldierRig";
+import { WEAPONS } from "../character/rifle";
 import { type World, type SurfaceKind } from "./world";
 import { buildLevel, type LevelResult } from "./levels";
 import { CombatFX, Sfx } from "./fx";
 import { Spring, clamp, damp, lerp } from "../character/math";
 import { Ally, Enemy, Fighter, RescueNPC, resolveCircleAABBs, type CombatHost } from "./Enemy";
 import { MISSIONS, type DialogueLine, type MissionDef, type ObjectiveDef } from "./story";
+import {
+  awardMissionReward,
+  getPlayerStats,
+  loadSave,
+  SAVE_KEY,
+  type MissionReward,
+  type PlayerStats,
+  type SoldierAppearance,
+} from "./progression";
+export { loadSave, SAVE_KEY };
 
 export interface ObjectiveState {
   id: string;
@@ -43,6 +54,7 @@ export interface HudState {
   ammo: number;
   reserve: number;
   health: number;
+  maxHealth: number;
   status: RigStatus;
   speed: number;
   reloading: boolean;
@@ -57,6 +69,17 @@ export interface HudState {
   spread: number;
   hitMarker: number;
   timeScale: number;
+  weaponIndex: number;
+  weaponName: string;
+  weaponCategory: string;
+  zoomFactor: number;
+  suppressed: boolean;
+  stealthState: "hidden" | "caution" | "compromised";
+  suspicion: number;
+  stealthKills: number;
+  alerts: number;
+  takedownReady: boolean;
+  weapons: { slot: number; shortName: string; category: string; mag: number; reserve: number }[];
 }
 
 export type Trigger = "reload" | "jump" | "hit" | "dieBack" | "dieFront" | "respawn" | "showcase";
@@ -64,29 +87,7 @@ export type Held = "fire" | "ads" | "sprint" | "crouch";
 
 export interface GameCallbacks {
   onHud: (s: HudState) => void;
-  onMissionEnd: (mission: MissionDef, success: boolean) => void;
-}
-
-export const SAVE_KEY = "vanguard_blackout_save_v1";
-export function loadSave(): { unlocked: number } {
-  try {
-    const raw = localStorage.getItem(SAVE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as { unlocked?: unknown };
-      const u = Number(parsed?.unlocked);
-      if (Number.isFinite(u) && u >= 0) return { unlocked: Math.floor(u) };
-    }
-  } catch {
-    /* ignore */
-  }
-  return { unlocked: 0 };
-}
-export function saveProgress(unlocked: number) {
-  try {
-    localStorage.setItem(SAVE_KEY, JSON.stringify({ unlocked }));
-  } catch {
-    /* ignore */
-  }
+  onMissionEnd: (mission: MissionDef, success: boolean, reward?: MissionReward) => void;
 }
 
 function disposeObject(obj: THREE.Object3D) {
@@ -127,7 +128,6 @@ export class Game {
   private crouchToggle = false;
   private adsBlend = 0;
   private sprintFov = 0;
-  private health = 100;
   private raf = 0;
   private last = performance.now();
   private hudT = 0;
@@ -139,6 +139,11 @@ export class Game {
   private shakeY = new Spring(300, 20);
   private hitMarker = 0;
   private spread = 0;
+  private health = 100;
+  private maxHealth = 100;
+  private stats: PlayerStats = getPlayerStats();
+  private menuHangar = false;
+  private menuYaw = 0.25;
   private timeScale = 1;
   private pivotY = 1.5;
   private raycaster = new THREE.Raycaster();
@@ -147,6 +152,11 @@ export class Game {
   private cleanup: (() => void)[] = [];
   private lockFailed = false;
   private zoomDist = 2.7;
+  private weaponIdx = 0;
+  private weaponAmmo = WEAPONS.map((w) => ({ mag: w.magSize, reserve: w.reserveMax, adsFov: w.adsFovDefault }));
+  private adsFovSmooth = WEAPONS[0].adsFovDefault;
+  private wheelAcc = 0;
+  private lastWheelSwitch = 0;
 
   /* mission state */
   private cb: GameCallbacks | null = null;
@@ -162,6 +172,8 @@ export class Game {
   private dialogueT = 0;
   private firstContact = false;
   private killed = 0;
+  private stealthKills = 0;
+  private alerts = 0;
   private bossKilled = false;
   private destroyed = 0;
   private rescued = false;
@@ -172,7 +184,7 @@ export class Game {
   private progress = 0;
   private phase: HudState["phase"] = "idle";
   private extractRing: THREE.Mesh | null = null;
-  private rescueBeacon: THREE.Mesh | null = null;
+  private rescueBeacon: THREE.Group | null = null;
   private destroyableHp = new Map<THREE.Object3D, number>();
   private practiceRespawnT = 0;
 
@@ -196,12 +208,169 @@ export class Game {
     this.bind();
     this.resize();
     this.emitHud();
+    (window as unknown as { __game: Game }).__game = this;
+    void this.enterMenuHangar();
+  }
+
+  /** Builds a live 3D studio hangar with the player's soldier for the Main Menu & Armory */
+  async enterMenuHangar() {
+    this.menuHangar = true;
+    this.phase = "idle";
+    this.paused = false;
+    this.enemies = [];
+    this.enemyHits = [];
+    this.ally = null;
+    this.npc = null;
+
+    if (this.missionRoot.children.length > 0) {
+      this.scene.remove(this.missionRoot);
+      disposeObject(this.missionRoot);
+      this.missionRoot = new THREE.Group();
+      this.scene.add(this.missionRoot);
+    }
+
+    this.scene.background = new THREE.Color(0x080b10);
+    this.scene.fog = new THREE.FogExp2(0x080b10, 0.045);
+
+    // Tactical studio dais + subtle amber perimeter ring
+    const floor = new THREE.Mesh(
+      new THREE.CircleGeometry(14, 48),
+      new THREE.MeshStandardMaterial({ color: 0x0c1016, roughness: 0.85, metalness: 0.2 }),
+    );
+    floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
+    this.missionRoot.add(floor);
+
+    const dais = new THREE.Mesh(
+      new THREE.CylinderGeometry(1.45, 1.58, 0.1, 48),
+      new THREE.MeshStandardMaterial({ color: 0x171c24, roughness: 0.45, metalness: 0.75 }),
+    );
+    dais.position.y = 0.05;
+    dais.receiveShadow = true;
+    this.missionRoot.add(dais);
+
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(1.38, 1.44, 64),
+      new THREE.MeshBasicMaterial({ color: 0xf59e0b, transparent: true, opacity: 0.55, side: THREE.DoubleSide }),
+    );
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.y = 0.103;
+    this.missionRoot.add(ring);
+
+    // 3-point tactical studio lighting (with bright front-key fill so dark/metallic armors read crisply)
+    const hemi = new THREE.HemisphereLight(0xaac8e8, 0x1e2530, 1.35);
+    const key = new THREE.DirectionalLight(0xfff1dc, 2.5);
+    key.position.set(2.4, 4.2, 4.0);
+    key.castShadow = true;
+    key.shadow.mapSize.set(1024, 1024);
+    const rim = new THREE.DirectionalLight(0xf59e0b, 1.9);
+    rim.position.set(-2.8, 3.0, -2.5);
+    const fill = new THREE.DirectionalLight(0x93c5fd, 1.45);
+    fill.position.set(-1.6, 1.8, 3.6);
+    this.missionRoot.add(hemi, key, rim, fill);
+
+    if (!this.rig) {
+      this.rig = await SoldierRig.load(this.scene, (p) => {
+        this.progress = Math.round(p * 100);
+        this.emitHud();
+      });
+      if (this.disposed) return;
+      this.rig.initArsenal();
+      this.rig.rifle.muzzle.add(this.fx.flash);
+      this.attachRigEvents();
+    }
+    if (!this.menuHangar || this.disposed) return;
+
+    const save = loadSave();
+    this.stats = getPlayerStats(save);
+    this.rig.respawn(new THREE.Vector3(0, 0.1, 0));
+    this.rig.root.position.y = 0.1;
+    this.rig.groundY = 0.1;
+    this.menuYaw = 0.25;
+    this.rig.aimYaw = this.menuYaw;
+    this.rig.aimPitch = 0.02;
+    this.rig.input.move.set(0, 0, 0);
+    this.rig.input.crouch = false;
+    this.rig.input.sprint = false;
+    this.rig.input.ads = true;
+    this.rig.input.lean = 0;
+
+    const idx = clamp(save.selectedWeapon, 0, WEAPONS.length - 1);
+    const spec = WEAPONS[idx];
+    this.weaponIdx = idx;
+    this.rig.equipWeapon(spec, spec.magSize, spec.reserveMax, this.fx.flash);
+    this.rig.setAppearance(save.appearance);
+    this.rig.aimPoint.set(Math.sin(this.menuYaw) * 10, 1.32, Math.cos(this.menuYaw) * 10);
+    for (let i = 0; i < 20; i++) this.rig.update(0.05, 0.1);
+
+    this.emitHud();
+    this.startLoop();
+  }
+
+  previewWeapon(idx: number) {
+    if (!this.rig || !this.menuHangar) return;
+    const nextIdx = ((idx % WEAPONS.length) + WEAPONS.length) % WEAPONS.length;
+    this.weaponIdx = nextIdx;
+    const spec = WEAPONS[nextIdx];
+    this.rig.equipWeapon(spec, spec.magSize, spec.reserveMax, this.fx.flash);
+    this.sfx.switchWeapon();
+    this.emitHud();
+  }
+
+  previewAppearance(app: SoldierAppearance) {
+    if (!this.rig) return;
+    this.rig.setAppearance(app);
+  }
+
+  refreshStats() {
+    this.stats = getPlayerStats();
+  }
+
+  private attachRigEvents() {
+    this.rig.events = {
+      onShot: (m, kick) => this.onShot(m, kick),
+      onEject: (p, d) => this.fx.casing(p, d),
+      onDry: () => this.sfx.dry(),
+      onFootstep: (_s, i) => {
+        this.sfx.step(i);
+        if (this.phase === "ready" && !this.rig.dead) {
+          const crouching = this.crouchToggle || this.keys.has("ControlLeft") || this.keys.has("ControlRight");
+          if (!crouching) {
+            const baseR = this.rig.status === "Sprinting" ? 11.5 : 4.2;
+            const radius = baseR * this.stats.footstepNoiseMult;
+            if (radius > 0.4) {
+              const p = this.rig.root.position;
+              for (const e of this.enemies) {
+                if (e.isDead) continue;
+                const d = Math.hypot(e.rig.root.position.x - p.x, e.rig.root.position.z - p.z);
+                if (d <= radius) e.alertFrom(p, 0.25 + (d / radius) * 0.35, this.rig.status === "Sprinting" ? 0.55 : 0.44);
+              }
+            }
+          }
+        }
+      },
+      onReloadEvent: (k) => {
+        if (k === "magout") this.sfx.magOut();
+        else if (k === "magin") this.sfx.magIn();
+        else if (k === "bolt") this.sfx.bolt();
+        else if (k === "drop") this.sfx.magDrop();
+      },
+      onLand: (i) => this.sfx.land(i),
+      onHit: () => this.sfx.hit(),
+      onDeath: () => this.sfx.fall(),
+    };
   }
 
   /* ------------------------------------------------------------ */
   async startMission(id: number, cb: GameCallbacks) {
+    this.menuHangar = false;
+    this.camera.rotation.set(0, 0, 0);
+    this.camera.fov = 62;
+    this.camera.updateProjectionMatrix();
     this.cb = cb;
     this.phase = "loading";
+    this.stats = getPlayerStats();
+    this.maxHealth = this.stats.maxHp;
     this.emitHud();
     const mission = MISSIONS.find((m) => m.id === id) ?? MISSIONS[0];
     this.mission = mission;
@@ -209,6 +378,8 @@ export class Game {
     // reset mission state
     this.firstContact = false;
     this.killed = 0;
+    this.stealthKills = 0;
+    this.alerts = 0;
     this.bossKilled = false;
     this.destroyed = 0;
     this.rescued = false;
@@ -232,8 +403,7 @@ export class Game {
     }
     if (this.rescueBeacon) {
       this.missionRoot.remove(this.rescueBeacon);
-      this.rescueBeacon.geometry.dispose();
-      (this.rescueBeacon.material as THREE.Material).dispose();
+      disposeObject(this.rescueBeacon);
       this.rescueBeacon = null;
     }
 
@@ -256,31 +426,22 @@ export class Game {
         this.emitHud();
       });
       if (this.disposed) return;
+      this.rig.initArsenal();
       this.rig.rifle.muzzle.add(this.fx.flash);
-      this.rig.events = {
-        onShot: (m, kick) => this.onShot(m, kick),
-        onEject: (p, d) => this.fx.casing(p, d),
-        onDry: () => this.sfx.dry(),
-        onFootstep: (_s, i) => this.sfx.step(i),
-        onReloadEvent: (k) => {
-          if (k === "magout") this.sfx.magOut();
-          else if (k === "magin") this.sfx.magIn();
-          else if (k === "bolt") this.sfx.bolt();
-          else if (k === "drop") this.sfx.magDrop();
-        },
-        onLand: (i) => this.sfx.land(i),
-        onHit: () => this.sfx.hit(),
-        onDeath: () => this.sfx.fall(),
-      };
+      this.attachRigEvents();
     }
     const sp = mission.spawn;
     this.rig.respawn(new THREE.Vector3(sp[0], 0, sp[1]));
+    this.rig.setAppearance(loadSave().appearance);
+    this.rig.crouchSpeedMult = this.stats.crouchSpeedMult;
     this.rig.aimYaw = THREE.MathUtils.degToRad(sp[2]);
     this.yaw = this.camYaw = this.rig.aimYaw;
     this.pitch = this.camPitch = 0.05;
-    this.health = 100;
+    this.maxHealth = this.stats.maxHp;
+    this.health = this.maxHealth;
     this.showcase = false;
     this.crouchToggle = false;
+    this.resetWeapons();
 
     // objectives
     this.objectives = mission.objectives.map((o: ObjectiveDef) => ({
@@ -288,7 +449,7 @@ export class Game {
       label: o.label,
       done: mission.practice === true,
       progress: mission.practice === true ? o.count ?? 1 : 0,
-      total: o.count ?? (o.kind === "reach" ? 1 : 0),
+      total: o.count ?? (o.kind === "reach" || o.kind === "rescue" ? 1 : 0),
     }));
     if (mission.practice) this.objectives.forEach((o) => (o.done = true));
 
@@ -304,8 +465,12 @@ export class Game {
         return out.set(r.x, r.y + this.rig.eyeHeight, r.z);
       },
       playerAlive: () => !this.rig.dead,
+      playerCrouching: () => this.crouchToggle || this.keys.has("ControlLeft") || this.keys.has("ControlRight"),
+      playerSprinting: () => this.rig?.status === "Sprinting",
+      playerDetectMult: () => this.stats.enemyDetectSpeedMult,
+      playerVisionRangeMult: () => this.stats.enemyVisionRangeMult,
       onPlayerHit: (dmg) => this.damage(dmg, Math.random() * Math.PI * 2),
-      onKilled: (e) => this.onEnemyKilled(e),
+      onKilled: (e, stealth) => this.onEnemyKilled(e, stealth),
       onAlert: () => this.onFirstContact(),
       enemies: () => this.enemies,
       mission,
@@ -357,19 +522,26 @@ export class Game {
       this.missionRoot.add(this.extractRing);
     }
     if (mission.rescue) {
-      const beaconGeo = new THREE.ConeGeometry(0.5, 1.6, 24, 1);
-      const beaconMat = new THREE.MeshStandardMaterial({ color: 0xffd060, emissive: 0xffaa20, emissiveIntensity: 1.6 });
-      this.rescueBeacon = new THREE.Mesh(beaconGeo, beaconMat);
-      this.rescueBeacon.position.set(mission.rescue[0], 2.2, mission.rescue[1]);
-      // base ring + collar for the beacon
-      const ringGeo = new THREE.TorusGeometry(0.5, 0.04, 10, 24);
-      const ringMesh = new THREE.Mesh(ringGeo, beaconMat);
-      ringMesh.rotation.x = Math.PI / 2;
-      ringMesh.position.set(mission.rescue[0], 0.1, mission.rescue[1]);
-      this.missionRoot.add(ringMesh);
-      const collar = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.4, 0.12, 24), beaconMat);
-      collar.position.set(mission.rescue[0], 1.5, mission.rescue[1]);
-      this.missionRoot.add(collar);
+      const grp = new THREE.Group();
+      grp.position.set(mission.rescue[0], 0, mission.rescue[1]);
+      const ringGeo = new THREE.RingGeometry(0.6, 0.78, 36);
+      const ringMat = new THREE.MeshBasicMaterial({ color: 0xffc857, transparent: true, opacity: 0.65, side: THREE.DoubleSide, depthWrite: false });
+      const ringMesh = new THREE.Mesh(ringGeo, ringMat);
+      ringMesh.rotation.x = -Math.PI / 2;
+      ringMesh.position.y = 0.07;
+      grp.add(ringMesh);
+      const beamMat = new THREE.MeshBasicMaterial({ color: 0xffd060, transparent: true, opacity: 0.16, depthWrite: false, side: THREE.DoubleSide });
+      const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.55, 3.4, 20, 1, true), beamMat);
+      beam.position.y = 1.75;
+      grp.add(beam);
+      const diamond = new THREE.Mesh(
+        new THREE.OctahedronGeometry(0.24, 0),
+        new THREE.MeshStandardMaterial({ color: 0xffd060, emissive: 0xffaa20, emissiveIntensity: 1.5, roughness: 0.2 })
+      );
+      diamond.position.y = 2.6;
+      diamond.scale.set(0.85, 1.35, 0.85);
+      grp.add(diamond);
+      this.rescueBeacon = grp;
       this.missionRoot.add(this.rescueBeacon);
     }
 
@@ -415,6 +587,9 @@ export class Game {
         case "KeyC":
           this.crouchToggle = !this.crouchToggle;
           break;
+        case "KeyV":
+          this.tryTakedown();
+          break;
         case "KeyH":
           this.trigger("hit");
           break;
@@ -429,6 +604,18 @@ export class Game {
           break;
         case "Tab":
           this.trigger("showcase");
+          break;
+        case "Digit1":
+          this.selectWeapon(0);
+          break;
+        case "Digit2":
+          this.selectWeapon(1);
+          break;
+        case "Digit3":
+          this.selectWeapon(2);
+          break;
+        case "Digit4":
+          this.selectWeapon(3);
           break;
         case "Escape":
           if (this.phase === "ready" || this.phase === "dead") this.paused = !this.paused;
@@ -452,8 +639,13 @@ export class Game {
     });
     on(window, "mousemove", (e: MouseEvent) => {
       const drag = this.mouseL || this.mouseR;
+      if (this.menuHangar) {
+        if (drag) this.menuYaw += e.movementX * 0.008;
+        return;
+      }
       if (!this.locked && !drag) return;
-      const s = 0.0022 * (this.adsBlend > 0.5 ? 0.6 : 1);
+      const fovScale = clamp(this.camera.fov / 62, 0.2, 1.0);
+      const s = 0.0022 * fovScale;
       this.camYaw -= e.movementX * s;
       this.camPitch = clamp(this.camPitch - e.movementY * s, -1.2, 1.25);
       if (!this.showcase) {
@@ -461,9 +653,38 @@ export class Game {
         this.pitch = this.camPitch;
       }
     });
-    on(el, "wheel", (e: WheelEvent) => {
-      this.zoomDist = clamp(this.zoomDist + e.deltaY * 0.002, 1.0, 6);
-    });
+    on(
+      window,
+      "wheel",
+      (e: WheelEvent) => {
+        if (this.showcase) {
+          this.zoomDist = clamp(this.zoomDist + e.deltaY * 0.002, 1.0, 6);
+          return;
+        }
+        if (this.phase !== "ready" || this.paused) return;
+        e.preventDefault();
+        const rmbHeld = this.mouseR || this.uiHeld.ads || this.keys.has("KeyZ");
+        if (rmbHeld) {
+          const w = WEAPONS[this.weaponIdx];
+          const st = this.weaponAmmo[this.weaponIdx];
+          // scroll up (deltaY < 0) zooms IN (smaller FOV), scroll down zooms OUT
+          const delta = Math.sign(e.deltaY) * Math.max(2.5, Math.min(8, Math.abs(e.deltaY) * 0.04));
+          st.adsFov = clamp(st.adsFov + delta, w.adsFovMin, w.adsFovMax);
+          this.emitHud();
+        } else {
+          const now = performance.now();
+          if (now - this.lastWheelSwitch < 95) return;
+          this.wheelAcc += e.deltaY;
+          if (Math.abs(this.wheelAcc) >= 12) {
+            const dir = this.wheelAcc > 0 ? 1 : -1;
+            this.wheelAcc = 0;
+            this.lastWheelSwitch = now;
+            this.selectWeapon((this.weaponIdx + dir + WEAPONS.length) % WEAPONS.length);
+          }
+        }
+      },
+      { passive: false },
+    );
     on(document, "pointerlockchange", () => {
       this.locked = document.pointerLockElement === el;
       this.emitHud();
@@ -556,7 +777,8 @@ export class Game {
 
   damage(n: number, angle: number) {
     if (this.rig.dead || this.phase !== "ready") return;
-    this.health = Math.max(0, this.health - n);
+    const scaled = n * this.stats.damageTakenMult;
+    this.health = Math.max(0, this.health - scaled);
     this.rig.hit(angle);
     this.shakeX.kick((Math.random() - 0.5) * 8);
     this.shakeY.kick(-5);
@@ -571,7 +793,8 @@ export class Game {
       if (this.mission?.practice) {
         this.practiceRespawnT = 1.2;
       } else {
-        this.cb?.onMissionEnd(this.mission!, false);
+        const { reward } = awardMissionReward(this.mission!.id, this.killed, this.stealthKills, this.alerts, false);
+        this.cb?.onMissionEnd(this.mission!, false, reward);
       }
     }
   }
@@ -579,10 +802,15 @@ export class Game {
   /** story missions: full rebuild; practice: quick reset */
   respawn() {
     if (!this.mission) return;
+    this.stats = getPlayerStats();
+    this.maxHealth = this.stats.maxHp;
     if (this.mission.practice) {
-      this.health = 100;
+      this.health = this.maxHealth;
       const sp = this.mission.spawn;
       this.rig.respawn(new THREE.Vector3(sp[0], 0, sp[1]));
+      this.rig.setAppearance(loadSave().appearance);
+      this.rig.crouchSpeedMult = this.stats.crouchSpeedMult;
+      this.resetWeapons();
       this.rig.aimYaw = THREE.MathUtils.degToRad(sp[2]);
       this.yaw = this.camYaw = this.rig.aimYaw;
       this.phase = "ready";
@@ -593,40 +821,41 @@ export class Game {
   }
 
   exitToMenu() {
-    this.phase = "idle";
-    this.paused = false;
     if (document.pointerLockElement) document.exitPointerLock();
+    void this.enterMenuHangar();
   }
 
   /* ------------------------------------------------------------ */
   private onFirstContact() {
+    this.alerts++;
     if (this.firstContact || !this.mission) return;
     this.firstContact = true;
     if (this.mission.onFirstContact) this.queueDialogue(this.mission.onFirstContact);
   }
 
-  private onEnemyKilled(e: Fighter) {
+  private onEnemyKilled(e: Fighter, stealth = false) {
     this.killed++;
+    if (stealth) this.stealthKills++;
     this.sfx.thud();
       if (e === this.bossEntity) {
         this.bossKilled = true;
         this.bossEntity = null;
       }
+    this.updateObjectives();
     // halfway line
     const eliminateTotal = this.mission!.enemies.filter((s) => !s.boss).length;
     if (!this.halfwayPlayed && eliminateTotal > 0 && this.killed >= Math.ceil(eliminateTotal / 2)) {
       this.halfwayPlayed = true;
       if (this.mission!.onHalfway) this.queueDialogue(this.mission!.onHalfway);
     }
-    // objective dialogue once
+    // objective dialogue once all non-extract objectives are complete
     if (!this.objectiveDialoguePlayed && this.mission!.onObjective) {
-      const prog = this.objectives.find((o) => !o.done);
-      if (!prog) {
+      const allNonExtract = this.objectives.filter((o) => o.id !== "extract").every((o) => o.done);
+      if (allNonExtract) {
         this.objectiveDialoguePlayed = true;
         this.queueDialogue(this.mission!.onObjective);
       }
     }
-    this.updateObjectives();
     this.emitHud();
   }
 
@@ -704,9 +933,12 @@ export class Game {
       if (d < 3.5) {
         this.rescued = true;
         this.updateObjectives();
-        if (!this.objectiveDialoguePlayed) {
-          this.objectiveDialoguePlayed = true;
-          if (this.mission.onObjective) this.queueDialogue(this.mission.onObjective);
+        if (!this.objectiveDialoguePlayed && this.mission.onObjective) {
+          const allNonExtract = this.objectives.filter((o) => o.id !== "extract").every((o) => o.done);
+          if (allNonExtract || this.mission.id === 1) {
+            this.objectiveDialoguePlayed = true;
+            this.queueDialogue(this.mission.onObjective);
+          }
         }
         this.emitHud();
       }
@@ -729,56 +961,139 @@ export class Game {
   private completeMission() {
     if (!this.mission || this.phase === "complete") return;
     this.phase = "complete";
-    const next = Math.max(this.mission.id + 1, loadSave().unlocked);
-    saveProgress(next);
+    const { reward } = awardMissionReward(this.mission.id, this.killed, this.stealthKills, this.alerts, true);
     if (this.mission.onExtraction) this.queueDialogue(this.mission.onExtraction);
     this.emitHud();
     setTimeout(() => {
-      this.cb?.onMissionEnd(this.mission!, true);
+      this.cb?.onMissionEnd(this.mission!, true, reward);
     }, 1800);
+  }
+
+  private resetWeapons() {
+    const mm = this.stats.magMult;
+    this.weaponAmmo = WEAPONS.map((w) => ({
+      mag: Math.round(w.magSize * mm),
+      reserve: Math.round(w.reserveMax * mm),
+      adsFov: w.adsFovDefault,
+    }));
+    const startIdx = clamp(loadSave().selectedWeapon, 0, WEAPONS.length - 1);
+    this.weaponIdx = startIdx;
+    this.adsFovSmooth = WEAPONS[startIdx].adsFovDefault;
+    if (this.rig) {
+      const spec = WEAPONS[startIdx];
+      const st = this.weaponAmmo[startIdx];
+      this.rig.equipWeapon(spec, st.mag, st.reserve, this.fx.flash, {
+        magSize: Math.round(spec.magSize * mm),
+        rpmMult: this.stats.rpmMult,
+        recoilMult: this.stats.recoilMult,
+      });
+    }
+  }
+
+  selectWeapon(idx: number) {
+    if (!this.rig || this.rig.dead || this.phase !== "ready") return;
+    const nextIdx = ((idx % WEAPONS.length) + WEAPONS.length) % WEAPONS.length;
+    if (nextIdx === this.weaponIdx) return;
+    // Save current weapon mag & reserve before swapping
+    this.weaponAmmo[this.weaponIdx].mag = this.rig.mag;
+    this.weaponAmmo[this.weaponIdx].reserve = this.rig.reserve;
+    this.weaponIdx = nextIdx;
+    const spec = WEAPONS[nextIdx];
+    const st = this.weaponAmmo[nextIdx];
+    this.rig.equipWeapon(spec, st.mag, st.reserve, this.fx.flash, {
+      magSize: Math.round(spec.magSize * this.stats.magMult),
+      rpmMult: this.stats.rpmMult,
+      recoilMult: this.stats.recoilMult,
+    });
+    this.sfx.switchWeapon();
+    this.emitHud();
+  }
+
+  private findTakedownTarget(): Enemy | null {
+    if (!this.rig || this.rig.dead || this.phase !== "ready") return null;
+    const p = this.rig.root.position;
+    let best: Enemy | null = null;
+    let bestD = 2.4;
+    for (const e of this.enemies) {
+      if (e.isDead || e.state === "attack") continue;
+      const d = p.distanceTo(e.rig.root.position);
+      if (d < bestD) {
+        bestD = d;
+        best = e;
+      }
+    }
+    return best;
+  }
+
+  tryTakedown() {
+    const target = this.findTakedownTarget();
+    if (!target) return false;
+    this.sfx.takedown();
+    this.hitMarker = 0.25;
+    this.camKick.kick(0.9);
+    target.takeDamage(1000, true);
+    this.emitHud();
+    return true;
   }
 
   /* ------------------------------------------------------------ */
   private onShot(muzzle: THREE.Vector3, kick: number) {
     const rig = this.rig;
-    const dir = rig.aimPoint.clone().sub(muzzle).normalize();
+    const w = WEAPONS[this.weaponIdx];
+    const baseDir = rig.aimPoint.clone().sub(muzzle).normalize();
     const moving = clamp(rig.speed / 4, 0, 1.2);
-    const spread = (this.adsBlend > 0.5 ? 0.0018 : 0.009) + moving * 0.012 + (rig.grounded ? 0 : 0.02) + (this.crouchToggle ? -0.002 : 0);
+    const rawSpread = lerp(w.baseSpread, w.adsSpread, this.adsBlend) + moving * 0.012 + (rig.grounded ? 0 : 0.02) + (this.crouchToggle ? -0.0015 : 0);
+    const spread = Math.max(0.0003, rawSpread * this.stats.spreadMult);
     this.spread = spread;
     const r = () => (Math.random() - 0.5) * 2;
-    dir.x += r() * spread;
-    dir.y += r() * spread;
-    dir.z += r() * spread;
-    dir.normalize();
-    this.raycaster.set(muzzle, dir);
-    this.raycaster.far = 300;
     const targets = [...this.enemyHits, ...this.level!.colliders];
-    const hits = this.raycaster.intersectObjects(targets, false);
-    let end = muzzle.clone().addScaledVector(dir, 150);
-    if (hits.length) {
-      const h = hits[0];
-      end = h.point.clone();
-      const n = (h.face?.normal.clone() ?? new THREE.Vector3(0, 1, 0)).transformDirection(h.object.matrixWorld);
-      const fighter = h.object.userData.fighter as Fighter | undefined;
-      if (fighter instanceof Enemy && !fighter.isDead) {
-        fighter.takeDamage(34);
-        this.hitMarker = 0.2;
-        this.sfx.hit();
-      } else if (h.object.userData.destroyable) {
-        this.damageDestroyable(h.object, h.point, n);
-      } else {
-        const kind = (h.object.userData.kind as SurfaceKind) ?? "dirt";
-        this.fx.impact(h.point, n, kind);
-        if (kind === "metal") this.sfx.ping();
-        if (h.object.userData.target) {
-          this.world.hitTarget(h.object, 7);
-          this.hitMarker = 0.18;
+    let hitEnemy = false;
+    const shotDamage = w.damage * this.stats.damageMult;
+
+    for (let p = 0; p < w.pellets; p++) {
+      const dir = baseDir.clone();
+      dir.x += r() * spread;
+      dir.y += r() * spread;
+      dir.z += r() * spread;
+      dir.normalize();
+      this.raycaster.set(muzzle, dir);
+      this.raycaster.far = 300;
+      const hits = this.raycaster.intersectObjects(targets, false);
+      let end = muzzle.clone().addScaledVector(dir, 150);
+      if (hits.length) {
+        const h = hits[0];
+        end = h.point.clone();
+        const n = (h.face?.normal.clone() ?? new THREE.Vector3(0, 1, 0)).transformDirection(h.object.matrixWorld);
+        const fighter = h.object.userData.fighter as Fighter | undefined;
+        if (fighter instanceof Enemy && !fighter.isDead) {
+          fighter.takeDamage(shotDamage, w.suppressed);
+          this.hitMarker = 0.2;
+          hitEnemy = true;
+        } else if (h.object.userData.destroyable) {
+          this.damageDestroyable(h.object, h.point, n, shotDamage);
+        } else {
+          const kind = (h.object.userData.kind as SurfaceKind) ?? "dirt";
+          this.fx.impact(h.point, n, kind);
+          if (kind === "metal" && p === 0) this.sfx.ping();
+          if (h.object.userData.target) {
+            this.world.hitTarget(h.object, 7);
+            this.hitMarker = 0.18;
+          }
         }
       }
+      this.fx.tracer(muzzle, end);
     }
-    this.fx.tracer(muzzle, end);
-    this.fx.muzzleFlash(this.camera);
-    this.sfx.shot();
+    if (hitEnemy) this.sfx.hit();
+    this.fx.muzzleFlash(this.camera, w.suppressed ? 0.24 : 1.0);
+    this.sfx.shot(w.soundPitch, w.suppressed);
+    // Silenced shots only alert enemies within the weapon's tight noise radius
+    const gunPos = rig.root.position;
+    const noiseR = w.noiseRadius * this.stats.shotNoiseMult;
+    for (const e of this.enemies) {
+      if (e.isDead) continue;
+      const d = Math.hypot(e.rig.root.position.x - gunPos.x, e.rig.root.position.z - gunPos.z);
+      if (d <= noiseR) e.alertFrom(gunPos, 0.2 + (d / noiseR) * 0.45, 0.55);
+    }
     // camera recoil
     const k = kick;
     this.camKick.kick(1.3 * k);
@@ -793,9 +1108,9 @@ export class Game {
     this.shakeY.kick(r() * 0.9 * k);
   }
 
-  private damageDestroyable(mesh: THREE.Object3D, point: THREE.Vector3, n: THREE.Vector3) {
+  private damageDestroyable(mesh: THREE.Object3D, point: THREE.Vector3, n: THREE.Vector3, dmg = 34) {
     let hp = this.destroyableHp.get(mesh) ?? 100;
-    hp -= 34;
+    hp -= dmg;
     if (hp <= 0) {
       this.destroyableHp.set(mesh, 0);
       (mesh as THREE.Mesh).visible = false;
@@ -804,9 +1119,13 @@ export class Game {
       this.fx.impact(point, n, "metal");
       this.fx.tracer(point.clone().addScaledVector(n, -1.5), point.clone().add(new THREE.Vector3(0, 2, 0)));
       this.updateObjectives();
-      if (!this.objectiveDialoguePlayed) {
-        this.objectiveDialoguePlayed = true;
-        if (this.mission?.onObjective) this.queueDialogue(this.mission.onObjective);
+      if (!this.objectiveDialoguePlayed && this.mission?.onObjective) {
+        const destroyDone = this.objectives.find((o) => o.id === "destroy")?.done ?? false;
+        const allNonExtract = this.objectives.filter((o) => o.id !== "extract").every((o) => o.done);
+        if (allNonExtract || (this.mission.id === 2 && destroyDone)) {
+          this.objectiveDialoguePlayed = true;
+          this.queueDialogue(this.mission.onObjective);
+        }
       }
       this.emitHud();
     } else {
@@ -843,6 +1162,24 @@ export class Game {
     if (this.practiceRespawnT > 0) {
       this.practiceRespawnT -= rawDt;
       if (this.practiceRespawnT <= 0) this.respawn();
+    }
+
+    // ---- menu hangar: showcase soldier standing on tactical dais
+    if (this.menuHangar && rig) {
+      if (!this.mouseL && !this.mouseR) this.menuYaw += rawDt * 0.12;
+      rig.input.ads = true;
+      rig.aimYaw = this.menuYaw;
+      rig.aimPitch = 0.02;
+      rig.aimPoint.set(Math.sin(this.menuYaw) * 10, 1.32, Math.cos(this.menuYaw) * 10);
+      rig.update(dt, 0.1);
+      // Offset lookAt left so the soldier stands crisply in the right half of the viewport
+      this.camera.fov = 38;
+      this.camera.updateProjectionMatrix();
+      this.camera.position.set(-0.72, 1.34, 3.15);
+      this.camera.lookAt(-0.54, 1.04, 0);
+      this.fx.update(dt);
+      this.renderer.render(this.scene, this.camera);
+      return;
     }
 
     // ---- showcase: orbit camera only
@@ -928,7 +1265,9 @@ export class Game {
     this.adsBlend = damp(this.adsBlend, ads ? 1 : 0, 12, rawDt);
     const sprinting = rig.status === "Sprinting";
     this.sprintFov = damp(this.sprintFov, sprinting ? 7 : 0, 5, rawDt);
-    cam.fov = lerp(62, 46, this.adsBlend) + this.sprintFov;
+    const targetAdsFov = this.weaponAmmo[this.weaponIdx]?.adsFov ?? 44;
+    this.adsFovSmooth = damp(this.adsFovSmooth, targetAdsFov, 14, rawDt);
+    cam.fov = lerp(62, this.adsFovSmooth, this.adsBlend) + this.sprintFov;
     cam.updateProjectionMatrix();
 
     const kick = this.camKick.update(0, dt);
@@ -999,6 +1338,23 @@ export class Game {
   private emitHud() {
     const r = this.rig;
     const mission = this.mission;
+    if (r && this.weaponAmmo[this.weaponIdx]) {
+      this.weaponAmmo[this.weaponIdx].mag = r.mag;
+      this.weaponAmmo[this.weaponIdx].reserve = r.reserve;
+    }
+    const w = WEAPONS[this.weaponIdx];
+    const zoomFactor = 62 / Math.max(10, this.camera.fov);
+    let maxSusp = 0;
+    let compromised = false;
+    let caution = false;
+    for (const e of this.enemies) {
+      if (e.isDead) continue;
+      if (e.state === "attack") compromised = true;
+      else if (e.state === "alert") caution = true;
+      if (e.suspicion > maxSusp) maxSusp = e.suspicion;
+    }
+    const stealthState: HudState["stealthState"] = compromised ? "compromised" : caution || maxSusp >= 0.12 ? "caution" : "hidden";
+    const takedownReady = this.findTakedownTarget() !== null;
     const boss = this.bossEntity && !this.bossEntity.isDead && this.bossEntity.alerted
       ? { name: this.bossEntity.name || "Boss", hp: Math.max(1, this.bossEntity.hp), maxHp: this.bossEntity.maxHp }
       : null;
@@ -1017,6 +1373,7 @@ export class Game {
       ammo: r?.mag ?? MAG_SIZE,
       reserve: r?.reserve ?? 120,
       health: this.health,
+      maxHealth: this.maxHealth,
       status: r?.status ?? "Idle",
       speed: r?.speed ?? 0,
       reloading: r?.isReloading ?? false,
@@ -1024,13 +1381,30 @@ export class Game {
       locked: this.locked,
       dead: r?.dead ?? false,
       crouch: this.crouchToggle,
-      ads: this.uiHeld.ads,
+      ads: this.uiHeld.ads || this.mouseR || this.keys.has("KeyZ"),
       sprint: this.uiHeld.sprint,
       showcase: this.showcase,
       fps: this.fps,
       spread: this.spread,
       hitMarker: this.hitMarker,
       timeScale: this.timeScale,
+      weaponIndex: this.weaponIdx,
+      weaponName: w.name,
+      weaponCategory: w.category,
+      zoomFactor,
+      suppressed: w.suppressed,
+      stealthState,
+      suspicion: Math.round(maxSusp * 100),
+      stealthKills: this.stealthKills,
+      alerts: this.alerts,
+      takedownReady,
+      weapons: WEAPONS.map((spec, i) => ({
+        slot: spec.slot,
+        shortName: spec.shortName,
+        category: spec.category,
+        mag: this.weaponAmmo[i]?.mag ?? spec.magSize,
+        reserve: this.weaponAmmo[i]?.reserve ?? spec.reserveMax,
+      })),
     });
   }
 

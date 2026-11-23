@@ -1,9 +1,23 @@
 import * as THREE from "three";
-import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { GLTFLoader, type GLTF } from "three/examples/jsm/loaders/GLTFLoader.js";
+import * as SkeletonUtils from "three/examples/jsm/utils/SkeletonUtils.js";
 import soldierUrl from "../assets/soldier.glb?url";
-import { buildRifle, RIFLE, type Rifle } from "./rifle";
+import { buildRifle, buildWeapon, RIFLE, tintWeapon, WEAPONS, type Rifle, type WeaponId, type WeaponSpec } from "./rifle";
 import { buildEquipment, type SoldierEquipment } from "./equipment";
+import type { SoldierAppearance } from "../game/progression";
 import { Spring, clamp, damp, dampAngle, easeInOut, lerp, smoothstep, wrapAngle } from "./math";
+
+let cachedGltfPromise: Promise<GLTF> | null = null;
+function loadCachedSoldierGltf(onProgress?: (p: number) => void): Promise<GLTF> {
+  if (!cachedGltfPromise) {
+    cachedGltfPromise = new GLTFLoader().loadAsync(soldierUrl, (e) => {
+      if (e.total) onProgress?.(e.loaded / e.total);
+    });
+  } else {
+    onProgress?.(1);
+  }
+  return cachedGltfPromise;
+}
 
 /* ------------------------------------------------------------------ */
 /*  Public types                                                       */
@@ -115,7 +129,12 @@ export class SoldierRig {
   private actions!: { idle: THREE.AnimationAction; walk: THREE.AnimationAction; run: THREE.AnimationAction };
   private bones: Record<string, THREE.Object3D> = {};
   private handBind = {} as Record<Side, HandBind>;
-  readonly rifle: Rifle;
+  rifle: Rifle;
+  private weapons = new Map<WeaponId, Rifle>();
+  weaponMagSize = MAG_SIZE;
+  fireInterval = FIRE_INTERVAL;
+  recoilMult = 1.0;
+  crouchSpeedMult = 1.0;
   /** tactical loadout parented to the rig (adds detail on top of the .glb) */
   equipment: SoldierEquipment | null = null;
   events: RigEvents = {};
@@ -205,8 +224,48 @@ export class SoldierRig {
     this.rifle = buildRifle();
     this.rifle.group.scale.setScalar(WS);
     scene.add(this.rifle.group);
+    this.weapons.set("carbine", this.rifle);
     this.root.add(this.fall);
     scene.add(this.root);
+  }
+
+  /** Pre-build all 4 player weapon models for instant 0ms switching. */
+  initArsenal() {
+    for (const w of WEAPONS) {
+      if (this.weapons.has(w.id)) continue;
+      const model = buildWeapon(w.id);
+      model.group.scale.setScalar(WS);
+      model.group.visible = false;
+      this.scene.add(model.group);
+      this.weapons.set(w.id, model);
+    }
+  }
+
+  equipWeapon(
+    spec: WeaponSpec,
+    magVal: number,
+    reserveVal: number,
+    flashObj?: THREE.Object3D,
+    opts?: { magSize?: number; rpmMult?: number; recoilMult?: number },
+  ) {
+    const next = this.weapons.get(spec.id);
+    if (!next) return;
+    this.reloadT = -1;
+    this.rifle.mag.position.copy(RIFLE.magRest);
+    this.rifle.mag.visible = true;
+    this.rifle.group.visible = false;
+    this.rifle = next;
+    this.rifle.group.visible = true;
+    this.rifle.mag.visible = true;
+    if (flashObj) this.rifle.muzzle.add(flashObj);
+    this.weaponMagSize = opts?.magSize ?? spec.magSize;
+    this.fireInterval = 60 / (spec.rpm * (opts?.rpmMult ?? 1));
+    this.recoilMult = spec.recoil * (opts?.recoilMult ?? 1);
+    this.mag = magVal;
+    this.reserve = reserveVal;
+    this.fireCd = 0.16;
+    this.aimTimer = Math.max(this.aimTimer, 2.2);
+    this.sRecoilRot.kick(0.9);
   }
 
   /* ---------------------------------------------------------------- */
@@ -214,10 +273,9 @@ export class SoldierRig {
   /* ---------------------------------------------------------------- */
   static async load(scene: THREE.Object3D, onProgress?: (p: number) => void): Promise<SoldierRig> {
     const rig = new SoldierRig(scene);
-    const gltf = await new GLTFLoader().loadAsync(soldierUrl, (e) => {
-      if (e.total) onProgress?.(e.loaded / e.total);
-    });
-    rig.setup(gltf);
+    const gltf = await loadCachedSoldierGltf(onProgress);
+    const clonedScene = SkeletonUtils.clone(gltf.scene) as THREE.Group;
+    rig.setup({ scene: clonedScene, animations: gltf.animations });
     return rig;
   }
 
@@ -234,9 +292,9 @@ export class SoldierRig {
         m.castShadow = true;
         m.receiveShadow = true;
         m.frustumCulled = false;
-        const mats = Array.isArray(m.material) ? m.material : [m.material];
-        mats.forEach((mat) => {
-          const s = mat as THREE.MeshStandardMaterial;
+        const origMats = Array.isArray(m.material) ? m.material : [m.material];
+        const clonedMats = origMats.map((mat) => {
+          const s = (mat as THREE.MeshStandardMaterial).clone();
           if (s.map) {
             s.map.anisotropy = 16;
             s.map.colorSpace = THREE.SRGBColorSpace;
@@ -246,11 +304,13 @@ export class SoldierRig {
             s.roughness = 0.08;
             s.envMapIntensity = 1.6;
           } else {
-            s.metalness = 0.12;
-            s.roughness = 0.62;
-            s.envMapIntensity = 0.9;
+            s.metalness = 0.14;
+            s.roughness = 0.58;
+            s.envMapIntensity = 0.95;
           }
+          return s;
         });
+        m.material = Array.isArray(m.material) ? clonedMats : clonedMats[0];
       }
       if (/^mixamorig/.test(o.name)) {
         const key = o.name.replace(/^mixamorig:?/, "");
@@ -328,17 +388,11 @@ export class SoldierRig {
     });
   }
 
-  /** Attach the procedural tactical loadout to the spine bone so it tracks the
-   *  character's animations. Built in model-local units, scaled to the rig. */
+  /** Attach the procedural tactical loadout directly to the Mixamo bones. */
   private buildEquipment() {
     if (!this.model || this.equipment) return;
     const eq = buildEquipment();
-    // match the rig's normalised scale so the loadout sits at the right size
-    const s = this.model.scale.x || 1;
-    eq.group.scale.setScalar(s);
-    // parent to the spine (fall back to the model root if bones are missing)
-    const spine = this.bones["Spine"] ?? this.bones["Hips"] ?? this.model;
-    spine.add(eq.group);
+    eq.attach(this.bones);
     this.equipment = eq;
   }
 
@@ -418,10 +472,10 @@ export class SoldierRig {
       return false;
     }
     this.mag--;
-    this.fireCd = FIRE_INTERVAL;
+    this.fireCd = this.fireInterval;
     this.aimTimer = 3;
     const r = () => Math.random() - 0.5;
-    const ads = this.input.ads ? 0.6 : 1;
+    const ads = (this.input.ads ? 0.6 : 1) * this.recoilMult;
     this.sRecoilRot.kick((3.4 + r() * 1.2) * ads);
     this.sRecoilPos.kick(0.8 * ads);
     this.sRecoilYaw.kick(r() * 1.8 * ads);
@@ -439,7 +493,7 @@ export class SoldierRig {
   }
 
   reload() {
-    if (this.dead || this.reloadT >= 0 || this.mag >= MAG_SIZE || this.reserve <= 0) return false;
+    if (this.dead || this.reloadT >= 0 || this.mag >= this.weaponMagSize || this.reserve <= 0) return false;
     this.reloadT = 0;
     this.reloadFlags = { out: false, drop: false, in: false, bolt: false, ammo: false };
     this.aimTimer = Math.max(this.aimTimer, RELOAD_TIME + 1);
@@ -564,7 +618,7 @@ export class SoldierRig {
       rel = wrapAngle(psi - this.aimYaw);
       const sprintOK = inp.sprint && !inp.crouch && !inp.ads && Math.abs(rel) < 1.1 && this.reloadT < 0;
       this.sprinting = sprintOK;
-      target = sprintOK ? this.runN : inp.crouch ? this.walkN * 0.6 : inp.ads ? this.walkN * 0.55 : this.walkN;
+      target = sprintOK ? this.runN : inp.crouch ? this.walkN * 0.6 * this.crouchSpeedMult : inp.ads ? this.walkN * 0.55 : this.walkN;
     } else {
       this.sprinting = false;
     }
@@ -622,6 +676,12 @@ export class SoldierRig {
       if (Math.abs(groundLevel - (this.lastGroundY ?? groundLevel)) > 0.25) {
         this.events.onLand?.(0.5);
       }
+      this.lastGroundY = groundLevel;
+    } else if (wantMove && this.root.position.y - groundLevel <= 0.38) {
+      // walking down stairs / small step-downs: stay grounded and follow tread smoothly
+      this.root.position.y = damp(this.root.position.y, groundLevel, 26, dt);
+      if (this.root.position.y - groundLevel < 0.015) this.root.position.y = groundLevel;
+      this.vy = 0;
       this.lastGroundY = groundLevel;
     } else {
       // grounded state but surface dropped below (fell off a ledge)
@@ -975,7 +1035,7 @@ export class SoldierRig {
       lCurl = r.curl;
       this.updateReloadProps(dt, lPalm, wq, toW);
     } else {
-      lPalm = toW(RIFLE.leftPalm);
+      lPalm = toW(this.rifle.leftPalm ?? RIFLE.leftPalm);
       lf = dirW(LF_GRIP.f);
       lp = dirW(LF_GRIP.p);
     }
@@ -997,7 +1057,7 @@ export class SoldierRig {
     this.solveArm("Left", lWrist, lf, lp, poleL);
 
     // fingers
-    const fire = this.fireCd > FIRE_INTERVAL * 0.4 ? 1 : 0;
+    const fire = this.fireCd > this.fireInterval * 0.4 ? 1 : 0;
     this.curlHand("Right", { Thumb: 0.55, Index: 0.45 + fire * 0.35, Middle: 1, Ring: 1, Pinky: 1 });
     this.curlHand("Left", { Thumb: 0.45, Index: lCurl, Middle: lCurl, Ring: lCurl, Pinky: lCurl });
 
@@ -1156,7 +1216,7 @@ export class SoldierRig {
     }
     if (t >= 1.95 && !fl.ammo) {
       fl.ammo = true;
-      const take = Math.min(MAG_SIZE - this.mag, this.reserve);
+      const take = Math.min(this.weaponMagSize - this.mag, this.reserve);
       this.mag += take;
       this.reserve -= take;
     }
@@ -1255,6 +1315,52 @@ export class SoldierRig {
         }
       });
     });
+  }
+
+  /** Apply full player customization (armor color/finish, tactical gear color/modules, visor glow, weapon skin). */
+  setAppearance(app: SoldierAppearance) {
+    if (!this.model) return;
+    const armor = new THREE.Color(app.armorColor);
+    const gear = new THREE.Color(app.gearColor);
+    const visor = new THREE.Color(app.visorColor);
+    const finish =
+      app.armorFinish === "matte"
+        ? { r: 0.78, m: 0.08 }
+        : app.armorFinish === "titanium"
+          ? { r: 0.28, m: 0.78 }
+          : { r: 0.54, m: 0.18 };
+
+    this.equipment?.tint(gear.getHex(), visor.getHex(), app.visorGlow);
+    this.equipment?.configure({
+      nvg: app.nvg,
+      backpack: app.backpack,
+      chestRig: app.chestRig,
+      holster: app.holster,
+      headset: app.headset,
+    });
+
+    this.model.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh) return;
+      const mats = Array.isArray(m.material) ? m.material : [m.material];
+      mats.forEach((mat) => {
+        const s = mat as THREE.MeshStandardMaterial;
+        if (!s || !("color" in s)) return;
+        if (/visor/i.test(s.name)) {
+          s.color.copy(visor);
+          s.emissive.copy(visor);
+          s.emissiveIntensity = app.visorGlow;
+        } else {
+          s.color.copy(armor);
+          s.roughness = finish.r;
+          s.metalness = finish.m;
+        }
+      });
+    });
+
+    for (const w of this.weapons.values()) {
+      tintWeapon(w, app.weaponFinish);
+    }
   }
 
   /** Slight height variation so no two soldiers are identical. */

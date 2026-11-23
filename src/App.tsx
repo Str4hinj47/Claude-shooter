@@ -1,7 +1,37 @@
-import { useEffect, useRef, useState } from "react";
-import { Game, loadSave, SAVE_KEY, type HudState, type ObjectiveState } from "./game/Game";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Game, type HudState, type ObjectiveState } from "./game/Game";
 import { MISSIONS, type MissionDef } from "./game/story";
+import {
+  canAfford,
+  DEFAULT_APPEARANCE,
+  getPlayerStats,
+  getUpgradeLevel,
+  loadSave,
+  previewMissionBaseReward,
+  purchaseUpgrade,
+  resetSave,
+  UPGRADES,
+  writeSave,
+  type ArmorFinish,
+  type CurrencyKey,
+  type MissionReward,
+  type NvgMode,
+  type SaveData,
+  type SoldierAppearance,
+  type UpgradeCategory,
+  type WeaponFinish,
+} from "./game/progression";
+import { WEAPONS } from "./character/rifle";
 import soldierUrl from "./assets/soldier.glb?url";
+import creditsIcon from "./assets/currencies/credits.png";
+import intelIcon from "./assets/currencies/intel.png";
+import salvageIcon from "./assets/currencies/salvage.png";
+
+const CURRENCY_META: Record<CurrencyKey, { label: string; icon: string; color: string }> = {
+  credits: { label: "Credits", icon: creditsIcon, color: "text-amber-300" },
+  intel: { label: "Intel", icon: intelIcon, color: "text-cyan-300" },
+  salvage: { label: "Salvage", icon: salvageIcon, color: "text-orange-300" },
+};
 
 const initial: HudState = {
   loading: true,
@@ -14,6 +44,7 @@ const initial: HudState = {
   ammo: 30,
   reserve: 120,
   health: 100,
+  maxHealth: 100,
   status: "Idle",
   speed: 0,
   reloading: false,
@@ -30,15 +61,35 @@ const initial: HudState = {
   timeScale: 1,
   paused: false,
   kills: 0,
+  weaponIndex: 0,
+  weaponName: "Vanguard M4A1-S",
+  weaponCategory: "Silenced Carbine",
+  zoomFactor: 1.0,
+  suppressed: true,
+  stealthState: "hidden",
+  suspicion: 0,
+  stealthKills: 0,
+  alerts: 0,
+  takedownReady: false,
+  weapons: WEAPONS.map((w) => ({
+    slot: w.slot,
+    shortName: w.shortName,
+    category: w.category,
+    mag: w.magSize,
+    reserve: w.reserveMax,
+  })),
 };
 
 const KEYS: [string, string][] = [
   ["W A S D", "Move"],
   ["Mouse", "Aim / look"],
-  ["LMB / F", "Fire (hold)"],
+  ["LMB / F", "Fire (silenced)"],
   ["RMB / Z", "Aim down sights"],
-  ["Shift", "Sprint"],
-  ["C / Ctrl", "Crouch"],
+  ["Scroll / 1-4", "Switch weapon"],
+  ["RMB + Scroll", "Zoom in / out"],
+  ["C / Ctrl", "Crouch (silent)"],
+  ["V", "Silent takedown"],
+  ["Shift", "Sprint (loud)"],
   ["Space", "Jump"],
   ["R", "Reload"],
   ["Q / E", "Lean"],
@@ -46,16 +97,82 @@ const KEYS: [string, string][] = [
   ["Tab", "Showcase orbit"],
 ];
 
-type Screen = "menu" | "briefing" | "playing";
+const UPGRADE_TABS: { id: UpgradeCategory; label: string }[] = [
+  { id: "weapons", label: "Weapons" },
+  { id: "armour", label: "Armour" },
+  { id: "stealth", label: "Stealth" },
+  { id: "precision", label: "Precision" },
+];
+
+const ARMOR_PRESETS: { name: string; hex: string }[] = [
+  { name: "Vanguard Ivory", hex: "#e6e8ec" },
+  { name: "Obsidian Spec-Ops", hex: "#262b33" },
+  { name: "Midnight Navy", hex: "#22364d" },
+  { name: "Olive Drab", hex: "#4b5842" },
+  { name: "Desert Coyote", hex: "#8e795b" },
+  { name: "Crimson Ghost", hex: "#6e252a" },
+  { name: "Arctic Slate", hex: "#7b8a99" },
+  { name: "Cobalt Stealth", hex: "#2b4e78" },
+];
+
+const GEAR_PRESETS: { name: string; hex: string }[] = [
+  { name: "Charcoal", hex: "#2e3338" },
+  { name: "Night Black", hex: "#16191e" },
+  { name: "Ranger Green", hex: "#3c4736" },
+  { name: "Coyote Tan", hex: "#7a674d" },
+  { name: "Slate Steel", hex: "#4a5565" },
+  { name: "Crimson", hex: "#5a2125" },
+];
+
+const VISOR_PRESETS: { name: string; hex: string }[] = [
+  { name: "Tactical Cyan", hex: "#22d3ee" },
+  { name: "Amber Hunter", hex: "#f59e0b" },
+  { name: "Predator Red", hex: "#ef4444" },
+  { name: "NVG Green", hex: "#34d399" },
+  { name: "Ghost Violet", hex: "#a855f7" },
+  { name: "Blackout", hex: "#1a202c" },
+];
+
+const WEAPON_FINISH_OPTIONS: { id: WeaponFinish; label: string; swatch: string }[] = [
+  { id: "obsidian", label: "Obsidian", swatch: "#1d2026" },
+  { id: "coyote", label: "Coyote", swatch: "#7c6b53" },
+  { id: "arctic", label: "Arctic", swatch: "#b8c0ca" },
+  { id: "crimson", label: "Crimson", swatch: "#8b232a" },
+  { id: "gold", label: "Gold-Trim", swatch: "#c29336" },
+];
+
+type Screen = "home" | "missions" | "upgrades" | "customize" | "controls" | "playing";
+
+function CurrencyBadge({ kind, amount, compact = false }: { kind: CurrencyKey; amount: number; compact?: boolean }) {
+  const m = CURRENCY_META[kind];
+  return (
+    <div
+      className={`inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/65 backdrop-blur-md ${
+        compact ? "px-2 py-0.5 text-[11px]" : "px-3 py-1 text-xs"
+      }`}
+      title={m.label}
+    >
+      <img src={m.icon} alt={m.label} className={`${compact ? "h-4 w-4" : "h-5 w-5"} shrink-0 object-contain`} />
+      <span className={`font-mono font-bold tabular-nums ${m.color}`}>{amount}</span>
+      {!compact && <span className="text-[10px] uppercase tracking-wider text-zinc-400">{m.label}</span>}
+    </div>
+  );
+}
 
 export default function App() {
   const host = useRef<HTMLDivElement>(null);
   const game = useRef<Game | null>(null);
   const [hud, setHud] = useState<HudState>(initial);
-  const [screen, setScreen] = useState<Screen>("menu");
-  const [briefing, setBriefing] = useState<MissionDef | null>(null);
-  const [saved, setSaved] = useState(loadSave().unlocked);
-  const [endInfo, setEndInfo] = useState<{ mission: MissionDef; success: boolean } | null>(null);
+  const [screen, setScreen] = useState<Screen>("home");
+  const [save, setSave] = useState<SaveData>(() => loadSave());
+  const [selectedMissionId, setSelectedMissionId] = useState<number>(() => {
+    const s = loadSave();
+    const next = Math.min(MISSIONS.length - 1, Math.max(1, s.unlocked));
+    return next;
+  });
+  const [upgradeTab, setUpgradeTab] = useState<UpgradeCategory>("weapons");
+  const [customTab, setCustomTab] = useState<"colors" | "gear">("colors");
+  const [endInfo, setEndInfo] = useState<{ mission: MissionDef; success: boolean; reward?: MissionReward } | null>(null);
 
   useEffect(() => {
     if (!host.current) return;
@@ -67,15 +184,80 @@ export default function App() {
     };
   }, []);
 
+  const stats = useMemo(() => getPlayerStats(save), [save]);
+  const unlockThreshold = Math.max(save.unlocked, 1);
+  const nextMission = MISSIONS.find((m) => m.id === Math.min(MISSIONS.length - 1, unlockThreshold)) ?? MISSIONS[1];
+  const selectedMission = MISSIONS.find((m) => m.id === selectedMissionId) ?? MISSIONS[1];
+  const ghostCount = Object.values(save.records).filter((r) => r.ghost).length;
+
+  const affordableCount = useMemo(
+    () =>
+      UPGRADES.filter((u) => {
+        const lvl = getUpgradeLevel(save, u.id);
+        return lvl < u.maxLevel && canAfford(save.currencies, u.costs[lvl]);
+      }).length,
+    [save],
+  );
+
   const startMission = (m: MissionDef) => {
     setEndInfo(null);
     setScreen("playing");
     void game.current?.startMission(m.id, {
       onHud: setHud,
-      onMissionEnd: (mission, success) => {
-        setEndInfo({ mission, success });
-        if (success) setSaved(loadSave().unlocked);
+      onMissionEnd: (mission, success, reward) => {
+        setEndInfo({ mission, success, reward });
+        setSave(loadSave());
       },
+    });
+  };
+
+  const exitToScreen = (target: Exclude<Screen, "playing">) => {
+    game.current?.exitToMenu();
+    setSave(loadSave());
+    setEndInfo(null);
+    setScreen(target);
+  };
+
+  const handleBuyUpgrade = (id: string) => {
+    const updated = purchaseUpgrade(id);
+    if (!updated) return;
+    setSave(updated);
+    game.current?.refreshStats();
+  };
+
+  const handleSelectMenuWeapon = (idx: number) => {
+    setSave((prev) => {
+      const updated: SaveData = { ...prev, selectedWeapon: idx };
+      writeSave(updated);
+      return updated;
+    });
+    game.current?.previewWeapon(idx);
+  };
+
+  const updateAppearance = (patch: Partial<SoldierAppearance>) => {
+    setSave((prev) => {
+      const nextApp: SoldierAppearance = { ...prev.appearance, ...patch };
+      const updated: SaveData = { ...prev, appearance: nextApp };
+      writeSave(updated);
+      game.current?.previewAppearance(nextApp);
+      return updated;
+    });
+  };
+
+  const randomizeAppearance = () => {
+    const pick = <T,>(arr: T[]) => arr[Math.floor(Math.random() * arr.length)];
+    updateAppearance({
+      armorColor: pick(ARMOR_PRESETS).hex,
+      armorFinish: pick<ArmorFinish>(["matte", "tactical", "titanium"]),
+      gearColor: pick(GEAR_PRESETS).hex,
+      visorColor: pick(VISOR_PRESETS).hex,
+      visorGlow: Number((0.35 + Math.random() * 0.75).toFixed(2)),
+      weaponFinish: pick(WEAPON_FINISH_OPTIONS).id,
+      nvg: pick<NvgMode>(["flipped", "deployed", "none"]),
+      backpack: Math.random() > 0.25,
+      chestRig: Math.random() > 0.2,
+      holster: Math.random() > 0.2,
+      headset: Math.random() > 0.2,
     });
   };
 
@@ -86,197 +268,804 @@ export default function App() {
     a.click();
   };
 
-  const healthPct = Math.max(0, hud.health);
+  const healthPct = Math.max(0, Math.min(100, (hud.health / Math.max(1, hud.maxHealth)) * 100));
   const spreadPx = 6 + hud.spread * 1800;
   const playing = screen === "playing";
-  // M1 (First Light) is always unlocked — no practice-range gate. Missions
-  // unlock sequentially from there: completing M1 unlocks M2, etc.
-  const unlockThreshold = Math.max(saved, 1);
-  const unlockedCount = MISSIONS.filter((m) => !m.practice && m.id <= unlockThreshold).length;
 
   return (
-    <div className="relative h-screen w-screen select-none overflow-hidden bg-black font-sans text-zinc-100">
+    <div className="relative h-screen w-screen select-none overflow-hidden bg-[#07090e] font-sans text-zinc-100">
+      {/* Live 3D canvas (Menu Hangar OR Active Mission) */}
       <div ref={host} className="absolute inset-0" />
 
-      {/* ================= MENU ================= */}
-      {screen === "menu" && (
-        <div className="absolute inset-0 overflow-y-auto bg-gradient-to-b from-[#0a0c10] via-[#0d0f14] to-black">
-          <div className="mx-auto max-w-5xl px-8 py-12">
-            {/* title */}
-            <div className="pt-8 text-center">
-              <div className="text-xs font-semibold uppercase tracking-[0.5em] text-amber-400/80">
-                Zlatograd · 2029 · a Str4hinj47 world
+      {/* ================= MENU SHELL (Top Bar + Active Subscreen) ================= */}
+      {!playing && (
+        <div className="pointer-events-none absolute inset-0 flex flex-col">
+          {/* Backdrop gradient: clear on right for 3D soldier on Home/Upgrades, deeper on Missions/Controls */}
+          <div
+            className={`absolute inset-0 -z-0 transition-colors duration-300 ${
+              screen === "missions" || screen === "controls"
+                ? "bg-[#07090e]/88 backdrop-blur-sm"
+                : "bg-gradient-to-r from-[#07090e]/95 via-[#07090e]/55 to-transparent"
+            }`}
+          />
+
+          {/* Top Navigation & Currencies Header */}
+          <header className="pointer-events-auto relative z-10 flex items-center justify-between border-b border-white/10 bg-black/35 px-8 py-4 backdrop-blur-md">
+            <div className="flex items-center gap-5">
+              {screen !== "home" && (
+                <button
+                  onClick={() => setScreen("home")}
+                  className="rounded-md border border-white/15 bg-white/[0.04] px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.2em] text-zinc-200 transition hover:bg-white/15"
+                >
+                  ← Back
+                </button>
+              )}
+              <div className="flex items-baseline gap-3">
+                <span className="text-lg font-black uppercase tracking-[0.22em] text-white">VANGUARD</span>
+                <span className="hidden text-[11px] font-bold uppercase tracking-[0.35em] text-amber-400/90 sm:inline">
+                  {screen === "home"
+                    ? "Blackout Protocol"
+                    : screen === "missions"
+                      ? "Operations"
+                      : screen === "upgrades"
+                        ? "Armory & Upgrades"
+                        : screen === "customize"
+                          ? "Operative Customizer"
+                          : "Field Manual"}
+                </span>
               </div>
-              <h1 className="mt-3 text-5xl font-black uppercase tracking-[0.15em] text-white drop-shadow-[0_0_30px_rgba(245,197,66,0.25)]">
-                VANGUARD
-              </h1>
-              <h2 className="text-2xl font-black uppercase tracking-[0.4em] text-amber-400">Blackout Protocol</h2>
-              <p className="mx-auto mt-5 max-w-2xl text-sm leading-relaxed text-zinc-400">
-                Capt. Elias “Vanguard” Voss — once the city’s enforcer, now its ghost. Meridian Global Security
-                bought Zlatograd and wired it into the Lattice, a surveillance grid that can erase anyone.
-                Six missions. Five armies in the same uniform. One kill-switch.
-              </p>
             </div>
 
-            {/* mission select */}
-            <div className="mt-10">
-              <div className="mb-4 flex items-center justify-between">
-                <h3 className="text-xs font-bold uppercase tracking-[0.4em] text-zinc-300">Campaign</h3>
-                <div className="flex items-center gap-3">
-                  <span className="font-mono text-xs text-zinc-500">
-                    Progress: {unlockedCount} / {MISSIONS.length - 1} missions unlocked
-                  </span>
+            <div className="flex items-center gap-2.5">
+              <CurrencyBadge kind="credits" amount={save.currencies.credits} />
+              <CurrencyBadge kind="intel" amount={save.currencies.intel} />
+              <CurrencyBadge kind="salvage" amount={save.currencies.salvage} />
+            </div>
+          </header>
+
+          {/* ================= HOME (Main Hub with 3D Soldier on Right) ================= */}
+          {screen === "home" && (
+            <div className="relative z-10 flex flex-1 items-center justify-between px-10 py-8">
+              <div className="pointer-events-auto flex w-full max-w-md flex-col gap-7">
+                <div>
+                  <div className="font-mono text-[10px] font-bold uppercase tracking-[0.4em] text-amber-400">
+                    Westgate · 2029
+                  </div>
+                  <h1 className="mt-2 text-4xl font-black uppercase tracking-[0.12em] text-white">
+                    Blackout Protocol
+                  </h1>
+                  <p className="mt-2 text-xs leading-relaxed text-zinc-400">
+                    Infiltrate Meridian sectors silently. Eliminate targets unseen, collect intel &amp; salvage, and upgrade your stealth rig.
+                  </p>
+                </div>
+
+                {/* Focused navigation buttons */}
+                <nav className="flex flex-col gap-2.5">
                   <button
                     onClick={() => {
-                      try { localStorage.removeItem(SAVE_KEY); } catch {}
-                      setSaved(0);
+                      setSelectedMissionId(nextMission.id);
+                      setScreen("missions");
                     }}
-                    className="rounded border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[10px] uppercase tracking-wider text-zinc-400 transition hover:bg-white/10 hover:text-zinc-200"
-                    title="Clears saved progress (localStorage)"
+                    className="group flex items-center justify-between rounded-lg border border-amber-400/50 bg-amber-400 px-5 py-3.5 text-left text-black transition hover:bg-amber-300"
                   >
-                    Reset
+                    <div>
+                      <div className="text-[10px] font-black uppercase tracking-[0.28em] text-black/70">
+                        Next Operation · M{nextMission.id}
+                      </div>
+                      <div className="text-sm font-black uppercase tracking-[0.16em]">{nextMission.codename}</div>
+                    </div>
+                    <span className="text-base font-black transition-transform group-hover:translate-x-1">→</span>
                   </button>
+
+                  <button
+                    onClick={() => setScreen("missions")}
+                    className="flex items-center justify-between rounded-lg border border-white/12 bg-white/[0.04] px-5 py-3 text-left transition hover:border-white/30 hover:bg-white/[0.09]"
+                  >
+                    <div>
+                      <div className="text-xs font-bold uppercase tracking-[0.2em] text-white">Missions</div>
+                      <div className="text-[11px] text-zinc-400">
+                        {Math.min(MISSIONS.length - 1, unlockThreshold)} / {MISSIONS.length - 1} unlocked · {ghostCount} Ghost
+                      </div>
+                    </div>
+                    <span className="text-xs text-zinc-400">▶</span>
+                  </button>
+
+                  <button
+                    onClick={() => setScreen("upgrades")}
+                    className="flex items-center justify-between rounded-lg border border-white/12 bg-white/[0.04] px-5 py-3 text-left transition hover:border-amber-400/45 hover:bg-white/[0.09]"
+                  >
+                    <div>
+                      <div className="text-xs font-bold uppercase tracking-[0.2em] text-white">Armory &amp; Upgrades</div>
+                      <div className="text-[11px] text-zinc-400">Weapons, armour, stealth boots &amp; precision</div>
+                    </div>
+                    {affordableCount > 0 ? (
+                      <span className="rounded-full bg-emerald-400/20 px-2.5 py-0.5 font-mono text-[10px] font-bold text-emerald-300">
+                        {affordableCount} Ready
+                      </span>
+                    ) : (
+                      <span className="text-xs text-zinc-400">▶</span>
+                    )}
+                  </button>
+
+                  <button
+                    onClick={() => setScreen("customize")}
+                    className="flex items-center justify-between rounded-lg border border-white/12 bg-white/[0.04] px-5 py-3 text-left transition hover:border-cyan-400/45 hover:bg-white/[0.09]"
+                  >
+                    <div>
+                      <div className="text-xs font-bold uppercase tracking-[0.2em] text-white">Customize Operative</div>
+                      <div className="text-[11px] text-zinc-400">Armor paint, visor optics, weapon skin &amp; tactical gear</div>
+                    </div>
+                    <span
+                      className="h-3.5 w-3.5 rounded-full border border-white/30"
+                      style={{ background: save.appearance.armorColor }}
+                    />
+                  </button>
+
+                  <button
+                    onClick={() => startMission(MISSIONS[0])}
+                    className="flex items-center justify-between rounded-lg border border-white/12 bg-white/[0.04] px-5 py-2.5 text-left transition hover:border-white/30 hover:bg-white/[0.09]"
+                  >
+                    <span className="text-xs font-bold uppercase tracking-[0.2em] text-zinc-200">Calibration Range</span>
+                    <span className="font-mono text-[10px] uppercase tracking-wider text-zinc-400">Free Play</span>
+                  </button>
+
+                  <button
+                    onClick={() => setScreen("controls")}
+                    className="flex items-center justify-between rounded-lg border border-white/10 bg-white/[0.02] px-5 py-2.5 text-left transition hover:border-white/25 hover:bg-white/[0.07]"
+                  >
+                    <span className="text-xs font-bold uppercase tracking-[0.2em] text-zinc-300">Field Manual &amp; Controls</span>
+                    <span className="text-xs text-zinc-500">?</span>
+                  </button>
+                </nav>
+
+                {/* Operative readiness strip */}
+                <div className="grid grid-cols-3 gap-2 rounded-lg border border-white/10 bg-black/50 p-3 text-center backdrop-blur">
+                  <div>
+                    <div className="text-[9px] uppercase tracking-[0.2em] text-zinc-500">Armour</div>
+                    <div className="mt-0.5 font-mono text-sm font-bold text-emerald-300">{stats.maxHp} HP</div>
+                  </div>
+                  <div>
+                    <div className="text-[9px] uppercase tracking-[0.2em] text-zinc-500">Step Noise</div>
+                    <div className="mt-0.5 font-mono text-sm font-bold text-cyan-300">
+                      {Math.round(stats.footstepNoiseMult * 100)}%
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[9px] uppercase tracking-[0.2em] text-zinc-500">Primary</div>
+                    <div className="mt-0.5 font-mono text-sm font-bold text-amber-300">
+                      {WEAPONS[save.selectedWeapon]?.shortName ?? "M4A1-S"}
+                    </div>
+                  </div>
                 </div>
               </div>
-              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+
+              {/* Right-side hint over the 3D soldier */}
+              <div className="pointer-events-none hidden self-end pb-2 text-right lg:block">
+                <div className="font-mono text-[10px] uppercase tracking-[0.3em] text-zinc-500">
+                  Drag to rotate operative · {WEAPONS[save.selectedWeapon]?.name}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ================= MISSIONS SCREEN ================= */}
+          {screen === "missions" && (
+            <div className="pointer-events-auto relative z-10 mx-auto grid w-full max-w-6xl flex-1 grid-cols-1 gap-6 overflow-y-auto px-8 py-7 lg:grid-cols-12">
+              {/* Left: Mission list */}
+              <div className="space-y-2.5 lg:col-span-5">
+                <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.35em] text-zinc-400">
+                  Select Sector
+                </div>
                 {MISSIONS.map((m) => {
                   const locked = !m.practice && m.id > unlockThreshold;
+                  const active = selectedMission.id === m.id;
+                  const rec = save.records[m.id];
                   return (
                     <button
                       key={m.id}
                       disabled={locked}
-                      onClick={() => {
-                        if (locked) return;
-                        setBriefing(m);
-                        setScreen("briefing");
-                      }}
-                      className="group relative overflow-hidden rounded-xl border bg-white/[0.03] p-5 text-left transition hover:bg-white/[0.07] disabled:cursor-not-allowed disabled:opacity-40"
-                      style={{ borderColor: locked ? "rgba(255,255,255,0.08)" : m.accent + "55" }}
+                      onClick={() => setSelectedMissionId(m.id)}
+                      className={`relative flex w-full items-center justify-between overflow-hidden rounded-lg border px-4 py-3 text-left transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                        active ? "bg-white/[0.1]" : "bg-white/[0.03] hover:bg-white/[0.07]"
+                      }`}
+                      style={{ borderColor: active ? m.accent : "rgba(255,255,255,0.1)" }}
                     >
-                      <div
-                        className="absolute inset-y-0 left-0 w-1"
-                        style={{ background: locked ? "#444" : m.accent }}
-                      />
-                      <div className="flex items-start justify-between">
-                        <div>
-                          <div className="font-mono text-[10px] font-bold uppercase tracking-[0.3em]" style={{ color: locked ? "#777" : m.accent }}>
-                            {m.id === 0 ? "FREE PLAY" : `MISSION ${m.id}`}
-                          </div>
-                          <div className="mt-1 text-lg font-black uppercase tracking-wide text-white">{m.codename}</div>
-                          <div className="mt-0.5 text-xs text-zinc-400">{m.name}</div>
+                      <div className="absolute inset-y-0 left-0 w-1" style={{ background: locked ? "#444" : m.accent }} />
+                      <div className="pl-2">
+                        <div className="font-mono text-[10px] font-bold uppercase tracking-[0.25em]" style={{ color: locked ? "#777" : m.accent }}>
+                          {m.id === 0 ? "Free Play" : `Mission ${m.id}`}
                         </div>
-                        <div className="text-right">
-                          <div className="text-[10px] uppercase tracking-wider text-zinc-500">{m.timeOfDay}</div>
-                          {locked ? (
-                            <div className="mt-1 text-lg">🔒</div>
-                          ) : (
-                            <div className="mt-1 text-xs font-bold text-emerald-400/80 group-hover:text-emerald-300">START →</div>
-                          )}
-                        </div>
+                        <div className="text-sm font-black uppercase tracking-wide text-white">{m.codename}</div>
+                        <div className="text-[11px] text-zinc-400">{m.name}</div>
                       </div>
-                      <div className="mt-3 truncate text-[11px] text-zinc-500">{m.location}</div>
+                      <div className="flex flex-col items-end gap-1 text-right">
+                        <span className="text-[10px] uppercase tracking-wider text-zinc-500">{m.timeOfDay}</span>
+                        {locked ? (
+                          <span className="text-xs text-zinc-500">Locked</span>
+                        ) : rec?.ghost ? (
+                          <span className="rounded bg-cyan-400/15 px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase text-cyan-300">
+                            Ghost
+                          </span>
+                        ) : rec?.completed ? (
+                          <span className="rounded bg-emerald-400/15 px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase text-emerald-300">
+                            Cleared
+                          </span>
+                        ) : null}
+                      </div>
                     </button>
                   );
                 })}
               </div>
-            </div>
 
-            {/* controls */}
-            <div className="mt-10">
-              <h3 className="mb-3 text-xs font-bold uppercase tracking-[0.4em] text-zinc-300">Controls</h3>
-              <div className="grid grid-cols-2 gap-x-8 gap-y-1.5 rounded-xl border border-white/10 bg-white/[0.03] p-4 text-xs sm:grid-cols-3">
-                {KEYS.map(([k, v]) => (
-                  <div key={k} className="flex items-center justify-between gap-4">
-                    <span className="font-mono font-semibold text-amber-300/90">{k}</span>
-                    <span className="text-right text-zinc-400">{v}</span>
+              {/* Right: Mission Dossier + Rewards + Deploy */}
+              <div className="flex flex-col justify-between rounded-xl border border-white/10 bg-black/55 p-6 backdrop-blur-md lg:col-span-7">
+                <div className="space-y-5">
+                  <div className="border-b border-white/10 pb-4">
+                    <div className="font-mono text-[10px] font-bold uppercase tracking-[0.35em]" style={{ color: selectedMission.accent }}>
+                      {selectedMission.id === 0 ? "Practice Range" : `Mission ${selectedMission.id} · ${selectedMission.codename}`}
+                    </div>
+                    <h2 className="mt-1 text-3xl font-black uppercase tracking-wide text-white">{selectedMission.name}</h2>
+                    <div className="mt-2 flex flex-wrap gap-4 text-xs text-zinc-400">
+                      <span>Sector: <b className="text-zinc-200">{selectedMission.location}</b></span>
+                      <span>Time: <b className="text-zinc-200">{selectedMission.timeOfDay}</b></span>
+                      <span>Hostiles: <b className="text-zinc-200">{selectedMission.enemies.length}</b></span>
+                    </div>
                   </div>
-                ))}
-              </div>
-            </div>
 
-            {/* lore + download */}
-            <div className="mt-10 flex flex-wrap items-center justify-between gap-6">
-              <p className="max-w-md text-xs leading-relaxed text-zinc-500">
-                Every soldier in Zlatograd wears the same Vanguard rig — only the paint differs. Master the range,
-                then take back the city, one mission at a time.
-              </p>
-              <button
-                onClick={download}
-                className="flex items-center gap-2 rounded-md border border-sky-400/40 bg-sky-500/15 px-4 py-2 text-xs font-bold uppercase tracking-widest text-sky-200 transition hover:bg-sky-500/30"
-              >
-                <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M12 3v12m0 0l-4-4m4 4l4-4M4 21h16" />
-                </svg>
-                Download Vanguard rig (GLB)
-              </button>
-            </div>
-            <div className="h-12" />
-          </div>
-        </div>
-      )}
+                  <div className="space-y-2.5">
+                    {selectedMission.briefing.map((line, i) => (
+                      <p key={i} className="border-l-2 pl-3 text-sm leading-relaxed text-zinc-300" style={{ borderColor: selectedMission.accent + "77" }}>
+                        {line}
+                      </p>
+                    ))}
+                  </div>
 
-      {/* ================= BRIEFING ================= */}
-      {screen === "briefing" && briefing && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/85 p-6 backdrop-blur-sm">
-          <div className="w-full max-w-2xl overflow-hidden rounded-2xl border bg-[#0e1015] shadow-2xl" style={{ borderColor: briefing.accent + "44" }}>
-            <div className="p-6" style={{ background: `linear-gradient(135deg, ${briefing.accent}18, transparent)` }}>
-              <div className="font-mono text-[10px] font-bold uppercase tracking-[0.4em]" style={{ color: briefing.accent }}>
-                {briefing.id === 0 ? "Free play · practice" : `Mission ${briefing.id} · ${briefing.codename}`}
-              </div>
-              <h2 className="mt-2 text-3xl font-black uppercase tracking-wide text-white">{briefing.name}</h2>
-              <div className="mt-1 flex gap-4 text-xs text-zinc-400">
-                <span>📍 {briefing.location}</span>
-                <span>🕐 {briefing.timeOfDay}</span>
-                <span>👥 {briefing.enemies.length} hostiles</span>
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <div className="rounded-lg border border-white/10 bg-white/[0.02] p-3.5">
+                      <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.28em] text-zinc-400">Objectives</div>
+                      <ul className="space-y-1.5">
+                        {selectedMission.objectives.map((o) => (
+                          <li key={o.id} className="flex items-center gap-2 text-xs text-zinc-200">
+                            <span className="text-emerald-400">◆</span>
+                            <span>{o.label}</span>
+                            {o.count !== undefined && <span className="font-mono text-zinc-500">×{o.count}</span>}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+
+                    <div className="rounded-lg border border-white/10 bg-white/[0.02] p-3.5">
+                      <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.28em] text-zinc-400">
+                        Completion Payout
+                      </div>
+                      {(() => {
+                        const r = previewMissionBaseReward(selectedMission.id);
+                        return (
+                          <div className="space-y-2">
+                            <div className="flex flex-wrap gap-1.5">
+                              <CurrencyBadge kind="credits" amount={r.credits} compact />
+                              <CurrencyBadge kind="intel" amount={r.intel} compact />
+                              <CurrencyBadge kind="salvage" amount={r.salvage} compact />
+                            </div>
+                            {selectedMission.id > 0 && (
+                              <div className="text-[11px] text-cyan-300/90">
+                                + Ghost Bonus (0 alerts): +120 Cr · +35 Intel · +20 Salvage
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-6 flex items-center justify-end gap-3 border-t border-white/10 pt-5">
+                  <button
+                    onClick={() => startMission(selectedMission)}
+                    className="rounded-lg px-8 py-3 text-sm font-black uppercase tracking-[0.2em] text-black transition hover:opacity-90"
+                    style={{ background: selectedMission.accent }}
+                  >
+                    Deploy
+                  </button>
+                </div>
               </div>
             </div>
-            <div className="max-h-[40vh] space-y-3 overflow-y-auto p-6">
-              {briefing.briefing.map((line, i) => (
-                <p key={i} className="border-l-2 pl-3 text-sm leading-relaxed text-zinc-300" style={{ borderColor: briefing.accent + "66" }}>
-                  {line}
-                </p>
-              ))}
-              <div className="pt-2">
-                <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.3em] text-zinc-500">Objectives</div>
-                <ul className="space-y-1.5">
-                  {briefing.objectives.map((o) => (
-                    <li key={o.id} className="flex items-center gap-2 text-sm text-zinc-300">
-                      <span className="text-emerald-400">◆</span>
-                      {o.label}
-                      {o.count !== undefined && <span className="font-mono text-xs text-zinc-500">×{o.count}</span>}
-                    </li>
+          )}
+
+          {/* ================= UPGRADES / ARMORY SCREEN ================= */}
+          {screen === "upgrades" && (
+            <div className="pointer-events-auto relative z-10 flex flex-1 overflow-hidden px-8 py-6">
+              <div className="flex w-full max-w-2xl flex-col gap-4 overflow-y-auto pr-2">
+                {/* Starting Weapon Preview Selector (updates 3D soldier!) */}
+                <div className="rounded-xl border border-white/10 bg-black/60 p-3.5 backdrop-blur-md">
+                  <div className="mb-2 flex items-center justify-between">
+                    <span className="text-[10px] font-bold uppercase tracking-[0.3em] text-zinc-400">
+                      Equip &amp; Inspect Silenced Weapon
+                    </span>
+                    <span className="font-mono text-[10px] text-amber-300">
+                      {WEAPONS[save.selectedWeapon]?.name}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-4 gap-2">
+                    {WEAPONS.map((w, idx) => {
+                      const active = save.selectedWeapon === idx;
+                      return (
+                        <button
+                          key={w.id}
+                          onClick={() => handleSelectMenuWeapon(idx)}
+                          className={`rounded-md border px-2.5 py-2 text-left transition ${
+                            active
+                              ? "border-amber-400 bg-amber-400/15 text-white"
+                              : "border-white/10 bg-white/[0.03] text-zinc-400 hover:bg-white/[0.08]"
+                          }`}
+                        >
+                          <div className="font-mono text-[9px] font-bold text-amber-400">[{w.slot}]</div>
+                          <div className="truncate text-xs font-bold">{w.shortName}</div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Category Tabs */}
+                <div className="grid grid-cols-4 gap-2">
+                  {UPGRADE_TABS.map((t) => (
+                    <button
+                      key={t.id}
+                      onClick={() => setUpgradeTab(t.id)}
+                      className={`rounded-lg border py-2 text-xs font-bold uppercase tracking-[0.18em] transition ${
+                        upgradeTab === t.id
+                          ? "border-amber-400/70 bg-amber-400/15 text-amber-300"
+                          : "border-white/10 bg-black/50 text-zinc-400 hover:text-zinc-200"
+                      }`}
+                    >
+                      {t.label}
+                    </button>
                   ))}
-                </ul>
+                </div>
+
+                {/* Upgrade List for selected tab */}
+                <div className="space-y-3">
+                  {UPGRADES.filter((u) => u.category === upgradeTab).map((u) => {
+                    const lvl = getUpgradeLevel(save, u.id);
+                    const maxed = lvl >= u.maxLevel;
+                    const cost = maxed ? null : u.costs[lvl];
+                    const affordable = cost ? canAfford(save.currencies, cost) : false;
+                    return (
+                      <div
+                        key={u.id}
+                        className="rounded-xl border border-white/10 bg-black/65 p-4 backdrop-blur-md"
+                      >
+                        <div className="flex items-start justify-between gap-4">
+                          <div>
+                            <div className="flex items-center gap-2.5">
+                              <h3 className="text-sm font-black uppercase tracking-wide text-white">{u.name}</h3>
+                              <span className="font-mono text-[10px] font-bold text-amber-400">
+                                TIER {lvl}/{u.maxLevel}
+                              </span>
+                            </div>
+                            <p className="mt-1 text-xs text-zinc-400">{u.subtitle}</p>
+                          </div>
+
+                          {/* Tier pips */}
+                          <div className="flex gap-1 pt-1">
+                            {Array.from({ length: u.maxLevel }).map((_, i) => (
+                              <div
+                                key={i}
+                                className={`h-2 w-5 rounded-sm ${
+                                  i < lvl ? "bg-amber-400" : "bg-white/15"
+                                }`}
+                              />
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="mt-3.5 flex flex-wrap items-center justify-between gap-3 border-t border-white/10 pt-3">
+                          <div className="flex items-center gap-2 font-mono text-[11px]">
+                            <span className="text-zinc-400">
+                              {lvl > 0 ? u.effectLabels[lvl - 1] : "Base"}
+                            </span>
+                            {!maxed && (
+                              <>
+                                <span className="text-zinc-600">→</span>
+                                <span className="font-bold text-emerald-300">{u.effectLabels[lvl]}</span>
+                              </>
+                            )}
+                          </div>
+
+                          {maxed ? (
+                            <span className="rounded border border-emerald-400/40 bg-emerald-400/10 px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-widest text-emerald-300">
+                              Maxed
+                            </span>
+                          ) : (
+                            <div className="flex items-center gap-2">
+                              <div className="flex items-center gap-1">
+                                {(Object.entries(cost!) as [CurrencyKey, number][]).map(([k, v]) => (
+                                  <CurrencyBadge key={k} kind={k} amount={v} compact />
+                                ))}
+                              </div>
+                              <button
+                                disabled={!affordable}
+                                onClick={() => handleBuyUpgrade(u.id)}
+                                className={`rounded-md px-3.5 py-1.5 text-[11px] font-black uppercase tracking-widest transition ${
+                                  affordable
+                                    ? "bg-amber-400 text-black hover:bg-amber-300"
+                                    : "cursor-not-allowed border border-white/10 bg-white/[0.04] text-zinc-500"
+                                }`}
+                              >
+                                Upgrade
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             </div>
-            <div className="flex items-center justify-between gap-4 border-t border-white/10 p-5">
-              <button
-                onClick={() => setScreen("menu")}
-                className="rounded-md border border-white/15 px-5 py-2.5 text-sm font-bold uppercase tracking-widest text-zinc-300 transition hover:bg-white/10"
-              >
-                Back
-              </button>
-              <button
-                onClick={() => startMission(briefing)}
-                className="rounded-md px-8 py-2.5 text-sm font-black uppercase tracking-widest text-black transition hover:opacity-90"
-                style={{ background: briefing.accent }}
-              >
-                Deploy
-              </button>
+          )}
+
+          {/* ================= CUSTOMIZE OPERATIVE SCREEN ================= */}
+          {screen === "customize" && (
+            <div className="pointer-events-auto relative z-10 flex flex-1 overflow-hidden px-8 py-6">
+              <div className="flex w-full max-w-xl flex-col gap-4 overflow-y-auto pr-2">
+                {/* Tabs + Quick Randomize/Reset */}
+                <div className="flex items-center justify-between gap-3">
+                  <div className="grid flex-1 grid-cols-2 gap-2">
+                    <button
+                      onClick={() => setCustomTab("colors")}
+                      className={`rounded-lg border py-2 text-xs font-bold uppercase tracking-[0.18em] transition ${
+                        customTab === "colors"
+                          ? "border-cyan-400/70 bg-cyan-400/15 text-cyan-200"
+                          : "border-white/10 bg-black/55 text-zinc-400 hover:text-zinc-200"
+                      }`}
+                    >
+                      Colors &amp; Finish
+                    </button>
+                    <button
+                      onClick={() => setCustomTab("gear")}
+                      className={`rounded-lg border py-2 text-xs font-bold uppercase tracking-[0.18em] transition ${
+                        customTab === "gear"
+                          ? "border-cyan-400/70 bg-cyan-400/15 text-cyan-200"
+                          : "border-white/10 bg-black/55 text-zinc-400 hover:text-zinc-200"
+                      }`}
+                    >
+                      Tactical Gear
+                    </button>
+                  </div>
+                  <button
+                    onClick={randomizeAppearance}
+                    className="rounded-lg border border-white/15 bg-black/55 px-3 py-2 text-[10px] font-bold uppercase tracking-widest text-zinc-200 transition hover:bg-white/15"
+                  >
+                    Random
+                  </button>
+                  <button
+                    onClick={() => updateAppearance({ ...DEFAULT_APPEARANCE })}
+                    className="rounded-lg border border-white/10 bg-black/55 px-3 py-2 text-[10px] font-bold uppercase tracking-widest text-zinc-400 transition hover:text-white"
+                  >
+                    Reset
+                  </button>
+                </div>
+
+                {customTab === "colors" && (
+                  <div className="space-y-4">
+                    {/* Armor Color + Finish */}
+                    <div className="rounded-xl border border-white/10 bg-black/65 p-4 backdrop-blur-md space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold uppercase tracking-[0.25em] text-zinc-300">Armor Suit Paint</span>
+                        <label className="flex cursor-pointer items-center gap-2 text-[10px] font-mono uppercase text-zinc-400">
+                          <span>Custom</span>
+                          <input
+                            type="color"
+                            value={save.appearance.armorColor}
+                            onChange={(e) => updateAppearance({ armorColor: e.target.value })}
+                            className="h-6 w-8 cursor-pointer rounded border border-white/20 bg-transparent"
+                          />
+                        </label>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {ARMOR_PRESETS.map((p) => {
+                          const active = save.appearance.armorColor.toLowerCase() === p.hex.toLowerCase();
+                          return (
+                            <button
+                              key={p.hex}
+                              onClick={() => updateAppearance({ armorColor: p.hex })}
+                              title={p.name}
+                              className={`flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-[11px] transition ${
+                                active ? "border-cyan-400 bg-cyan-400/15 text-white" : "border-white/10 bg-white/[0.03] text-zinc-400 hover:text-white"
+                              }`}
+                            >
+                              <span className="h-3.5 w-3.5 rounded-sm border border-white/25" style={{ background: p.hex }} />
+                              <span>{p.name}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      <div className="pt-1">
+                        <div className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.25em] text-zinc-400">Surface Material</div>
+                        <div className="grid grid-cols-3 gap-2">
+                          {(
+                            [
+                              ["matte", "Matte Stealth"],
+                              ["tactical", "Tactical Ceramic"],
+                              ["titanium", "Brushed Titanium"],
+                            ] as [ArmorFinish, string][]
+                          ).map(([id, label]) => (
+                            <button
+                              key={id}
+                              onClick={() => updateAppearance({ armorFinish: id })}
+                              className={`rounded-md border py-1.5 text-[11px] font-bold transition ${
+                                save.appearance.armorFinish === id
+                                  ? "border-cyan-400 bg-cyan-400/15 text-cyan-200"
+                                  : "border-white/10 bg-white/[0.03] text-zinc-400 hover:text-white"
+                              }`}
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Tactical Gear Color */}
+                    <div className="rounded-xl border border-white/10 bg-black/65 p-4 backdrop-blur-md space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold uppercase tracking-[0.25em] text-zinc-300">Tactical Rig &amp; Pouches</span>
+                        <label className="flex cursor-pointer items-center gap-2 text-[10px] font-mono uppercase text-zinc-400">
+                          <span>Custom</span>
+                          <input
+                            type="color"
+                            value={save.appearance.gearColor}
+                            onChange={(e) => updateAppearance({ gearColor: e.target.value })}
+                            className="h-6 w-8 cursor-pointer rounded border border-white/20 bg-transparent"
+                          />
+                        </label>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {GEAR_PRESETS.map((p) => {
+                          const active = save.appearance.gearColor.toLowerCase() === p.hex.toLowerCase();
+                          return (
+                            <button
+                              key={p.hex}
+                              onClick={() => updateAppearance({ gearColor: p.hex })}
+                              className={`flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-[11px] transition ${
+                                active ? "border-cyan-400 bg-cyan-400/15 text-white" : "border-white/10 bg-white/[0.03] text-zinc-400 hover:text-white"
+                              }`}
+                            >
+                              <span className="h-3.5 w-3.5 rounded-sm border border-white/25" style={{ background: p.hex }} />
+                              <span>{p.name}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Visor & NVG Optics */}
+                    <div className="rounded-xl border border-white/10 bg-black/65 p-4 backdrop-blur-md space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold uppercase tracking-[0.25em] text-zinc-300">Visor &amp; NVG Optics</span>
+                        <label className="flex cursor-pointer items-center gap-2 text-[10px] font-mono uppercase text-zinc-400">
+                          <span>Custom</span>
+                          <input
+                            type="color"
+                            value={save.appearance.visorColor}
+                            onChange={(e) => updateAppearance({ visorColor: e.target.value })}
+                            className="h-6 w-8 cursor-pointer rounded border border-white/20 bg-transparent"
+                          />
+                        </label>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {VISOR_PRESETS.map((p) => {
+                          const active = save.appearance.visorColor.toLowerCase() === p.hex.toLowerCase();
+                          return (
+                            <button
+                              key={p.hex}
+                              onClick={() => updateAppearance({ visorColor: p.hex })}
+                              className={`flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-[11px] transition ${
+                                active ? "border-cyan-400 bg-cyan-400/15 text-white" : "border-white/10 bg-white/[0.03] text-zinc-400 hover:text-white"
+                              }`}
+                            >
+                              <span className="h-3.5 w-3.5 rounded-full border border-white/25" style={{ background: p.hex }} />
+                              <span>{p.name}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <div className="flex items-center gap-3 pt-1">
+                        <span className="text-[10px] font-bold uppercase tracking-[0.22em] text-zinc-400">Optic Glow</span>
+                        <input
+                          type="range"
+                          min={0.1}
+                          max={1.4}
+                          step={0.05}
+                          value={save.appearance.visorGlow}
+                          onChange={(e) => updateAppearance({ visorGlow: Number(e.target.value) })}
+                          className="flex-1 accent-cyan-400"
+                        />
+                        <span className="w-10 text-right font-mono text-[11px] text-cyan-300">
+                          {Math.round(save.appearance.visorGlow * 100)}%
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Weapon Finish */}
+                    <div className="rounded-xl border border-white/10 bg-black/65 p-4 backdrop-blur-md space-y-2.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold uppercase tracking-[0.25em] text-zinc-300">Weapon Camo Finish</span>
+                        <div className="flex gap-1">
+                          {WEAPONS.map((w, idx) => (
+                            <button
+                              key={w.id}
+                              onClick={() => handleSelectMenuWeapon(idx)}
+                              className={`rounded px-2 py-0.5 font-mono text-[10px] font-bold transition ${
+                                save.selectedWeapon === idx ? "bg-amber-400 text-black" : "bg-white/10 text-zinc-400 hover:text-white"
+                              }`}
+                            >
+                              {w.shortName}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-5 gap-2">
+                        {WEAPON_FINISH_OPTIONS.map((wf) => (
+                          <button
+                            key={wf.id}
+                            onClick={() => updateAppearance({ weaponFinish: wf.id })}
+                            className={`flex flex-col items-center gap-1 rounded-md border py-2 text-[10px] font-bold transition ${
+                              save.appearance.weaponFinish === wf.id
+                                ? "border-amber-400 bg-amber-400/15 text-amber-200"
+                                : "border-white/10 bg-white/[0.03] text-zinc-400 hover:text-white"
+                            }`}
+                          >
+                            <span className="h-3.5 w-6 rounded-sm border border-white/25" style={{ background: wf.swatch }} />
+                            <span>{wf.label}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {customTab === "gear" && (
+                  <div className="space-y-4">
+                    {/* NVG Goggles State */}
+                    <div className="rounded-xl border border-white/10 bg-black/65 p-4 backdrop-blur-md space-y-3">
+                      <div className="text-[11px] font-bold uppercase tracking-[0.25em] text-zinc-300">
+                        Night-Vision Goggles (NVG)
+                      </div>
+                      <div className="grid grid-cols-3 gap-2">
+                        {(
+                          [
+                            ["flipped", "Flipped Up"],
+                            ["deployed", "Deployed"],
+                            ["none", "Removed"],
+                          ] as [NvgMode, string][]
+                        ).map(([mode, label]) => (
+                          <button
+                            key={mode}
+                            onClick={() => updateAppearance({ nvg: mode })}
+                            className={`rounded-md border py-2 text-xs font-bold transition ${
+                              save.appearance.nvg === mode
+                                ? "border-cyan-400 bg-cyan-400/15 text-cyan-200"
+                                : "border-white/10 bg-white/[0.03] text-zinc-400 hover:text-white"
+                            }`}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Modular Rig Toggles */}
+                    <div className="rounded-xl border border-white/10 bg-black/65 p-4 backdrop-blur-md space-y-2.5">
+                      <div className="mb-1 text-[11px] font-bold uppercase tracking-[0.25em] text-zinc-300">
+                        Modular Loadout Attachments
+                      </div>
+                      {(
+                        [
+                          ["backpack", "Assault Radio Pack", "Rear tactical pack, utility pouches & whip antenna"],
+                          ["chestRig", "Chest Mag Placard", "Front 3-mag tactical rig & PTT radio"],
+                          ["holster", "Drop-Leg Holster & Pouch", "Thigh sidearm holster & leg utility pouch"],
+                          ["headset", "Comms Headset & Light", "Helmet rails, ear-pro cups, flashlight & boom mic"],
+                        ] as ["backpack" | "chestRig" | "holster" | "headset", string, string][]
+                      ).map(([key, title, desc]) => {
+                        const on = save.appearance[key];
+                        return (
+                          <button
+                            key={key}
+                            onClick={() => updateAppearance({ [key]: !on })}
+                            className="flex w-full items-center justify-between rounded-lg border border-white/10 bg-white/[0.03] px-4 py-3 text-left transition hover:bg-white/[0.07]"
+                          >
+                            <div>
+                              <div className="text-xs font-bold uppercase tracking-wide text-white">{title}</div>
+                              <div className="text-[11px] text-zinc-400">{desc}</div>
+                            </div>
+                            <span
+                              className={`rounded-full px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-widest ${
+                                on ? "bg-emerald-400/20 text-emerald-300" : "bg-white/10 text-zinc-500"
+                              }`}
+                            >
+                              {on ? "Equipped" : "Off"}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
+          )}
+
+          {/* ================= CONTROLS / FIELD MANUAL SCREEN ================= */}
+          {screen === "controls" && (
+            <div className="pointer-events-auto relative z-10 mx-auto grid w-full max-w-5xl flex-1 grid-cols-1 gap-6 overflow-y-auto px-8 py-8 md:grid-cols-2">
+              <div className="rounded-xl border border-white/10 bg-black/55 p-6 backdrop-blur-md">
+                <h3 className="text-xs font-bold uppercase tracking-[0.35em] text-amber-400">Controls</h3>
+                <div className="mt-4 space-y-2 text-xs">
+                  {KEYS.map(([k, v]) => (
+                    <div key={k} className="flex items-center justify-between border-b border-white/5 pb-1.5">
+                      <span className="font-mono font-semibold text-amber-300">{k}</span>
+                      <span className="text-zinc-300">{v}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex flex-col justify-between gap-6">
+                <div className="rounded-xl border border-white/10 bg-black/55 p-6 backdrop-blur-md space-y-4">
+                  <h3 className="text-xs font-bold uppercase tracking-[0.35em] text-cyan-300">Stealth Doctrine</h3>
+                  <ul className="space-y-3 text-xs leading-relaxed text-zinc-300">
+                    <li>
+                      <b className="text-white">Silenced Arsenal:</b> Every weapon is suppressed. Unaware guards take{" "}
+                      <span className="text-emerald-300">2.5× ambush damage</span> and drop without alerting the sector.
+                    </li>
+                    <li>
+                      <b className="text-white">Vision Cones &amp; Suspicion:</b> Stay out of forward sightlines. Crouching cuts visual range and eliminates footstep noise.
+                    </li>
+                    <li>
+                      <b className="text-white">Silent Takedowns:</b> Approach behind or beside an unaware guard and press{" "}
+                      <span className="font-mono text-amber-300">[V]</span> for an instant quiet takedown.
+                    </li>
+                    <li>
+                      <b className="text-white">Ghost Bonus:</b> Finish any mission with <span className="text-cyan-300">0 Alerts</span> for massive Credits, Intel &amp; Salvage payouts.
+                    </li>
+                  </ul>
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/10 bg-black/55 p-4 backdrop-blur-md">
+                  <button
+                    onClick={download}
+                    className="rounded-md border border-sky-400/40 bg-sky-500/15 px-4 py-2 text-[11px] font-bold uppercase tracking-widest text-sky-200 transition hover:bg-sky-500/30"
+                  >
+                    Download Vanguard Rig (GLB)
+                  </button>
+                  <button
+                    onClick={() => setSave(resetSave())}
+                    className="rounded-md border border-red-400/30 bg-red-500/10 px-4 py-2 text-[11px] font-bold uppercase tracking-widest text-red-300 transition hover:bg-red-500/25"
+                  >
+                    Reset Progress
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
-      {/* ================= PLAYING ================= */}
+      {/* ================= PLAYING HUD ================= */}
       {playing && (
         <>
           {/* vignette + damage */}
           <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_55%,rgba(0,0,0,0.55)_100%)]" />
-          {hud.health < 100 && !hud.dead && (
+          {hud.health < hud.maxHealth && !hud.dead && (
             <div
               className="pointer-events-none absolute inset-0"
-              style={{ boxShadow: `inset 0 0 ${120 + (100 - hud.health)}px rgba(160,0,0,${(100 - hud.health) / 160})` }}
+              style={{
+                boxShadow: `inset 0 0 ${120 + (hud.maxHealth - hud.health)}px rgba(160,0,0,${Math.max(0, (hud.maxHealth - hud.health) / (hud.maxHealth * 1.5))})`,
+              }}
             />
           )}
 
@@ -318,15 +1107,79 @@ export default function App() {
             );
           })()}
 
+          {/* stealth status pill (top-center) */}
+          {hud.phase === "ready" && !hud.dead && (
+            <div className="pointer-events-none absolute left-1/2 top-5 flex -translate-x-1/2 flex-col items-center gap-1.5">
+              <div
+                className={`flex items-center gap-2.5 rounded-full border px-4 py-1 text-[11px] font-black uppercase tracking-[0.25em] backdrop-blur-md ${
+                  hud.stealthState === "compromised"
+                    ? "border-red-500/60 bg-red-950/75 text-red-300 shadow-[0_0_20px_rgba(239,68,68,0.3)]"
+                    : hud.stealthState === "caution"
+                      ? "border-amber-400/60 bg-amber-950/70 text-amber-300"
+                      : "border-emerald-400/45 bg-black/65 text-emerald-300"
+                }`}
+              >
+                <span
+                  className={`h-2 w-2 rounded-full ${
+                    hud.stealthState === "compromised"
+                      ? "animate-ping bg-red-400"
+                      : hud.stealthState === "caution"
+                        ? "animate-pulse bg-amber-400"
+                        : "bg-emerald-400"
+                  }`}
+                />
+                <span>
+                  {hud.stealthState === "compromised"
+                    ? "Compromised"
+                    : hud.stealthState === "caution"
+                      ? `Caution · ${hud.suspicion}%`
+                      : hud.crouch
+                        ? "Hidden · Silent"
+                        : "Hidden"}
+                </span>
+              </div>
+              {hud.stealthState === "caution" && (
+                <div className="h-1 w-32 overflow-hidden rounded-full bg-black/70">
+                  <div className="h-full bg-amber-400 transition-all duration-100" style={{ width: `${hud.suspicion}%` }} />
+                </div>
+              )}
+              <div className="flex items-center gap-3 font-mono text-[10px] uppercase tracking-widest text-zinc-400">
+                <span>Stealth Kills: <b className="text-emerald-300">{hud.stealthKills}</b></span>
+                <span>·</span>
+                <span>Alerts: <b className={hud.alerts > 0 ? "text-red-400" : "text-emerald-300"}>{hud.alerts}</b></span>
+              </div>
+            </div>
+          )}
+
+          {/* stealth takedown prompt */}
+          {hud.takedownReady && !hud.dead && (
+            <div className="pointer-events-none absolute bottom-44 left-1/2 -translate-x-1/2">
+              <div className="rounded-full border border-emerald-400/60 bg-emerald-950/80 px-4 py-1.5 text-xs font-black uppercase tracking-[0.22em] text-emerald-200 backdrop-blur">
+                [V] Silent Takedown
+              </div>
+            </div>
+          )}
+
           {/* boss bar */}
           {hud.boss && (
-            <div className="pointer-events-none absolute left-1/2 top-20 -translate-x-1/2 w-80 text-center">
+            <div className="pointer-events-none absolute left-1/2 top-24 w-80 -translate-x-1/2 text-center">
               <div className="mb-1 text-xs font-bold uppercase tracking-[0.3em] text-red-400 drop-shadow">{hud.boss.name}</div>
               <div className="h-2.5 overflow-hidden rounded-sm border border-red-500/50 bg-black/70">
                 <div className="h-full bg-gradient-to-r from-red-600 to-red-400 transition-all duration-200" style={{ width: `${Math.max(0, (hud.boss.hp / hud.boss.maxHp) * 100)}%` }} />
               </div>
             </div>
           )}
+
+          {/* top-right pause button + FPS */}
+          <div className="absolute right-5 top-5 flex items-center gap-2">
+            <span className="pointer-events-none font-mono text-[11px] text-zinc-500">{Math.round(hud.fps)} FPS</span>
+            <button
+              onClick={() => game.current?.setPaused(!hud.paused)}
+              className="rounded-md border border-white/15 bg-black/50 px-3 py-1.5 text-[11px] font-bold uppercase tracking-widest text-zinc-300 backdrop-blur transition hover:bg-black/80"
+            >
+              {hud.paused ? "Resume" : "Pause"}
+            </button>
+          </div>
 
           {/* dialogue */}
           {hud.dialogue && (
@@ -350,16 +1203,52 @@ export default function App() {
             </div>
           )}
 
-          {/* right: ammo + health */}
+          {/* right: weapons + ammo + health */}
           {hud.phase !== "loading" && (
-            <div className="pointer-events-none absolute bottom-5 right-5 w-64 space-y-2 text-right">
+            <div className="pointer-events-none absolute bottom-5 right-5 w-72 space-y-2 text-right">
+              {hud.ads && (
+                <div className="ml-auto inline-flex items-center gap-2 rounded border border-amber-400/35 bg-black/70 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.2em] text-amber-300 backdrop-blur">
+                  <span>{hud.zoomFactor.toFixed(1)}× ZOOM</span>
+                  <span className="text-zinc-400">· Scroll</span>
+                </div>
+              )}
+              <div className="flex justify-end gap-1.5">
+                {hud.weapons.map((w, idx) => {
+                  const active = idx === hud.weaponIndex;
+                  return (
+                    <div
+                      key={w.slot}
+                      className={`rounded border px-2 py-1 text-left transition ${
+                        active
+                          ? "border-amber-400/70 bg-amber-400/15 text-white shadow-[0_0_12px_rgba(251,191,36,0.2)]"
+                          : "border-white/10 bg-black/55 text-zinc-400"
+                      }`}
+                    >
+                      <div className="flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider">
+                        <span className={active ? "text-amber-300" : "text-zinc-500"}>{w.slot}</span>
+                        <span>{w.shortName}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="flex items-center justify-end gap-2 text-[11px] font-bold uppercase tracking-[0.2em] text-zinc-300">
+                {hud.suppressed && (
+                  <span className="rounded border border-emerald-400/40 bg-emerald-400/10 px-1.5 py-0.5 text-[9px] font-bold tracking-widest text-emerald-300">
+                    SILENCED
+                  </span>
+                )}
+                <span>
+                  <span className="text-amber-400">{hud.weaponCategory}</span> · {hud.weaponName}
+                </span>
+              </div>
               {hud.reloading && (
                 <div className="ml-auto h-1.5 w-48 overflow-hidden rounded bg-white/15">
                   <div className="h-full bg-amber-400" style={{ width: `${hud.reloadProgress * 100}%` }} />
                 </div>
               )}
               <div className="font-mono leading-none">
-                <span className={`text-6xl font-black tabular-nums drop-shadow-lg ${hud.ammo <= 8 ? "text-red-400" : "text-white"}`}>
+                <span className={`text-6xl font-black tabular-nums drop-shadow-lg ${hud.ammo <= (hud.weaponIndex === 2 ? 2 : hud.weaponIndex === 3 ? 3 : 8) ? "text-red-400" : "text-white"}`}>
                   {String(hud.ammo).padStart(2, "0")}
                 </span>
                 <span className="ml-1 text-2xl font-bold text-zinc-400">/ {hud.reserve}</span>
@@ -372,7 +1261,7 @@ export default function App() {
                     style={{ width: `${healthPct}%` }}
                   />
                 </div>
-                <span className="w-8 font-mono text-sm text-zinc-200">{Math.round(healthPct)}</span>
+                <span className="w-9 font-mono text-sm text-zinc-200">{Math.round(hud.health)}</span>
               </div>
             </div>
           )}
@@ -380,7 +1269,7 @@ export default function App() {
           {/* capture hint */}
           {hud.phase === "ready" && !hud.locked && !hud.dead && !hud.paused && (
             <div className="pointer-events-none absolute bottom-6 left-1/2 -translate-x-1/2 rounded-full border border-white/15 bg-black/60 px-4 py-2 text-xs text-zinc-200 backdrop-blur">
-              <b className="text-amber-300">Click the scene</b> to capture the mouse · <b className="text-amber-300">Esc</b> to pause · drag to look if capture is blocked
+              <b className="text-amber-300">Click scene</b> to lock mouse · <b className="text-amber-300">Esc</b> to pause
             </div>
           )}
 
@@ -400,9 +1289,17 @@ export default function App() {
 
           {/* death */}
           {hud.phase === "dead" && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-6 bg-black/70 backdrop-blur-sm">
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-6 bg-black/75 backdrop-blur-sm">
               <div className="text-7xl font-black uppercase tracking-[0.3em] text-red-500 drop-shadow-[0_0_25px_rgba(255,0,0,0.5)]">K.I.A.</div>
               <div className="text-sm uppercase tracking-widest text-zinc-400">{hud.mission?.codename} · {hud.mission?.name}</div>
+              {endInfo?.reward && (endInfo.reward.credits > 0 || endInfo.reward.intel > 0 || endInfo.reward.salvage > 0) && (
+                <div className="flex items-center gap-2 rounded-lg border border-white/10 bg-black/60 px-4 py-2">
+                  <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">Recovered:</span>
+                  <CurrencyBadge kind="credits" amount={endInfo.reward.credits} compact />
+                  <CurrencyBadge kind="intel" amount={endInfo.reward.intel} compact />
+                  <CurrencyBadge kind="salvage" amount={endInfo.reward.salvage} compact />
+                </div>
+              )}
               <div className="flex gap-4">
                 <button
                   onClick={() => game.current?.respawn()}
@@ -411,13 +1308,16 @@ export default function App() {
                   Retry mission
                 </button>
                 <button
-                  onClick={() => {
-                    game.current?.exitToMenu();
-                    setScreen("menu");
-                  }}
+                  onClick={() => exitToScreen("upgrades")}
+                  className="rounded-md border border-amber-400/40 bg-amber-400/15 px-7 py-2.5 text-sm font-bold uppercase tracking-widest text-amber-300 backdrop-blur transition hover:bg-amber-400/30"
+                >
+                  Armory
+                </button>
+                <button
+                  onClick={() => exitToScreen("home")}
                   className="rounded-md border border-white/15 bg-black/50 px-7 py-2.5 text-sm font-bold uppercase tracking-widest text-zinc-300 backdrop-blur transition hover:bg-black/70"
                 >
-                  Quit to menu
+                  Main Menu
                 </button>
               </div>
             </div>
@@ -432,39 +1332,47 @@ export default function App() {
                   <div className="mt-2 text-2xl font-black uppercase tracking-wide text-white">{endInfo.mission.codename}</div>
                   <div className="text-xs text-zinc-400">{endInfo.mission.name}</div>
                 </div>
-                <div className="max-h-[36vh] space-y-3 overflow-y-auto p-6">
+                {endInfo.reward && (
+                  <div className="flex flex-col items-center gap-2 border-b border-white/10 bg-black/40 px-6 py-4">
+                    <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.3em] text-zinc-400">
+                      <span>Mission Rewards</span>
+                      {endInfo.reward.ghostBonus && (
+                        <span className="rounded bg-cyan-400/20 px-2 py-0.5 text-cyan-300">Ghost Bonus (0 Alerts)</span>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap justify-center gap-2">
+                      <CurrencyBadge kind="credits" amount={endInfo.reward.credits} />
+                      <CurrencyBadge kind="intel" amount={endInfo.reward.intel} />
+                      <CurrencyBadge kind="salvage" amount={endInfo.reward.salvage} />
+                    </div>
+                  </div>
+                )}
+                <div className="max-h-[30vh] space-y-3 overflow-y-auto p-6">
                   {endInfo.mission.debrief.map((line, i) => (
                     <p key={i} className="border-l-2 border-emerald-400/50 pl-3 text-sm leading-relaxed text-zinc-300">{line}</p>
                   ))}
                 </div>
                 <div className="flex items-center justify-between gap-4 border-t border-white/10 p-5">
                   <button
-                    onClick={() => {
-                      game.current?.exitToMenu();
-                      setScreen("menu");
-                    }}
-                    className="rounded-md border border-white/15 px-5 py-2.5 text-sm font-bold uppercase tracking-widest text-zinc-300 transition hover:bg-white/10"
+                    onClick={() => exitToScreen("upgrades")}
+                    className="rounded-md border border-amber-400/40 bg-amber-400/15 px-5 py-2.5 text-sm font-bold uppercase tracking-widest text-amber-300 transition hover:bg-amber-400/25"
                   >
-                    Menu
+                    Armory
                   </button>
                   <div className="flex gap-3">
                     <button
-                      onClick={() => startMission(endInfo.mission)}
-                      className="rounded-md border border-white/20 px-5 py-2.5 text-sm font-bold uppercase tracking-widest text-zinc-200 transition hover:bg-white/10"
+                      onClick={() => exitToScreen("home")}
+                      className="rounded-md border border-white/15 px-4 py-2.5 text-sm font-bold uppercase tracking-widest text-zinc-300 transition hover:bg-white/10"
                     >
-                      Replay
+                      Menu
                     </button>
                     {endInfo.mission.id < MISSIONS.length - 1 && (
                       <button
                         onClick={() => {
-                          const next = MISSIONS.find((m) => m.id === endInfo.mission.id + 1);
-                          if (next) {
-                            setBriefing(next);
-                            setScreen("briefing");
-                          }
+                          const next = MISSIONS[endInfo.mission.id + 1];
+                          startMission(next);
                         }}
-                        className="rounded-md px-7 py-2.5 text-sm font-black uppercase tracking-widest text-black transition hover:opacity-90"
-                        style={{ background: endInfo.mission.accent }}
+                        className="rounded-md bg-emerald-400 px-6 py-2.5 text-sm font-black uppercase tracking-widest text-black transition hover:bg-emerald-300"
                       >
                         Next mission →
                       </button>
@@ -477,27 +1385,34 @@ export default function App() {
 
           {/* pause */}
           {hud.paused && hud.phase === "ready" && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-5 bg-black/75 backdrop-blur">
-              <div className="text-4xl font-black uppercase tracking-[0.3em] text-amber-400">Paused</div>
-              <div className="flex flex-col gap-3">
+            <div className="absolute inset-0 flex items-center justify-center bg-black/75 backdrop-blur-sm">
+              <div className="w-80 space-y-3 rounded-2xl border border-white/15 bg-[#0e1015] p-6 text-center shadow-2xl">
+                <div className="text-xl font-black uppercase tracking-[0.25em] text-white">Paused</div>
+                <div className="text-xs text-zinc-500">{hud.mission?.codename} · {hud.kills} eliminated · {hud.stealthKills} stealth</div>
                 <button
                   onClick={() => game.current?.setPaused(false)}
-                  className="w-64 rounded-md border border-white/25 bg-white/10 px-6 py-2.5 text-sm font-bold uppercase tracking-widest backdrop-blur transition hover:bg-white/20"
+                  className="w-full rounded-md bg-amber-400 py-2.5 text-xs font-black uppercase tracking-widest text-black transition hover:bg-amber-300"
                 >
-                  Resume (Esc)
+                  Resume
                 </button>
                 <button
-                  onClick={() => game.current?.respawn()}
-                  className="w-64 rounded-md border border-white/15 bg-black/50 px-6 py-2.5 text-sm font-bold uppercase tracking-widest text-zinc-300 backdrop-blur transition hover:bg-black/70"
+                  onClick={() => {
+                    game.current?.setPaused(false);
+                    game.current?.respawn();
+                  }}
+                  className="w-full rounded-md border border-white/15 py-2.5 text-xs font-bold uppercase tracking-widest text-zinc-200 transition hover:bg-white/10"
                 >
                   Restart mission
                 </button>
                 <button
-                  onClick={() => {
-                    game.current?.exitToMenu();
-                    setScreen("menu");
-                  }}
-                  className="w-64 rounded-md border border-white/15 bg-black/50 px-6 py-2.5 text-sm font-bold uppercase tracking-widest text-zinc-300 backdrop-blur transition hover:bg-black/70"
+                  onClick={() => exitToScreen("upgrades")}
+                  className="w-full rounded-md border border-amber-400/30 py-2.5 text-xs font-bold uppercase tracking-widest text-amber-300 transition hover:bg-amber-400/10"
+                >
+                  Armory &amp; Upgrades
+                </button>
+                <button
+                  onClick={() => exitToScreen("home")}
+                  className="w-full rounded-md border border-white/10 py-2.5 text-xs font-bold uppercase tracking-widest text-zinc-400 transition hover:bg-white/10"
                 >
                   Quit to menu
                 </button>
@@ -511,18 +1426,24 @@ export default function App() {
 }
 
 function ObjectiveRow({ o, accent }: { o: ObjectiveState; accent: string }) {
-  const done = o.done;
-  const progressText = o.total > 1 ? ` ${o.progress}/${o.total}` : "";
   return (
-    <div
-      className={`flex items-center gap-2 rounded border px-2.5 py-1.5 text-xs backdrop-blur transition ${
-        done ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-300" : "border-white/10 bg-black/50 text-zinc-300"
-      }`}
-    >
-      <span className={done ? "text-emerald-400" : "text-zinc-500"}>{done ? "✓" : "◇"}</span>
-      <span className={done ? "line-through decoration-emerald-400/50" : ""}>{o.label}</span>
-      {!done && progressText && <span className="ml-auto font-mono text-zinc-500">{progressText}</span>}
-      {!done && o.total <= 1 && <span className="ml-auto h-1.5 w-1.5 animate-pulse rounded-full" style={{ background: accent }} />}
+    <div className="flex items-center gap-2 text-xs">
+      <span
+        className="flex h-4 w-4 items-center justify-center rounded-sm border text-[10px] font-bold"
+        style={{
+          borderColor: o.done ? "#34d399" : accent + "88",
+          background: o.done ? "rgba(52,211,153,0.2)" : "rgba(0,0,0,0.4)",
+          color: o.done ? "#34d399" : "#ccc",
+        }}
+      >
+        {o.done ? "✓" : "·"}
+      </span>
+      <span className={o.done ? "text-zinc-500 line-through" : "text-zinc-200 drop-shadow"}>{o.label}</span>
+      {o.total > 1 && (
+        <span className="font-mono text-[10px] text-zinc-400">
+          {o.progress}/{o.total}
+        </span>
+      )}
     </div>
   );
 }

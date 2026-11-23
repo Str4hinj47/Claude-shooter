@@ -281,13 +281,13 @@ export class CombatFX {
     this.flashes.setScale(s);
   }
 
-  muzzleFlash(camera: THREE.Camera) {
-    this.flashT = 0.045;
+  muzzleFlash(camera: THREE.Camera, scale = 1.0) {
+    this.flashT = scale < 0.5 ? 0.025 : 0.045;
     this.flash.visible = true;
     this.flash.rotation.z = Math.random() * Math.PI;
-    const s = 0.8 + Math.random() * 0.5;
+    const s = (0.8 + Math.random() * 0.5) * scale;
     this.flash.scale.setScalar(s);
-    this.flashLight.intensity = 14 + Math.random() * 8;
+    this.flashLight.intensity = (14 + Math.random() * 8) * scale * scale;
     const core = this.flash.getObjectByName("core")!;
     core.quaternion.copy(camera.quaternion);
     // smoke puff
@@ -477,31 +477,42 @@ export class Sfx {
     o.stop(t0 + dur + 0.05);
   }
 
-  shot() {
-    this.burst({ dur: 0.22, freq: 5000, sweepTo: 600, q: 0.5, type: "lowpass", gain: 1.0, reverb: 0.9 });
-    this.burst({ dur: 0.05, freq: 3200, q: 0.6, type: "highpass", gain: 0.7 });
-    this.tone(150, 38, 0.2, 0.9, "sine");
-    this.tone(90, 30, 0.28, 0.6, "triangle");
+  shot(pitch = 1.0, suppressed = false) {
+    if (suppressed) {
+      // Crisp tactical silencer "thwip / phut" (no loud muzzle blast or long echo)
+      this.burst({ dur: 0.065 / Math.sqrt(pitch), freq: 2400 * pitch, sweepTo: 550 * pitch, q: 1.1, type: "bandpass", gain: 0.42, reverb: 0.15 });
+      this.burst({ dur: 0.03, freq: 4200 * pitch, q: 0.9, type: "highpass", gain: 0.22 });
+      this.tone(135 * pitch, 48 * pitch, 0.075, 0.28, "sine");
+      return;
+    }
+    this.burst({ dur: 0.22 / Math.sqrt(pitch), freq: 5000 * pitch, sweepTo: 600 * pitch, q: 0.5, type: "lowpass", gain: 1.0, reverb: 0.9 });
+    this.burst({ dur: 0.05, freq: 3200 * pitch, q: 0.6, type: "highpass", gain: 0.7 });
+    this.tone(150 * pitch, 38 * pitch, 0.2, 0.9, "sine");
+    this.tone(90 * pitch, 30 * pitch, 0.28, 0.6, "triangle");
     this.burst({ dur: 0.9, freq: 700, sweepTo: 200, type: "lowpass", gain: 0.12, reverb: 1.0, delay: 0.02 });
   }
+  switchWeapon() {
+    this.burst({ dur: 0.04, freq: 1400, q: 1.4, gain: 0.25 });
+  }
+  takedown() {
+    this.burst({ dur: 0.09, freq: 520, sweepTo: 180, type: "lowpass", gain: 0.55 });
+    this.tone(95, 42, 0.11, 0.35, "sine");
+  }
   dry() {
-    this.burst({ dur: 0.03, freq: 3500, q: 3, gain: 0.5 });
+    this.burst({ dur: 0.025, freq: 3200, q: 2.5, gain: 0.35 });
   }
   magOut() {
-    this.burst({ dur: 0.05, freq: 1800, q: 2, gain: 0.5 });
-    this.tone(260, 120, 0.06, 0.3, "square");
+    this.burst({ dur: 0.035, freq: 1600, q: 1.5, gain: 0.28 });
   }
   magIn() {
-    this.burst({ dur: 0.07, freq: 1100, q: 1.5, gain: 0.7 });
-    this.tone(180, 70, 0.09, 0.5, "square");
+    this.burst({ dur: 0.045, freq: 1050, q: 1.4, gain: 0.36 });
   }
   bolt() {
-    this.burst({ dur: 0.05, freq: 2400, q: 2, gain: 0.55 });
-    this.burst({ dur: 0.06, freq: 1500, q: 2, gain: 0.7, delay: 0.1 });
-    this.tone(320, 110, 0.07, 0.3, "square", 0.1);
+    this.burst({ dur: 0.035, freq: 2100, q: 1.8, gain: 0.32 });
+    this.burst({ dur: 0.045, freq: 1450, q: 1.6, gain: 0.38, delay: 0.1 });
   }
   magDrop() {
-    this.burst({ dur: 0.08, freq: 600, q: 1, gain: 0.35, delay: 0.25 });
+    this.burst({ dur: 0.055, freq: 550, q: 1, gain: 0.2, delay: 0.25 });
   }
   step(intensity: number) {
     this.burst({ dur: 0.09, freq: 300 + intensity * 250, q: 0.7, type: "lowpass", gain: 0.12 + intensity * 0.22 });

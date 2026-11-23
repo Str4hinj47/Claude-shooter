@@ -7,6 +7,8 @@ const ctxStub = new Proxy(
   {
     get: (_t, k) => {
       if (k === "createRadialGradient" || k === "createLinearGradient") return () => ({ addColorStop() {} });
+      if (k === "createImageData") return (w, h) => ({ width: w, height: h, data: new Uint8ClampedArray(w * h * 4) });
+      if (k === "getImageData") return (_x, _y, w, h) => ({ width: w, height: h, data: new Uint8ClampedArray(w * h * 4) });
       if (k === "measureText") return () => ({ width: 10 });
       if (k === "canvas") return { width: 1024, height: 1024 };
       return () => {};

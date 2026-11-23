@@ -11,6 +11,22 @@ import { Sky } from "three/examples/jsm/objects/Sky.js";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import { buildWorld, World } from "./world";
 import type { SurfaceKind } from "./world";
+import {
+  bevelledBox,
+  craftedBarrel,
+  craftedCrate,
+  craftedRockCluster,
+  craftedStall,
+  craftedTreeConifer,
+  craftedTreeRound,
+  craftedWell,
+  doorWithStep,
+  gableRoof,
+  insetWindow,
+  part,
+  scatterInstances,
+} from "./kit/geom";
+import { materialFor } from "./kit/surface";
 
 /* ====================== seeded RNG ====================== */
 function mulberry32(seed: number) {
@@ -261,47 +277,6 @@ function gravelTex(size: number, rng: () => number): THREE.CanvasTexture {
   return t;
 }
 
-/** tile roof: horizontal tile rows (bands) stacking along the slope */
-function tileTex(size: number, rng: () => number): THREE.CanvasTexture {
-  const c = document.createElement("canvas");
-  c.width = c.height = size;
-  const g = c.getContext("2d")!;
-  const rows = 6;
-  for (let r = 0; r < rows; r++) {
-    const base = 0.62 + rng() * 0.18;
-    g.fillStyle = `rgb(${Math.floor(120 * base)},${Math.floor(62 * base)},${Math.floor(44 * base)})`;
-    g.fillRect(0, (r * size) / rows, size, size / rows);
-    // tile highlight + shadow within the row
-    g.fillStyle = "rgba(255,220,180,0.10)";
-    g.fillRect(0, (r * size) / rows, size, size / rows / 3);
-    g.fillStyle = "rgba(0,0,0,0.18)";
-    g.fillRect(0, ((r + 1) * size) / rows - 3, size, 3);
-  }
-  const t = new THREE.CanvasTexture(c);
-  t.colorSpace = THREE.SRGBColorSpace;
-  return t;
-}
-
-/** slate roof: finer dark bands */
-function slateTex(size: number, rng: () => number): THREE.CanvasTexture {
-  const c = document.createElement("canvas");
-  c.width = c.height = size;
-  const g = c.getContext("2d")!;
-  const rows = 9;
-  for (let r = 0; r < rows; r++) {
-    const v = 0.32 + rng() * 0.14;
-    g.fillStyle = `rgb(${Math.floor(70 * v)},${Math.floor(74 * v)},${Math.floor(80 * v)})`;
-    g.fillRect(0, (r * size) / rows, size, size / rows);
-    g.fillStyle = "rgba(255,255,255,0.07)";
-    g.fillRect(0, (r * size) / rows, size, size / rows / 3);
-    g.fillStyle = "rgba(0,0,0,0.25)";
-    g.fillRect(0, ((r + 1) * size) / rows - 2, size, 2);
-  }
-  const t = new THREE.CanvasTexture(c);
-  t.colorSpace = THREE.SRGBColorSpace;
-  return t;
-}
-
 /** corrugated metal: vertical wave stripes */
 function corrugTex(size: number, rng: () => number): THREE.CanvasTexture {
   const c = document.createElement("canvas");
@@ -442,12 +417,13 @@ function setupAmbient(scene: THREE.Scene, renderer: THREE.WebGLRenderer, c: Ambi
   u["mieDirectionalG"].value = 0.82;
   u["sunPosition"].value.copy(sunDir);
   skyScene.add(sky);
-  const cubeRT = new THREE.WebGLCubeRenderTarget(1024, { type: THREE.HalfFloatType });
+  const cubeRT = new THREE.WebGLCubeRenderTarget(256, { type: THREE.HalfFloatType });
   const cubeCam = new THREE.CubeCamera(1, 10000, cubeRT);
   cubeCam.update(renderer, skyScene);
   scene.background = cubeRT.texture;
   const pmrem = new THREE.PMREMGenerator(renderer);
   scene.environment = pmrem.fromCubemap(cubeRT.texture).texture;
+  pmrem.dispose();
   scene.environmentIntensity = c.envIntensity;
   scene.fog = new THREE.FogExp2(c.fogColor, c.fogDensity);
 
@@ -505,10 +481,26 @@ class Kit {
   extras: { update: (dt: number) => void }[] = [];
   rng: () => number;
   scene: THREE.Object3D;
+  invisMat = new THREE.MeshBasicMaterial({ visible: false });
+  private wallMatCache = new Map<string, THREE.MeshStandardMaterial>();
+  private facadeId = new WeakMap<object, number>();
+  private nextFacadeId = 1;
 
   constructor(scene: THREE.Object3D, seed: number) {
     this.scene = scene;
     this.rng = mulberry32(seed);
+  }
+
+  /** invisible physics-only collider + AABB (no z-fighting with detailed visual shells) */
+  colliderBox(w: number, h: number, d: number, x: number, y: number, z: number, ry = 0, kind: SurfaceKind = "concrete") {
+    const m = this.box(this.invisMat, w, h, d, x, y, z, ry);
+    m.userData.kind = kind;
+    this.scene.add(m);
+    this.colliders.push(m);
+    m.updateWorldMatrix(true, false);
+    const box = new THREE.Box3().setFromObject(m);
+    if (!box.isEmpty()) this.aabbs.push(box);
+    return m;
   }
 
   add(m: THREE.Mesh, kind: SurfaceKind, noShadow = false) {
@@ -563,23 +555,37 @@ class Kit {
   /** wall material with the facade tiled to this face's real length (bays align
       across faces and corners) */
   wallFaceMat(f: ReturnType<typeof facade>, lenH: number, h: number, emissive: number): THREE.MeshStandardMaterial {
-    const m = new THREE.MeshStandardMaterial({
-      map: f.map.clone(),
-      bumpMap: f.map.clone(),
-      bumpScale: 0.06,
-      roughness: 0.85,
-      metalness: 0.02,
-      emissive: 0xffffff,
-      emissiveMap: f.glow.clone(),
-      emissiveIntensity: emissive,
-    });
+    let fid = this.facadeId.get(f);
+    if (!fid) {
+      fid = this.nextFacadeId++;
+      this.facadeId.set(f, fid);
+    }
     const repX = Math.max(1, lenH / f.tileW);
     const repY = Math.max(1, h / f.tileH);
-    for (const tx of [m.map, m.bumpMap, m.emissiveMap] as THREE.Texture[]) {
-      tx!.wrapS = tx!.wrapT = THREE.RepeatWrapping;
-      tx!.repeat.set(repX, repY);
-      tx!.needsUpdate = true;
+    const key = `${fid}|${repX.toFixed(2)}|${repY.toFixed(2)}|${emissive.toFixed(2)}`;
+    const hit = this.wallMatCache.get(key);
+    if (hit) return hit;
+
+    const mapTex = f.map.clone();
+    const glowTex = f.glow.clone();
+    mapTex.colorSpace = THREE.SRGBColorSpace;
+    glowTex.colorSpace = THREE.SRGBColorSpace;
+    for (const tx of [mapTex, glowTex]) {
+      tx.wrapS = tx.wrapT = THREE.RepeatWrapping;
+      tx.repeat.set(repX, repY);
+      tx.needsUpdate = true;
     }
+    const m = new THREE.MeshStandardMaterial({
+      map: mapTex,
+      bumpMap: mapTex,
+      bumpScale: 0.05,
+      roughness: 0.84,
+      metalness: 0.04,
+      emissive: 0xffffff,
+      emissiveMap: glowTex,
+      emissiveIntensity: emissive,
+    });
+    this.wallMatCache.set(key, m);
     return m;
   }
 
@@ -613,68 +619,62 @@ class Kit {
     const ry = o.ry ?? 0;
     const t = 0.3;
     const colH = o.collideTo ?? h;
-    // hidden collision box (identical AABB to before — gameplay unchanged)
-    const collider = this.box(this.wallFaceMat(o.facade, w, h, o.emissive ?? 0), w, colH, d, x, 0, z, ry);
-    this.solid(collider);
+    // invisible collision box (zero z-fighting with visual shell)
+    const collider = this.colliderBox(w, colH, d, x, 0, z, ry, "concrete");
     if (colH < h) {
-      // trim collider so rooftop combat works (raycast gap at roofline)
       const last = this.aabbs[this.aabbs.length - 1];
       last.max.y = colH;
     }
-    // visual shell (non-colliding) in a rotated group; outer faces flush with the collider
+    // entire visual building + roof + parapet + details live in one rotated group
     const g = new THREE.Group();
     g.position.set(x, 0, z);
     g.rotation.y = ry;
     this.scene.add(g);
-    // four wall faces, each tiled to its own length so bays line up at corners
+
+    const em = o.emissive ?? 0;
+    const fbMat = this.wallFaceMat(o.facade, w, h, em);
+    const lrMat = this.wallFaceMat(o.facade, d, h, em);
     for (const sz of [-1, 1]) {
-      const m = this.mesh(this.wallFaceMat(o.facade, w, h, o.emissive ?? 0), new THREE.BoxGeometry(w, h, t), 0, h / 2, sz * (d / 2 - t / 2), 0);
+      const m = this.mesh(fbMat, new THREE.BoxGeometry(w, h, t), 0, h / 2, sz * (d / 2 - t / 2), 0);
+      m.castShadow = true;
+      m.receiveShadow = true;
       g.add(m);
     }
     for (const sx of [-1, 1]) {
-      const m = this.mesh(this.wallFaceMat(o.facade, d, h, o.emissive ?? 0), new THREE.BoxGeometry(t, h, d), sx * (w / 2 - t / 2), h / 2, 0, 0);
+      const m = this.mesh(lrMat, new THREE.BoxGeometry(t, h, d - 2 * t), sx * (w / 2 - t / 2), h / 2, 0, 0);
+      m.castShadow = true;
+      m.receiveShadow = true;
       g.add(m);
     }
-    // corner quoins (protrude slightly, hide face seams)
-    const quoinMat = new THREE.MeshStandardMaterial({ color: 0x5a5550, roughness: 0.9 });
+    // corner pilasters (flush masonry trim hiding corner seams)
+    const quoinMat = materialFor(0x5a5550, { roughness: 0.9, family: "stone", seed: 4 });
     for (const sx of [-1, 1]) {
       for (const sz of [-1, 1]) {
-        const q = this.mesh(quoinMat, new RoundedBoxGeometry(t * 1.15, h, t * 1.15, 2, 0.03), sx * (w / 2 + t * 0.28), h / 2, sz * (d / 2 + t * 0.28), 0);
+        const q = this.mesh(quoinMat, bevelledBox(t * 1.15, h, t * 1.15, 0.025), sx * (w / 2 - t * 0.35), h / 2, sz * (d / 2 - t * 0.35), 0);
+        q.castShadow = true;
+        q.receiveShadow = true;
         g.add(q);
       }
     }
-    // plinth band around the base
-    const plinthMat = new THREE.MeshStandardMaterial({ color: 0x4a4640, roughness: 0.92 });
-    for (const sz of [-1, 1]) {
-      const p = this.mesh(plinthMat, new RoundedBoxGeometry(w + 0.1, 0.5, t + 0.12, 3, 0.04), 0, 0.25, sz * (d / 2 + 0.04), 0);
-      g.add(p);
-    }
-    for (const sx of [-1, 1]) {
-      const p = this.mesh(plinthMat, new RoundedBoxGeometry(t + 0.12, 0.5, d + 0.1, 3, 0.04), sx * (w / 2 + 0.04), 0.25, 0, 0);
-      g.add(p);
-    }
-    // floor-line bands (sill/lintel courses) at each floor level
+    // ground plinth
+    const plinthMat = materialFor(0x4a4640, { roughness: 0.92, family: "stone", seed: 8 });
+    const plinth = this.mesh(plinthMat, bevelledBox(w + 0.14, 0.48, d + 0.14, 0.03), 0, 0.24, 0, 0);
+    plinth.receiveShadow = true;
+    g.add(plinth);
+    // floor-line stringer courses
     const floorH = o.facade.tileH / o.facade.rows;
-    const bandMat = new THREE.MeshStandardMaterial({ color: 0x8a8580, roughness: 0.9 });
-    for (let k = 1; k * floorH < h - 0.2; k++) {
-      for (const sz of [-1, 1]) {
-        const b = this.mesh(bandMat, new RoundedBoxGeometry(w + 0.08, 0.14, t + 0.1, 2, 0.02), 0, k * floorH, sz * (d / 2 + 0.03), 0);
-        g.add(b);
-      }
-      for (const sx of [-1, 1]) {
-        const b = this.mesh(bandMat, new RoundedBoxGeometry(t + 0.1, 0.14, d + 0.08, 2, 0.02), sx * (w / 2 + 0.03), k * floorH, 0, 0);
-        g.add(b);
-      }
+    const bandMat = materialFor(0x7c7770, { roughness: 0.9 });
+    for (let k = 1; k * floorH < h - 0.25; k++) {
+      const band = this.mesh(bandMat, bevelledBox(w + 0.12, 0.13, d + 0.12, 0.02), 0, k * floorH, 0, 0);
+      g.add(band);
     }
-    if (o.roof !== "none") this.roof(x, z, w, d, h, o.roof ?? "flat", o.roofMat);
-    if (o.parapet) this.parapet(x, z, w, d, h, o.roofMat);
-    if (o.details) this.roofDetails(x, z, w, d, h, o.roofMat);
+    if (o.roof !== "none") this.roofLocal(g, w, d, h, o.roof ?? "flat", o.roofMat, fbMat);
+    if (o.parapet) this.parapetLocal(g, w, d, h, o.roofMat);
+    if (o.details) this.roofDetailsLocal(g, w, d, h, o.roofMat);
     return collider;
   }
 
-  /* hollow building with a doorway on the +z face — player can walk inside.
-     Walls are separate solid segments so the interior is open; the rooftop stays
-     walkable (short collider) for rooftop combat. */
+  /* Playable CS2-style multi-door, multi-window building with optional interior partition & walkable roof */
   enterable(o: {
     x: number;
     z: number;
@@ -686,188 +686,237 @@ class Kit {
     roofMat: THREE.Material;
     doorW?: number;
     doorH?: number;
+    doors?: ("N" | "S" | "E" | "W")[];
+    windows?: ("N" | "S" | "E" | "W")[];
+    partition?: "none" | "x" | "z";
     emissive?: number;
     ry?: number;
     inner?: THREE.Material;
+    walkableRoof?: boolean;
+    parapet?: boolean;
   }) {
     const { x, z, w, d, h } = o;
     const t = 0.3;
-    const doorW = o.doorW ?? 1.8;
-    const doorH = o.doorH ?? 2.4;
+    const doorW = Math.min(o.doorW ?? 1.9, Math.min(w, d) - 1.4);
+    const doorH = Math.min(o.doorH ?? 2.45, h - 0.45);
+    const doors = new Set<"N" | "S" | "E" | "W">(o.doors ?? ["S"]);
+    const windows = new Set<"N" | "S" | "E" | "W">(o.windows ?? []);
+    const partition = o.partition ?? "none";
     const ry = o.ry ?? 0;
     const em = o.emissive ?? 0;
-    const wallNorth = this.wallFaceMat(o.facade, w, h, em);
-    const wallSouth = this.wallFaceMat(o.facade, w, h, em);
-    const wallSide = this.wallFaceMat(o.facade, d - 2 * t, h, em);
-    const wallDoor = this.wallFaceMat(o.facade, w, h, em);
+    const wallNS = this.wallFaceMat(o.facade, w, h, em);
+    const wallEW = this.wallFaceMat(o.facade, d - 2 * t, h, em);
 
-    // north + south walls (full span, along X)
-    this.solid(this.box(wallNorth, w, h, t, x, 0, z - d / 2, ry), "concrete");
-    this.solid(this.box(wallSouth, w, h, t, x, 0, z + d / 2, ry), "concrete");
-    // west + east walls (along Z)
-    const sideSpan = d - 2 * t;
-    const doorInset = doorW / 2 + t;
-    for (const sx of [-1, 1]) {
-      const cx = x + sx * (w / 2);
-      this.solid(this.box(wallSide, t, h, sideSpan, cx, 0, z, ry), "concrete");
-    }
-    // lintel above the door on the south wall (keeps the opening head solid)
-    this.solid(this.box(wallDoor, doorW, h - doorH, t, x, 0, z + d / 2, ry), "concrete");
-    // door reveal on the south wall (two jamb returns)
-    for (const sx of [-1, 1]) {
-      this.solid(this.box(wallDoor, doorW / 2, doorH, t, x + sx * doorInset, 0, z + d / 2, ry), "concrete");
-    }
-
-    // exterior trim: plinth + floor bands (visual only)
     const g = new THREE.Group();
     g.position.set(x, 0, z);
     g.rotation.y = ry;
     this.scene.add(g);
-    const plinthMat = new THREE.MeshStandardMaterial({ color: 0x4a4640, roughness: 0.92 });
-    const bandMat = new THREE.MeshStandardMaterial({ color: 0x8a8580, roughness: 0.9 });
-    const floorH = o.facade.tileH / o.facade.rows;
-    for (const sz of [-1, 1]) {
-      const p = this.mesh(plinthMat, new RoundedBoxGeometry(w + 0.1, 0.5, t + 0.12, 3, 0.04), 0, 0.25, sz * (d / 2 + 0.04), 0);
-      g.add(p);
-    }
-    for (const sx of [-1, 1]) {
-      const p = this.mesh(plinthMat, new RoundedBoxGeometry(t + 0.12, 0.5, d + 0.1, 3, 0.04), sx * (w / 2 + 0.04), 0.25, 0, 0);
-      g.add(p);
-    }
-    for (let k = 1; k * floorH < h - 0.2; k++) {
-      for (const sz of [-1, 1]) {
-        const b = this.mesh(bandMat, new RoundedBoxGeometry(w + 0.08, 0.14, t + 0.1, 2, 0.02), 0, k * floorH, sz * (d / 2 + 0.03), 0);
-        g.add(b);
-      }
-      for (const sx of [-1, 1]) {
-        const b = this.mesh(bandMat, new RoundedBoxGeometry(t + 0.1, 0.14, d + 0.08, 2, 0.02), sx * (w / 2 + 0.03), k * floorH, 0, 0);
-        g.add(b);
-      }
-    }
-    // door frame (trim around the doorway on the outside)
-    const frameMat = new THREE.MeshStandardMaterial({ color: 0x3a3328, roughness: 0.9 });
-    g.add(this.mesh(frameMat, new RoundedBoxGeometry(doorW + 0.2, 0.14, 0.14, 2, 0.03), 0, doorH + 0.07, d / 2 + 0.07, 0));
-    for (const sx of [-1, 1]) {
-      g.add(this.mesh(frameMat, new RoundedBoxGeometry(0.14, doorH + 0.2, 0.14, 2, 0.03), sx * (doorW / 2 + 0.07), (doorH + 0.2) / 2, d / 2 + 0.07, 0));
-    }
 
-    // interior floor slab (visual + walkable top)
-    const innerMat = o.inner ?? new THREE.MeshStandardMaterial({ color: 0x6b6258, roughness: 0.95 });
-    const floor = this.box(innerMat, w - 2 * t, 0.12, d - 2 * t, x, 0.06, z, ry);
-    floor.receiveShadow = true;
-    this.scene.add(floor);
-    this.colliders.push(floor);
-    this.aabbs.push(new THREE.Box3().setFromObject(floor));
-    // floor plank lines
-    const plankMat = new THREE.MeshStandardMaterial({ color: 0x4a3f33, roughness: 0.95 });
-    for (let px = -(w - 2 * t) / 2 + 0.5; px < (w - 2 * t) / 2; px += 0.7) {
-      const pl = this.mesh(plankMat, new THREE.BoxGeometry(0.03, 0.01, d - 2 * t - 0.2), x + px, 0.19, z, ry);
-      this.scene.add(pl);
-    }
-
-    // interior wall liners (hide mirrored facade texture from inside)
-    const linerMat = new THREE.MeshStandardMaterial({ color: 0x2a2622, roughness: 0.95 });
-    const linerH = h - 0.15;
-    const innerW = w - 2 * t - 0.1;
-    const innerD = d - 2 * t - 0.1;
-    const addLiner = (lx: number, lz: number, lw: number, ld: number) => {
-      const ln = this.mesh(linerMat, new THREE.BoxGeometry(lw, linerH, ld), lx, linerH / 2 + 0.08, lz, ry);
-      this.scene.add(ln);
+    const addLocalSolid = (mat: THREE.Material, bw: number, bh: number, bd: number, lx: number, ly: number, lz: number, cast = true) => {
+      if (bw <= 0.02 || bh <= 0.02 || bd <= 0.02) return;
+      const m = this.mesh(mat, new THREE.BoxGeometry(bw, bh, bd), lx, ly, lz, 0);
+      m.castShadow = cast;
+      m.receiveShadow = true;
+      m.userData.kind = "concrete";
+      g.add(m);
+      this.colliders.push(m);
+      m.updateWorldMatrix(true, false);
+      const box = new THREE.Box3().setFromObject(m);
+      if (!box.isEmpty()) this.aabbs.push(box);
+      return m;
     };
-    addLiner(x, z - d / 2 + t / 2 - 0.05, innerW, 0.08); // north
-    addLiner(x, z + d / 2 - t / 2 - 0.05, innerW, 0.08); // south (behind door — mostly covered by door threshold)
-    for (const sx of [-1, 1]) addLiner(x + sx * (w / 2 - t / 2 - 0.05), z, 0.08, innerD); // east/west
 
-    // interior furniture (visual only — placed clear of the doorway path)
-    const furnMat = new THREE.MeshStandardMaterial({ color: 0x5a4a38, roughness: 0.9 });
-    const crateMat = new THREE.MeshStandardMaterial({ color: 0x6a5438, roughness: 0.92 });
-    const ix = x, iz = z - d * 0.24;
-    // table
-    this.scene.add(this.mesh(furnMat, new RoundedBoxGeometry(1.3, 0.08, 0.75, 3, 0.02), ix, 0.95, iz, ry));
-    for (const [dx, dz] of [[-0.55, -0.28], [0.55, -0.28], [-0.55, 0.28], [0.55, 0.28]]) {
-      this.scene.add(this.mesh(furnMat, new THREE.BoxGeometry(0.07, 0.9, 0.07), ix + dx, 0.49, iz + dz, ry));
-    }
-    // crates
-    for (const [cx, cz, s] of [[ix - 1.1, iz + 0.3, 0.6], [ix + 1.1, iz + 0.35, 0.5]]) {
-      this.scene.add(this.mesh(crateMat, new RoundedBoxGeometry(s, s, s, 3, 0.05), cx, s / 2 + 0.12, cz, ry + 0.2));
-    }
-    // shelf unit against the north wall
-    this.scene.add(this.mesh(furnMat, new RoundedBoxGeometry(1.6, 1.6, 0.4, 3, 0.04), ix + 0.6, 0.9, z - d / 2 + 0.5, ry));
-    for (const sy of [0.5, 1.0, 1.5]) {
-      this.scene.add(this.mesh(furnMat, new THREE.BoxGeometry(1.5, 0.05, 0.38), ix + 0.6, sy, z - d / 2 + 0.5, ry));
-    }
-    // hanging lamp
-    const lampRod = this.mesh(new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.7, metalness: 0.8 }), new THREE.CylinderGeometry(0.02, 0.02, 0.7, 6), ix - 0.4, h - 0.35, iz + 0.2, ry);
-    this.scene.add(lampRod);
-    const lamp = this.mesh(new THREE.MeshStandardMaterial({ color: 0xffe9b0, emissive: 0xffd98a, emissiveIntensity: 1.6, roughness: 0.6 }), new THREE.SphereGeometry(0.14, 12, 10), ix - 0.4, h - 0.75, iz + 0.2, ry);
-    this.scene.add(lamp);
-    // rug
-    const rug = this.mesh(new THREE.MeshStandardMaterial({ color: 0x7a3a30, roughness: 0.95 }), new THREE.PlaneGeometry(1.8, 1.2), ix, 0.205, iz, ry);
-    rug.rotation.x = -Math.PI / 2;
-    this.scene.add(rug);
+    const linerMat = materialFor(0x403a34, { roughness: 0.95, family: "plaster", seed: 3 });
+    const trimMat = materialFor(0x3a3228, { roughness: 0.85, family: "wood", seed: 7 });
 
-    // door threshold (visual)
-    const door = this.box(new THREE.MeshStandardMaterial({ color: 0x3a2a1a, roughness: 0.9 }), doorW, doorH, 0.08, x, 0, z + d / 2 + 0.02, ry);
-    this.scene.add(door);
+    const buildWall = (side: "N" | "S" | "E" | "W") => {
+      const alongX = side === "N" || side === "S";
+      const span = alongX ? w : d - 2 * t;
+      const mat = alongX ? wallNS : wallEW;
+      const pos = alongX ? (side === "S" ? d / 2 - t / 2 : -d / 2 + t / 2) : (side === "E" ? w / 2 - t / 2 : -w / 2 + t / 2);
 
-    if (o.roof !== "none") this.roof(x, z, w, d, h, o.roof ?? "flat", o.roofMat);
+      const placeBox = (along: number, y: number, bLen: number, bh: number, m: THREE.Material) => {
+        if (alongX) addLocalSolid(m, bLen, bh, t, along, y, pos);
+        else addLocalSolid(m, t, bh, bLen, pos, y, along);
+      };
+
+      if (doors.has(side)) {
+        const dW = Math.min(doorW, span - 1.0);
+        const jambW = (span - dW) / 2;
+        for (const sgn of [-1, 1]) {
+          placeBox(sgn * (dW / 2 + jambW / 2), h / 2, jambW, h, mat);
+        }
+        const lintelH = h - doorH;
+        if (lintelH > 0.05) placeBox(0, doorH + lintelH / 2, dW, lintelH, mat);
+        const doorObj = doorWithStep({ width: dW, height: doorH, wallT: t, openAngle: -1.18 });
+        if (side === "S") doorObj.position.set(0, 0, pos);
+        else if (side === "N") { doorObj.position.set(0, 0, pos); doorObj.rotation.y = Math.PI; }
+        else if (side === "E") { doorObj.position.set(pos, 0, 0); doorObj.rotation.y = Math.PI / 2; }
+        else { doorObj.position.set(pos, 0, 0); doorObj.rotation.y = -Math.PI / 2; }
+        g.add(doorObj);
+      } else if (windows.has(side) && h >= 2.8 && span >= 3.2) {
+        const winW = Math.min(2.2, span * 0.42);
+        const sillH = 0.96;
+        const winTop = Math.min(2.22, h - 0.45);
+        const sideW = (span - winW) / 2;
+        for (const sgn of [-1, 1]) {
+          placeBox(sgn * (winW / 2 + sideW / 2), h / 2, sideW, h, mat);
+        }
+        placeBox(0, sillH / 2, winW, sillH, mat);
+        if (h - winTop > 0.05) placeBox(0, winTop + (h - winTop) / 2, winW, h - winTop, mat);
+        if (alongX) {
+          g.add(part(bevelledBox(winW + 0.14, 0.08, t + 0.14, 0.02), trimMat, [0, sillH, pos]));
+          g.add(part(bevelledBox(winW + 0.14, 0.08, t + 0.1, 0.02), trimMat, [0, winTop, pos]));
+        } else {
+          g.add(part(bevelledBox(t + 0.14, 0.08, winW + 0.14, 0.02), trimMat, [pos, sillH, 0]));
+          g.add(part(bevelledBox(t + 0.1, 0.08, winW + 0.14, 0.02), trimMat, [pos, winTop, 0]));
+        }
+      } else {
+        placeBox(0, h / 2, span, h, mat);
+        const lSpan = Math.max(0.2, span - 0.1);
+        const inOff = side === "S" ? pos - t / 2 - 0.03 : side === "N" ? pos + t / 2 + 0.03 : side === "E" ? pos - t / 2 - 0.03 : pos + t / 2 + 0.03;
+        if (alongX) g.add(part(new THREE.BoxGeometry(lSpan, h - 0.18, 0.05), linerMat, [0, (h - 0.18) / 2 + 0.12, inOff], [0, 0, 0], false));
+        else g.add(part(new THREE.BoxGeometry(0.05, h - 0.18, lSpan), linerMat, [inOff, (h - 0.18) / 2 + 0.12, 0], [0, 0, 0], false));
+      }
+    };
+
+    buildWall("N");
+    buildWall("S");
+    buildWall("E");
+    buildWall("W");
+
+    // exterior trim: corner pilasters
+    const quoinMat = materialFor(0x524d47, { roughness: 0.9, family: "stone", seed: 6 });
+    for (const sx of [-1, 1]) {
+      for (const sz of [-1, 1]) {
+        g.add(part(bevelledBox(t * 1.1, h, t * 1.1, 0.025), quoinMat, [sx * (w / 2 - t * 0.35), h / 2, sz * (d / 2 - t * 0.35)]));
+      }
+    }
+
+    // interior floor slab (walkable)
+    const innerMat = o.inner ?? materialFor(0x6b6258, { roughness: 0.94, family: "wood", seed: 14 });
+    const floor = addLocalSolid(innerMat, w - 2 * t, 0.12, d - 2 * t, 0, 0.06, 0, false)!;
+    floor.userData.kind = "wood";
+
+    // interior partition wall with offset doorway (2-room CQB layout)
+    if (partition !== "none") {
+      const pT = 0.22;
+      const gapW = 1.85;
+      if (partition === "z" && d > 5) {
+        const span = w - 2 * t;
+        const leftW = Math.max(0.8, span * 0.58 - gapW / 2);
+        const rightW = Math.max(0.8, span - leftW - gapW);
+        addLocalSolid(linerMat, leftW, h - 0.15, pT, -span / 2 + leftW / 2, (h - 0.15) / 2 + 0.12, 0);
+        addLocalSolid(linerMat, rightW, h - 0.15, pT, span / 2 - rightW / 2, (h - 0.15) / 2 + 0.12, 0);
+        if (h - doorH > 0.08) {
+          addLocalSolid(linerMat, gapW, h - doorH, pT, -span / 2 + leftW + gapW / 2, doorH + (h - doorH) / 2, 0);
+        }
+      } else if (partition === "x" && w > 5) {
+        const span = d - 2 * t;
+        const backD = Math.max(0.8, span * 0.58 - gapW / 2);
+        const frontD = Math.max(0.8, span - backD - gapW);
+        addLocalSolid(linerMat, pT, h - 0.15, backD, 0, (h - 0.15) / 2 + 0.12, -span / 2 + backD / 2);
+        addLocalSolid(linerMat, pT, h - 0.15, frontD, 0, (h - 0.15) / 2 + 0.12, span / 2 - frontD / 2);
+        if (h - doorH > 0.08) {
+          addLocalSolid(linerMat, pT, h - doorH, gapW, 0, doorH + (h - doorH) / 2, -span / 2 + backD + gapW / 2);
+        }
+      }
+    }
+
+    // interior tactical furniture & warm overhead lamp
+    const furnMat = materialFor(0x5a4a38, { roughness: 0.85, family: "wood", seed: 16 });
+    const iz = partition === "z" ? -d * 0.25 : -d * 0.18;
+    const ix = partition === "x" ? -w * 0.24 : 0;
+    const cr1 = craftedCrate(0.68, 41);
+    cr1.position.set(ix - 0.9, 0.12, iz + 0.2);
+    cr1.rotation.y = 0.22;
+    g.add(cr1);
+    const cr2 = craftedCrate(0.55, 42);
+    cr2.position.set(ix + 1.0, 0.12, iz - 0.25);
+    cr2.rotation.y = -0.18;
+    g.add(cr2);
+    g.add(part(bevelledBox(1.2, 0.08, 0.7, 0.02), furnMat, [ix, 0.92, iz]));
+    for (const [dx, dz] of [[-0.5, -0.25], [0.5, -0.25], [-0.5, 0.25], [0.5, 0.25]]) {
+      g.add(part(new THREE.BoxGeometry(0.06, 0.82, 0.06), furnMat, [ix + dx, 0.51, iz + dz]));
+    }
+    const rodMat = materialFor(0x2a2a2a, { roughness: 0.6, metalness: 0.8 });
+    g.add(part(new THREE.CylinderGeometry(0.02, 0.02, 0.55, 8), rodMat, [0, h - 0.3, 0], [0, 0, 0], false));
+    g.add(part(new THREE.ConeGeometry(0.24, 0.14, 16, 1, true), rodMat, [0, h - 0.58, 0], [0, 0, 0], false));
+    const bulb = new THREE.Mesh(
+      new THREE.SphereGeometry(0.11, 12, 10),
+      new THREE.MeshStandardMaterial({ color: 0xffe9b0, emissive: 0xffd98a, emissiveIntensity: 1.7, roughness: 0.4 })
+    );
+    bulb.position.set(0, h - 0.64, 0);
+    g.add(bulb);
+
+    if (o.roof !== "none") this.roofLocal(g, w, d, h, o.roof ?? "flat", o.roofMat, wallNS);
+    if (o.walkableRoof) {
+      addLocalSolid(this.invisMat, w + 0.45, 0.36, d + 0.45, 0, h + 0.18, 0, false);
+    }
+    if (o.parapet) this.parapetLocal(g, w, d, h, o.roofMat);
     return { x, z, w, d, h };
   }
 
-  /** 3D window frames (+ optional shutters) on all four faces, aligned to the
-      facade's bay grid so frames sit exactly on the textured windows */
+  /** Recessed 3D window bays (+ optional shutters) mounted flush on all four faces */
   windowTrim(o: {
     x: number; z: number; w: number; d: number; h: number;
     bayW: number; floorH: number; rows: number; cols: number;
     ry: number; frameMat: THREE.Material; shutterMat: THREE.Material | null;
   }) {
-    const { x, z, w, d, h, bayW, floorH, rows, cols, ry } = o;
-    const tileW = bayW * cols;
-    const tileH = floorH * rows;
-    // vertical mapping (same for all faces)
-    const clampY = h < tileH;
-    const rowCount = clampY ? rows : Math.max(1, Math.floor(h / floorH));
-    const winY = (row: number) => (row + 0.5) * (clampY ? h / rows : floorH);
-    const winH = (clampY ? h / rows : floorH) * 0.56;
+    const { x, z, w, d, h, bayW, floorH, ry } = o;
+    const rowCount = Math.max(1, Math.min(2, Math.floor((h - 0.8) / floorH) || 1));
+    const winH = Math.min(1.15, floorH * 0.45);
     const g = new THREE.Group();
     g.position.set(x, 0, z);
     g.rotation.y = ry;
     this.scene.add(g);
-    const face = (alongX: boolean, sign: number, len: number) => {
-      const clampX = len < tileW;
-      const nWin = clampX ? cols : Math.max(1, Math.floor(len / bayW));
-      const winW = (clampX ? len / cols : bayW) * 0.64;
-      for (let m = 0; m < nWin; m++) {
-        const p = (m + 0.5) * (clampX ? len / cols : bayW);
+
+    const frameCol = (o.frameMat as THREE.MeshStandardMaterial)?.color?.getHexString?.() ?? "5a422c";
+    const shutterCol = (o.shutterMat as THREE.MeshStandardMaterial)?.color?.getHexString?.() ?? "3f533b";
+    const addFace = (alongX: boolean, sign: number, len: number, wallDist: number) => {
+      const count = Math.max(1, Math.min(4, Math.floor(len / (bayW * 1.4))));
+      const winW = Math.min(0.95, (len / count) * 0.44);
+      const step = len / (count + 0.4);
+      for (let m = 0; m < count; m++) {
+        const p = (m - (count - 1) / 2) * step;
         for (let row = 0; row < rowCount; row++) {
-          const wy = winY(row);
+          const wy = 1.45 + row * floorH;
+          if (wy + winH / 2 > h - 0.35) continue;
+          const win = insetWindow({
+            width: winW,
+            height: winH,
+            inset: 0.08,
+            frame: 0.06,
+            bars: 1,
+            rows: 1,
+            sill: true,
+            shutters: Boolean(o.shutterMat),
+            frameColor: "#" + frameCol,
+            shutterColor: "#" + shutterCol,
+            glassColor: "#212b36",
+            emissive: "#ffcf7a",
+            emissiveIntensity: 0.12,
+            seed: Math.abs(Math.round(x * 7 + z * 11 + m * 3 + row)),
+          });
           if (alongX) {
-            g.add(this.mesh(o.frameMat, new RoundedBoxGeometry(winW + 0.14, winH + 0.14, 0.1, 2, 0.02), sign * p, wy, d / 2 + 0.05, 0));
+            win.position.set(p, wy, sign * (wallDist + 0.02));
+            win.rotation.y = sign > 0 ? 0 : Math.PI;
           } else {
-            g.add(this.mesh(o.frameMat, new RoundedBoxGeometry(0.1, winH + 0.14, winW + 0.14, 2, 0.02), w / 2 + 0.05, wy, sign * p, 0));
+            win.position.set(sign * (wallDist + 0.02), wy, p);
+            win.rotation.y = sign > 0 ? Math.PI / 2 : -Math.PI / 2;
           }
-          if (o.shutterMat) {
-            const off = winW / 2 + 0.06;
-            if (alongX) {
-              g.add(this.mesh(o.shutterMat, new RoundedBoxGeometry(0.07, winH + 0.06, 0.06, 2, 0.02), sign * (p - off), wy, d / 2 + 0.08, 0));
-              g.add(this.mesh(o.shutterMat, new RoundedBoxGeometry(0.07, winH + 0.06, 0.06, 2, 0.02), sign * (p + off), wy, d / 2 + 0.08, 0));
-            } else {
-              g.add(this.mesh(o.shutterMat, new RoundedBoxGeometry(0.06, winH + 0.06, 0.07, 2, 0.02), w / 2 + 0.08, wy, sign * (p - off), 0));
-              g.add(this.mesh(o.shutterMat, new RoundedBoxGeometry(0.06, winH + 0.06, 0.07, 2, 0.02), w / 2 + 0.08, wy, sign * (p + off), 0));
-            }
-          }
+          g.add(win);
         }
       }
     };
-    face(true, 1, w);
-    face(true, -1, w);
-    face(false, 1, d);
-    face(false, -1, d);
+    addFace(true, 1, w, d / 2);
+    addFace(true, -1, w, d / 2);
+    addFace(false, 1, d, w / 2);
+    addFace(false, -1, d, w / 2);
     return g;
   }
 
-  /* flight of steps ascending along +X (or +Z when alongZ). Each step is a solid
-     block; the player auto-steps up the risers (see resolveCircleAABBs + groundHeightAt). */
+  /* flight of steps ascending along +X/-X (or +Z/-Z when alongZ). */
   stairs(o: {
     x: number;
     z: number;
@@ -876,628 +925,567 @@ class Kit {
     run: number;
     width: number;
     alongZ?: boolean;
+    dir?: 1 | -1;
     mat: THREE.Material;
     sideMat?: THREE.Material;
   }) {
     const { x, z, steps, rise, run, width } = o;
     const alongZ = o.alongZ ?? false;
+    const dir = o.dir ?? 1;
     const stepMat = o.mat;
-    const sideMat = o.sideMat ?? stepMat;
+    const sideMat = o.sideMat ?? materialFor(0x7a7e84, { roughness: 0.55, metalness: 0.5 });
     for (let i = 0; i < steps; i++) {
       const h = (i + 1) * rise;
-      const off = i * run;
-      const m = this.mesh(stepMat, new RoundedBoxGeometry(alongZ ? width : run, h, alongZ ? run : width, 3, Math.min(0.05, h / 3)), x + (alongZ ? 0 : off), h / 2, z + (alongZ ? off : 0), 0);
+      const off = dir * i * run;
+      const sx = x + (alongZ ? 0 : off);
+      const sz = z + (alongZ ? off : 0);
+      const m = this.mesh(
+        stepMat,
+        new RoundedBoxGeometry(alongZ ? width : run, h, alongZ ? run : width, 2, Math.min(0.035, h / 3)),
+        sx,
+        h / 2,
+        sz,
+        0
+      );
       m.castShadow = true;
       m.receiveShadow = true;
-      this.solid(m, "concrete");
-      // riser facing the ascending direction (visual highlight on the front face)
-      const fm = this.mesh(sideMat, new RoundedBoxGeometry(alongZ ? width : run, 0.06, 0.12, 2, 0.02), x + (alongZ ? 0 : off), h - 0.03, z + (alongZ ? off : 0) + (alongZ ? 0 : run / 2 - 0.06), 0);
-      fm.castShadow = true;
-      this.scene.add(fm);
-    }
-    // handrail: posts + continuous top rail + mid rail
-    const railMat = new THREE.MeshStandardMaterial({ color: 0x2a2d30, roughness: 0.6, metalness: 0.8 });
-    const rSeg = 20;
-    for (let i = 0; i <= steps; i++) {
-      const h = i * rise + 0.9;
-      const off = i * run;
-      const post = this.mesh(railMat, new THREE.CylinderGeometry(0.04, 0.04, 0.9, rSeg, 3), x + (alongZ ? 0 : off) + width / 2 + 0.2, h - 0.45, z + (alongZ ? off : 0), 0);
-      post.castShadow = true;
-      this.scene.add(post);
-    }
-    // continuous rail bar along the top of the posts
-    const railLen = steps * run;
-    const railBar = this.mesh(railMat, new THREE.CylinderGeometry(0.025, 0.025, railLen, rSeg, 3), x + width / 2 + 0.2, steps * rise / 2 + 0.9, z + (alongZ ? 0 : 0) + (alongZ ? railLen / 2 : 0), 0);
-    if (!alongZ) {
-      railBar.rotation.z = Math.PI / 2;
-      railBar.position.x = x + width / 2 + 0.2;
-      railBar.position.z = steps * run / 2;
-    } else {
-      railBar.rotation.x = Math.PI / 2;
-      railBar.position.x = x + width / 2 + 0.2;
-      railBar.position.z = z + railLen / 2;
-    }
-    railBar.castShadow = true;
-    this.scene.add(railBar);
-  }
-
-  roof(x: number, z: number, w: number, d: number, h: number, kind: string, mat: THREE.Material) {
-    const fasciaMat = new THREE.MeshStandardMaterial({ color: 0x3a3a40, roughness: 0.8, metalness: 0.4 });
-    if (kind === "flat") {
-      // gravel membrane slab + raised cap + eave fascia on ALL four sides
-      const rm = this.roofSurfaceMat(mat, this.pTex("gravel", () => gravelTex(256, this.rng)), [Math.max(1, w / 5), Math.max(1, d / 5)]);
-      this.scene.add(this.mesh(rm, new RoundedBoxGeometry(w + 0.6, 0.4, d + 0.6, 4, 0.1), x, h + 0.2, z));
-      this.scene.add(this.mesh(rm, new RoundedBoxGeometry(w + 0.3, 0.12, d + 0.3, 3, 0.04), x, h + 0.42, z));
-      for (const sz of [-1, 1]) this.scene.add(this.mesh(fasciaMat, new RoundedBoxGeometry(w + 0.66, 0.16, 0.18, 3, 0.03), x, h + 0.1, z + sz * (d / 2 + 0.32)));
-      for (const sx of [-1, 1]) this.scene.add(this.mesh(fasciaMat, new RoundedBoxGeometry(0.18, 0.16, d + 0.66, 3, 0.03), x + sx * (w / 2 + 0.32), h + 0.1, z));
-    } else if (kind === "tile") {
-      // pitched tile roof: shape x-axis = depth (world Z via 90° rotation),
-      // extruded along the width (world X). Ridge runs along Z.
-      const rise = Math.min(2.2, d * 0.35);
-      const shape = new THREE.Shape();
-      shape.moveTo(-d / 2 - 0.4, 0);
-      shape.lineTo(d / 2 + 0.4, 0);
-      shape.lineTo(d / 2, rise);
-      shape.lineTo(-d / 2, rise);
-      shape.closePath();
-      const g = new THREE.ExtrudeGeometry(shape, { depth: w, bevelEnabled: true, bevelThickness: 0.04, bevelSize: 0.04, bevelSegments: 2 });
-      g.translate(0, -rise / 2, -w / 2);
-      const rm = this.roofSurfaceMat(mat, this.pTex("tile", () => tileTex(256, this.rng)), [1, 1]);
-      const m = this.mesh(rm, g, x, h + rise / 2, z);
-      m.rotation.y = Math.PI / 2;
       this.scene.add(m);
-      // eave fascia along the two long eaves (world x sides)
-      for (const sx of [-1, 1]) this.scene.add(this.mesh(fasciaMat, new RoundedBoxGeometry(0.24, 0.24, d + 0.8, 3, 0.04), x + sx * (w / 2 + 0.2), h + 0.08, z));
-      // gable-end trim (extrusion ends at world x) framing the trapezoid ends
-      for (const sx of [-1, 1]) this.scene.add(this.mesh(fasciaMat, new RoundedBoxGeometry(0.2, rise + 0.2, d + 0.8, 3, 0.04), x + sx * (w / 2 + 0.1), h + rise / 2, z));
-      // ridge cap + rolls at the ridge ends
-      const ridge = new THREE.MeshStandardMaterial({ color: 0x6a2a1a, roughness: 0.9 });
-      this.scene.add(this.mesh(ridge, new RoundedBoxGeometry(0.28, 0.16, d + 0.4, 3, 0.04), x, h + rise + 0.05, z));
-      for (const sz of [-1, 1]) {
-        const roll = this.mesh(ridge, new THREE.CylinderGeometry(0.16, 0.16, 0.4, 16), x, h + rise + 0.05, z + sz * (d / 2 + 0.2));
-        roll.rotation.x = Math.PI / 2;
-        this.scene.add(roll);
+      this.colliderBox(alongZ ? width : run, h, alongZ ? run : width, sx, 0, sz, 0, "concrete");
+      // non-slip tread nosing on leading top edge of step
+      const nosing = this.mesh(
+        sideMat,
+        new RoundedBoxGeometry(alongZ ? width : 0.08, 0.04, alongZ ? 0.08 : width, 2, 0.01),
+        sx + (alongZ ? 0 : -dir * (run / 2 - 0.04)),
+        h + 0.01,
+        sz + (alongZ ? -dir * (run / 2 - 0.04) : 0),
+        0
+      );
+      this.scene.add(nosing);
+    }
+    // handrails on both sides
+    const railMat = materialFor(0x2a2d30, { roughness: 0.5, metalness: 0.85 });
+    const railLen = Math.hypot((steps - 1) * run, (steps - 1) * rise) + 0.35;
+    const slopeAng = Math.atan2(steps * rise, steps * run);
+    const midOff = (dir * (steps - 1) * run) / 2;
+    const midY = ((steps + 1) * rise) / 2 + 0.88;
+    for (const side of [-1, 1]) {
+      const sideOff = side * (width / 2 + 0.08);
+      for (let i = 0; i < steps; i += 2) {
+        const h = (i + 1) * rise;
+        const off = dir * i * run;
+        const px = x + (alongZ ? sideOff : off);
+        const pz = z + (alongZ ? off : sideOff);
+        const post = this.mesh(railMat, new THREE.CylinderGeometry(0.032, 0.032, 0.9, 10), px, h + 0.45, pz);
+        post.castShadow = true;
+        this.scene.add(post);
       }
-      this.chimney(x, z, w, d, h, rise);
-    } else if (kind === "gable") {
-      // pitched slate roof, same orientation fix as tile
-      const rise = Math.min(3.2, d * 0.45);
-      const shape = new THREE.Shape();
-      shape.moveTo(-d / 2 - 0.4, 0);
-      shape.lineTo(d / 2 + 0.4, 0);
-      shape.lineTo(d / 2, rise);
-      shape.lineTo(-d / 2, rise);
-      shape.closePath();
-      const g = new THREE.ExtrudeGeometry(shape, { depth: w, bevelEnabled: true, bevelThickness: 0.05, bevelSize: 0.05, bevelSegments: 2 });
-      g.translate(0, -rise / 2, -w / 2);
-      const rm = this.roofSurfaceMat(mat, this.pTex("slate", () => slateTex(256, this.rng)), [1, 1]);
-      const m = this.mesh(rm, g, x, h + rise / 2, z);
-      m.rotation.y = Math.PI / 2;
-      this.scene.add(m);
-      for (const sx of [-1, 1]) this.scene.add(this.mesh(fasciaMat, new RoundedBoxGeometry(0.26, 0.26, d + 0.8, 3, 0.04), x + sx * (w / 2 + 0.2), h + 0.08, z));
-      for (const sx of [-1, 1]) this.scene.add(this.mesh(fasciaMat, new RoundedBoxGeometry(0.22, rise + 0.2, d + 0.8, 3, 0.04), x + sx * (w / 2 + 0.1), h + rise / 2, z));
-      const ridge = new THREE.MeshStandardMaterial({ color: 0x4a4a50, roughness: 0.85 });
-      this.scene.add(this.mesh(ridge, new RoundedBoxGeometry(0.3, 0.34, d + 0.5, 3, 0.05), x, h + rise + 0.08, z));
-      for (const sz of [-1, 1]) {
-        const roll = this.mesh(ridge, new THREE.CylinderGeometry(0.18, 0.18, 0.44, 16), x, h + rise + 0.08, z + sz * (d / 2 + 0.25));
-        roll.rotation.x = Math.PI / 2;
-        this.scene.add(roll);
+      const rx = x + (alongZ ? sideOff : midOff);
+      const rz = z + (alongZ ? midOff : sideOff);
+      const bar = this.mesh(railMat, new THREE.CylinderGeometry(0.026, 0.026, railLen, 10), rx, midY, rz);
+      if (alongZ) {
+        bar.rotation.x = dir * (Math.PI / 2 - slopeAng);
+      } else {
+        bar.rotation.z = -dir * (Math.PI / 2 - slopeAng);
       }
-      this.chimney(x, z, w, d, h, rise);
-    } else { // metal: shallow pitched corrugated sheet + eave trim
-      const rm = this.roofSurfaceMat(mat, this.pTex("corr", () => corrugTex(256, this.rng)), [Math.max(1, w / 3), Math.max(1, d / 3)]);
-      this.scene.add(this.mesh(rm, new RoundedBoxGeometry(w + 0.5, 0.25, d + 0.5, 4, 0.06), x, h + 0.05 + 0.125, z));
-      for (const sz of [-1, 1]) this.scene.add(this.mesh(fasciaMat, new RoundedBoxGeometry(w + 0.54, 0.16, 0.16, 3, 0.03), x, h + 0.1, z + sz * (d / 2 + 0.28)));
-      for (const sx of [-1, 1]) this.scene.add(this.mesh(fasciaMat, new RoundedBoxGeometry(0.16, 0.16, d + 0.54, 3, 0.03), x + sx * (w / 2 + 0.28), h + 0.1, z));
-      const ridge = new THREE.MeshStandardMaterial({ color: 0x5a5a60, roughness: 0.7, metalness: 0.6 });
-      this.scene.add(this.mesh(ridge, new THREE.CylinderGeometry(0.1, 0.1, d + 0.5, 18), x, h + 0.25, z, Math.PI / 2));
-    }
-  }
-
-  /** chimney on a pitched roof (sits on the roof's flat top strip) */
-  chimney(x: number, z: number, w: number, d: number, h: number, rise: number) {
-    const cx = x + (this.rng() - 0.5) * w * 0.4;
-    const cz = z + (this.rng() - 0.5) * d * 0.3;
-    const chim = new THREE.MeshStandardMaterial({ color: 0x7a5a48, roughness: 0.95 });
-    this.scene.add(this.mesh(chim, new RoundedBoxGeometry(0.5, 1.7, 0.5, 3, 0.08), cx, h + rise + 0.95, cz));
-    this.scene.add(this.mesh(chim, new RoundedBoxGeometry(0.62, 0.12, 0.62, 3, 0.03), cx, h + rise + 1.81, cz));
-  }
-
-  parapet(x: number, z: number, w: number, d: number, h: number, mat: THREE.Material) {
-    const t = 0.25;
-    const H = 0.9;
-    // sits on the roof slab edge (slab overhangs the walls by ~0.3)
-    const ox = w / 2 + 0.25;
-    const oz = d / 2 + 0.25;
-    // rounded merlon caps along the long edges
-    const cap = new THREE.MeshStandardMaterial({ color: 0x6a6a70, roughness: 0.85 });
-    // long sides (along z)
-    this.scene.add(this.mesh(mat, new RoundedBoxGeometry(t, H, d + 0.5, 3, 0.05), x - ox, h - 0.2 + H / 2, z));
-    this.scene.add(this.mesh(mat, new RoundedBoxGeometry(t, H, d + 0.5, 3, 0.05), x + ox, h - 0.2 + H / 2, z));
-    // short sides (along x)
-    this.scene.add(this.mesh(mat, new RoundedBoxGeometry(w + 0.5, H, t, 3, 0.05), x, h - 0.2 + H / 2, z - oz));
-    this.scene.add(this.mesh(mat, new RoundedBoxGeometry(w + 0.5, H, t, 3, 0.05), x, h - 0.2 + H / 2, z + oz));
-    // crenellated cap stones on the two long sides
-    const step = 1.2;
-    const n = Math.max(1, Math.floor((d + 0.5) / step));
-    for (let i = 0; i <= n; i++) {
-      const zc = z - (d + 0.5) / 2 + i * step;
-      this.scene.add(this.mesh(cap, new RoundedBoxGeometry(t + 0.14, 0.16, step * 0.6, 3, 0.03), x - ox, h + H - 0.04, zc));
-      this.scene.add(this.mesh(cap, new RoundedBoxGeometry(t + 0.14, 0.16, step * 0.6, 3, 0.03), x + ox, h + H - 0.04, zc));
-    }
-  }
-
-  roofDetails(x: number, z: number, w: number, d: number, h: number, mat: THREE.Material) {
-    const r = this.rng;
-    // detailed AC units
-    const acCount = 1 + Math.floor(r() * 2);
-    for (let i = 0; i < acCount; i++) {
-      this.acUnit(x + (r() - 0.5) * w * 0.6, z + (r() - 0.5) * d * 0.6, h, r() * Math.PI);
-    }
-    // water tank: legs + cylindrical body + conical top
-    if (r() < 0.5) {
-      const tx = x + (r() - 0.5) * w * 0.5;
-      const tz = z + (r() - 0.5) * d * 0.5;
-      const tankMat = new THREE.MeshStandardMaterial({ color: 0x8a8f96, roughness: 0.5, metalness: 0.7 });
-      for (const [lx, lz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
-        const leg = this.mesh(tankMat, new THREE.CylinderGeometry(0.08, 0.08, 0.6, 8), tx + lx * 0.6, h + 0.3, tz + lz * 0.6);
-        this.scene.add(leg);
-      }
-      const tank = this.mesh(tankMat, new THREE.CylinderGeometry(0.8, 0.8, 1.4, 20), tx, h + 1.3, tz);
-      this.scene.add(tank);
-      const top = this.mesh(new THREE.MeshStandardMaterial({ color: 0x5a5f66, roughness: 0.6, metalness: 0.6 }), new THREE.ConeGeometry(0.85, 0.4, 20), tx, h + 2.1, tz);
-      this.scene.add(top);
-    }
-    // antenna mast with crossbar
-    if (r() < 0.6) {
-      const ax = x + (r() - 0.5) * w * 0.4;
-      const az = z + (r() - 0.5) * d * 0.4;
-      const mastH = 2 + r() * 2;
-      const mast = this.mesh(mat, new THREE.CylinderGeometry(0.04, 0.05, mastH, 8), ax, h + mastH / 2, az);
-      this.scene.add(mast);
-      const bar = this.mesh(mat, new THREE.CylinderGeometry(0.02, 0.02, 0.8, 6), ax, h + mastH * 0.7, az);
-      bar.rotation.z = Math.PI / 2;
+      bar.castShadow = true;
       this.scene.add(bar);
     }
   }
 
-  /* ---------------- props ---------------- */
-  crate(mat: THREE.Material, x: number, z: number, s: number, ry = 0, y = 0) {
-    // collision = plain box (stable AABB); visual = rounded box + metal banding
-    const col = this.solid(this.box(mat, s, s, s, x, y, z, ry), "wood");
-    const vis = this.mesh(
-      mat,
-      new RoundedBoxGeometry(s, s, s, 4, Math.min(0.08, s / 5)),
-      x,
-      y + s / 2,
-      z,
-      ry,
-    );
-    vis.castShadow = true;
-    vis.receiveShadow = true;
-    this.scene.add(vis);
-    // corner posts
-    const postMat = new THREE.MeshStandardMaterial({ color: 0x3a2a16, roughness: 0.85 });
-    const pr = s * 0.1;
-    for (const [px, pz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
-      const p = this.mesh(postMat, new THREE.CylinderGeometry(pr, pr, s * 1.04, 10), x + px * (s / 2 - pr * 0.6), y + s / 2, z + pz * (s / 2 - pr * 0.6), ry);
-      this.scene.add(p);
+  roofLocal(parent: THREE.Object3D, w: number, d: number, h: number, kind: string, mat: THREE.Material, wallMat?: THREE.Material) {
+    const fasciaMat = materialFor(0x3a3a40, { roughness: 0.8, metalness: 0.35 });
+    if (kind === "flat") {
+      const rm = this.roofSurfaceMat(mat, this.pTex("gravel", () => gravelTex(256, this.rng)), [Math.max(1, w / 5), Math.max(1, d / 5)]);
+      parent.add(part(bevelledBox(w + 0.5, 0.36, d + 0.5, 0.06), rm, [0, h + 0.18, 0]));
+      parent.add(part(bevelledBox(w + 0.2, 0.1, d + 0.2, 0.03), rm, [0, h + 0.4, 0]));
+      for (const sz of [-1, 1]) parent.add(part(bevelledBox(w + 0.56, 0.14, 0.14, 0.02), fasciaMat, [0, h + 0.08, sz * (d / 2 + 0.25)]));
+      for (const sx of [-1, 1]) parent.add(part(bevelledBox(0.14, 0.14, d + 0.56, 0.02), fasciaMat, [sx * (w / 2 + 0.25), h + 0.08, 0]));
+    } else if (kind === "tile" || kind === "gable") {
+      const alongZ = d >= w;
+      const rw = alongZ ? d : w;
+      const rd = alongZ ? w : d;
+      const tileCol = (mat as THREE.MeshStandardMaterial)?.color?.getHexString?.() ?? (kind === "tile" ? "8a3b2a" : "50545c");
+      const ridgeCol = kind === "tile" ? "#6c2c1f" : "#3a3e46";
+      const gRoof = gableRoof({
+        width: rw,
+        depth: rd,
+        wallH: h,
+        pitchDeg: kind === "tile" ? 30 : 34,
+        eave: 0.38,
+        verge: 0.25,
+        tileColor: "#" + tileCol,
+        ridgeColor: ridgeCol,
+        wallMat: wallMat ?? materialFor(0x8a8074, { roughness: 0.9, family: "plaster" }),
+        chimney: true,
+        seed: Math.abs(Math.round(w * 11 + d * 17 + h * 5)),
+      });
+      if (alongZ) gRoof.rotation.y = Math.PI / 2;
+      parent.add(gRoof);
+    } else {
+      const rm = this.roofSurfaceMat(mat, this.pTex("corr", () => corrugTex(256, this.rng)), [Math.max(1, w / 3), Math.max(1, d / 3)]);
+      parent.add(part(bevelledBox(w + 0.45, 0.22, d + 0.45, 0.04), rm, [0, h + 0.14, 0]));
+      for (const sz of [-1, 1]) parent.add(part(bevelledBox(w + 0.5, 0.14, 0.14, 0.02), fasciaMat, [0, h + 0.08, sz * (d / 2 + 0.22)]));
+      for (const sx of [-1, 1]) parent.add(part(bevelledBox(0.14, 0.14, d + 0.5, 0.02), fasciaMat, [sx * (w / 2 + 0.22), h + 0.08, 0]));
     }
-    // horizontal metal straps
-    const strapMat = new THREE.MeshStandardMaterial({ color: 0x6a6a6e, roughness: 0.5, metalness: 0.8 });
-    for (const sy of [y + s * 0.28, y + s * 0.72]) {
-      const band = this.mesh(strapMat, new THREE.BoxGeometry(s + 0.04, s * 0.05, s + 0.04), x, sy, z, ry);
-      band.castShadow = true;
-      this.scene.add(band);
-    }
-    return col;
   }
 
-  barrel(mat: THREE.Material, x: number, z: number, color = 0x9b2c22) {
-    const m = this.solid(
-      this.mesh(mat, new THREE.CylinderGeometry(0.3, 0.3, 0.9, 40), x, 0.45, z),
-      "metal",
-    );
-    const ringMat = new THREE.MeshStandardMaterial({ color, roughness: 0.5, metalness: 0.7 });
-    // steel hoops (more, finer) + rims
-    [-0.3, -0.13, 0.04, 0.21, 0.34].forEach((y) => {
-      const r = new THREE.Mesh(new THREE.TorusGeometry(0.304, 0.014, 12, 40), ringMat);
-      r.rotation.x = Math.PI / 2;
-      r.position.y = y;
-      m.add(r);
-    });
-    // chime ring at the top + base ring
-    [0.36, -0.36].forEach((y) => {
-      const r = new THREE.Mesh(new THREE.TorusGeometry(0.3, 0.022, 12, 40), new THREE.MeshStandardMaterial({ color: 0x8a8a8e, roughness: 0.4, metalness: 0.85 }));
-      r.rotation.x = Math.PI / 2;
-      r.position.y = y;
-      m.add(r);
-    });
-    // bung cap on the side
-    const bung = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.05, 16), new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.6, metalness: 0.7 }));
-    bung.position.set(0.3, 0.2, 0);
-    m.add(bung);
+  roof(x: number, z: number, w: number, d: number, h: number, kind: string, mat: THREE.Material) {
+    const g = new THREE.Group();
+    g.position.set(x, 0, z);
+    this.scene.add(g);
+    this.roofLocal(g, w, d, h, kind, mat);
+  }
+
+  parapetLocal(parent: THREE.Object3D, w: number, d: number, h: number, mat: THREE.Material) {
+    const t = 0.25;
+    const H = 0.85;
+    const ox = w / 2 + 0.14;
+    const oz = d / 2 + 0.14;
+    const cap = materialFor(0x6a6a70, { roughness: 0.85, family: "stone", seed: 5 });
+    for (const sx of [-1, 1]) parent.add(part(bevelledBox(t, H, d + 0.42, 0.03), mat, [sx * ox, h + H / 2, 0]));
+    for (const sz of [-1, 1]) parent.add(part(bevelledBox(w + 0.42, H, t, 0.03), mat, [0, h + H / 2, sz * oz]));
+    const step = 1.35;
+    const n = Math.max(1, Math.floor((d + 0.4) / step));
+    for (let i = 0; i <= n; i++) {
+      const zc = -(d + 0.4) / 2 + i * step;
+      for (const sx of [-1, 1]) parent.add(part(bevelledBox(t + 0.12, 0.14, step * 0.58, 0.02), cap, [sx * ox, h + H + 0.05, zc]));
+    }
+  }
+
+  parapet(x: number, z: number, w: number, d: number, h: number, mat: THREE.Material) {
+    const g = new THREE.Group();
+    g.position.set(x, 0, z);
+    this.scene.add(g);
+    this.parapetLocal(g, w, d, h, mat);
+  }
+
+  roofDetailsLocal(parent: THREE.Object3D, w: number, d: number, h: number, mat: THREE.Material) {
+    const r = this.rng;
+    const acCount = 1 + Math.floor(r() * 2);
+    for (let i = 0; i < acCount; i++) {
+      const ac = this.makeAcUnitGroup(r() * Math.PI);
+      ac.position.set((r() - 0.5) * w * 0.55, h + 0.42, (r() - 0.5) * d * 0.55);
+      parent.add(ac);
+    }
+    if (r() < 0.5) {
+      const tx = (r() - 0.5) * w * 0.45;
+      const tz = (r() - 0.5) * d * 0.45;
+      const tankMat = materialFor(0x8a8f96, { roughness: 0.5, metalness: 0.7 });
+      for (const [lx, lz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+        parent.add(part(new THREE.CylinderGeometry(0.07, 0.07, 0.6, 8), tankMat, [tx + lx * 0.55, h + 0.7, tz + lz * 0.55]));
+      }
+      parent.add(part(new THREE.CylinderGeometry(0.75, 0.75, 1.35, 18), tankMat, [tx, h + 1.65, tz]));
+      parent.add(part(new THREE.ConeGeometry(0.8, 0.4, 18), materialFor(0x5a5f66, { roughness: 0.6, metalness: 0.6 }), [tx, h + 2.5, tz]));
+    }
+    if (r() < 0.6) {
+      const ax = (r() - 0.5) * w * 0.4;
+      const az = (r() - 0.5) * d * 0.4;
+      const mastH = 2 + r() * 2;
+      parent.add(part(new THREE.CylinderGeometry(0.04, 0.05, mastH, 8), mat, [ax, h + 0.4 + mastH / 2, az]));
+      parent.add(part(new THREE.CylinderGeometry(0.02, 0.02, 0.8, 6), mat, [ax, h + 0.4 + mastH * 0.7, az], [0, 0, Math.PI / 2]));
+    }
+  }
+
+  roofDetails(x: number, z: number, w: number, d: number, h: number, mat: THREE.Material) {
+    const g = new THREE.Group();
+    g.position.set(x, 0, z);
+    this.scene.add(g);
+    this.roofDetailsLocal(g, w, d, h, mat);
+  }
+
+  /* ---------------- props ---------------- */
+  crate(_mat: THREE.Material, x: number, z: number, s: number, ry = 0, y = 0) {
+    const vis = craftedCrate(s, Math.abs(Math.round(x * 13 + z * 19 + s * 7)) + 1);
+    vis.position.set(x, y, z);
+    vis.rotation.y = ry;
+    this.scene.add(vis);
+    return this.colliderBox(s + 0.04, s + 0.06, s + 0.04, x, y, z, ry, "wood");
+  }
+
+  barrel(_mat: THREE.Material, x: number, z: number, color = 0x9b2c22) {
+    const vis = craftedBarrel(color, true);
+    vis.position.set(x, 0, z);
+    this.scene.add(vis);
+    const col = this.mesh(this.invisMat, new THREE.CylinderGeometry(0.4, 0.4, 1.05, 12), x, 0.525, z);
+    col.userData.kind = "metal";
+    this.scene.add(col);
+    this.colliders.push(col);
+    col.updateWorldMatrix(true, false);
+    this.aabbs.push(new THREE.Box3().setFromObject(col));
   }
 
   sandbag(x: number, z: number, ry = 0, count = 5) {
-    const mat = new THREE.MeshStandardMaterial({ color: 0x8d8163, roughness: 0.95 });
+    const g = new THREE.Group();
+    g.position.set(x, 0, z);
+    g.rotation.y = ry;
+    this.scene.add(g);
+    const mat = materialFor(0x8d8163, { roughness: 0.94, family: "fabric", seed: 18 });
+    const seamMat = materialFor(0x5a5240, { roughness: 0.98 });
+    const bagGeo = new RoundedBoxGeometry(0.65, 0.27, 0.36, 4, 0.09);
+    const seamGeo = new THREE.BoxGeometry(0.6, 0.014, 0.3);
     for (let i = 0; i < count; i++) {
-      const col = Math.floor(i / 3);
-      const b = this.mesh(mat, new RoundedBoxGeometry(0.65, 0.28, 0.35, 4, 0.08), x + (i % 3) * 0.55 - 0.55, 0.12 + col * 0.28, z, ry);
+      const row = Math.floor(i / 3);
+      const col = i % 3;
+      const bx = (col - 1) * 0.58 + (row % 2) * 0.22;
+      const by = 0.13 + row * 0.25;
+      const b = this.mesh(mat, bagGeo, bx, by, 0, (col - 1) * 0.04);
       b.castShadow = true;
       b.receiveShadow = true;
-      this.scene.add(b);
-      // stitching seam for detail
-      const seam = this.mesh(new THREE.MeshStandardMaterial({ color: 0x5a5240, roughness: 1 }), new THREE.BoxGeometry(0.6, 0.012, 0.3), 0, 0, 0, 0);
-      b.add(seam);
+      g.add(b);
+      b.add(new THREE.Mesh(seamGeo, seamMat));
     }
   }
 
   car(x: number, z: number, ry = 0, color = 0x2e5a8c, scale = 1) {
-    const body = new THREE.MeshStandardMaterial({ color, roughness: 0.4, metalness: 0.5 });
-    const glass = new THREE.MeshStandardMaterial({ color: 0x14181c, roughness: 0.15, metalness: 0.9 });
-    const tire = new THREE.MeshStandardMaterial({ color: 0x111, roughness: 0.9 });
-    const chrome = new THREE.MeshStandardMaterial({ color: 0x9aa0a8, roughness: 0.3, metalness: 0.95 });
+    const body = materialFor(color, { roughness: 0.38, metalness: 0.55 });
+    const darkTrim = materialFor(0x1b1e22, { roughness: 0.72, metalness: 0.2 });
+    const glass = materialFor(0x14181e, { roughness: 0.14, metalness: 0.9 });
+    const tire = materialFor(0x141416, { roughness: 0.9 });
+    const chrome = materialFor(0x9aa0a8, { roughness: 0.28, metalness: 0.95 });
     const grp = new THREE.Group();
     grp.position.set(x, 0, z);
     grp.rotation.y = ry;
-    // lower body (rounded)
-    const b = new THREE.Mesh(new RoundedBoxGeometry(2 * scale, 0.7 * scale, 4.6 * scale, 4, 0.12 * scale), body);
-    b.position.y = 0.55 * scale;
+    this.scene.add(grp);
+
+    // lower body + front/rear bumpers
+    const b = this.mesh(body, new RoundedBoxGeometry(2.0 * scale, 0.64 * scale, 4.55 * scale, 4, 0.12 * scale), 0, 0.56 * scale, 0);
     b.castShadow = true;
+    b.receiveShadow = true;
     grp.add(b);
-    // upper cabin glass (rounded)
-    const c = new THREE.Mesh(new RoundedBoxGeometry(1.7 * scale, 0.65 * scale, 2.2 * scale, 4, 0.1 * scale), glass);
-    c.position.y = 1.1 * scale;
-    c.position.z = -0.1 * scale;
+    for (const sz of [-1, 1]) {
+      grp.add(part(bevelledBox(1.96 * scale, 0.2 * scale, 0.18 * scale, 0.03 * scale), darkTrim, [0, 0.34 * scale, sz * 2.26 * scale]));
+    }
+    // grille
+    grp.add(part(bevelledBox(0.95 * scale, 0.22 * scale, 0.06 * scale, 0.02 * scale), darkTrim, [0, 0.55 * scale, 2.28 * scale]));
+    // cabin + sloped windshield + rear window
+    const c = this.mesh(body, new RoundedBoxGeometry(1.7 * scale, 0.62 * scale, 2.0 * scale, 4, 0.09 * scale), 0, 1.12 * scale, -0.15 * scale);
     c.castShadow = true;
     grp.add(c);
-    // roof + door cut lines
-    const roof = new THREE.Mesh(new RoundedBoxGeometry(1.75 * scale, 0.06 * scale, 2.25 * scale, 3, 0.02 * scale), body);
-    roof.position.y = 1.42 * scale;
-    roof.position.z = -0.1 * scale;
-    grp.add(roof);
-    for (const sx of [-0.45, 0.45]) {
-      const line = new THREE.Mesh(new THREE.BoxGeometry(0.02 * scale, 0.5 * scale, 2.2 * scale), new THREE.MeshStandardMaterial({ color: 0x0a0a0a, roughness: 0.6 }));
-      line.position.set(sx * scale, 0.95 * scale, -0.1 * scale);
-      grp.add(line);
-    }
+    grp.add(part(bevelledBox(1.74 * scale, 0.5 * scale, 1.8 * scale, 0.04 * scale), glass, [0, 1.12 * scale, -0.15 * scale]));
+    const ws = part(bevelledBox(1.56 * scale, 0.58 * scale, 0.08 * scale, 0.02 * scale), glass, [0, 1.08 * scale, 0.85 * scale], [-0.52, 0, 0]);
+    grp.add(ws);
     // headlights + taillights
-    const lightMat = new THREE.MeshStandardMaterial({ color: 0xfff4c0, emissive: 0xfff0b0, emissiveIntensity: 0.6 });
-    const tailMat = new THREE.MeshStandardMaterial({ color: 0xff2222, emissive: 0xcc1111, emissiveIntensity: 0.5 });
+    const lightMat = materialFor(0xfff4c0, { emissive: 0xfff0b0, emissiveIntensity: 0.7 });
+    const tailMat = materialFor(0xff2222, { emissive: 0xcc1111, emissiveIntensity: 0.6 });
     for (const sx of [-0.7, 0.7]) {
-      const hl = new THREE.Mesh(new THREE.BoxGeometry(0.28 * scale, 0.14 * scale, 0.08 * scale), lightMat);
-      hl.position.set(sx * scale, 0.62 * scale, 2.3 * scale);
-      grp.add(hl);
-      const tl = new THREE.Mesh(new THREE.BoxGeometry(0.26 * scale, 0.13 * scale, 0.08 * scale), tailMat);
-      tl.position.set(sx * scale, 0.62 * scale, -2.3 * scale);
-      grp.add(tl);
+      grp.add(part(new THREE.BoxGeometry(0.28 * scale, 0.14 * scale, 0.08 * scale), lightMat, [sx * scale, 0.62 * scale, 2.27 * scale], [0, 0, 0], false));
+      grp.add(part(new THREE.BoxGeometry(0.26 * scale, 0.13 * scale, 0.08 * scale), tailMat, [sx * scale, 0.62 * scale, -2.27 * scale], [0, 0, 0], false));
     }
     // mirrors
     for (const sx of [-1, 1]) {
-      const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.03 * scale, 0.03 * scale, 0.22 * scale, 10), chrome);
-      arm.rotation.z = Math.PI / 2;
-      arm.position.set(sx * (1.0 * scale), 1.05 * scale, 0.5 * scale);
-      grp.add(arm);
-      const cap = new THREE.Mesh(new RoundedBoxGeometry(0.18 * scale, 0.12 * scale, 0.06 * scale, 3, 0.02 * scale), body);
-      cap.position.set(sx * (1.1 * scale), 1.05 * scale, 0.58 * scale);
-      grp.add(cap);
+      grp.add(part(new THREE.CylinderGeometry(0.03 * scale, 0.03 * scale, 0.2 * scale, 8), darkTrim, [sx * 0.94 * scale, 1.0 * scale, 0.5 * scale], [0, 0, Math.PI / 2]));
+      grp.add(part(new RoundedBoxGeometry(0.16 * scale, 0.11 * scale, 0.08 * scale, 2, 0.02 * scale), body, [sx * 1.05 * scale, 1.0 * scale, 0.5 * scale]));
     }
-    // wheels with hubs
-    for (const [wx, wz] of [[-0.8, 1.2], [0.8, 1.2], [-0.8, -1.4], [0.8, -1.4]]) {
-      const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.38 * scale, 0.38 * scale, 0.25 * scale, 28), tire);
-      wheel.rotation.z = Math.PI / 2;
-      wheel.position.set(wx * scale, 0.38 * scale, wz * scale);
-      grp.add(wheel);
-      const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.18 * scale, 0.18 * scale, 0.27 * scale, 16), chrome);
-      hub.rotation.z = Math.PI / 2;
-      hub.position.set(wx * scale, 0.38 * scale, wz * scale);
-      grp.add(hub);
+    // wheels + wheel arches
+    for (const [wx, wz] of [[-0.86, 1.32], [0.86, 1.32], [-0.86, -1.38], [0.86, -1.38]]) {
+      grp.add(part(new THREE.CylinderGeometry(0.38 * scale, 0.38 * scale, 0.25 * scale, 24), tire, [wx * scale, 0.38 * scale, wz * scale], [0, 0, Math.PI / 2]));
+      grp.add(part(new THREE.CylinderGeometry(0.2 * scale, 0.2 * scale, 0.27 * scale, 14), chrome, [wx * scale, 0.38 * scale, wz * scale], [0, 0, Math.PI / 2]));
     }
-    this.scene.add(grp);
-    // collision stays a stable box
-    const col = this.box(body, 2 * scale, 0.7 * scale, 4.6 * scale, x, 0, z, ry);
-    this.colliders.push(col);
-    this.aabbs.push(new THREE.Box3().setFromObject(col));
+    // invisible physics collider (zero z-fighting!)
+    this.colliderBox(2.0 * scale, 1.4 * scale, 4.55 * scale, x, 0, z, ry, "metal");
   }
 
   truck(x: number, z: number, ry = 0, color = 0x3a5a3a) {
-    const body = new THREE.MeshStandardMaterial({ color, roughness: 0.5, metalness: 0.4 });
-    const cab = new THREE.MeshStandardMaterial({ color: 0x2c4a2c, roughness: 0.4, metalness: 0.6 });
-    const tire = new THREE.MeshStandardMaterial({ color: 0x111, roughness: 0.9 });
-    const chrome = new THREE.MeshStandardMaterial({ color: 0x9aa0a8, roughness: 0.3, metalness: 0.95 });
-    const b = this.box(body, 2.4, 2.2, 7, x, 0, z, ry);
-    const c = this.box(cab, 2.4, 1.6, 2.6, x + Math.sin(ry) * 3.3, 0, z + Math.cos(ry) * 3.3, ry);
-    // rounded visual bodies on top of collision boxes
-    const visBody = this.mesh(body, new RoundedBoxGeometry(2.4, 2.2, 7, 4, 0.18), x, 1.1, z, ry);
+    const body = materialFor(color, { roughness: 0.55, metalness: 0.35 });
+    const cab = materialFor(0x2c4a2c, { roughness: 0.45, metalness: 0.55 });
+    const tire = materialFor(0x141416, { roughness: 0.9 });
+    const chrome = materialFor(0x9aa0a8, { roughness: 0.3, metalness: 0.92 });
+    const glass = materialFor(0x14181e, { roughness: 0.15, metalness: 0.9 });
+
+    const grp = new THREE.Group();
+    grp.position.set(x, 0, z);
+    grp.rotation.y = ry;
+    this.scene.add(grp);
+
+    // cargo bed body + cab in local space
+    const visBody = this.mesh(body, new RoundedBoxGeometry(2.4, 2.0, 6.8, 4, 0.14), 0, 1.35, -0.5);
     visBody.castShadow = true;
     visBody.receiveShadow = true;
-    this.scene.add(visBody);
-    const visCab = this.mesh(cab, new RoundedBoxGeometry(2.4, 1.6, 2.6, 4, 0.14), x + Math.sin(ry) * 3.3, 0.8, z + Math.cos(ry) * 3.3, ry);
+    grp.add(visBody);
+    const chassis = this.mesh(materialFor(0x1e2024, { roughness: 0.75, metalness: 0.4 }), bevelledBox(2.1, 0.35, 9.2, 0.03), 0, 0.42, 0.5);
+    grp.add(chassis);
+    const visCab = this.mesh(cab, new RoundedBoxGeometry(2.35, 1.75, 2.5, 4, 0.14), 0, 1.35, 3.65);
     visCab.castShadow = true;
-    this.scene.add(visCab);
-    // cab windshield + mirrors
-    const glass = new THREE.MeshStandardMaterial({ color: 0x14181c, roughness: 0.15, metalness: 0.9 });
-    const ws = this.mesh(glass, new RoundedBoxGeometry(2.1, 0.7, 0.06, 3, 0.03), x + Math.sin(ry) * 3.3, 1.2, z + Math.cos(ry) * 4.6, ry);
-    this.scene.add(ws);
+    visCab.receiveShadow = true;
+    grp.add(visCab);
+    // front grille + bumper
+    grp.add(part(bevelledBox(1.8, 0.55, 0.08, 0.02), materialFor(0x1c1e22, { roughness: 0.6, metalness: 0.4 }), [0, 0.85, 4.91]));
+    grp.add(part(bevelledBox(2.4, 0.25, 0.2, 0.03), chrome, [0, 0.42, 4.95]));
+    // windshield + side mirrors
+    grp.add(part(bevelledBox(2.06, 0.68, 0.08, 0.02), glass, [0, 1.66, 4.88], [-0.15, 0, 0]));
     for (const sx of [-1, 1]) {
-      const arm = this.mesh(chrome, new THREE.CylinderGeometry(0.04, 0.04, 0.4, 10), x + Math.sin(ry) * 3.3 + sx * 1.3, 1.1, z + Math.cos(ry) * 3.6, ry);
-      arm.rotation.z = Math.PI / 2;
-      this.scene.add(arm);
+      grp.add(part(new THREE.CylinderGeometry(0.03, 0.03, 0.35, 8), chrome, [sx * 1.32, 1.55, 4.2], [0, 0, Math.PI / 2]));
+      grp.add(part(bevelledBox(0.12, 0.26, 0.08, 0.02), materialFor(0x222, { roughness: 0.6 }), [sx * 1.46, 1.55, 4.2]));
     }
-    // cargo bed slats + stacked crates
-    const slatMat = new THREE.MeshStandardMaterial({ color: 0x5a4a30, roughness: 0.9 });
+    // cargo bed wooden slats + strapped crates on top
+    const slatMat = materialFor(0x5a4a30, { roughness: 0.9, family: "wood", seed: 19 });
     for (let i = -2; i <= 2; i++) {
-      const slat = this.mesh(slatMat, new THREE.BoxGeometry(2.2, 0.06, 0.1), x + i * 1.2, 2.3, z, ry);
-      slat.rotation.y = ry;
-      this.scene.add(slat);
+      grp.add(part(new THREE.BoxGeometry(2.26, 0.06, 0.14), slatMat, [0, 2.38, -0.5 + i * 1.25]));
     }
-    const crateMat = new THREE.MeshStandardMaterial({ color: 0x8a6a43, roughness: 0.82 });
-    for (const [dx, dz, h] of [[-0.6, 0.4, 0.8], [0.6, -0.3, 0.6]] as const) {
-      const cr = this.mesh(crateMat, new THREE.BoxGeometry(1.0, h, 1.0), x + dx, 2.3 + h / 2, z + dz, ry);
-      this.scene.add(cr);
+    const c1 = craftedCrate(0.85, 71);
+    c1.position.set(-0.45, 2.41, -1.2);
+    c1.rotation.y = 0.12;
+    grp.add(c1);
+    const c2 = craftedCrate(0.68, 72);
+    c2.position.set(0.55, 2.41, 0.2);
+    c2.rotation.y = -0.18;
+    grp.add(c2);
+    // wheels + hubs (6x6 military truck)
+    for (const [wx, wz] of [[-1.08, 3.7], [1.08, 3.7], [-1.08, -0.3], [1.08, -0.3], [-1.08, -2.5], [1.08, -2.5]]) {
+      grp.add(part(new THREE.CylinderGeometry(0.5, 0.5, 0.34, 24), tire, [wx, 0.5, wz], [0, 0, Math.PI / 2]));
+      grp.add(part(new THREE.CylinderGeometry(0.24, 0.24, 0.36, 14), chrome, [wx, 0.5, wz], [0, 0, Math.PI / 2]));
     }
-    // wheels with hubs
-    for (const [wx, wz] of [[-1, 2.2], [1, 2.2], [-1, -2.5], [1, -2.5]] as const) {
-      const w = this.mesh(tire, new THREE.CylinderGeometry(0.5, 0.5, 0.3, 28), x + wx * Math.cos(ry) + wz * Math.sin(ry), 0.5, z - wx * Math.sin(ry) + wz * Math.cos(ry));
-      w.rotation.z = Math.PI / 2;
-      w.rotation.y = ry;
-      this.scene.add(w);
-      const hub = this.mesh(chrome, new THREE.CylinderGeometry(0.24, 0.24, 0.32, 16), x + wx * Math.cos(ry) + wz * Math.sin(ry), 0.5, z - wx * Math.sin(ry) + wz * Math.cos(ry));
-      hub.rotation.z = Math.PI / 2;
-      hub.rotation.y = ry;
-      this.scene.add(hub);
-    }
-    this.scene.add(b, c);
-    this.colliders.push(b, c);
-    for (const m of [b, c]) {
-      m.updateWorldMatrix(true, false);
-      this.aabbs.push(new THREE.Box3().setFromObject(m));
-    }
+
+    // invisible physics colliders matching body + cab
+    this.colliderBox(2.4, 2.35, 7.0, x - Math.sin(ry) * 0.5, 0, z - Math.cos(ry) * 0.5, ry, "metal");
+    this.colliderBox(2.4, 2.1, 2.6, x + Math.sin(ry) * 3.6, 0, z + Math.cos(ry) * 3.6, ry, "metal");
   }
 
   container(x: number, y: number, z: number, ry = 0, color = 0x8a6a3a) {
     const c = new THREE.Color(color);
-    const mat = new THREE.MeshStandardMaterial({ color: c, roughness: 0.65, metalness: 0.35 });
-    const col = this.box(mat, 6, 2.6, 2.5, x, y, z, ry);
-    // rounded visual shell + corrugation + end frames + doors
-    const vis = this.mesh(mat, new RoundedBoxGeometry(6, 2.6, 2.5, 4, 0.14), x, y + 1.3, z, ry);
-    vis.castShadow = true;
-    vis.receiveShadow = true;
-    this.scene.add(vis);
-    const ribMat = new THREE.MeshStandardMaterial({ color: c.clone().multiplyScalar(0.75), roughness: 0.7 });
-    for (let i = -2; i <= 2; i++) {
-      const rib = new THREE.Mesh(new THREE.BoxGeometry(0.05, 2.6, 2.5), ribMat);
-      rib.position.set(i * 1.15, 1.3, 0);
-      rib.rotation.y = ry;
-      vis.add(rib);
+    const mat = materialFor(color, { roughness: 0.62, metalness: 0.35, family: "metal", seed: Math.abs(Math.round(x * 7 + z * 13)) });
+    const ribMat = materialFor(c.clone().multiplyScalar(0.76).getHex(), { roughness: 0.68, metalness: 0.4 });
+    const postMat = materialFor(c.clone().multiplyScalar(0.55).getHex(), { roughness: 0.65, metalness: 0.55 });
+    const doorMat = materialFor(0x282a2e, { roughness: 0.55, metalness: 0.65 });
+
+    const grp = new THREE.Group();
+    grp.position.set(x, y, z);
+    grp.rotation.y = ry;
+    this.scene.add(grp);
+
+    const body = this.mesh(mat, new RoundedBoxGeometry(5.96, 2.58, 2.46, 3, 0.08), 0, 1.3, 0);
+    body.castShadow = true;
+    body.receiveShadow = true;
+    grp.add(body);
+    // corrugated vertical ribs along both long sides + roof
+    for (let i = -10; i <= 10; i++) {
+      grp.add(part(new THREE.BoxGeometry(0.08, 2.32, 2.54), ribMat, [i * 0.26, 1.3, 0]));
     }
-    // vertical corrugation on the ends
-    for (let i = -1; i <= 1; i++) {
-      const end = new THREE.Mesh(new THREE.BoxGeometry(0.04, 2.6, 0.04), ribMat);
-      end.position.set(i * 0.7, 1.3, 1.25);
-      vis.add(end);
-    }
-    // corner posts
-    const postMat = new THREE.MeshStandardMaterial({ color: c.clone().multiplyScalar(0.55), roughness: 0.7, metalness: 0.5 });
+    // corner posts & castings
     for (const [px, pz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
-      const p = new THREE.Mesh(new THREE.BoxGeometry(0.1, 2.6, 0.1), postMat);
-      p.position.set(px * 2.95, 1.3, pz * 1.2);
-      p.rotation.y = ry;
-      vis.add(p);
+      grp.add(part(bevelledBox(0.16, 2.6, 0.16, 0.02), postMat, [px * 2.94, 1.3, pz * 1.19]));
     }
-    // door lines + handles
-    const doorMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.6, metalness: 0.6 });
-    for (const dz of [-0.6, 0.6]) {
-      const line = new THREE.Mesh(new THREE.BoxGeometry(0.02, 2.4, 0.02), ribMat);
-      line.position.set(0, 1.3, dz);
-      vis.add(line);
-      const handle = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.06, 0.08), doorMat);
-      handle.position.set(0.5, 0.9, dz);
-      vis.add(handle);
+    // end double doors + locking bars at +x end
+    grp.add(part(new THREE.BoxGeometry(0.06, 2.38, 0.04), doorMat, [3.0, 1.3, 0]));
+    for (const dz of [-0.45, 0.45]) {
+      grp.add(part(new THREE.CylinderGeometry(0.025, 0.025, 2.25, 8), doorMat, [3.03, 1.3, dz]));
+      grp.add(part(new THREE.BoxGeometry(0.08, 0.07, 0.18), doorMat, [3.06, 0.95, dz]));
     }
-    this.scene.add(col);
-    this.colliders.push(col);
-    return col;
+
+    return this.colliderBox(6, 2.6, 2.5, x, y, z, ry, "metal");
   }
 
   containerRow(x: number, z: number, count: number, ry = 0, colors = [0x8a6a3a, 0x3a6a8a, 0x5a7a3a, 0x8a8a8a]) {
     for (let i = 0; i < count; i++) {
-      const m = this.container(x + i * 6.4, 0, z, (ry + (i % 2 ? 0.04 : -0.04)), colors[(i + Math.floor(x)) % colors.length]);
-      m.updateWorldMatrix(true, false);
-      this.aabbs.push(new THREE.Box3().setFromObject(m));
+      this.container(x + i * 6.4, 0, z, ry + (i % 2 ? 0.04 : -0.04), colors[(i + Math.abs(Math.floor(x))) % colors.length]);
     }
   }
 
   fence(x1: number, z1: number, x2: number, z2: number) {
-    const wood = new THREE.MeshStandardMaterial({ color: 0x6b4f30, roughness: 0.9 });
+    const wood = materialFor(0x6b4f30, { roughness: 0.9, family: "wood", seed: 25 });
+    const capMat = materialFor(0x4c3720, { roughness: 0.85, family: "wood", seed: 26 });
     const len = Math.hypot(x2 - x1, z2 - z1);
     const ux = (x2 - x1) / len;
     const uz = (z2 - z1) / len;
     const ang = Math.atan2(ux, uz) - Math.PI / 2;
-    const n = Math.max(2, Math.floor(len / 1.4));
+    const grp = new THREE.Group();
+    grp.position.set((x1 + x2) / 2, 0, (z1 + z2) / 2);
+    grp.rotation.y = ang;
+    this.scene.add(grp);
+
+    const n = Math.max(2, Math.floor(len / 1.5));
     for (let i = 0; i <= n; i++) {
-      const t = i / n;
-      const px = x1 + (x2 - x1) * t;
-      const pz = z1 + (z2 - z1) * t;
-      const post = this.mesh(wood, new RoundedBoxGeometry(0.13, 1.4, 0.13, 3, 0.03), px, 0, pz, ang);
-      post.castShadow = true;
-      this.scene.add(post);
-      // post foot
-      const foot = this.mesh(wood, new THREE.BoxGeometry(0.2, 0.1, 0.2), px, 0.05, pz, ang);
-      this.scene.add(foot);
+      const lx = -len / 2 + (len * i) / n;
+      grp.add(part(bevelledBox(0.14, 1.38, 0.14, 0.02), wood, [lx, 0.69, 0]));
+      grp.add(part(bevelledBox(0.18, 0.07, 0.18, 0.02), capMat, [lx, 1.4, 0]));
     }
-    for (const y of [0.7, 1.2, 1.32]) {
-      const rail = this.mesh(wood, new RoundedBoxGeometry(len, 0.1, 0.07, 3, 0.02), (x1 + x2) / 2, y, (z1 + z2) / 2, ang);
-      rail.castShadow = true;
-      this.scene.add(rail);
+    for (const y of [0.42, 1.08]) {
+      grp.add(part(bevelledBox(len, 0.09, 0.06, 0.015), wood, [0, y, 0]));
     }
+    const picketCount = Math.max(4, Math.floor(len / 0.24));
+    const picketGeo = bevelledBox(0.11, 1.18, 0.03, 0.01);
+    const picketInst = scatterInstances(
+      picketGeo,
+      wood,
+      Array.from({ length: picketCount }, (_, i) => ({
+        position: [-len / 2 + 0.12 + (i * (len - 0.24)) / Math.max(1, picketCount - 1), 0.68, 0.045] as [number, number, number],
+        scale: [1, 0.96 + ((i * 7) % 5) * 0.02, 1] as [number, number, number],
+        hue: (((i * 13) % 7) - 3) * 0.012,
+      }))
+    );
+    grp.add(picketInst);
   }
 
   tree(x: number, z: number, s = 1) {
-    const trunkMat = new THREE.MeshStandardMaterial({ color: 0x5a3d22, roughness: 0.9 });
-    const leafMat = new THREE.MeshStandardMaterial({ color: 0x3d5a2a, roughness: 0.9 });
-    const trunk = this.mesh(trunkMat, new THREE.CylinderGeometry(0.2 * s, 0.32 * s, 2.4 * s, 16, 4), x, 1.2 * s, z);
-    this.scene.add(trunk);
-    // branch stubs
-    for (const [by, bx, bz] of [[2.0, 0.3, 0], [1.8, -0.3, 0.1], [2.2, 0.1, -0.3]]) {
-      const br = this.mesh(trunkMat, new THREE.CylinderGeometry(0.04 * s, 0.07 * s, 0.5 * s, 8), x + bx * s, by * s, z + bz * s);
-      br.rotation.z = bx * 0.6;
-      br.rotation.x = bz * 0.6;
-      this.scene.add(br);
-    }
-    // multi-layer canopy
-    for (let i = 0; i < 7; i++) {
-      const leaf = this.mesh(leafMat, new THREE.SphereGeometry((0.85 + this.rng() * 0.55) * s, 18, 14), x + (this.rng() - 0.5) * 1.5 * s, (2.4 + i * 0.4 + this.rng() * 0.5) * s, z + (this.rng() - 0.5) * 1.5 * s);
-      this.scene.add(leaf);
-    }
-    // small under-foliage
-    for (let i = 0; i < 3; i++) {
-      const low = this.mesh(leafMat, new THREE.SphereGeometry((0.5 + this.rng() * 0.3) * s, 14, 10), x + (this.rng() - 0.5) * 1.2 * s, 1.5 * s + this.rng() * 0.3, z + (this.rng() - 0.5) * 1.2 * s);
-      this.scene.add(low);
-    }
+    const seed = Math.abs(Math.round(x * 19 + z * 31)) + 1;
+    const t = seed % 3 === 0 ? craftedTreeConifer(s * 1.1, seed) : craftedTreeRound(s, seed);
+    t.position.set(x, 0, z);
+    this.scene.add(t);
   }
 
   haystack(x: number, z: number) {
-    const mat = new THREE.MeshStandardMaterial({ color: 0xc9a84a, roughness: 1 });
-    const m = this.mesh(mat, new THREE.SphereGeometry(1.6, 28, 22), x, 1.1, z);
-    m.scale.y = 0.8;
-    this.scene.add(m);
-    // bale wrap ridges
-    const ridge = new THREE.MeshStandardMaterial({ color: 0xb5963c, roughness: 1 });
-    for (let i = 0; i < 3; i++) {
-      const r = this.mesh(ridge, new THREE.TorusGeometry(1.5 - i * 0.25, 0.04, 8, 28), x, 1.0 + i * 0.12, z);
-      r.rotation.x = Math.PI / 2;
-      r.scale.y = 0.8;
-      this.scene.add(r);
+    const mat = materialFor(0xc9a84a, { roughness: 0.96, family: "fabric", seed: 33 });
+    const g = new THREE.Group();
+    g.position.set(x, 0, z);
+    this.scene.add(g);
+    const m = this.mesh(mat, new THREE.CylinderGeometry(1.15, 1.55, 1.6, 20), 0, 0.8, 0);
+    m.castShadow = true;
+    m.receiveShadow = true;
+    g.add(m);
+    const cap = this.mesh(mat, new THREE.SphereGeometry(1.15, 20, 12, 0, Math.PI * 2, 0, Math.PI * 0.5), 0, 1.58, 0);
+    cap.scale.y = 0.65;
+    cap.castShadow = true;
+    g.add(cap);
+    const ridge = materialFor(0x8c702a, { roughness: 0.95 });
+    for (const y of [0.55, 1.15]) {
+      g.add(part(new THREE.TorusGeometry(y < 1 ? 1.4 : 1.24, 0.035, 8, 24), ridge, [0, y, 0], [Math.PI / 2, 0, 0], false));
     }
   }
 
   streetlight(x: number, z: number, ry = 0) {
-    const poleMat = new THREE.MeshStandardMaterial({ color: 0x2a2d30, roughness: 0.6, metalness: 0.8 });
-    const pole = this.mesh(poleMat, new THREE.CylinderGeometry(0.09, 0.12, 5, 24, 4), x, 2.5, z, ry);
-    this.scene.add(pole);
-    // access panel on the pole
-    const panel = this.mesh(new THREE.MeshStandardMaterial({ color: 0x1a1c1f, roughness: 0.7, metalness: 0.5 }), new THREE.BoxGeometry(0.2, 0.5, 0.06), x + Math.sin(ry) * 0.1, 1.2, z + Math.cos(ry) * 0.1);
-    this.scene.add(panel);
-    const arm = this.mesh(poleMat, new THREE.CylinderGeometry(0.05, 0.05, 1.6, 16), x + Math.sin(ry) * 0.9, 5, z + Math.cos(ry) * 0.9, ry + Math.PI / 2);
-    this.scene.add(arm);
-    // lamp housing + bulb
-    const housing = this.mesh(new THREE.MeshStandardMaterial({ color: 0x1a1c1f, roughness: 0.5, metalness: 0.7 }), new THREE.CylinderGeometry(0.16, 0.12, 0.18, 20), x + Math.sin(ry) * 1.7, 4.9, z + Math.cos(ry) * 1.7);
-    this.scene.add(housing);
-    const bulb = this.mesh(new THREE.MeshStandardMaterial({ color: 0xffe9b0, emissive: 0xffd98a, emissiveIntensity: 2.2 }), new THREE.SphereGeometry(0.14, 20, 16), x + Math.sin(ry) * 1.7, 4.8, z + Math.cos(ry) * 1.7);
-    this.scene.add(bulb);
+    const poleMat = materialFor(0x2a2d30, { roughness: 0.55, metalness: 0.82 });
+    const darkMat = materialFor(0x1a1c1f, { roughness: 0.55, metalness: 0.65 });
+    const grp = new THREE.Group();
+    grp.position.set(x, 0, z);
+    grp.rotation.y = ry;
+    this.scene.add(grp);
+
+    // cast iron base collar + tapered shaft
+    grp.add(part(new THREE.CylinderGeometry(0.18, 0.24, 0.55, 16), darkMat, [0, 0.275, 0]));
+    grp.add(part(new THREE.CylinderGeometry(0.08, 0.13, 4.9, 18), poleMat, [0, 2.55, 0]));
+    grp.add(part(new THREE.BoxGeometry(0.18, 0.45, 0.06), darkMat, [0, 1.2, 0.11]));
+    // horizontal arm pointing along +Z in local space
+    grp.add(part(new THREE.CylinderGeometry(0.045, 0.055, 1.6, 12), poleMat, [0, 4.95, 0.8], [Math.PI / 2, 0, 0]));
+    grp.add(part(new THREE.CylinderGeometry(0.025, 0.025, 0.75, 8), poleMat, [0, 4.68, 0.35], [Math.PI / 4, 0, 0]));
+    // lantern hood + glowing diffuser
+    grp.add(part(bevelledBox(0.36, 0.14, 0.54, 0.03), darkMat, [0, 4.96, 1.56]));
+    grp.add(
+      part(
+        new THREE.SphereGeometry(0.15, 14, 10),
+        new THREE.MeshStandardMaterial({ color: 0xffe9b0, emissive: 0xffd98a, emissiveIntensity: 2.2, roughness: 0.3 }),
+        [0, 4.86, 1.62],
+        [0, 0, 0],
+        false
+      )
+    );
   }
 
   /* ---------------- industry ---------------- */
   craneTower(x: number, z: number, h: number, ry = 0) {
-    const yellow = new THREE.MeshStandardMaterial({ color: 0xd8a81c, roughness: 0.5, metalness: 0.5 });
-    const dark = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.6, metalness: 0.7 });
-    // mast (rounded) + lattice cross-braces
-    const mast = this.mesh(yellow, new RoundedBoxGeometry(1.3, h, 1.3, 4, 0.2), x, h / 2, z, ry);
-    mast.castShadow = true;
-    this.scene.add(mast);
-    const braceMat = new THREE.MeshStandardMaterial({ color: 0xb89018, roughness: 0.6, metalness: 0.6 });
-    for (let yy = 1; yy < h; yy += 1.5) {
-      const br1 = this.mesh(braceMat, new THREE.BoxGeometry(1.4, 0.05, 0.05), x - 0.6, yy, z, ry);
-      const br2 = this.mesh(braceMat, new THREE.BoxGeometry(0.05, 0.05, 1.4), x + 0.6, yy, z, ry);
-      this.scene.add(br1, br2);
+    const yellow = materialFor(0xd8a81c, { roughness: 0.48, metalness: 0.55 });
+    const braceMat = materialFor(0xb08614, { roughness: 0.55, metalness: 0.6 });
+    const dark = materialFor(0x2a2a2a, { roughness: 0.6, metalness: 0.72 });
+    const glass = materialFor(0x141a22, { roughness: 0.15, metalness: 0.9 });
+
+    const grp = new THREE.Group();
+    grp.position.set(x, 0, z);
+    grp.rotation.y = ry;
+    this.scene.add(grp);
+
+    // ballast base pad
+    grp.add(part(bevelledBox(3.2, 0.6, 3.2, 0.08), materialFor(0x6b6f75, { roughness: 0.9, family: "stone" }), [0, 0.3, 0]));
+    // 4 corner mast chords + lattice braces
+    for (const [cx, cz] of [[-0.55, -0.55], [0.55, -0.55], [-0.55, 0.55], [0.55, 0.55]]) {
+      grp.add(part(new THREE.BoxGeometry(0.16, h, 0.16), yellow, [cx, h / 2, cz]));
     }
-    // jib (long horizontal arm) + counter-jib (rounded)
+    for (let yy = 0.9; yy < h - 0.5; yy += 1.4) {
+      for (const sz of [-0.55, 0.55]) grp.add(part(new THREE.BoxGeometry(1.15, 0.07, 0.07), braceMat, [0, yy, sz]));
+      for (const sx of [-0.55, 0.55]) grp.add(part(new THREE.BoxGeometry(0.07, 0.07, 1.15), braceMat, [sx, yy, 0]));
+    }
+    // operator cab + slewing ring
+    grp.add(part(new THREE.CylinderGeometry(0.85, 0.85, 0.35, 16), dark, [0, h - 0.2, 0]));
+    grp.add(part(new RoundedBoxGeometry(1.75, 1.9, 2.2, 3, 0.12), yellow, [0.9, h - 0.75, 1.0]));
+    grp.add(part(bevelledBox(1.4, 0.9, 1.5, 0.03), glass, [0.9, h - 0.55, 1.35]));
+    // main jib along +Z and counter-jib along -Z
     const jibLen = 22;
-    const jib = this.mesh(yellow, new RoundedBoxGeometry(0.8, 0.9, jibLen, 4, 0.18), x, h, z + Math.cos(ry) * 9, ry);
-    jib.castShadow = true;
-    const counter = this.mesh(yellow, new RoundedBoxGeometry(0.8, 0.9, 9, 4, 0.18), x, h, z - Math.cos(ry) * 4.5, ry);
-    const cw = this.mesh(dark, new RoundedBoxGeometry(2.2, 1.6, 1.6, 4, 0.3), x - Math.sin(ry) * 4.5, h - 0.6, z - Math.cos(ry) * 4.5, ry);
-    const cab = this.mesh(yellow, new RoundedBoxGeometry(2, 2, 2.4, 4, 0.3), x + Math.sin(ry) * 1.6, h - 0.8, z + Math.cos(ry) * 1.6, ry);
-    cab.castShadow = true;
-    // jib truss detail (diagonals)
-    const trussMat = new THREE.MeshStandardMaterial({ color: 0x9a7214, roughness: 0.6, metalness: 0.6 });
-    for (let i = 0; i < 6; i++) {
-      const zz = -jibLen / 2 + i * (jibLen / 5);
-      const diag = this.mesh(trussMat, new THREE.BoxGeometry(0.06, 0.85, 0.06), x, h, z + Math.cos(ry) * 9 + zz, ry);
-      diag.rotation.z = 0.4;
-      this.scene.add(diag);
-    }
-    // hook cable (tapered, high segment) + block
-    const hookX = x + Math.sin(ry) * 10;
-    const hookZ = z + Math.cos(ry) * 10;
-    const cable = this.mesh(dark, new THREE.CylinderGeometry(0.02, 0.04, 6, 12), hookX, h - 3, hookZ);
-    const block = this.mesh(dark, new RoundedBoxGeometry(0.7, 0.7, 0.7, 3, 0.12), hookX, h - 6.2, hookZ);
-    block.castShadow = true;
-    this.scene.add(jib, counter, cw, cab, cable, block);
-    this.colliders.push(mast);
-    const beacon = this.mesh(new THREE.MeshStandardMaterial({ color: 0xff2222, emissive: 0xff0000, emissiveIntensity: 3 }), new THREE.SphereGeometry(0.12, 16, 12), x, h + 0.3, z);
-    this.scene.add(beacon);
+    grp.add(part(new RoundedBoxGeometry(0.85, 0.85, jibLen, 3, 0.1), yellow, [0, h + 0.35, 9.5]));
+    grp.add(part(new RoundedBoxGeometry(0.85, 0.85, 8.5, 3, 0.1), yellow, [0, h + 0.35, -4.5]));
+    grp.add(part(new RoundedBoxGeometry(2.2, 1.6, 1.7, 3, 0.15), dark, [0, h - 0.5, -7.2]));
+    // cat-head peak + stay cables (top of cylinder tilts toward +Z on +rotX, toward -Z on -rotX)
+    grp.add(part(new THREE.ConeGeometry(0.8, 3.2, 4), yellow, [0, h + 2.2, 0], [0, Math.PI / 4, 0]));
+    grp.add(part(new THREE.CylinderGeometry(0.03, 0.03, 18.4, 8), dark, [0, h + 2.25, 9.0], [-1.4, 0, 0]));
+    grp.add(part(new THREE.CylinderGeometry(0.03, 0.03, 8.2, 8), dark, [0, h + 2.15, -3.7], [1.18, 0, 0]));
+    // trolley + hoist cable + hook block
+    grp.add(part(bevelledBox(1.0, 0.5, 1.1, 0.05), dark, [0, h - 0.1, 12.0]));
+    grp.add(part(new THREE.CylinderGeometry(0.03, 0.03, 6.2, 10), dark, [0, h - 3.3, 12.0]));
+    grp.add(part(bevelledBox(0.7, 0.7, 0.7, 0.08), dark, [0, h - 6.5, 12.0]));
+
+    const beacon = new THREE.Mesh(
+      new THREE.SphereGeometry(0.14, 14, 10),
+      new THREE.MeshStandardMaterial({ color: 0xff2222, emissive: 0xff0000, emissiveIntensity: 3 })
+    );
+    beacon.position.set(0, h + 3.9, 0);
+    grp.add(beacon);
     this.beacon(beacon, 3, this.rng() * 6);
-    return { mast, x, z, h, ry };
+
+    const mastCol = this.colliderBox(1.4, h, 1.4, x, 0, z, ry, "metal");
+    return { mast: mastCol, x, z, h, ry };
   }
 
   craneGantry(x: number, z: number, h: number, span: number) {
-    const yellow = new THREE.MeshStandardMaterial({ color: 0xd8a81c, roughness: 0.5, metalness: 0.5 });
-    const dark = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.6, metalness: 0.7 });
+    const yellow = materialFor(0xd8a81c, { roughness: 0.48, metalness: 0.55 });
+    const dark = materialFor(0x2a2a2a, { roughness: 0.6, metalness: 0.72 });
+    const grp = new THREE.Group();
+    grp.position.set(x, 0, z);
+    this.scene.add(grp);
+
     for (const sx of [-1, 1]) {
-      const leg = this.mesh(yellow, new RoundedBoxGeometry(0.7, h, 0.7, 4, 0.15), x + sx * span / 2, h / 2, z, 0);
-      leg.castShadow = true;
-      const leg2 = this.mesh(yellow, new RoundedBoxGeometry(0.7, h, 0.7, 4, 0.15), x + sx * span / 2, h / 2, z + 1.6, 0);
-      leg2.castShadow = true;
-      this.scene.add(leg, leg2);
-      this.colliders.push(leg, leg2);
-      // diagonal brace
-      const brace = this.mesh(dark, new THREE.BoxGeometry(0.1, Math.hypot(h, 1.6), 0.1), x + sx * span / 2, h / 2, z + 0.8, 0);
-      brace.rotation.z = Math.atan2(1.6, h);
-      this.scene.add(brace);
+      const lx = sx * (span / 2);
+      // wheel bogie beam along Z
+      grp.add(part(bevelledBox(0.9, 0.6, 3.6, 0.06), dark, [lx, 0.3, 0]));
+      // angled A-frame twin legs meeting at top girder
+      grp.add(part(new RoundedBoxGeometry(0.65, h, 0.65, 3, 0.1), yellow, [lx, h / 2, -0.95], [0.06, 0, 0]));
+      grp.add(part(new RoundedBoxGeometry(0.65, h, 0.65, 3, 0.1), yellow, [lx, h / 2, 0.95], [-0.06, 0, 0]));
+      // mid horizontal tie
+      grp.add(part(bevelledBox(0.35, 0.35, 1.8, 0.04), dark, [lx, h * 0.5, 0]));
+      // colliders for both legs
+      this.colliderBox(0.9, h, 2.4, x + lx, 0, z, 0, "metal");
     }
-    const beam = this.mesh(yellow, new RoundedBoxGeometry(0.8, 0.9, span + 1, 4, 0.18), x, h, z + 0.8, 0);
-    beam.castShadow = true;
-    const cross = this.mesh(yellow, new RoundedBoxGeometry(span + 1, 0.8, 0.8, 4, 0.18), x, h, z + 1.6, 0);
-    this.scene.add(beam, cross);
-    // trolley + hoist cable
-    const trolley = this.mesh(dark, new RoundedBoxGeometry(1, 0.6, 0.8, 3, 0.12), x + 3, h - 0.8, z + 0.8, 0);
-    this.scene.add(trolley);
-    const cable = this.mesh(dark, new THREE.CylinderGeometry(0.02, 0.02, 3, 10), x + 3, h - 2.3, z + 0.8);
-    this.scene.add(cable);
+    // twin bridge girders spanning ALONG X between the legs!
+    grp.add(part(new RoundedBoxGeometry(span + 2.2, 0.95, 0.75, 3, 0.12), yellow, [0, h, -0.55]));
+    grp.add(part(new RoundedBoxGeometry(span + 2.2, 0.95, 0.75, 3, 0.12), yellow, [0, h, 0.55]));
+    // trolley + spreader frame
+    grp.add(part(bevelledBox(1.4, 0.6, 1.9, 0.06), dark, [3, h - 0.6, 0]));
+    for (const sz of [-0.6, 0.6]) {
+      grp.add(part(new THREE.CylinderGeometry(0.025, 0.025, 3.6, 8), dark, [3, h - 2.4, sz]));
+    }
+    grp.add(part(bevelledBox(2.4, 0.35, 1.6, 0.05), yellow, [3, h - 4.2, 0]));
   }
 
   excavator(x: number, z: number, ry = 0) {
-    const yellow = new THREE.MeshStandardMaterial({ color: 0xd8a81c, roughness: 0.5, metalness: 0.4 });
-    const dark = new THREE.MeshStandardMaterial({ color: 0x222, roughness: 0.9 });
-    const track = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.95 });
-    // tracks (rounded, high segment)
+    const yellow = materialFor(0xd8a81c, { roughness: 0.48, metalness: 0.45 });
+    const dark = materialFor(0x222428, { roughness: 0.85, metalness: 0.3 });
+    const track = materialFor(0x18181a, { roughness: 0.92 });
+    const glass = materialFor(0x101418, { roughness: 0.18, metalness: 0.85 });
+
+    const grp = new THREE.Group();
+    grp.position.set(x, 0, z);
+    grp.rotation.y = ry;
+    this.scene.add(grp);
+
+    // horizontal crawler tracks seated at y=0 along local Z
     for (const sx of [-1, 1]) {
-      const t = this.mesh(track, new THREE.CylinderGeometry(0.5, 0.5, 2.4, 28), x + sx * 1.2, 0.5, z, ry + Math.PI / 2);
-      t.castShadow = true;
-      this.scene.add(t);
-      // track tread links
-      for (let i = -1; i <= 1; i++) {
-        const link = this.mesh(dark, new THREE.BoxGeometry(2.4, 0.16, 0.12), x + sx * 1.2, 0.5 + Math.cos(i * 0.6) * 0.4, z + Math.sin(i * 0.6) * 0.4, ry);
-        this.scene.add(link);
+      grp.add(part(new RoundedBoxGeometry(0.65, 0.72, 3.4, 3, 0.18), track, [sx * 1.15, 0.38, 0]));
+      grp.add(part(bevelledBox(0.55, 0.44, 2.8, 0.05), dark, [sx * 1.15, 0.42, 0]));
+      for (const sz of [-1.35, 1.35]) {
+        grp.add(part(new THREE.CylinderGeometry(0.36, 0.36, 0.68, 18), dark, [sx * 1.15, 0.38, sz], [0, 0, Math.PI / 2]));
       }
     }
-    // body + cab (rounded)
-    const b = this.mesh(yellow, new RoundedBoxGeometry(2.4, 1, 3.6, 4, 0.2), x, 0.7, z, ry);
-    b.castShadow = true;
-    b.receiveShadow = true;
-    const c = this.mesh(yellow, new RoundedBoxGeometry(1.8, 1.4, 1.6, 4, 0.25), x + Math.sin(ry) * 1.4, 1.4, z + Math.cos(ry) * 1.4, ry);
-    c.castShadow = true;
-    // cab window
-    const glass = new THREE.MeshStandardMaterial({ color: 0x101418, roughness: 0.2, metalness: 0.8 });
-    const win = this.mesh(glass, new THREE.BoxGeometry(1.5, 0.6, 0.06), x + Math.sin(ry) * 1.4, 1.7, z + Math.cos(ry) * 2.2, ry);
-    this.scene.add(win);
-    // arm (rounded, two segments) + bucket
-    const arm = this.mesh(yellow, new RoundedBoxGeometry(0.6, 0.6, 3.4, 4, 0.15), x + Math.sin(ry) * 2.4, 2.2, z + Math.cos(ry) * 2.4, ry);
-    arm.castShadow = true;
-    const arm2 = this.mesh(yellow, new RoundedBoxGeometry(0.5, 0.5, 2.2, 4, 0.13), x + Math.sin(ry) * 3.6, 1.6, z + Math.cos(ry) * 3.6, ry);
-    arm2.castShadow = true;
-    const bucket = this.mesh(dark, new RoundedBoxGeometry(1, 0.9, 1.2, 4, 0.2), x + Math.sin(ry) * 4.4, 1.2, z + Math.cos(ry) * 4.4, ry);
-    bucket.castShadow = true;
-    // bucket teeth
+    // lower carbody + swing ring
+    grp.add(part(bevelledBox(1.8, 0.4, 1.8, 0.06), dark, [0, 0.55, 0]));
+    // upper rotating house + counterweight + operator cab
+    grp.add(part(new RoundedBoxGeometry(2.3, 1.05, 3.2, 4, 0.16), yellow, [0, 1.25, -0.25]));
+    grp.add(part(new RoundedBoxGeometry(2.35, 0.9, 0.7, 3, 0.14), dark, [0, 1.25, -1.65]));
+    grp.add(part(new RoundedBoxGeometry(1.15, 1.45, 1.7, 3, 0.14), yellow, [-0.55, 1.95, 0.45]));
+    grp.add(part(bevelledBox(0.92, 0.9, 1.35, 0.03), glass, [-0.55, 2.02, 0.62]));
+    // articulated boom + stick + digging bucket
+    grp.add(part(new RoundedBoxGeometry(0.45, 0.55, 3.2, 3, 0.1), yellow, [0.5, 2.35, 1.8], [-0.55, 0, 0]));
+    grp.add(part(new RoundedBoxGeometry(0.38, 0.45, 2.3, 3, 0.08), yellow, [0.5, 2.25, 3.7], [0.75, 0, 0]));
+    grp.add(part(new RoundedBoxGeometry(0.95, 0.8, 1.05, 3, 0.15), dark, [0.5, 1.2, 4.35], [0.35, 0, 0]));
     for (let i = 0; i < 4; i++) {
-      const tooth = this.mesh(dark, new THREE.ConeGeometry(0.08, 0.25, 8), x + Math.sin(ry) * 4.4 + (i - 1.5) * 0.25, 1.0, z + Math.cos(ry) * 4.4 + 0.6, 0);
-      tooth.rotation.x = Math.PI / 2;
-      this.scene.add(tooth);
+      grp.add(part(new THREE.ConeGeometry(0.06, 0.24, 6), dark, [0.16 + i * 0.22, 0.85, 4.82], [Math.PI / 2, 0, 0]));
     }
-    this.scene.add(b, c, arm, arm2, bucket);
+    this.colliderBox(2.6, 2.4, 3.8, x, 0, z, ry, "metal");
   }
 
 
@@ -1555,82 +1543,106 @@ class Kit {
   }
 
   ship(x: number, z: number) {
-    const hullMat = new THREE.MeshStandardMaterial({ color: 0x2c4a66, roughness: 0.6, metalness: 0.5 });
-    const superMat = new THREE.MeshStandardMaterial({ color: 0xe8e6e0, roughness: 0.5, metalness: 0.3 });
-    const glass = new THREE.MeshStandardMaterial({ color: 0x101418, roughness: 0.2, metalness: 0.8 });
-    // hull (long in z, bow north): rounded box + tapered, rounded bow
-    const hull = this.mesh(hullMat, new RoundedBoxGeometry(10, 7, 44, 5, 0.6), x, 0, z, 0);
+    const hullMat = materialFor(0x2c4a66, { roughness: 0.58, metalness: 0.48, family: "metal", seed: 51 });
+    const superMat = materialFor(0xe8e6e0, { roughness: 0.48, metalness: 0.25 });
+    const deckMat = materialFor(0x4a4036, { roughness: 0.88, family: "wood", seed: 52 });
+    const railMat = materialFor(0x22262a, { roughness: 0.6, metalness: 0.78 });
+    const glass = materialFor(0x101418, { roughness: 0.16, metalness: 0.85 });
+
+    // sculpted ship hull: full 13.4m beam matching the 14m walkable deck overhang
+    const hull = this.mesh(hullMat, new RoundedBoxGeometry(13.4, 6.8, 42, 5, 0.55), x, 0, z, 0);
     hull.castShadow = true;
     hull.receiveShadow = true;
-    const bow = this.mesh(hullMat, new THREE.CylinderGeometry(3.2, 5, 14, 32, 3, false), x, 0, z - 25, 0);
-    bow.rotation.x = Math.PI / 2;
+    // tapered V-bow pointing north (-Z)
+    const bowShape = new THREE.Shape();
+    bowShape.moveTo(-6.5, 0);
+    bowShape.lineTo(0, 14);
+    bowShape.lineTo(6.5, 0);
+    bowShape.closePath();
+    const bowGeo = new THREE.ExtrudeGeometry(bowShape, {
+      depth: 6.4,
+      bevelEnabled: true,
+      bevelThickness: 0.35,
+      bevelSize: 0.3,
+      bevelSegments: 2,
+    });
+    bowGeo.rotateX(-Math.PI / 2);
+    const bow = this.mesh(hullMat, bowGeo, x, -3.2, z - 20.5, 0);
     bow.castShadow = true;
-    // bow bulb
-    const bulb = this.mesh(hullMat, new THREE.SphereGeometry(3.2, 24, 16), x, -2.2, z - 30, 0);
-    bulb.scale.set(1, 0.5, 1.6);
+    // bulbous bow below waterline
+    const bulb = this.mesh(materialFor(0x8a1c1c, { roughness: 0.55, metalness: 0.35 }), new THREE.SphereGeometry(2.4, 20, 14), x, -2.0, z - 33, 0);
+    bulb.scale.set(0.9, 0.55, 1.8);
     this.scene.add(hull, bow, bulb);
-    // red waterline stripe + boot topping
-    const stripe = this.mesh(new THREE.MeshStandardMaterial({ color: 0x8a1c1c, roughness: 0.6, metalness: 0.4 }), new THREE.BoxGeometry(10.2, 0.45, 44.2), x, 0.05, z);
-    this.scene.add(stripe);
-    const boot = this.mesh(new THREE.MeshStandardMaterial({ color: 0x1a1a1e, roughness: 0.7, metalness: 0.4 }), new THREE.BoxGeometry(10.1, 0.3, 44.1), x, -0.75, z);
-    this.scene.add(boot);
-    // waterline collider — blocks walking through the hull, shots at deck pass over
-    this.colliders.push(this.box(hullMat, 14, 2.9, 44, x, -1.45, z, 0));
-    // deck — walkable surface (top at y = 3.5), rounded slab + planking lines
-    const deck = this.mesh(new THREE.MeshStandardMaterial({ color: 0x4a4036, roughness: 0.9 }), new RoundedBoxGeometry(14, 0.4, 42, 4, 0.1), x, 3.3, z, 0);
+
+    // waterline stripe + boot topping (flush with hull sides)
+    this.scene.add(part(new THREE.BoxGeometry(13.56, 0.46, 42.2), materialFor(0x8a1c1c, { roughness: 0.55, metalness: 0.35 }), [x, 0.05, z], [0, 0, 0], false));
+    this.scene.add(part(new THREE.BoxGeometry(13.5, 0.32, 42.1), materialFor(0x1a1a1e, { roughness: 0.65, metalness: 0.4 }), [x, -0.7, z], [0, 0, 0], false));
+
+    // waterline hull collider
+    this.colliders.push(this.box(this.invisMat, 14, 2.9, 44, x, -1.45, z, 0));
+
+    // walkable main deck (top at y = 3.5, width 14, z ± 21 — preserves all spawn/boss heights)
+    const deck = this.mesh(deckMat, new RoundedBoxGeometry(14, 0.4, 42, 4, 0.08), x, 3.3, z, 0);
     deck.castShadow = true;
     deck.receiveShadow = true;
     this.scene.add(deck);
-    const plankMat = new THREE.MeshStandardMaterial({ color: 0x3a3228, roughness: 0.95 });
+    const plankMat = materialFor(0x362f26, { roughness: 0.94 });
     for (let px = -6; px <= 6; px += 1.4) {
-      const plank = this.mesh(plankMat, new THREE.BoxGeometry(0.05, 0.02, 40), x + px, 3.52, z);
-      this.scene.add(plank);
+      this.scene.add(part(new THREE.BoxGeometry(0.05, 0.02, 40.4), plankMat, [x + px, 3.51, z], [0, 0, 0], false));
     }
-    this.colliders.push(this.box(new THREE.MeshStandardMaterial({ color: 0x4a4036, roughness: 0.9 }), 14, 0.4, 42, x, 3.1, z, 0));
+    this.colliders.push(this.box(this.invisMat, 14, 0.4, 42, x, 3.1, z, 0));
     this.aabbs.push(new THREE.Box3(new THREE.Vector3(x - 7, 3.1, z - 21), new THREE.Vector3(x + 7, 3.5, z + 21)));
-    // superstructure at stern (south end) — rounded, with window band
-    const sup = this.mesh(superMat, new RoundedBoxGeometry(7, 4.5, 6, 5, 0.4), x, 3.5 + 2.25, z + 10, 0);
+
+    // aft superstructure + bridge + funnel + radar mast
+    const sup = this.mesh(superMat, new RoundedBoxGeometry(7.2, 4.5, 6.2, 4, 0.3), x, 3.5 + 2.25, z + 10, 0);
     sup.castShadow = true;
     sup.receiveShadow = true;
     this.scene.add(sup);
-    const supCol = this.box(superMat, 7, 4.5, 6, x, 3.5, z + 10, 0);
+    const supCol = this.box(this.invisMat, 7.2, 4.5, 6.2, x, 3.5, z + 10, 0);
     this.colliders.push(supCol);
     this.aabbs.push(new THREE.Box3().setFromObject(supCol));
-    const winBand = this.mesh(glass, new THREE.BoxGeometry(7.05, 1.2, 6.05), x, 5.2, z + 10);
-    this.scene.add(winBand);
-    const bridge = this.mesh(glass, new RoundedBoxGeometry(7.4, 2.2, 5, 5, 0.2), x, 8 + 1.1, z + 10, 0);
+
+    this.scene.add(part(bevelledBox(7.28, 1.1, 6.28, 0.02), glass, [x, 5.4, z + 10], [0, 0, 0], false));
+    const bridge = this.mesh(superMat, new RoundedBoxGeometry(8.2, 2.2, 5.2, 4, 0.2), x, 8 + 1.1, z + 10, 0);
     bridge.castShadow = true;
     this.scene.add(bridge);
-    const bridgeCol = this.box(glass, 7.4, 2.2, 5, x, 8, z + 10, 0);
+    this.scene.add(part(bevelledBox(8.28, 1.0, 4.6, 0.02), glass, [x, 9.25, z + 9.9], [0, 0, 0], false));
+    const bridgeCol = this.box(this.invisMat, 7.4, 2.2, 5, x, 8, z + 10, 0);
     this.colliders.push(bridgeCol);
     this.aabbs.push(new THREE.Box3().setFromObject(bridgeCol));
-    // containers on deck (edges, centre lane left clear for the boss)
+
+    // ship funnel + radar mast behind bridge
+    this.scene.add(part(new THREE.CylinderGeometry(0.95, 1.25, 3.0, 16), materialFor(0x8a2420, { roughness: 0.6, metalness: 0.35 }), [x, 11.4, z + 11.8]));
+    this.scene.add(part(new THREE.CylinderGeometry(0.98, 0.98, 0.5, 16), railMat, [x, 12.9, z + 11.8]));
+    this.scene.add(part(new THREE.CylinderGeometry(0.08, 0.14, 3.4, 10), railMat, [x, 11.9, z + 9.2]));
+    this.scene.add(part(bevelledBox(2.2, 0.14, 0.2, 0.02), superMat, [x, 13.3, z + 9.2]));
+
+    // deck containers (side edges; centre lane kept open for boss fight)
     for (const [cx, cz] of [[-4, -6], [-4, -12], [4, -6], [4, -12]] as const) {
       for (let row = 0; row < 2; row++) {
-        const m = this.container(x + cx, 3.5 + row * 2.7, z + cz, (cx + cz) % 2 ? 0.06 : -0.06, [0x8a6a3a, 0x3a6a8a, 0x5a7a3a][(cx + cz + row) % 3]);
-        m.updateWorldMatrix(true, false);
-        this.aabbs.push(new THREE.Box3().setFromObject(m));
+        this.container(x + cx, 3.5 + row * 2.7, z + cz, (cx + cz) % 2 ? 0.06 : -0.06, [0x8a6a3a, 0x3a6a8a, 0x5a7a3a][(cx + cz + row) % 3]);
       }
     }
-    // deck hatches (dark panels)
-    const hatchMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1e, roughness: 0.8, metalness: 0.4 });
-    for (const [hx, hz] of [[-4, -14], [4, -14], [-4, -24], [4, -24]] as const) {
-      const hatch = this.mesh(hatchMat, new THREE.BoxGeometry(2.2, 0.06, 1.6), x + hx, 3.56, z + hz, (hx + hz) % 2 ? 0.3 : -0.3);
-      this.scene.add(hatch);
+
+    // cargo hatches with raised coaming rims
+    const hatchMat = materialFor(0x26282e, { roughness: 0.72, metalness: 0.45 });
+    for (const [hx, hz] of [[-4, -15], [4, -15]] as const) {
+      this.scene.add(part(bevelledBox(2.8, 0.32, 2.0, 0.04), hatchMat, [x + hx, 3.66, z + hz]));
     }
-    // navigation lights (red port, green starboard) + mast beacon
-    const navRed = this.mesh(new THREE.MeshStandardMaterial({ color: 0xff2020, emissive: 0xff0000, emissiveIntensity: 2.5 }), new THREE.SphereGeometry(0.12, 8, 6), x - 3.2, 2.6, z - 16);
-    const navGreen = this.mesh(new THREE.MeshStandardMaterial({ color: 0x20ff40, emissive: 0x00ff30, emissiveIntensity: 2.5 }), new THREE.SphereGeometry(0.12, 8, 6), x + 3.2, 2.6, z - 16);
-    const navWhite = this.mesh(new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xffffee, emissiveIntensity: 2.5 }), new THREE.SphereGeometry(0.1, 8, 6), x, 10.8, z + 10);
+
+    // navigation lights mounted cleanly on bridge wingtips + masthead
+    const navRed = this.mesh(new THREE.MeshStandardMaterial({ color: 0xff2020, emissive: 0xff0000, emissiveIntensity: 2.5 }), new THREE.SphereGeometry(0.14, 10, 8), x - 4.2, 9.2, z + 9.5);
+    const navGreen = this.mesh(new THREE.MeshStandardMaterial({ color: 0x20ff40, emissive: 0x00ff30, emissiveIntensity: 2.5 }), new THREE.SphereGeometry(0.14, 10, 8), x + 4.2, 9.2, z + 9.5);
+    const navWhite = this.mesh(new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xffffee, emissiveIntensity: 2.5 }), new THREE.SphereGeometry(0.12, 10, 8), x, 13.7, z + 9.2);
     this.scene.add(navRed, navGreen, navWhite);
     this.beacon(navRed, 1.6, 0);
     this.beacon(navGreen, 1.6, 2);
     this.beacon(navWhite, 1.2, 4);
-    // flag on the bridge mast
+
+    // fluttering ensign flag
     const flagMat = new THREE.MeshStandardMaterial({ color: 0xc9a84a, roughness: 0.8, side: THREE.DoubleSide });
-    const flagPole = this.mesh(new THREE.MeshStandardMaterial({ color: 0x222, roughness: 0.7, metalness: 0.8 }), new THREE.CylinderGeometry(0.04, 0.04, 2.2, 6), x + 2.6, 11.3, z + 10);
-    this.scene.add(flagPole);
-    const flag = this.mesh(flagMat, new THREE.PlaneGeometry(0.9, 0.55), x + 3.0, 12.2, z + 10);
+    this.scene.add(part(new THREE.CylinderGeometry(0.04, 0.04, 2.2, 8), railMat, [x + 2.8, 11.3, z + 10]));
+    const flag = this.mesh(flagMat, new THREE.PlaneGeometry(0.95, 0.55), x + 3.28, 12.1, z + 10);
     this.scene.add(flag);
     this.flagMesh = flag;
     let flagPhase = 0;
@@ -1640,12 +1652,14 @@ class Kit {
         flag.rotation.z = Math.sin(flagPhase) * 0.35;
       },
     });
-    // deck railings (thin posts along both long edges)
-    const railMat = new THREE.MeshStandardMaterial({ color: 0x222, roughness: 0.7 });
-    for (let i = -17; i <= 17; i += 3) {
-      for (const sx of [-7, 7]) {
-        const post = this.mesh(railMat, new THREE.CylinderGeometry(0.05, 0.05, 1.1, 6), x + sx, 4.05, z + i);
-        this.scene.add(post);
+
+    // continuous 2-rail safety railings around port & starboard deck edges
+    for (const sx of [-6.85, 6.85]) {
+      for (const ry of [4.05, 4.55]) {
+        this.scene.add(part(new THREE.CylinderGeometry(0.028, 0.028, 41, 8), railMat, [x + sx, ry, z], [Math.PI / 2, 0, 0]));
+      }
+      for (let i = -20; i <= 20; i += 2.5) {
+        this.scene.add(part(new THREE.CylinderGeometry(0.04, 0.04, 1.1, 8), railMat, [x + sx, 4.05, z + i]));
       }
     }
     return { x, z, deckY: 3.5 };
@@ -1713,45 +1727,38 @@ class Kit {
   }
 
   relayTower(x: number, z: number, h: number) {
-    const steel = new THREE.MeshStandardMaterial({ color: 0x9aa0a8, roughness: 0.5, metalness: 0.8 });
-    const pole = this.mesh(steel, new THREE.CylinderGeometry(0.12, 0.22, h, 24, 4), x, h / 2, z);
+    const steel = materialFor(0x9aa0a8, { roughness: 0.48, metalness: 0.82 });
+    const braceMat = materialFor(0x7a8088, { roughness: 0.58, metalness: 0.78 });
+    const pole = this.mesh(steel, new THREE.CylinderGeometry(0.12, 0.22, h, 20, 4), x, h / 2, z);
     pole.castShadow = true;
     this.scene.add(pole);
     this.colliders.push(pole);
-    // triangular lattice cross-braces
-    const braceMat = new THREE.MeshStandardMaterial({ color: 0x7a8088, roughness: 0.6, metalness: 0.8 });
     for (let i = 1; i <= 6; i++) {
       const yy = (i / 6) * h;
       const r = 0.35 + (i / 6) * 0.5;
-      const ring = this.mesh(steel, new THREE.TorusGeometry(r, 0.04, 8, 28), x, yy, z);
+      const ring = this.mesh(steel, new THREE.TorusGeometry(r, 0.04, 8, 24), x, yy, z);
       ring.rotation.x = Math.PI / 2;
       this.scene.add(ring);
-      // vertical corner struts
       for (let a = 0; a < 3; a++) {
-        const ang = a * (Math.PI * 2 / 3);
+        const ang = a * ((Math.PI * 2) / 3);
         const sx = Math.cos(ang) * r;
         const sz = Math.sin(ang) * r;
-        const strut = this.mesh(braceMat, new THREE.CylinderGeometry(0.03, 0.03, (i === 6 ? h - yy : 1.6), 8), x + sx, yy + (i === 6 ? (h - yy) / 2 : 0.8), z + sz);
-        this.scene.add(strut);
+        this.scene.add(part(new THREE.CylinderGeometry(0.03, 0.03, i === 6 ? h - yy : 1.6, 8), braceMat, [x + sx, yy + (i === 6 ? (h - yy) / 2 : 0.8), z + sz]));
       }
     }
-    const dish = this.mesh(steel, new THREE.SphereGeometry(1.1, 32, 20, 0, Math.PI * 2, 0, Math.PI / 2.4), x, h, z);
+    const dish = this.mesh(steel, new THREE.SphereGeometry(1.1, 28, 18, 0, Math.PI * 2, 0, Math.PI / 2.4), x, h + 0.3, z);
     dish.rotation.x = -Math.PI / 2.4;
-    dish.position.y = h + 0.3;
     dish.castShadow = true;
     this.scene.add(dish);
-    // dish support struts
     for (let a = 0; a < 3; a++) {
-      const ang = a * (Math.PI * 2 / 3) + Math.PI / 6;
+      const ang = a * ((Math.PI * 2) / 3) + Math.PI / 6;
       const strut = this.mesh(steel, new THREE.CylinderGeometry(0.03, 0.03, 1.4, 8), x + Math.cos(ang) * 0.4, h + 0.5, z + Math.sin(ang) * 0.4);
       strut.rotation.z = Math.cos(ang) * 0.7;
       strut.rotation.x = -Math.sin(ang) * 0.7;
       this.scene.add(strut);
     }
-    // feed horn at dish focus
-    const horn = this.mesh(steel, new THREE.CylinderGeometry(0.08, 0.12, 0.4, 16), x, h + 0.9, z);
-    this.scene.add(horn);
-    const beacon = this.mesh(new THREE.MeshStandardMaterial({ color: 0xff2020, emissive: 0xff0000, emissiveIntensity: 4 }), new THREE.SphereGeometry(0.16, 16, 12), x, h + 1.6, z);
+    this.scene.add(part(new THREE.CylinderGeometry(0.08, 0.12, 0.4, 14), steel, [x, h + 0.9, z]));
+    const beacon = this.mesh(new THREE.MeshStandardMaterial({ color: 0xff2020, emissive: 0xff0000, emissiveIntensity: 4 }), new THREE.SphereGeometry(0.16, 14, 10), x, h + 1.6, z);
     this.scene.add(beacon);
     this.beacon(beacon, 2, this.rng() * 6);
   }
@@ -1768,161 +1775,165 @@ class Kit {
       rows: 2,
       rng: this.rng,
     });
-    const roof = new THREE.MeshStandardMaterial({ color: 0x8a3b2a, roughness: 0.9, metalness: 0 });
-    this.building({ x, z, w, d, h, facade: stone, roof: "tile", roofMat: roof, emissive: 0.35, parapet: false, details: false, ry });
-    // 3D window frames + shutters on all faces
+    const roofMat = materialFor(0x8a3b2a, { roughness: 0.88, family: "roof-tile", seed: 12 });
+    this.building({ x, z, w, d, h, facade: stone, roof: "tile", roofMat, emissive: 0.35, parapet: false, details: false, ry });
     this.windowTrim({
       x, z, w, d, h, bayW: 1.6, floorH: 3, rows: 2, cols: 3, ry,
-      frameMat: new THREE.MeshStandardMaterial({ color: 0x5a5048, roughness: 0.9 }),
-      shutterMat: new THREE.MeshStandardMaterial({ color: 0x4a5a32, roughness: 0.9 }),
+      frameMat: materialFor(0x5a5048, { roughness: 0.88 }),
+      shutterMat: materialFor(0x4a5a32, { roughness: 0.88 }),
     });
-    // door + frame + step
-    const doorX = x + Math.sin(ry) * (w / 2 - 0.6);
-    const doorZ = z + Math.cos(ry) * (d / 2 + 0.1);
-    const door = this.box(new THREE.MeshStandardMaterial({ color: 0x4a3320, roughness: 0.9 }), 1.1, 2, 0.12, doorX, 0, doorZ, ry + Math.PI);
-    this.scene.add(door);
-    const frameMat = new THREE.MeshStandardMaterial({ color: 0x5a5048, roughness: 0.9 });
-    this.scene.add(this.mesh(frameMat, new RoundedBoxGeometry(1.35, 0.14, 0.16, 2, 0.03), doorX, 2.12, doorZ + Math.cos(ry) * 0.08, ry));
-    this.scene.add(this.mesh(frameMat, new RoundedBoxGeometry(0.16, 2.2, 0.16, 2, 0.03), doorX + Math.sin(ry) * 0.75, 1.1, doorZ + Math.cos(ry) * 0.08, ry));
-    this.scene.add(this.mesh(frameMat, new RoundedBoxGeometry(0.16, 2.2, 0.16, 2, 0.03), doorX - Math.sin(ry) * 0.75, 1.1, doorZ + Math.cos(ry) * 0.08, ry));
-    const step = this.mesh(new THREE.MeshStandardMaterial({ color: 0x6a6258, roughness: 0.95 }), new RoundedBoxGeometry(1.5, 0.14, 0.4, 3, 0.03), doorX, 0.07, doorZ + Math.cos(ry) * 0.25, ry);
-    this.scene.add(step);
+    // wooden door + stone step flush on local +z face
+    const doorGrp = new THREE.Group();
+    doorGrp.position.set(x, 0, z);
+    doorGrp.rotation.y = ry;
+    const dObj = doorWithStep({ width: 1.1, height: 2.05, wallT: 0.32, openAngle: 0, frameColor: "#5a5048", doorColor: "#4a3320" });
+    dObj.position.set(0, 0, d / 2 - 0.14);
+    doorGrp.add(dObj);
+    this.scene.add(doorGrp);
   }
 
   church(x: number, z: number) {
-    const stoneMat = new THREE.MeshStandardMaterial({ color: 0xd8d2c4, roughness: 0.95 });
-    const roofMat = new THREE.MeshStandardMaterial({ color: 0x5a5a60, roughness: 0.8 });
-    // nave (collision box) + rounded visual shell
-    this.solid(this.box(stoneMat, 9, 6, 13, x, 0, z), "concrete");
-    const naveVis = this.mesh(stoneMat, new RoundedBoxGeometry(9, 6, 13, 5, 0.4), x, 3, z);
-    naveVis.castShadow = true;
-    naveVis.receiveShadow = true;
-    this.scene.add(naveVis);
-    // buttresses along the nave sides
-    for (const sx of [-1, 1]) {
-      for (const zz of [-3, 0, 3]) {
-        const but = this.mesh(stoneMat, new RoundedBoxGeometry(0.7, 4.5, 1.2, 3, 0.15), x + sx * 4.8, 2.2, z + zz, 0);
-        but.castShadow = true;
-        this.scene.add(but);
+    const stoneMat = materialFor(0xd8d2c4, { roughness: 0.92, family: "plaster", seed: 44 });
+    const frameStone = materialFor(0xb8b0a0, { roughness: 0.9, family: "plaster", seed: 45 });
+    const roofMat = materialFor(0x4a4d54, { roughness: 0.78, family: "roof-tile", seed: 46 });
+    const innerStone = materialFor(0x6e695f, { roughness: 0.94, family: "stone", seed: 47 });
+    const oakMat = materialFor(0x4f3822, { roughness: 0.85, family: "wood", seed: 48 });
+
+    // Enterable hollow limestone nave (9 x 13 x 6m) with South main door, North vestry door, East sanctuary door
+    const nw = 9;
+    const nd = 13;
+    const nh = 6;
+    const wt = 0.36;
+    const addNaveWall = (bw: number, bh: number, bd: number, lx: number, ly: number, lz: number, mat: THREE.Material = stoneMat) => {
+      if (bw <= 0.02 || bh <= 0.02 || bd <= 0.02) return;
+      const m = this.mesh(mat, bevelledBox(bw, bh, bd, 0.03), x + lx, ly, z + lz);
+      m.castShadow = true;
+      m.receiveShadow = true;
+      this.solid(m, "concrete");
+    };
+    // Walkable flagstone nave floor
+    const floor = this.mesh(innerStone, new THREE.BoxGeometry(nw - wt, 0.12, nd - wt), x, 0.06, z);
+    floor.receiveShadow = true;
+    this.solid(floor, "concrete");
+
+    // South wall (main front entrance doorW = 2.2, doorH = 2.7)
+    const sDoorW = 2.2;
+    const sDoorH = 2.7;
+    const sJamb = (nw - sDoorW) / 2;
+    for (const sx of [-1, 1]) addNaveWall(sJamb, nh, wt, sx * (sDoorW / 2 + sJamb / 2), nh / 2, nd / 2 - wt / 2);
+    addNaveWall(sDoorW, nh - sDoorH, wt, 0, sDoorH + (nh - sDoorH) / 2, nd / 2 - wt / 2);
+
+    // North wall (rear vestry doorway doorW = 1.9, doorH = 2.5)
+    const nDoorW = 1.9;
+    const nDoorH = 2.5;
+    const nJamb = (nw - nDoorW) / 2;
+    for (const sx of [-1, 1]) addNaveWall(nJamb, nh, wt, sx * (nDoorW / 2 + nJamb / 2), nh / 2, -nd / 2 + wt / 2);
+    addNaveWall(nDoorW, nh - nDoorH, wt, 0, nDoorH + (nh - nDoorH) / 2, -nd / 2 + wt / 2);
+
+    // West wall (pierced shooting window at center z=0, sill=1.2m..2.6m)
+    const wSpan = nd - 2 * wt;
+    const winW = 2.4;
+    const wSide = (wSpan - winW) / 2;
+    for (const sz of [-1, 1]) addNaveWall(wt, nh, wSide, -nw / 2 + wt / 2, nh / 2, sz * (winW / 2 + wSide / 2));
+    addNaveWall(wt, 1.2, winW, -nw / 2 + wt / 2, 0.6, 0);
+    addNaveWall(wt, nh - 2.6, winW, -nw / 2 + wt / 2, 2.6 + (nh - 2.6) / 2, 0);
+
+    // East wall (pierced sanctuary door at local z = -2.0 -> world z = -20.0 facing Old Petar!)
+    // Local Z range: [-6.14 .. +6.14], doorway centered at local z = -2.0, width = 2.0 -> [-3.0 .. -1.0]
+    const eNorthD = 3.14; // -6.14 .. -3.0
+    const eSouthD = 7.14; // -1.0 .. +6.14
+    addNaveWall(wt, nh, eNorthD, nw / 2 - wt / 2, nh / 2, -6.14 + eNorthD / 2);
+    addNaveWall(wt, nh, eSouthD, nw / 2 - wt / 2, nh / 2, -1.0 + eSouthD / 2);
+    addNaveWall(wt, nh - 2.5, 2.0, nw / 2 - wt / 2, 2.5 + (nh - 2.5) / 2, -2.0);
+
+    // Interior pews (2 rows on West, 2 rows on East — center aisle clear!) + warm overhead chandelier
+    for (const pz of [-2.4, 0.2, 2.8]) {
+      for (const px of [-2.7, 2.7]) {
+        this.solid(this.box(oakMat, 2.0, 0.85, 0.55, x + px, 0.12, z + pz), "wood");
       }
     }
-    // bell tower (east side): collision box + rounded visual + belfry
-    this.solid(this.box(stoneMat, 3.4, 13, 3.4, x + 6, 0, z + 4), "concrete");
-    const towerVis = this.mesh(stoneMat, new RoundedBoxGeometry(3.4, 13, 3.4, 5, 0.35), x + 6, 6.5, z + 4);
-    towerVis.castShadow = true;
-    towerVis.receiveShadow = true;
-    this.scene.add(towerVis);
-    // belfry opening ring (stone collar)
-    const collar = this.mesh(stoneMat, new THREE.TorusGeometry(1.7, 0.35, 10, 28), x + 6, 11.2, z + 4);
-    collar.rotation.x = Math.PI / 2;
-    this.scene.add(collar);
-    // pyramid tower roof (higher segment)
-    const towerRoof = this.mesh(roofMat, new THREE.ConeGeometry(2.8, 2.6, 8, 1), x + 6, 14.3, z + 4);
-    towerRoof.rotation.y = Math.PI / 4;
-    towerRoof.castShadow = true;
-    this.scene.add(towerRoof);
-    // spire + finial ball
-    const spire = this.mesh(roofMat, new THREE.ConeGeometry(0.3, 1.2, 12), x + 6, 15.9, z + 4);
-    this.scene.add(spire);
-    const finial = this.mesh(new THREE.MeshStandardMaterial({ color: 0xb89a3a, roughness: 0.4, metalness: 0.8 }), new THREE.SphereGeometry(0.12, 16, 12), x + 6, 16.75, z + 4);
-    this.scene.add(finial);
-    // cross
-    const crossMat = new THREE.MeshStandardMaterial({ color: 0x3a3328, roughness: 0.9 });
-    const cross1 = this.mesh(crossMat, new THREE.BoxGeometry(0.15, 1.1, 0.15), x + 6, 17.4, z + 4);
-    const cross1b = this.mesh(crossMat, new THREE.BoxGeometry(0.7, 0.15, 0.15), x + 6, 17.7, z + 4);
-    this.scene.add(cross1, cross1b);
-    // main roof (gable)
-    this.roof(x, z, 9.4, 13.4, 6, "gable", roofMat);
-    // door
-    const door = this.mesh(new THREE.MeshStandardMaterial({ color: 0x3a2a1a, roughness: 0.9 }), new RoundedBoxGeometry(1.4, 2.4, 0.15, 3, 0.03), x, 1.2, z + 6.75);
-    door.castShadow = true;
-    this.scene.add(door);
-    // door arch keystone
-    const arch = this.mesh(stoneMat, new THREE.TorusGeometry(0.85, 0.12, 8, 20, Math.PI), x, 2.4, z + 6.85);
-    arch.rotation.x = Math.PI / 2;
-    arch.rotation.z = -Math.PI / 2;
+    // Side stone altar table (clear of North vestry doorway)
+    this.solid(this.box(frameStone, 1.4, 1.0, 0.7, x - 2.6, 0.12, z - 4.8), "concrete");
+    const ironMat = materialFor(0x28282c, { roughness: 0.5, metalness: 0.85 });
+    this.scene.add(part(new THREE.CylinderGeometry(0.03, 0.03, 1.4, 8), ironMat, [x, 5.1, z], [0, 0, 0], false));
+    this.scene.add(part(new THREE.TorusGeometry(0.75, 0.04, 8, 20), ironMat, [x, 4.4, z], [Math.PI / 2, 0, 0], false));
+    for (let k = 0; k < 6; k++) {
+      const a = (k / 6) * Math.PI * 2;
+      this.scene.add(part(new THREE.SphereGeometry(0.09, 8, 6), new THREE.MeshStandardMaterial({ color: 0xffe49c, emissive: 0xffc85a, emissiveIntensity: 2.0 }), [x + Math.cos(a) * 0.75, 4.5, z + Math.sin(a) * 0.75], [0, 0, 0], false));
+    }
+
+    // nave stone plinth + side buttresses
+    for (const sx of [-1, 1]) {
+      for (const zz of [-4, 0, 4]) {
+        this.scene.add(part(bevelledBox(0.65, 4.8, 0.9, 0.06), frameStone, [x + sx * 4.7, 2.4, z + zz]));
+      }
+    }
+    // gable slate roof on nave
+    this.roof(x, z, 9.2, 13.2, 6, "gable", roofMat);
+
+    // bell tower (east side): solid base (0..9.8) + open 4-pier belfry (9.8..13.2) so bronze bell is clearly visible!
+    const tx = x + 6;
+    const tz = z + 4;
+    this.colliderBox(3.4, 13.2, 3.4, tx, 0, tz, 0, "concrete");
+    this.scene.add(part(bevelledBox(3.4, 9.8, 3.4, 0.08), stoneMat, [tx, 4.9, tz]));
+    this.scene.add(part(bevelledBox(3.7, 0.55, 3.7, 0.04), frameStone, [tx, 0.275, tz]));
+    // stringer cornice around tower at belfry sill
+    this.scene.add(part(bevelledBox(3.7, 0.28, 3.7, 0.03), frameStone, [tx, 9.8, tz]));
+    // 4 corner stone piers forming open belfry
+    for (const [px, pz] of [[-1.3, -1.3], [1.3, -1.3], [-1.3, 1.3], [1.3, 1.3]]) {
+      this.scene.add(part(bevelledBox(0.75, 3.3, 0.75, 0.05), stoneMat, [tx + px, 11.45, tz + pz]));
+    }
+    // belfry top entablature
+    this.scene.add(part(bevelledBox(3.65, 0.45, 3.65, 0.04), frameStone, [tx, 13.2, tz]));
+    // hanging bronze bell + oak headstock yoke inside the open belfry
+    const bellMat = materialFor(0xc89e3c, { roughness: 0.35, metalness: 0.85 });
+    this.scene.add(part(bevelledBox(2.4, 0.22, 0.24, 0.02), materialFor(0x4a3420, { roughness: 0.9 }), [tx, 12.35, tz]));
+    this.scene.add(part(new THREE.CylinderGeometry(0.42, 0.72, 1.05, 24), bellMat, [tx, 11.55, tz]));
+    this.scene.add(part(new THREE.SphereGeometry(0.14, 12, 10), bellMat, [tx, 10.95, tz]));
+
+    // octagonal slate spire + brass finial + wrought-iron cross
+    const spireRoof = this.mesh(roofMat, new THREE.ConeGeometry(2.75, 3.2, 8, 1), tx, 15.0, tz);
+    spireRoof.rotation.y = Math.PI / 8;
+    spireRoof.castShadow = true;
+    this.scene.add(spireRoof);
+    this.scene.add(part(new THREE.SphereGeometry(0.18, 14, 10), bellMat, [tx, 16.65, tz]));
+    const crossMat = materialFor(0x2a2622, { roughness: 0.7, metalness: 0.75 });
+    this.scene.add(part(new THREE.BoxGeometry(0.14, 1.25, 0.14), crossMat, [tx, 17.4, tz]));
+    this.scene.add(part(new THREE.BoxGeometry(0.75, 0.14, 0.14), crossMat, [tx, 17.68, tz]));
+
+    // open arched oak double doors on front entrance + semicircular stone arch + east sanctuary frame
+    const doorObj = doorWithStep({ width: sDoorW, height: sDoorH, wallT: wt, openAngle: -1.35, frameColor: "#b8b0a0", doorColor: "#3a2a1a" });
+    doorObj.position.set(x, 0, z + nd / 2 - wt / 2);
+    this.scene.add(doorObj);
+    const eastDoorObj = doorWithStep({ width: 2.0, height: 2.5, wallT: wt, openAngle: -1.3, frameColor: "#b8b0a0", doorColor: "#3a2a1a" });
+    eastDoorObj.position.set(x + nw / 2 - wt / 2, 0, z - 2.0);
+    eastDoorObj.rotation.y = Math.PI / 2;
+    this.scene.add(eastDoorObj);
+    const arch = this.mesh(frameStone, new THREE.TorusGeometry(1.15, 0.13, 10, 24, Math.PI), x, sDoorH + 0.05, z + nd / 2 + 0.05);
     this.scene.add(arch);
-    // window frames on nave + tower
-    const frameStone = new THREE.MeshStandardMaterial({ color: 0xb8b0a0, roughness: 0.95 });
-    this.windowTrim({ x, z, w: 9, d: 13, h: 6, bayW: 3, floorH: 3, rows: 2, cols: 3, ry: 0, frameMat: frameStone, shutterMat: null });
-    this.windowTrim({ x: x + 6, z: z + 4, w: 3.4, d: 3.4, h: 13, bayW: 1.7, floorH: 3, rows: 1, cols: 2, ry: 0, frameMat: frameStone, shutterMat: null });
-    // bell (visible opening)
-    const bell = this.mesh(new THREE.MeshStandardMaterial({ color: 0xb89a3a, roughness: 0.4, metalness: 0.8 }), new THREE.CylinderGeometry(0.5, 0.75, 0.9, 28, 1, true), x + 6, 11.5, z + 4);
-    this.scene.add(bell);
-    const bellKnob = this.mesh(new THREE.MeshStandardMaterial({ color: 0xb89a3a, roughness: 0.4, metalness: 0.8 }), new THREE.SphereGeometry(0.14, 16, 12), x + 6, 12.0, z + 4);
-    this.scene.add(bellKnob);
-    // graveyard wall
-    this.fence(x - 8, z + 8, x + 14, z + 8);
+
+    // recessed Gothic/stone windows on tower faces
+    this.windowTrim({ x: tx, z: tz, w: 3.4, d: 3.4, h: 9.2, bayW: 1.8, floorH: 3.2, rows: 2, cols: 1, ry: 0, frameMat: frameStone, shutterMat: null });
   }
 
   well(x: number, z: number) {
-    const stone = new THREE.MeshStandardMaterial({ color: 0x9a9084, roughness: 0.95 });
-    // well housing stone base (rounded)
-    const base = this.mesh(stone, new RoundedBoxGeometry(2.4, 0.9, 2.4, 4, 0.2), x, 0.45, z);
-    base.castShadow = true;
-    base.receiveShadow = true;
-    this.scene.add(base);
-    // well opening ring (stone)
-    const ring = this.mesh(stone, new THREE.TorusGeometry(1.0, 0.24, 12, 28), x, 0.8, z);
-    ring.rotation.x = Math.PI / 2;
-    ring.castShadow = true;
-    this.scene.add(ring);
-    // inner dark well mouth
-    const mouth = this.mesh(new THREE.MeshStandardMaterial({ color: 0x14100c, roughness: 1 }), new THREE.CylinderGeometry(0.85, 0.85, 0.6, 28, 1, true), x, 0.78, z);
-    this.scene.add(mouth);
-    // roof (high-segment cone) + finial
-    const roof = this.mesh(new THREE.MeshStandardMaterial({ color: 0x5a4030, roughness: 0.9 }), new THREE.ConeGeometry(1.6, 0.9, 16, 1), x, 1.7, z);
-    roof.castShadow = true;
-    this.scene.add(roof);
-    const finial = this.mesh(stone, new THREE.SphereGeometry(0.12, 16, 12), x, 2.18, z);
-    this.scene.add(finial);
-    // support posts (rounded) + crossbeam
-    const beam = this.mesh(stone, new RoundedBoxGeometry(2.6, 0.14, 0.16, 3, 0.04), x, 1.5, z + 1.15, 0);
-    beam.castShadow = true;
-    this.scene.add(beam);
-    for (const sx of [-1, 1]) {
-      const post = this.mesh(stone, new RoundedBoxGeometry(0.2, 1.7, 0.2, 3, 0.04), x + sx, 0.85, z + 1.1, 0);
-      post.castShadow = true;
-      this.scene.add(post);
-    }
-    // diagonal brace struts
-    for (const sx of [-1, 1]) {
-      const brace = this.mesh(stone, new THREE.BoxGeometry(0.1, 0.9, 0.1), x + sx, 1.3, z + 0.6, 0);
-      this.scene.add(brace);
-    }
+    const w = craftedWell(1.0);
+    w.position.set(x, 0, z);
+    this.scene.add(w);
+    const col = this.mesh(this.invisMat, new THREE.CylinderGeometry(1.15, 1.15, 1.1, 14), x, 0.55, z);
+    col.userData.kind = "concrete";
+    this.scene.add(col);
+    this.colliders.push(col);
+    col.updateWorldMatrix(true, false);
+    this.aabbs.push(new THREE.Box3().setFromObject(col));
   }
 
   stall(x: number, z: number, ry = 0) {
-    const wood = new THREE.MeshStandardMaterial({ color: 0x6b4f30, roughness: 0.9 });
-    const awn = new THREE.MeshStandardMaterial({ color: 0x9a3b2a, roughness: 0.85 });
-    // counter (rounded)
-    const counter = this.mesh(wood, new RoundedBoxGeometry(2.4, 0.08, 2.4, 4, 0.04), x, 0.84, z, ry);
-    counter.castShadow = true;
-    counter.receiveShadow = true;
-    this.scene.add(counter);
-    // counter base
-    const base = this.mesh(wood, new RoundedBoxGeometry(2.2, 0.5, 2.2, 4, 0.08), x, 0.55, z, ry);
-    this.scene.add(base);
-    for (const [px, pz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]] as const) {
-      const post = this.mesh(wood, new RoundedBoxGeometry(0.1, 2, 0.1, 3, 0.03), x + px, 1.0, z + pz, ry);
-      post.castShadow = true;
-      this.scene.add(post);
-    }
-    // awning (high-segment extruded, with scalloped edge)
-    const shape = new THREE.Shape();
-    shape.moveTo(-1.3, 0);
-    shape.lineTo(1.3, 0);
-    shape.lineTo(1.3, 0.4);
-    shape.lineTo(-1.3, 0.4);
-    shape.closePath();
-    const g = new THREE.ExtrudeGeometry(shape, { depth: 2.4, bevelEnabled: true, bevelThickness: 0.03, bevelSize: 0.03, bevelSegments: 2 });
-    g.translate(0, 0, -1.2);
-    const roofM = this.mesh(awn, g, x, 2, z, ry);
-    roofM.castShadow = true;
-    this.scene.add(roofM);
-    // awning trim
-    const trim = this.mesh(new THREE.MeshStandardMaterial({ color: 0x6a2418, roughness: 0.9 }), new RoundedBoxGeometry(2.5, 0.05, 2.5, 3, 0.02), x, 1.97, z, ry);
-    this.scene.add(trim);
+    const st = craftedStall(Math.abs(Math.round(x * 7 + z * 11)) + 1);
+    st.position.set(x, 0, z);
+    st.rotation.y = ry;
+    this.scene.add(st);
+    this.colliderBox(2.8, 1.0, 1.9, x, 0, z, ry, "wood");
   }
 
   /* ================= environment polish (visual only — never collides) ================= */
@@ -1999,63 +2010,78 @@ class Kit {
     });
     const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
     m.position.set(x, y, z);
-    m.rotation.y = ry;
+    m.rotation.set(0, ry, 0);
     this.scene.add(m);
     return m;
   }
 
-  /** irregular grey rock */
+  /** sculpted stone cluster */
   rock(x: number, z: number, s = 1) {
-    const mat = new THREE.MeshStandardMaterial({ color: 0x7a746c, roughness: 0.98, flatShading: true });
-    const m = this.mesh(mat, new THREE.IcosahedronGeometry(0.45 * s, 0), x, 0.2 * s, z);
-    m.scale.set(1 + this.rng() * 0.5, 0.6 + this.rng() * 0.3, 1 + this.rng() * 0.5);
-    m.rotation.set(this.rng() * 3, this.rng() * 3, this.rng() * 3);
-    this.decor(m);
+    const rc = craftedRockCluster(s * 0.72, Math.abs(Math.round(x * 17 + z * 29)) + 1);
+    rc.position.set(x, 0, z);
+    this.scene.add(rc);
   }
 
   /** pile of rubble chunks */
   rubble(x: number, z: number, n = 5) {
-    const mat = new THREE.MeshStandardMaterial({ color: 0x6a6660, roughness: 0.98, flatShading: true });
+    const mat = materialFor(0x6a6660, { roughness: 0.96, family: "stone", seed: 15 });
     for (let i = 0; i < n; i++) {
-      const s = 0.12 + this.rng() * 0.24;
-      const m = this.mesh(mat, new THREE.BoxGeometry(s, s * 0.8, s), x + (this.rng() - 0.5) * 1.2, s * 0.4, z + (this.rng() - 0.5) * 1.2, this.rng() * 3);
-      m.rotation.x = this.rng() * 0.6;
-      m.rotation.z = this.rng() * 0.6;
+      const s = 0.14 + this.rng() * 0.24;
+      const m = this.mesh(mat, bevelledBox(s, s * 0.75, s, 0.02), x + (this.rng() - 0.5) * 1.2, s * 0.35, z + (this.rng() - 0.5) * 1.2, this.rng() * 3);
+      m.rotation.x = this.rng() * 0.5;
+      m.rotation.z = this.rng() * 0.5;
       this.decor(m);
     }
   }
 
   /** traffic cone with white band + base */
   trafficCone(x: number, z: number, ry = 0) {
-    const orange = new THREE.MeshStandardMaterial({ color: 0xe06a1c, roughness: 0.75 });
-    const white = new THREE.MeshStandardMaterial({ color: 0xf0ece0, roughness: 0.8 });
-    const dark = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.9 });
-    const cone = this.mesh(orange, new THREE.ConeGeometry(0.2, 0.75, 18), x, 0.38, z, ry);
-    this.decor(cone);
-    const band = this.mesh(white, new THREE.CylinderGeometry(0.15, 0.17, 0.12, 18), x, 0.32, z, ry);
-    this.decor(band);
-    const base = this.mesh(dark, new THREE.BoxGeometry(0.5, 0.05, 0.5), x, 0.025, z, ry);
-    this.decor(base, false);
+    const orange = materialFor(0xe06a1c, { roughness: 0.72 });
+    const white = materialFor(0xf0ece0, { roughness: 0.78 });
+    const dark = materialFor(0x1a1a1a, { roughness: 0.9 });
+    const grp = new THREE.Group();
+    grp.position.set(x, 0, z);
+    grp.rotation.y = ry;
+    grp.add(part(new THREE.ConeGeometry(0.18, 0.72, 16), orange, [0, 0.38, 0]));
+    grp.add(part(new THREE.CylinderGeometry(0.12, 0.14, 0.12, 16), white, [0, 0.32, 0]));
+    grp.add(part(bevelledBox(0.48, 0.05, 0.48, 0.015), dark, [0, 0.025, 0]));
+    this.scene.add(grp);
   }
 
   /** post-mounted sign board */
   roadSign(x: number, z: number, ry = 0, text = "DANGER", bg = "#d8a01c", fg = "#1a1a1a") {
-    const steel = new THREE.MeshStandardMaterial({ color: 0x2a2d30, roughness: 0.6, metalness: 0.8 });
-    const post = this.mesh(steel, new THREE.CylinderGeometry(0.05, 0.06, 2.2, 12), x, 1.1, z, ry);
-    this.decor(post);
-    const face = this.mesh(new THREE.MeshStandardMaterial({ map: signTex(text, bg, fg, this.rng), roughness: 0.8, side: THREE.DoubleSide }), new THREE.PlaneGeometry(1.1, 0.55), x, 1.85, z + Math.cos(ry) * 0.55, ry);
-    this.decor(face);
+    const steel = materialFor(0x2a2d30, { roughness: 0.55, metalness: 0.8 });
+    const grp = new THREE.Group();
+    grp.position.set(x, 0, z);
+    grp.rotation.y = ry;
+    grp.add(part(new THREE.CylinderGeometry(0.045, 0.055, 2.2, 12), steel, [0, 1.1, 0]));
+    grp.add(part(bevelledBox(1.18, 0.62, 0.06, 0.015), steel, [0, 1.88, 0.03]));
+    const face = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.1, 0.55),
+      new THREE.MeshStandardMaterial({ map: signTex(text, bg, fg, this.rng), roughness: 0.78 })
+    );
+    face.position.set(0, 1.88, 0.065);
+    grp.add(face);
+    this.scene.add(grp);
   }
 
-  /** rooftop billboard: two posts + large ad panel */
+  /** rooftop billboard: twin posts + framed ad panel */
   billboard(x: number, z: number, y: number, ry = 0) {
-    const steel = new THREE.MeshStandardMaterial({ color: 0x2a2d30, roughness: 0.6, metalness: 0.8 });
-    for (const sx of [-1, 1]) {
-      const post = this.mesh(steel, new THREE.CylinderGeometry(0.08, 0.1, 5, 12), x + sx * 1.4, y + 2.5, z, ry);
-      this.decor(post);
+    const steel = materialFor(0x2a2d30, { roughness: 0.55, metalness: 0.8 });
+    const grp = new THREE.Group();
+    grp.position.set(x, y, z);
+    grp.rotation.y = ry;
+    for (const sx of [-1.4, 1.4]) {
+      grp.add(part(new THREE.CylinderGeometry(0.08, 0.1, 4.6, 12), steel, [sx, 2.3, 0]));
     }
-    const face = this.mesh(new THREE.MeshStandardMaterial({ map: this.pTex("ad", () => adTex(this.rng)), roughness: 0.8, side: THREE.DoubleSide }), new THREE.PlaneGeometry(4.4, 2.2), x, y + 5.6, z + Math.cos(ry) * 0.1, ry);
-    this.decor(face);
+    grp.add(part(bevelledBox(4.56, 2.36, 0.12, 0.03), steel, [0, 4.5, 0.04]));
+    const face = new THREE.Mesh(
+      new THREE.PlaneGeometry(4.4, 2.2),
+      new THREE.MeshStandardMaterial({ map: this.pTex("ad", () => adTex(this.rng)), roughness: 0.78 })
+    );
+    face.position.set(0, 4.5, 0.11);
+    grp.add(face);
+    this.scene.add(grp);
   }
 
   /** crossed grass blades tuft */
@@ -2085,41 +2111,42 @@ class Kit {
     this.decor(m);
   }
 
-  /** rooftop AC unit: rounded body + louver + fan */
-  acUnit(x: number, z: number, y: number, ry = 0) {
-    const body = new THREE.MeshStandardMaterial({ color: 0xb8bcc0, roughness: 0.7, metalness: 0.4 });
-    const dark = new THREE.MeshStandardMaterial({ color: 0x2a2d30, roughness: 0.7, metalness: 0.6 });
-    const b = this.mesh(body, new RoundedBoxGeometry(1.2, 0.8, 0.9, 4, 0.12), x, y + 0.4, z, ry);
-    this.decor(b);
-    // louver slats on the front face
+  makeAcUnitGroup(ry = 0) {
+    const body = materialFor(0xb8bcc0, { roughness: 0.65, metalness: 0.42 });
+    const dark = materialFor(0x2a2d30, { roughness: 0.68, metalness: 0.62 });
+    const grp = new THREE.Group();
+    grp.rotation.y = ry;
+    grp.add(part(new RoundedBoxGeometry(1.2, 0.8, 0.9, 3, 0.08), body, [0, 0.4, 0]));
     for (let i = 0; i < 4; i++) {
-      const s = this.mesh(dark, new THREE.BoxGeometry(1.0, 0.05, 0.04), x, y + 0.15 + i * 0.15, z + Math.cos(ry) * 0.46 + Math.sin(ry) * 0.46, ry);
-      this.decor(s, false);
+      grp.add(part(new THREE.BoxGeometry(0.95, 0.05, 0.04), dark, [0, 0.18 + i * 0.14, 0.455], [0, 0, 0], false));
     }
-    // fan ring on the side
-    const fan = this.mesh(dark, new THREE.TorusGeometry(0.28, 0.04, 8, 20), x - Math.sin(ry) * 0.5, y + 0.4, z + Math.cos(ry) * 0.5, ry + Math.PI / 2);
-    fan.rotation.x = Math.PI / 2;
-    this.decor(fan, false);
+    grp.add(part(new THREE.TorusGeometry(0.26, 0.035, 8, 18), dark, [0, 0.81, 0], [Math.PI / 2, 0, 0], false));
+    return grp;
+  }
+
+  /** rooftop AC unit: rounded body + louver + top fan */
+  acUnit(x: number, z: number, y: number, ry = 0) {
+    const g = this.makeAcUnitGroup(ry);
+    g.position.set(x, y, z);
+    this.scene.add(g);
   }
 
   /** rooftop antenna array: masts + crossbars + small dish */
   antennaArray(x: number, z: number, y: number, ry = 0) {
-    const steel = new THREE.MeshStandardMaterial({ color: 0x8a9098, roughness: 0.5, metalness: 0.85 });
+    const steel = materialFor(0x8a9098, { roughness: 0.48, metalness: 0.84 });
+    const grp = new THREE.Group();
+    grp.position.set(x, y, z);
+    grp.rotation.y = ry;
     for (let i = 0; i < 3; i++) {
       const h = 1.6 + i * 0.5;
       const dx = (i - 1) * 0.7;
-      const mast = this.mesh(steel, new THREE.CylinderGeometry(0.03, 0.04, h, 8), x + Math.cos(ry) * dx, y + h / 2, z + Math.sin(ry) * dx, ry);
-      this.decor(mast);
+      grp.add(part(new THREE.CylinderGeometry(0.03, 0.04, h, 8), steel, [dx, h / 2, 0]));
       for (let k = 0; k < 2; k++) {
-        const bar = this.mesh(steel, new THREE.CylinderGeometry(0.02, 0.02, 0.5, 6), x + Math.cos(ry) * dx, y + h * (0.4 + k * 0.35), z + Math.sin(ry) * dx, ry + Math.PI / 2);
-        bar.rotation.z = Math.PI / 2;
-        this.decor(bar, false);
+        grp.add(part(new THREE.CylinderGeometry(0.02, 0.02, 0.5, 6), steel, [dx, h * (0.4 + k * 0.35), 0], [0, 0, Math.PI / 2], false));
       }
     }
-    // small dish on the tallest mast
-    const dish = this.mesh(steel, new THREE.SphereGeometry(0.4, 20, 12, 0, Math.PI * 2, 0, Math.PI / 2.6), x, y + 2.9, z);
-    dish.rotation.x = -Math.PI / 2.6;
-    this.decor(dish);
+    grp.add(part(new THREE.SphereGeometry(0.4, 18, 12, 0, Math.PI * 2, 0, Math.PI / 2.6), steel, [0, 2.7, 0], [-Math.PI / 2.6, 0, 0]));
+    this.scene.add(grp);
   }
 
   /** sagging wire strand between two points */
@@ -2186,11 +2213,12 @@ function buildRange(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.
   const groundHeightAt = (x: number, z: number, y: number): number => {
     let best = 0;
     for (const box of aabbs) {
-      // small forward tolerance so a step's top is caught as the player reaches its riser
-      if (x < box.min.x - 0.3 || x > box.max.x + 0.3) continue;
-      if (z < box.min.z - 0.3 || z > box.max.z + 0.3) continue;
       const top = box.max.y;
       if (top > y + 0.6) continue;
+      // larger forward catch when stepping up stairs/risers; tighter margin when walking off edges
+      const pad = top > y + 0.05 && top <= y + 0.58 ? 0.52 : 0.22;
+      if (x < box.min.x - pad || x > box.max.x + pad) continue;
+      if (z < box.min.z - pad || z > box.max.z + pad) continue;
       if (top > best) best = top;
     }
     return best;
@@ -2198,7 +2226,7 @@ function buildRange(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.
   return { ...w, aabbs, destroyables: [] as THREE.Mesh[], groundHeightAt };
 }
 
-/* ---------------- M1: Gornja Luka village ---------------- */
+/* ---------------- M1: Highland Village ---------------- */
 function buildVillage(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.WebGLRenderer): LevelResult {
   const K = new Kit(content, 1337);
   const ambient = setupAmbient(main, renderer, {
@@ -2207,42 +2235,61 @@ function buildVillage(content: THREE.Object3D, main: THREE.Scene, renderer: THRE
     turbidity: 4.5,
     rayleigh: 1.6,
     fogColor: 0xd9b48f,
-    fogDensity: 0.0065,
+    fogDensity: 0.006,
     hemiSky: 0x9db4c8,
     hemiGround: 0x55462f,
-    hemiIntensity: 0.55,
+    hemiIntensity: 0.58,
     sunColor: 0xffd9a0,
     sunIntensity: 3.4,
-    envIntensity: 0.5,
+    envIntensity: 0.52,
     exposure: 1.05,
     shadowFar: 100,
   });
   content.add(ambient.sun, ambient.hemi);
   if (ambient.stars) content.add(ambient.stars);
 
-  // ground: grass field patches + dirt road
-  const gc = noiseCanvas(1024, "#5a6b3a", [["rgba(120,130,80,0.35)", 9000], ["rgba(90,100,55,0.3)", 7000], ["rgba(80,60,35,0.15)", 4000]], K.rng);
+  // ground: grass valley floor + main dirt/cobble road + church square plaza
+  const gc = noiseCanvas(1024, "#566737", [["rgba(120,130,80,0.35)", 9000], ["rgba(90,100,55,0.3)", 7000], ["rgba(80,60,35,0.15)", 4000]], K.rng);
   const gTex = toTex(gc, 90);
   K.ground(400, new THREE.MeshStandardMaterial({ map: gTex, bumpMap: toTex(gc, 90, false), bumpScale: 1.4, roughness: 0.97, metalness: 0 }));
-  // dirt road N-S
   const rc = noiseCanvas(512, "#7a6848", [["rgba(0,0,0,0.2)", 8000], ["rgba(255,230,190,0.08)", 4000]], K.rng);
-  const road = K.mesh(new THREE.MeshStandardMaterial({ map: toTex(rc, 14), bumpMap: toTex(rc, 14, false), bumpScale: 1, roughness: 0.98 }), new THREE.PlaneGeometry(7, 100), 0, 0.02, 10);
+  const road = K.mesh(new THREE.MeshStandardMaterial({ map: toTex(rc, 14), bumpMap: toTex(rc, 14, false), bumpScale: 1, roughness: 0.98 }), new THREE.PlaneGeometry(7.2, 108), 0, 0.02, 10);
   road.rotation.x = -Math.PI / 2;
   road.receiveShadow = true;
   content.add(road);
 
-  // houses
-  K.houseVillage(-13, -2, 7, 8, 4.5, 0.2);
-  K.houseVillage(-13, 6, 7, 8, 4, -0.1);
-  K.houseVillage(-14, 18, 7, 8, 4.5, 0.3);
-  K.houseVillage(-13, 30, 8, 8, 4, -0.2);
-  K.houseVillage(13, -8, 8, 8, 4.5, -0.2);
-  K.houseVillage(14, 4, 7, 8, 4, 0.1);
-  K.houseVillage(13, 16, 7, 8, 4.5, 0.25);
-  K.houseVillage(14, 28, 8, 8, 4, -0.15);
-  K.houseVillage(-10, -26, 7, 7, 3.8, 0.15);
+  // cobblestone church & well plaza
+  const cobbleMat = materialFor(0x888175, { roughness: 0.92, family: "stone", seed: 103 });
+  const plaza = K.mesh(cobbleMat, new THREE.PlaneGeometry(24, 18), -2, 0.028, -16);
+  plaza.rotation.x = -Math.PI / 2;
+  plaza.receiveShadow = true;
+  content.add(plaza);
 
-  // enterable houses (hollow walls + doorways) for interior & corner ambush play
+  // road curbstones + side paths to enterable houses
+  const curbMat = materialFor(0x7c766c, { roughness: 0.93, family: "stone", seed: 104 });
+  for (const sx of [-3.75, 3.75]) {
+    for (let z = -6; z <= 46; z += 4.5) {
+      content.add(part(bevelledBox(0.32, 0.14, 4.1, 0.02), curbMat, [sx, 0.07, z], [0, 0, 0], false));
+    }
+  }
+  for (const [px, pz, pw, pd] of [[-7.5, 19, 7, 2.2], [-7.5, 39, 7, 2.2], [7.5, 17, 7, 2.2], [7.5, 29, 7, 2.2]] as const) {
+    const p = K.mesh(cobbleMat, new THREE.PlaneGeometry(pw, pd), px, 0.022, pz);
+    p.rotation.x = -Math.PI / 2;
+    p.receiveShadow = true;
+    content.add(p);
+  }
+
+  // south village entrance stone gate pillars + overhead timber beam & lanterns (frame spawn/extraction)
+  const gateStone = materialFor(0x8a8276, { roughness: 0.92, family: "stone", seed: 105 });
+  const gateWood = materialFor(0x523b26, { roughness: 0.88, family: "wood", seed: 106 });
+  for (const sx of [-4.8, 4.8]) {
+    K.solid(K.mesh(gateStone, bevelledBox(1.1, 3.6, 1.1, 0.05), sx, 1.8, 36), "concrete");
+    content.add(part(bevelledBox(1.32, 0.25, 1.32, 0.03), gateStone, [sx, 3.7, 36]));
+    content.add(part(new THREE.SphereGeometry(0.16, 10, 8), new THREE.MeshStandardMaterial({ color: 0xffe4a0, emissive: 0xffc864, emissiveIntensity: 1.8 }), [sx, 4.02, 36], [0, 0, 0], false));
+  }
+  content.add(part(bevelledBox(10.8, 0.35, 0.42, 0.03), gateWood, [0, 4.2, 36]));
+
+  // village facade & roof styles
   const villageStone = facade({
     base: "#8a8074",
     glass: "#2a2620",
@@ -2254,52 +2301,145 @@ function buildVillage(content: THREE.Object3D, main: THREE.Scene, renderer: THRE
     rows: 2,
     rng: K.rng,
   });
-  const tileRoof = new THREE.MeshStandardMaterial({ color: 0x8a3b2a, roughness: 0.9, metalness: 0 });
-  // a cluster of enterable houses flanking the road — enemies can pop out of doorways
-  K.enterable({ x: -16, z: 18, w: 7, d: 8, h: 4.2, facade: villageStone, roof: "tile", roofMat: tileRoof, emissive: 0.4 });
-  K.enterable({ x: 16, z: 18, w: 7, d: 8, h: 4.2, facade: villageStone, roof: "tile", roofMat: tileRoof, emissive: 0.4, ry: 0.2 });
-  K.enterable({ x: -14, z: 38, w: 7, d: 8, h: 4, facade: villageStone, roof: "tile", roofMat: tileRoof, emissive: 0.35, ry: -0.2 });
-  K.enterable({ x: 14, z: 38, w: 7, d: 8, h: 4, facade: villageStone, roof: "tile", roofMat: tileRoof, emissive: 0.35, ry: 0.2 });
+  const tileRoof = materialFor(0x8a3b2a, { roughness: 0.88, family: "roof-tile", seed: 12 });
+  const guardRoofMat = materialFor(0x5a5650, { roughness: 0.9, family: "concrete", seed: 108 });
 
-  // church + square
+  // west street houses (connected CS2-style indoor tavern + shop flank route)
+  K.houseVillage(-14.5, -2, 7, 8, 4.5, Math.PI / 2);
+  K.enterable({ x: -14.5, z: 8, w: 8, d: 8, h: 4.2, facade: villageStone, roof: "tile", roofMat: tileRoof, doors: ["S", "E", "W"], windows: ["N"], partition: "z", emissive: 0.5, ry: Math.PI / 2 });
+  K.enterable({ x: -15, z: 19, w: 8, d: 8, h: 4.2, facade: villageStone, roof: "tile", roofMat: tileRoof, doors: ["S", "E", "W"], windows: ["N"], partition: "x", emissive: 0.45, ry: Math.PI / 2 });
+  K.houseVillage(-14.5, 29, 7, 8, 4.2, Math.PI / 2);
+  K.enterable({ x: -14.5, z: 39, w: 7, d: 8, h: 4.0, facade: villageStone, roof: "tile", roofMat: tileRoof, doors: ["S", "E"], windows: ["W"], emissive: 0.4, ry: Math.PI / 2 });
+  K.houseVillage(-13, -27, 7, 7, 3.8, 0.15);
+
+  // east street houses (enterable bakery/storehouse + shop + climbable guardhouse)
+  K.houseVillage(14.5, -8, 8, 8, 4.5, -Math.PI / 2);
+  K.enterable({ x: 14.5, z: 4, w: 8, d: 8, h: 4.1, facade: villageStone, roof: "tile", roofMat: tileRoof, doors: ["S", "E", "W"], windows: ["N"], partition: "x", emissive: 0.5, ry: -Math.PI / 2 });
+  K.enterable({ x: 15, z: 17, w: 8, d: 8, h: 4.2, facade: villageStone, roof: "tile", roofMat: tileRoof, doors: ["S", "E", "W"], windows: ["N"], partition: "z", emissive: 0.45, ry: -Math.PI / 2 });
+
+  // north-east barn connector behind church square
+  K.enterable({ x: 13, z: -28, w: 7, d: 6.5, h: 3.8, facade: villageStone, roof: "tile", roofMat: tileRoof, doors: ["S", "W"], windows: ["E"], emissive: 0.4 });
+
+  // climbable flat-roofed Guardhouse (enterable ground floor + accessible 3.0m rooftop terrace!)
+  K.enterable({
+    x: 15,
+    z: 29,
+    w: 7,
+    d: 7,
+    h: 3.0,
+    facade: villageStone,
+    roof: "flat",
+    roofMat: guardRoofMat,
+    doors: ["S", "E"],
+    windows: ["N"],
+    emissive: 0.5,
+    ry: -Math.PI / 2,
+    walkableRoof: true,
+    parapet: false,
+  });
+  // stone parapet walls on guardhouse rooftop (leaving south-east landing open for the stairs)
+  const parapetMat = materialFor(0x746d63, { roughness: 0.9, family: "stone", seed: 109 });
+  content.add(part(bevelledBox(7.2, 0.85, 0.25, 0.03), parapetMat, [15, 3.65, 25.55])); // north
+  content.add(part(bevelledBox(0.25, 0.85, 7.2, 0.03), parapetMat, [11.55, 3.65, 29])); // west (street side)
+  content.add(part(bevelledBox(0.25, 0.85, 7.2, 0.03), parapetMat, [18.45, 3.65, 29])); // east
+  content.add(part(bevelledBox(3.4, 0.85, 0.25, 0.03), parapetMat, [13.2, 3.65, 32.45])); // south-west (leaves x=15..18 open)
+  // landing bridge + stone stairs ascending +X along south wall onto the guardhouse roof (y = 3.0m)
+  const stairStone = materialFor(0x9a9284, { roughness: 0.92, family: "stone", seed: 110 });
+  K.stairs({ x: 11.4, z: 33.4, steps: 10, rise: 0.3, run: 0.55, width: 1.5, mat: stairStone });
+  const gLand = K.mesh(stairStone, bevelledBox(2.2, 0.28, 2.0, 0.03), 17.0, 3.06, 33.1);
+  gLand.castShadow = true;
+  gLand.receiveShadow = true;
+  content.add(gLand);
+  K.colliderBox(2.2, 3.2, 2.0, 17.0, 0, 33.1, 0, "concrete");
+  // guardhouse rooftop sandbag cover + crate
+  const rBag = K.mesh(materialFor(0x8d8163, { roughness: 0.94, family: "fabric", seed: 18 }), new RoundedBoxGeometry(0.65, 0.32, 1.8, 3, 0.08), 12.2, 3.52, 29);
+  content.add(rBag);
+  K.crate(materialFor(0x8a6a43, { roughness: 0.82 }), 17.2, 26.8, 0.9, 0.3, 3.36);
+
+  // church + working stone staircase leading up onto a raised Bell-Tower Overlook Terrace!
   K.church(-8, -18);
-  // staircase up the church tower (climbable, rooftop vantage over the square)
-  K.stairs({ x: -8, z: -10.5, steps: 6, rise: 0.3, run: 0.7, width: 1.4, mat: new THREE.MeshStandardMaterial({ color: 0xc8c2b4, roughness: 0.95 }) });
+  // raised colonnade overlook terrace (y = 2.4m) beside the bell tower, open underneath, parapet & sandbags on top
+  const terraceX = -1.4;
+  const terraceZ = -10.2;
+  const terraceTop = K.mesh(stairStone, bevelledBox(4.4, 0.34, 2.8, 0.04), terraceX, 2.23, terraceZ);
+  terraceTop.castShadow = true;
+  terraceTop.receiveShadow = true;
+  content.add(terraceTop);
+  K.colliderBox(4.4, 0.34, 2.8, terraceX, 2.06, terraceZ, 0, "concrete");
+  for (const [px, pz] of [[-3.3, -11.3], [0.5, -11.3], [-3.3, -9.1], [0.5, -9.1]] as const) {
+    content.add(part(bevelledBox(0.42, 2.1, 0.42, 0.03), stairStone, [px, 1.05, pz]));
+  }
+  // waist-high stone parapet around terrace edges (leaving west x=-3.6 stair entry completely open!)
+  content.add(part(bevelledBox(4.4, 0.85, 0.22, 0.03), parapetMat, [terraceX, 2.82, terraceZ + 1.29])); // south
+  content.add(part(bevelledBox(4.4, 0.85, 0.22, 0.03), parapetMat, [terraceX, 2.82, terraceZ - 1.29])); // north
+  content.add(part(bevelledBox(0.22, 0.85, 2.8, 0.03), parapetMat, [terraceX + 2.09, 2.82, terraceZ])); // east
+  // stone staircase climbing +X directly onto the 2.4m Bell-Tower Overlook Terrace
+  K.stairs({ x: -8.1, z: terraceZ, steps: 8, rise: 0.3, run: 0.56, width: 1.5, mat: stairStone });
+  K.crate(materialFor(0x8a6a43, { roughness: 0.82 }), 0.0, terraceZ - 0.5, 0.75, 0.2, 2.4);
+
+  // Old Petar's sanctuary lectern + open radio-codebook + warm lantern right beside rescue point (-2, -20)
+  const shrineWood = materialFor(0x523b24, { roughness: 0.85, family: "wood", seed: 112 });
+  content.add(part(bevelledBox(0.85, 0.95, 0.55, 0.02), shrineWood, [-3.15, 0.475, -20.8], [0, 0.45, 0]));
+  content.add(part(bevelledBox(0.55, 0.08, 0.4, 0.01), materialFor(0xe8dfc8, { roughness: 0.9 }), [-3.15, 1.0, -20.8], [0.22, 0.45, 0]));
+  content.add(part(new THREE.CylinderGeometry(0.06, 0.08, 2.4, 10), materialFor(0x2a2d30, { roughness: 0.6, metalness: 0.8 }), [-3.4, 1.2, -21.4]));
+  content.add(part(new THREE.SphereGeometry(0.15, 10, 8), new THREE.MeshStandardMaterial({ color: 0xffe4a0, emissive: 0xffc864, emissiveIntensity: 2.0 }), [-3.4, 2.48, -21.4], [0, 0, 0], false));
+
+  // low stone churchyard perimeter walls with wide open walkway gaps
+  K.solid(K.box(parapetMat, 4.5, 0.95, 0.4, -12.5, 0, -8.5), "concrete");
+  K.solid(K.box(parapetMat, 4.5, 0.95, 0.4, 5.2, 0, -8.5), "concrete");
 
   // corner ambush cover: low walls along the road approaches (kept clear of spawn/patrol lanes)
-  const lowWall = new THREE.MeshStandardMaterial({ color: 0x9a9288, roughness: 0.95 });
-  K.solid(K.box(lowWall, 6, 1.1, 0.4, -2, 0, 26, 0.1), "concrete");
-  K.solid(K.box(lowWall, 6, 1.1, 0.4, 2, 0, 26, -0.1), "concrete");
-  K.solid(K.box(lowWall, 0.4, 1.1, 6, -16, 0, 2, 0.2), "concrete");
-  K.solid(K.box(lowWall, 0.4, 1.1, 6, 16, 0, 2, -0.2), "concrete");
+  const lowWall = materialFor(0x9a9288, { roughness: 0.92, family: "stone", seed: 114 });
+  K.solid(K.box(lowWall, 4.6, 1.05, 0.4, -2.5, 0, 26, 0.1), "concrete");
+  K.solid(K.box(lowWall, 4.6, 1.05, 0.4, 2.5, 0, 26, -0.1), "concrete");
+  K.solid(K.box(lowWall, 0.4, 1.05, 5.2, -11.5, 0, 2, 0.15), "concrete");
 
-  // props
-  K.well(4, -14);
-  K.stall(5, 8, 0.3);
-  K.stall(-5, 12, -0.2);
-  K.haystack(18, -4);
-  K.haystack(-18, 2);
-  K.haystack(-18, 26);
-  K.tree(19, -12);
-  K.tree(-19, -8);
-  K.tree(21, 16);
-  K.tree(-21, 10);
-  K.tree(18, 32);
-  K.tree(-19, 34);
-  K.tree(6, 26);
-  K.tree(-6, 36);
-  K.tree(26, -20);
-  K.tree(-26, -22);
-  K.fence(-17, -2, -22, 6);
-  K.fence(18, 8, 22, -2);
-  K.fence(-17, 18, -22, 24);
-  K.fence(17, 30, 22, 34);
+  // village lanterns & utility poles along the street
+  for (const z of [-6, 8, 22, 34]) {
+    K.streetlight(-4.2, z, Math.PI / 2);
+    K.streetlight(4.2, z, -Math.PI / 2);
+  }
+
+  // central props + weathered parked village truck for cover
+  K.well(4.5, -14);
+  K.stall(5.5, 8, 0.3);
+  K.stall(-5.5, 12, -0.2);
+  K.truck(5.8, 22.5, -0.22, 0x4b5c42);
+  K.haystack(19, -4);
+  K.haystack(-19, 2);
+  K.haystack(-19, 26);
+
+  // trees inside village & rich perimeter valley treeline
+  for (const [tx, tz, sc] of [
+    [19, -12, 1.05], [-19, -8, 1.0], [21, 16, 1.1], [-21, 10, 1.0],
+    [20, 34, 1.05], [-20, 34, 1.0], [6.5, 28, 0.9], [-6.5, 34, 0.95],
+    [26, -20, 1.2], [-26, -22, 1.15],
+  ] as const) {
+    K.tree(tx, tz, sc);
+  }
+  for (let i = 0; i < 28; i++) {
+    const a = (i / 28) * Math.PI * 2;
+    if (Math.abs(Math.sin(a)) < 0.12 && Math.cos(a) > 0) continue;
+    const r = 46 + (i % 3) * 8;
+    const px = Math.cos(a) * r;
+    const pz = Math.sin(a) * r;
+    if (Math.abs(px) < 8 && pz > 35) continue;
+    K.tree(px, pz, 1.05 + (i % 4) * 0.15);
+  }
+
+  K.fence(-18, -2, -23, 6);
+  K.fence(19, 8, 23, -2);
+  K.fence(-18, 18, -23, 24);
+  K.fence(19, 32, 24, 36);
+
   // cover for gunplay
-  const woodMat = new THREE.MeshStandardMaterial({ color: 0x8a6a43, roughness: 0.82 });
+  const woodMat = materialFor(0x8a6a43, { roughness: 0.82 });
   K.crate(woodMat, -6.5, 16, 1.1, 0.3);
-  K.crate(woodMat, 7, -10, 1.2, -0.4);
+  K.crate(woodMat, 7.2, -10, 1.2, -0.4);
   K.crate(woodMat, 8, 10, 1.0, 0.2);
   K.crate(woodMat, -8, -28, 1.1, 0.5);
+  K.barrel(woodMat, 6.2, -13.5, 0x6b4428);
+  K.barrel(woodMat, 5.5, -14.2, 0x6b4428);
   K.sandbag(4, 30, 0.2, 4);
   K.sandbag(-4, 30, -0.2, 4);
   K.sandbag(6, -20, 0.1, 4);
@@ -2312,26 +2452,41 @@ function buildVillage(content: THREE.Object3D, main: THREE.Scene, renderer: THRE
   for (let i = 0; i < 4; i++) K.cracks(-12 + K.rng() * 24, 8 + K.rng() * 50, 2.4 + K.rng() * 1.6);
   for (let i = 0; i < 8; i++) K.rock(-22 + K.rng() * 44, -24 + K.rng() * 66, 0.7 + K.rng() * 0.8);
   K.rubble(-16, 12, 4);
-  K.rubble(15, 26, 4);
+  K.rubble(15, 25, 4);
   K.dirtMound(-10, -18, 1.1);
   K.dirtMound(18, 20, 0.9);
-  for (let i = 0; i < 14; i++) K.grassTuft(-20 + K.rng() * 40, -26 + K.rng() * 70, 3);
+  for (let i = 0; i < 16; i++) K.grassTuft(-20 + K.rng() * 40, -26 + K.rng() * 70, 3);
   K.flowers(6, 24, 6);
   K.flowers(-6, 30, 5);
   K.flowers(4, -12, 5);
-  K.wireStrand(-13, -2, -13, 6, 5.2, 0.5);
-  K.wireStrand(13, 4, 14, 16, 5.3, 0.6);
-  K.wireStrand(-14, 18, -14, 30, 5.2, 0.5);
+  K.flowers(-5.5, -8.8, 6);
+  K.wireStrand(-4.2, -6, -4.2, 8, 5.1, 0.45);
+  K.wireStrand(-4.2, 8, -4.2, 22, 5.1, 0.45);
+  K.wireStrand(4.2, -6, 4.2, 8, 5.1, 0.45);
+  K.wireStrand(4.2, 8, 4.2, 22, 5.1, 0.45);
+  K.wireStrand(-4.2, 8, 4.2, 8, 5.1, 0.55);
   K.dustMotes(90, 110, 14, 90, 0xe8d8b0, 0.2);
 
-  // hills ring
-  const hillMat = new THREE.MeshStandardMaterial({ color: 0x4a5a38, roughness: 1, flatShading: true });
-  for (let i = 0; i < 14; i++) {
-    const a = (i / 14) * Math.PI * 2;
-    const r = 48 + K.rng() * 12;
-    const h = 12 + K.rng() * 14;
-    const hill = K.mesh(hillMat, new THREE.SphereGeometry(h * 0.9, 10, 8), Math.cos(a) * r, h * 0.35, Math.sin(a) * r);
-    hill.scale.y = 0.5;
+  // hills ring: rolling olive-green foothills blending naturally into dawn haze (no tiled stone UVs)
+  const hillMatA = new THREE.MeshStandardMaterial({ color: 0x4b5c38, roughness: 0.97, flatShading: true });
+  const hillMatB = new THREE.MeshStandardMaterial({ color: 0x3f4e30, roughness: 0.98, flatShading: true });
+  for (let i = 0; i < 18; i++) {
+    const a = (i / 18) * Math.PI * 2;
+    const r = 84 + (i % 3) * 14;
+    const h = 12 + K.rng() * 11;
+    const rad = h * 1.55;
+    const geo = new THREE.IcosahedronGeometry(rad, 2);
+    const pos = geo.attributes.position as THREE.BufferAttribute;
+    for (let vi = 0; vi < pos.count; vi++) {
+      const px = pos.getX(vi);
+      const py = pos.getY(vi);
+      const pz = pos.getZ(vi);
+      const ridge = 1 + Math.sin(px * 0.16 + i) * 0.18 + Math.cos(pz * 0.14 - i) * 0.14;
+      pos.setXYZ(vi, px * ridge, py * 0.56, pz * ridge);
+    }
+    geo.computeVertexNormals();
+    const hill = K.mesh(i % 2 === 0 ? hillMatA : hillMatB, geo, Math.cos(a) * r, h * 0.25, Math.sin(a) * r, a + K.rng() * 0.4);
+    hill.scale.set(1.4, 1.0, 0.95);
     content.add(hill);
   }
 
@@ -2375,31 +2530,68 @@ function buildConstruction(content: THREE.Object3D, main: THREE.Scene, renderer:
     content.add(j);
   }
 
-  // building under construction (slabs + columns + rebar)
-  const concrete = new THREE.MeshStandardMaterial({ color: 0xb4b0a8, roughness: 0.92 });
-  const concreteDark = new THREE.MeshStandardMaterial({ color: 0x8a867e, roughness: 0.95 });
+  // Playable multi-level Meridian Tower under construction (enterable ground floor + interior stairs to 2nd floor!)
+  const concrete = materialFor(0xb4b0a8, { roughness: 0.92, family: "stone", seed: 70 });
+  const concreteDark = materialFor(0x8a867e, { roughness: 0.94, family: "stone", seed: 71 });
+  const rebarMat = materialFor(0x555050, { roughness: 0.65, metalness: 0.65 });
   const bx = 0, bz = -16, bw = 18, bd = 14;
-  for (let f = 1; f <= 3; f++) {
-    const slab = K.box(concrete, bw, 0.4, bd, bx, f * 3, bz);
-    slab.receiveShadow = true;
-    content.add(slab);
-    // corner columns
-    for (const [cx, cz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]] as const) {
-      const col = K.box(concreteDark, 0.6, f * 3, 0.6, bx + cx * (bw / 2 - 0.6), 0, bz + cz * (bd / 2 - 0.6));
-      content.add(col);
+  // ground floor walkable concrete slab
+  const gfSlab = K.mesh(concrete, new THREE.BoxGeometry(bw, 0.12, bd), bx, 0.06, bz);
+  gfSlab.receiveShadow = true;
+  K.solid(gfSlab, "concrete");
+  // full-height structural columns (individual colliders so ground & 2nd floor are open!)
+  for (const cx of [-bw / 2 + 0.6, 0, bw / 2 - 0.6]) {
+    for (const cz of [-bd / 2 + 0.6, bd / 2 - 0.6]) {
+      const col = K.mesh(concreteDark, bevelledBox(0.7, 9.4, 0.7, 0.03), bx + cx, 4.7, bz + cz);
+      col.castShadow = true;
+      col.receiveShadow = true;
+      K.solid(col, "concrete");
     }
-    // rebar sticking up from the top slab
+  }
+  // ground floor cinderblock half-walls & interior cover partitions with doorways (CS2 site fighting!)
+  const blockWall = materialFor(0x9b968c, { roughness: 0.92, family: "concrete", seed: 72 });
+  K.solid(K.box(blockWall, 5.2, 2.8, 0.35, bx - 6.0, 0, bz + 6.7), "concrete");
+  K.solid(K.box(blockWall, 5.2, 2.8, 0.35, bx + 6.0, 0, bz + 6.7), "concrete");
+  K.solid(K.box(blockWall, 5.2, 2.8, 0.35, bx - 6.0, 0, bz - 6.7), "concrete");
+  K.solid(K.box(blockWall, 5.2, 2.8, 0.35, bx + 6.0, 0, bz - 6.7), "concrete");
+  K.solid(K.box(blockWall, 0.35, 2.8, 4.6, bx + 2.2, 0, bz - 2.2), "concrete");
+  K.solid(K.box(blockWall, 4.0, 1.1, 0.35, bx - 2.5, 0, bz - 2.8), "concrete");
+  // 2nd floor walkable concrete deck (y = 3.0..3.36m) split around stairwell cutout [-7.2..-1.2, -13.5..-11.5]
+  const f2Slabs: [number, number, number, number][] = [
+    [0, -18.25, 18, 9.5],       // north deck
+    [3.9, -11.25, 10.2, 4.5],   // east deck (stairs land onto x = -1.2)
+    [-5.1, -10.25, 7.8, 2.5],   // south-west deck
+    [-8.1, -12.5, 1.8, 2.0],    // west lip
+  ];
+  for (const [sx, sz, sw, sd] of f2Slabs) {
+    const sl = K.mesh(concrete, new THREE.BoxGeometry(sw, 0.36, sd), sx, 3.18, sz);
+    sl.castShadow = true;
+    sl.receiveShadow = true;
+    K.solid(sl, "concrete");
+  }
+  // 2nd floor concrete stair (climbs +X from x=-6.7..x=-1.65 at z=-12.5 onto y=3.36m deck)
+  K.stairs({ x: -6.7, z: -12.5, steps: 11, rise: 0.305, run: 0.56, width: 1.5, mat: concreteDark });
+  // 2nd floor low concrete cover + safety rails
+  const railMat = materialFor(0xd87a1c, { roughness: 0.7 });
+  K.solid(K.box(concreteDark, 3.8, 1.05, 0.4, 4.5, 3.36, -9.6), "concrete");
+  K.solid(K.box(concreteDark, 3.8, 1.05, 0.4, -4.5, 3.36, -21.8), "concrete");
+  for (const f of [2, 3]) {
+    const sy = f * 3;
     if (f === 3) {
+      const slab = K.mesh(concrete, bevelledBox(bw, 0.38, bd, 0.04), bx, sy + 0.19, bz);
+      slab.castShadow = true;
+      slab.receiveShadow = true;
+      content.add(slab);
       for (let i = 0; i < 24; i++) {
         const rx = bx + (K.rng() - 0.5) * bw * 0.85;
         const rz = bz + (K.rng() - 0.5) * bd * 0.85;
-        const rb = K.mesh(new THREE.MeshStandardMaterial({ color: 0x555050, roughness: 0.7, metalness: 0.6 }), new THREE.CylinderGeometry(0.04, 0.04, 1.6, 6), rx, 9.8, rz);
-        content.add(rb);
+        content.add(part(new THREE.CylinderGeometry(0.035, 0.035, 1.6, 6), rebarMat, [rx, 10.1, rz], [0, 0, 0], false));
       }
     }
+    for (const sz of [-bd / 2 + 0.12, bd / 2 - 0.12]) {
+      content.add(part(new THREE.BoxGeometry(bw - 0.4, 0.06, 0.06), railMat, [bx, sy + 1.1, bz + sz], [0, 0, 0], false));
+    }
   }
-  K.colliders.push(K.box(concrete, bw, 12, bd, bx, 0, bz));
-  K.aabbs.push(new THREE.Box3(new THREE.Vector3(bx - bw / 2, 0, bz - bd / 2), new THREE.Vector3(bx + bw / 2, 12, bz + bd / 2)));
 
   // tower cranes over the building
   K.craneTower(-6, -16, 17, 0.1);
@@ -2421,17 +2613,37 @@ function buildConstruction(content: THREE.Object3D, main: THREE.Scene, renderer:
     }
   }
 
-  // site office (rescue target) — enterable so the player can clear it room by room
+  // site office (rescue target) — 2-room enterable office with street window + side doors + walkable roof
   K.enterable({
-    x: -18, z: -20, w: 8, d: 6, h: 3.4,
+    x: -18, z: -20, w: 8, d: 7, h: 3.4,
     facade: facade({ base: "#d8d2c4", glass: "#2a3a4a", frame: "#5a5048", glow: "#ffd98a", bayW: 1.8, floorH: 3, cols: 3, rows: 1, rng: K.rng, sign: "SITE OFFICE" }),
     roof: "flat",
     roofMat: new THREE.MeshStandardMaterial({ color: 0x4a5a3a, roughness: 0.9 }),
+    doors: ["S", "E"],
+    windows: ["N", "W"],
+    partition: "x",
     emissive: 0.5,
   });
 
-  // staircase up to the scaffold platform (covered ambush vantage over the site)
-  K.stairs({ x: 7.6, z: -29, steps: 8, rise: 0.3, run: 0.6, width: 1.2, alongZ: false, mat: new THREE.MeshStandardMaterial({ color: 0xb0a830, roughness: 0.7, metalness: 0.4 }) });
+  // east modular site warehouse (indoor CQB lane + climbable 3.6m rooftop overlook)
+  K.enterable({
+    x: 18.5, z: 6, w: 7, d: 9, h: 3.6,
+    facade: facade({ base: "#6f7780", glass: "#1e2934", frame: "#3c424a", glow: "#ffd98a", bayW: 1.8, floorH: 3, cols: 3, rows: 1, rng: K.rng }),
+    roof: "flat",
+    roofMat: new THREE.MeshStandardMaterial({ color: 0x4a4d52, roughness: 0.88 }),
+    doors: ["W", "N", "S"],
+    windows: ["E"],
+    partition: "z",
+    walkableRoof: true,
+    parapet: true,
+    emissive: 0.5,
+  });
+  K.stairs({ x: 14.3, z: 10.6, steps: 12, rise: 0.3, run: 0.56, width: 1.4, mat: new THREE.MeshStandardMaterial({ color: 0x8a867e, roughness: 0.85 }) });
+
+  // staircase up to a walkable scaffold overlook deck (covered vantage over north jammer)
+  K.stairs({ x: 7.4, z: -29, steps: 8, rise: 0.3, run: 0.6, width: 1.3, alongZ: false, mat: new THREE.MeshStandardMaterial({ color: 0xb0a830, roughness: 0.7, metalness: 0.4 }) });
+  const scafDeck = K.mesh(new THREE.MeshStandardMaterial({ color: 0x8a6d42, roughness: 0.88 }), bevelledBox(3.4, 0.28, 3.6, 0.03), 13.0, 2.4, -29.8);
+  K.solid(scafDeck, "wood");
 
   // stacked concrete barriers forming corner cover / lanes through the site
   const wedgeMat = new THREE.MeshStandardMaterial({ color: 0xc8b020, roughness: 0.7, metalness: 0.3 });
@@ -2525,7 +2737,7 @@ function buildConstruction(content: THREE.Object3D, main: THREE.Scene, renderer:
   return finish(K, ambient);
 }
 
-/* ---------------- M3: Downtown Zlatograd ---------------- */
+/* ---------------- M3: Downtown District ---------------- */
 function buildDowntown(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.WebGLRenderer): LevelResult {
   const K = new Kit(content, 90210);
   const ambient = setupAmbient(main, renderer, {
@@ -2588,32 +2800,50 @@ function buildDowntown(content: THREE.Object3D, main: THREE.Scene, renderer: THR
   B(-8, -28, 10, 10, 24, glassF, 22.4); // rooftop sniper — trimmed
   B(8, -28, 10, 10, 24, glassF);
 
-  // enterable street-level shops (hollow, doorways) — interior & corner ambush play
-  K.enterable({ x: -5, z: 20, w: 6, d: 8, h: 5, facade: brickF, roof: "flat", roofMat: roofSlab, emissive: 0.7 });
-  K.enterable({ x: 5, z: -16, w: 6, d: 8, h: 5, facade: glassF, roof: "flat", roofMat: roofSlab, emissive: 0.9, ry: 0.2 });
-  K.enterable({ x: 6, z: 30, w: 6, d: 8, h: 4.5, facade: concreteF, roof: "flat", roofMat: roofSlab, emissive: 0.6 });
-  K.enterable({ x: -6, z: -18, w: 6, d: 8, h: 4.5, facade: concreteF, roof: "flat", roofMat: roofSlab, emissive: 0.6, ry: -0.2 });
+  // CS2-style pass-through urban shop/lobby connectors flanking the avenue (multi-door + pierced windows + 2-room interior)
+  K.enterable({ x: -6.5, z: 20, w: 6.5, d: 9, h: 4.4, facade: brickF, roof: "flat", roofMat: roofSlab, doors: ["N", "S", "E", "W"], partition: "z", walkableRoof: true, parapet: true, emissive: 0.75 });
+  K.enterable({ x: 6.5, z: 18, w: 6.5, d: 9, h: 4.2, facade: glassF, roof: "flat", roofMat: roofSlab, doors: ["N", "S", "E", "W"], partition: "z", walkableRoof: true, parapet: true, emissive: 0.85 });
+  K.enterable({ x: 6.5, z: -16, w: 6.5, d: 9, h: 4.4, facade: glassF, roof: "flat", roofMat: roofSlab, doors: ["N", "S", "W"], windows: ["E"], partition: "z", emissive: 0.9 });
+  K.enterable({ x: -6.5, z: -16, w: 6.5, d: 9, h: 4.4, facade: concreteF, roof: "flat", roofMat: roofSlab, doors: ["N", "S", "E"], windows: ["W"], partition: "z", emissive: 0.7 });
 
-  // staircase up the side of a mid-rise for a rooftop vantage over the avenue
-  K.stairs({ x: -10.4, z: 30, steps: 14, rise: 0.28, run: 0.6, width: 1.3, mat: new THREE.MeshStandardMaterial({ color: 0x6a6a70, roughness: 0.9 }) });
-  K.stairs({ x: 10.4, z: 18, steps: 12, rise: 0.3, run: 0.6, width: 1.3, mat: new THREE.MeshStandardMaterial({ color: 0x6a6a70, roughness: 0.9 }) });
+  // Elevated Downtown Pedestrian Skybridge / Overpass across the avenue (z = 2, y = 3.6m) with twin stairs!
+  const skyMat = new THREE.MeshStandardMaterial({ color: 0x6a6e75, roughness: 0.85, metalness: 0.25 });
+  const skyBridge = K.mesh(skyMat, bevelledBox(19.6, 0.34, 3.2, 0.04), 0, 3.43, 2);
+  skyBridge.castShadow = true;
+  skyBridge.receiveShadow = true;
+  K.solid(skyBridge, "concrete");
+  // skybridge waist-high railings + cover planters
+  for (const sz of [0.55, 3.45]) {
+    content.add(part(bevelledBox(17.2, 0.9, 0.16, 0.02), skyMat, [0, 4.05, sz]));
+  }
+  for (const sx of [-7.5, 7.5]) {
+    content.add(part(bevelledBox(0.5, 3.3, 0.5, 0.03), skyMat, [sx, 1.65, 2]));
+  }
+  K.solid(K.box(skyMat, 1.8, 0.95, 0.45, 0, 3.6, 1.2), "concrete");
+  // twin staircases climbing along -Z from south sidewalks up onto the skybridge (z=8.5 -> z=3.6)
+  K.stairs({ x: -8.6, z: 8.6, alongZ: true, dir: -1, steps: 12, rise: 0.3, run: 0.5, width: 1.4, mat: skyMat });
+  K.stairs({ x: 8.6, z: 8.6, alongZ: true, dir: -1, steps: 12, rise: 0.3, run: 0.5, width: 1.4, mat: skyMat });
+
+  // stairs onto the shop rooftops + relay substation deck near (18, -26)
+  K.stairs({ x: -9.8, z: 29.5, alongZ: true, dir: -1, steps: 14, rise: 0.31, run: 0.55, width: 1.3, mat: skyMat });
+  K.stairs({ x: 9.8, z: 27.5, alongZ: true, dir: -1, steps: 14, rise: 0.3, run: 0.55, width: 1.3, mat: skyMat });
 
   // rooftop relay cache (objective) — mast in the street at (18, -26)
   K.relayTower(18, -26, 13);
 
-  // streetlights
+  // streetlights (arms reach inward over the avenue)
   for (let z = -28; z <= 44; z += 12) {
-    K.streetlight(-9.4, z, 0);
-    K.streetlight(9.4, z, 0);
+    K.streetlight(-9.4, z, Math.PI / 2);
+    K.streetlight(9.4, z, -Math.PI / 2);
   }
 
-  // cars
-  K.car(-6, 30, 0.4, 0x2e5a8c);
-  K.car(6, 30, -0.2, 0x8a3a3a);
-  K.car(-6, -14, 0.5, 0x5a5a5a);
-  K.car(-6, 8, 0.1, 0x2e6a4a);
-  K.car(6, 16, -0.4, 0x8a7a2e);
-  K.car(-6, 22, 0.2, 0x3a3a5a);
+  // cars (parked along the avenue center lanes, keeping shop doorways & skybridge stairs clear!)
+  K.car(-2.6, 30, 0.3, 0x2e5a8c);
+  K.car(2.6, 32, -0.2, 0x8a3a3a);
+  K.car(-2.4, -10, 0.4, 0x5a5a5a);
+  K.car(2.4, 8, -0.15, 0x2e6a4a);
+  K.car(2.6, 16, -0.35, 0x8a7a2e);
+  K.car(-2.5, 22, 0.2, 0x3a3a5a);
 
   // distant skyline (Meridian Tower under construction completion)
   const farMat = new THREE.MeshStandardMaterial({ color: 0x4a4f58, roughness: 0.9 });
@@ -2627,8 +2857,7 @@ function buildDowntown(content: THREE.Object3D, main: THREE.Scene, renderer: THR
   // completed Meridian Tower in the distance (foreshadowing M2)
   const mt = K.box(new THREE.MeshStandardMaterial({ color: 0x5a6270, roughness: 0.85, emissive: 0x1a2230, emissiveIntensity: 0.6 }), 16, 78, 16, -58, 0, -56);
   K.scene.add(mt);
-  const mtSign = K.mesh(new THREE.MeshStandardMaterial({ color: 0xd8b01c, emissive: 0xd8b01c, emissiveIntensity: 0.8 }), new THREE.PlaneGeometry(10, 3), -58, 41, -56);
-  mtSign.rotation.y = Math.PI;
+  const mtSign = K.mesh(new THREE.MeshStandardMaterial({ color: 0xd8b01c, emissive: 0xd8b01c, emissiveIntensity: 0.8 }), new THREE.PlaneGeometry(10, 3), -58, 41, -47.92);
   K.scene.add(mtSign);
 
   // cover props
@@ -2682,7 +2911,7 @@ function buildDowntown(content: THREE.Object3D, main: THREE.Scene, renderer: THR
   return finish(K, ambient);
 }
 
-/* ---------------- M4: Zlatograd Port ---------------- */
+/* ---------------- M4: Westgate Port ---------------- */
 function buildPort(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.WebGLRenderer): LevelResult {
   const K = new Kit(content, 5150);
   const ambient = setupAmbient(main, renderer, {
@@ -2748,11 +2977,22 @@ function buildPort(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.W
   K.craneGantry(-13, -8.5, 16, 20);
   K.craneGantry(13, -8.5, 16, 20);
 
-  // enterable dockside warehouse + guard hut (interior clearing + corner ambush)
+  // Enterable dockside Customs Warehouse + Harbor Security Station (multi-door indoor CQB + climbable rooftop catwalks!)
   const warehouseF = facade({ base: "#5a5a60", glass: "#1a2430", frame: "#3a3a40", glow: "#ffca7a", bayW: 2, floorH: 3.4, cols: 3, rows: 2, rng: K.rng });
   const roofSlabP = new THREE.MeshStandardMaterial({ color: 0x3a3a40, roughness: 0.85 });
-  K.enterable({ x: -14, z: 24, w: 10, d: 8, h: 5, facade: warehouseF, roof: "flat", roofMat: roofSlabP, emissive: 0.6 });
-  K.enterable({ x: 14, z: 24, w: 8, d: 6, h: 3.6, facade: warehouseF, roof: "flat", roofMat: roofSlabP, emissive: 0.5, ry: 0.2 });
+  K.enterable({ x: -14, z: 24, w: 11, d: 9, h: 4.2, facade: warehouseF, roof: "flat", roofMat: roofSlabP, doors: ["N", "S", "E"], windows: ["W"], partition: "z", walkableRoof: true, parapet: true, emissive: 0.65 });
+  K.enterable({ x: 14, z: 24, w: 8, d: 7, h: 3.6, facade: warehouseF, roof: "flat", roofMat: roofSlabP, doors: ["W", "N", "S"], windows: ["E"], partition: "x", walkableRoof: true, parapet: true, emissive: 0.55 });
+  const dockStairMat = new THREE.MeshStandardMaterial({ color: 0x6a727a, roughness: 0.7, metalness: 0.5 });
+  K.stairs({ x: -19.8, z: 18.5, alongZ: true, dir: 1, steps: 14, rise: 0.3, run: 0.55, width: 1.4, mat: dockStairMat });
+  K.stairs({ x: 18.8, z: 19.5, alongZ: true, dir: 1, steps: 12, rise: 0.3, run: 0.55, width: 1.4, mat: dockStairMat });
+
+  // Central covered shipping-container breezeway tunnel (x = 0, z = 8) + climbable top deck (y = 3.0m)
+  const tunMat = materialFor(0x2e4a62, { roughness: 0.72, metalness: 0.35, family: "metal", seed: 84 });
+  K.solid(K.box(tunMat, 0.45, 3.0, 9.0, -2.8, 0, 8), "metal");
+  K.solid(K.box(tunMat, 0.45, 3.0, 9.0, 2.8, 0, 8), "metal");
+  const tunRoof = K.mesh(tunMat, bevelledBox(6.1, 0.32, 9.2, 0.03), 0, 3.16, 8);
+  K.solid(tunRoof, "metal");
+  K.stairs({ x: -4.2, z: 14.2, alongZ: true, dir: -1, steps: 11, rise: 0.3, run: 0.52, width: 1.4, mat: dockStairMat });
 
   // container stacks on dock
   K.containerRow(-16, -2, 3);
@@ -2764,36 +3004,37 @@ function buildPort(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.W
   K.stairs({ x: -15.4, z: 2, steps: 5, rise: 0.5, run: 0.7, width: 1.4, mat: new THREE.MeshStandardMaterial({ color: 0x8a6a3a, roughness: 0.7, metalness: 0.3 }) });
   K.stairs({ x: 15.4, z: 2, steps: 5, rise: 0.5, run: 0.7, width: 1.4, mat: new THREE.MeshStandardMaterial({ color: 0x3a6a8a, roughness: 0.7, metalness: 0.3 }) });
 
-  // floodlight towers
-  const poleMat = new THREE.MeshStandardMaterial({ color: 0x2a2d30, roughness: 0.6, metalness: 0.7 });
+  // floodlight towers (with crossbar head mounting twin lamps)
+  const poleMat = materialFor(0x2a2d30, { roughness: 0.55, metalness: 0.75 });
   for (const [fx, fz] of [[-10, 16], [10, 16], [-20, 28], [20, 28], [0, 38]] as const) {
-    const pole = K.mesh(poleMat, new THREE.CylinderGeometry(0.12, 0.15, 12, 10), fx, 6, fz);
+    const pole = K.mesh(poleMat, new THREE.CylinderGeometry(0.12, 0.16, 12, 10), fx, 6, fz);
     K.scene.add(pole);
-    const lamp = K.mesh(new THREE.MeshStandardMaterial({ color: 0xfff4d0, emissive: 0xfff0c0, emissiveIntensity: 2.6 }), new THREE.SphereGeometry(0.5, 10, 8), fx, 12.4, fz);
-    K.scene.add(lamp);
-    const lamp2 = K.mesh(new THREE.MeshStandardMaterial({ color: 0xfff4d0, emissive: 0xfff0c0, emissiveIntensity: 2.6 }), new THREE.SphereGeometry(0.5, 10, 8), fx + 1.4, 12.2, fz);
-    K.scene.add(lamp2);
-    // light cone
-    const cone = K.mesh(new THREE.MeshBasicMaterial({ color: 0xfff0c8, transparent: true, opacity: 0.05, side: THREE.DoubleSide, depthWrite: false }), new THREE.ConeGeometry(5, 12, 12, 1, true), fx, 6.5, fz);
+    content.add(part(bevelledBox(2.2, 0.14, 0.14, 0.02), poleMat, [fx + 0.7, 12.1, fz]));
+    for (const lx of [fx, fx + 1.4]) {
+      content.add(part(bevelledBox(0.55, 0.38, 0.35, 0.03), poleMat, [lx, 12.42, fz]));
+      const lamp = K.mesh(new THREE.MeshStandardMaterial({ color: 0xfff4d0, emissive: 0xfff0c0, emissiveIntensity: 2.6 }), new THREE.SphereGeometry(0.28, 10, 8), lx, 12.35, fz + 0.12);
+      K.scene.add(lamp);
+    }
+    const cone = K.mesh(new THREE.MeshBasicMaterial({ color: 0xfff0c8, transparent: true, opacity: 0.04, side: THREE.DoubleSide, depthWrite: false }), new THREE.ConeGeometry(5, 12, 12, 1, true), fx + 0.7, 6.2, fz);
     K.scene.add(cone);
   }
 
   // weapon crates (destroyables)
-  const wcMat = new THREE.MeshStandardMaterial({ color: 0x3a4a2a, roughness: 0.7, metalness: 0.3 });
+  const wcMat = materialFor(0x3a4a2a, { roughness: 0.7, metalness: 0.3, family: "wood", seed: 82 });
+  const labelTex = stripeLabel();
   for (const [wx, wz] of [[14, -4], [-14, -6], [10, -10], [-10, -8]] as const) {
     const grp = new THREE.Group();
     grp.position.set(wx, 0, wz);
-    const box = new THREE.Mesh(new THREE.BoxGeometry(1.8, 1.4, 1.8), wcMat);
+    const box = new THREE.Mesh(new RoundedBoxGeometry(1.8, 1.4, 1.8, 3, 0.06), wcMat);
     box.position.y = 0.7;
     box.castShadow = true;
     box.receiveShadow = true;
     box.userData.kind = "wood";
     box.userData.destroyable = true;
     grp.add(box);
-    // white stripe + MERIDIAN label
-    const label = K.mesh(new THREE.MeshStandardMaterial({ map: stripeLabel(), roughness: 0.6 }), new THREE.PlaneGeometry(1.2, 0.5), wx, 1.45, wz + 0.92);
-    K.scene.add(label);
-    grp.position.y = 0;
+    const label = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 0.5), new THREE.MeshStandardMaterial({ map: labelTex, roughness: 0.6 }));
+    label.position.set(0, 0.05, 0.91);
+    box.add(label);
     K.scene.add(grp);
     K.colliders.push(box);
     K.destroyables.push(box);
@@ -2805,8 +3046,8 @@ function buildPort(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.W
   K.barrel(new THREE.MeshStandardMaterial({ color: 0x9b2c22, roughness: 0.5, metalness: 0.7 }), 4, 20);
   K.sandbag(8, 30, 0, 5);
   K.sandbag(-8, 30, 0, 5);
-  K.truck(12, 26, 0.3, 0x3a5a3a);
-  K.truck(-12, 30, -0.3, 0x4a4a4a);
+  K.truck(12, 34, 0.3, 0x3a5a3a);
+  K.truck(-14, 38, -0.25, 0x4a4a4a);
 
   // environment polish: dock weathering + clutter (visual only)
   for (let i = 0; i < 8; i++) K.groundStain(-24 + K.rng() * 48, -16 + K.rng() * 64, 0.6 + K.rng() * 0.9);
@@ -2884,24 +3125,52 @@ function buildHQ(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.Web
   const gc = noiseCanvas(1024, "#40413f", [["rgba(0,0,0,0.25)", 9000], ["rgba(255,255,255,0.04)", 4000]], K.rng);
   K.ground(300, new THREE.MeshStandardMaterial({ map: toTex(gc, 50), bumpMap: toTex(gc, 50, false), bumpScale: 1, roughness: 0.95 }));
 
-  // main tower (Sorin's perch)
+  // Main Meridian Tower with Playable Ground-Floor Marble & Glass Lobby (fight INSIDE the HQ through to the helipad!)
   const glassF = facade({ base: "#2e343c", glass: "#0a0d12", frame: "#4a5058", glow: "#ffca7a", bayW: 2, floorH: 3.4, cols: 4, rows: 3, rng: K.rng, sign: "MERIDIAN" });
-  K.building({
-    x: 0, z: -32, w: 16, d: 10, h: 42,
-    facade: glassF, roof: "flat",
-    roofMat: new THREE.MeshStandardMaterial({ color: 0x3a3f46, roughness: 0.85 }),
-    parapet: true, details: true, emissive: 0.6,
-  });
-  // tower entrance canopy + lit door
-  const canopy = K.box(new THREE.MeshStandardMaterial({ color: 0x3a4048, roughness: 0.8, metalness: 0.4 }), 4, 0.3, 3, 0, 0, -26.5);
-  K.scene.add(canopy);
-  const door = K.mesh(new THREE.MeshStandardMaterial({ color: 0xd8d4c0, emissive: 0xffd98a, emissiveIntensity: 0.8 }), new THREE.PlaneGeometry(2, 3), 0, 1.5, -25.01);
-  K.scene.add(door);
+  const marbleMat = materialFor(0x2c3036, { roughness: 0.55, metalness: 0.25, family: "stone", seed: 91 });
+  const lobbyFloor = K.mesh(marbleMat, new THREE.BoxGeometry(16, 0.14, 10), 0, 0.07, -32);
+  lobbyFloor.receiveShadow = true;
+  K.solid(lobbyFloor, "concrete");
+  // Lobby walls (South entrance + North helipad exit, wide 3.6m double openings + interior security desk/columns!)
+  const lH = 4.4;
+  for (const sz of [-36.8, -27.2]) {
+    for (const sx of [-5.0, 5.0]) {
+      K.solid(K.box(marbleMat, 6.0, lH, 0.4, sx, 0, sz), "concrete");
+    }
+    K.solid(K.box(marbleMat, 4.0, lH - 3.0, 0.4, 0, 3.0, sz), "concrete");
+  }
+  for (const sx of [-7.8, 7.8]) {
+    K.solid(K.box(marbleMat, 0.4, lH, 10.0, sx, 0, -32), "concrete");
+  }
+  // Lobby interior tactical columns + flanking security desks (clear center corridor to helipad!)
+  for (const [cx, cz] of [[-4.8, -32], [4.8, -32]] as const) {
+    K.solid(K.box(marbleMat, 0.85, lH, 0.85, cx, 0, cz), "concrete");
+  }
+  const deskMat = materialFor(0x4a3828, { roughness: 0.7 });
+  K.solid(K.box(deskMat, 2.2, 1.05, 0.7, -2.7, 0.14, -32.2), "wood");
+  K.solid(K.box(deskMat, 2.2, 1.05, 0.7, 2.7, 0.14, -32.2), "wood");
+  // Lobby ceiling / Upper Skyscraper Shaft (y = 4.4 .. 42m, clear overhead!)
+  const upperTowerMat = K.wallFaceMat(glassF, 16, 37.6, 0.6);
+  const upperTower = K.mesh(upperTowerMat, new THREE.BoxGeometry(16, 37.6, 10), 0, 4.4 + 18.8, -32);
+  upperTower.castShadow = true;
+  upperTower.receiveShadow = true;
+  content.add(upperTower);
+  K.colliderBox(16, 37.6, 10, 0, 4.4, -32, 0, "concrete");
+  K.roof(0, -32, 16, 10, 42, "flat", new THREE.MeshStandardMaterial({ color: 0x3a3f46, roughness: 0.85 }));
+  K.parapet(0, -32, 16, 10, 42, new THREE.MeshStandardMaterial({ color: 0x3a3f46, roughness: 0.85 }));
 
-  // compound wall (z=-20) with gate gap at x -2..2
+  // tower entrance canopy (elevated overhead at y = 3.6 with support columns) + glowing lobby arch
+  const canopyMat = materialFor(0x3a4048, { roughness: 0.7, metalness: 0.5 });
+  K.scene.add(part(bevelledBox(5.2, 0.28, 3.0, 0.04), canopyMat, [0, 3.65, -25.5]));
+  for (const sx of [-2.2, 2.2]) {
+    K.scene.add(part(new THREE.CylinderGeometry(0.11, 0.11, 3.6, 12), canopyMat, [sx, 1.8, -24.3]));
+  }
+
+  // compound wall (z=-20) with main gate (x=-2..2) AND APC west breach gap (x=-15..-11) for CS2 A/B split assault!
   const wallMat = new THREE.MeshStandardMaterial({ color: 0x55565a, roughness: 0.9 });
-  K.solid(K.box(wallMat, 26, 4.2, 0.8, -15, 0, -20), "concrete");
-  K.solid(K.box(wallMat, 22, 4.2, 0.8, 15, 0, -20), "concrete");
+  K.solid(K.box(wallMat, 12, 4.2, 0.8, -22, 0, -20), "concrete");
+  K.solid(K.box(wallMat, 9, 4.2, 0.8, -6.5, 0, -20), "concrete");
+  K.solid(K.box(wallMat, 22, 4.2, 0.8, 13, 0, -20), "concrete");
   // gate posts + guard tower
   K.solid(K.box(wallMat, 0.8, 5, 0.8, -2, 0, -20), "concrete");
   K.solid(K.box(wallMat, 0.8, 5, 0.8, 2, 0, -20), "concrete");
@@ -2912,10 +3181,10 @@ function buildHQ(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.Web
   const towerBeacon = K.mesh(new THREE.MeshStandardMaterial({ color: 0xff2020, emissive: 0xff0000, emissiveIntensity: 3 }), new THREE.SphereGeometry(0.14, 8, 6), -7, 8.1, -20);
   K.scene.add(towerBeacon);
   K.beacon(towerBeacon, 2, 0);
-  // razor wire on the wall (decorative rings)
+  // razor wire on the wall (skip both gate and west breach!)
   const wireMat = new THREE.MeshStandardMaterial({ color: 0x8a8a8a, roughness: 0.4, metalness: 0.9 });
   for (let x = -24; x <= 24; x += 1.5) {
-    if (Math.abs(x) < 2.6) continue;
+    if (Math.abs(x) < 2.6 || (x > -15.6 && x < -10.4)) continue;
     const ring = K.mesh(wireMat, new THREE.TorusGeometry(0.4, 0.03, 6, 10), x, 4.5, -19.7);
     ring.rotation.x = Math.PI / 2;
     ring.rotation.z = x * 0.4;
@@ -2926,14 +3195,16 @@ function buildHQ(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.Web
   K.sandbag(-6, -22, 0, 6);
   K.sandbag(6, -22, 0, 6);
 
-  // enterable barracks (interior clearing + corner ambush) flanking the approach
+  // enterable multi-door security barracks (interior room-clearing + climbable 4.2m rooftops overlooking courtyard!)
   const barracksF = facade({ base: "#4a5058", glass: "#161c24", frame: "#33383f", glow: "#ffca7a", bayW: 2, floorH: 3.4, cols: 3, rows: 2, rng: K.rng });
   const hqRoof = new THREE.MeshStandardMaterial({ color: 0x2a2e33, roughness: 0.85 });
-  K.enterable({ x: -20, z: 10, w: 10, d: 8, h: 5, facade: barracksF, roof: "flat", roofMat: hqRoof, emissive: 0.5 });
-  K.enterable({ x: 20, z: 10, w: 10, d: 8, h: 5, facade: barracksF, roof: "flat", roofMat: hqRoof, emissive: 0.5, ry: 0.2 });
+  K.enterable({ x: -20, z: 10, w: 10, d: 9, h: 4.2, facade: barracksF, roof: "flat", roofMat: hqRoof, doors: ["E", "N", "S"], windows: ["W"], partition: "z", walkableRoof: true, parapet: true, emissive: 0.55 });
+  K.enterable({ x: 20, z: 10, w: 10, d: 9, h: 4.2, facade: barracksF, roof: "flat", roofMat: hqRoof, doors: ["W", "N", "S"], windows: ["E"], partition: "z", walkableRoof: true, parapet: true, emissive: 0.55 });
 
-  // staircase up the side of a compound building for a covered vantage over the gate
-  K.stairs({ x: -20.4, z: 6, steps: 12, rise: 0.3, run: 0.6, width: 1.3, mat: new THREE.MeshStandardMaterial({ color: 0x55565a, roughness: 0.9 }) });
+  // staircases up BOTH barracks rooftops for elevated crossfire over the approach & wall breach
+  const hqStairMat = new THREE.MeshStandardMaterial({ color: 0x55565a, roughness: 0.9 });
+  K.stairs({ x: -26.0, z: 14.5, alongZ: true, dir: -1, steps: 14, rise: 0.3, run: 0.55, width: 1.4, mat: hqStairMat });
+  K.stairs({ x: 26.0, z: 14.5, alongZ: true, dir: -1, steps: 14, rise: 0.3, run: 0.55, width: 1.4, mat: hqStairMat });
 
   // low corner cover / barricades in the courtyard
   const bqMat = new THREE.MeshStandardMaterial({ color: 0x5a5c60, roughness: 0.9 });
@@ -2988,10 +3259,10 @@ function buildHQ(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.Web
   // helipad (extraction, north of tower)
   K.helipad(0, -44);
 
-  // streetlights (dim) along approach
+  // streetlights (dim) along approach, arms oriented inward over road
   for (let z = 44; z >= 16; z -= 12) {
-    K.streetlight(-9, z, 0);
-    K.streetlight(9, z, 0);
+    K.streetlight(-9, z, Math.PI / 2);
+    K.streetlight(9, z, -Math.PI / 2);
   }
 
   // rain
@@ -3035,6 +3306,191 @@ function buildHQ(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.Web
   return finish(K, ambient);
 }
 
+/* ---------------- M6: Iron Citadel (260m Black-Site Fortress) ---------------- */
+function buildCitadel(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.WebGLRenderer): LevelResult {
+  const K = new Kit(content, 900017);
+  const ambient = setupAmbient(main, renderer, {
+    sunElev: 4,
+    sunAzim: 145,
+    turbidity: 8,
+    rayleigh: 0.7,
+    fogColor: 0x090b12,
+    fogDensity: 0.0085,
+    hemiSky: 0x252d3f,
+    hemiGround: 0x090c10,
+    hemiIntensity: 0.34,
+    sunColor: 0x4b5c80,
+    sunIntensity: 0.32,
+    envIntensity: 0.16,
+    exposure: 1.12,
+    stars: true,
+    shadowFar: 160,
+  });
+  content.add(ambient.sun, ambient.hemi);
+  if (ambient.stars) content.add(ambient.stars);
+
+  // Massive 380m alpine dark-stone & asphalt compound ground
+  const gc = noiseCanvas(1024, "#363a42", [["rgba(0,0,0,0.25)", 9500], ["rgba(255,255,255,0.05)", 4500]], K.rng);
+  K.ground(380, new THREE.MeshStandardMaterial({ map: toTex(gc, 65), bumpMap: toTex(gc, 65, false), bumpScale: 1.1, roughness: 0.94 }));
+
+  const wallMat = materialFor(0x464a54, { roughness: 0.88, family: "stone", seed: 101 });
+  const darkSteel = materialFor(0x282d36, { roughness: 0.55, metalness: 0.55, family: "metal", seed: 102 });
+  const bunkerRoof = new THREE.MeshStandardMaterial({ color: 0x2a2f38, roughness: 0.85 });
+  const stairMat = new THREE.MeshStandardMaterial({ color: 0x5c6470, roughness: 0.75, metalness: 0.4 });
+  const citadelF = facade({ base: "#323844", glass: "#0d121a", frame: "#4a5260", glow: "#c084fc", bayW: 2, floorH: 3.4, cols: 4, rows: 2, rng: K.rng });
+
+  // Outer perimeter mountain ridge walls (keeps 260m arena framed)
+  for (const sx of [-70, 70]) {
+    K.solid(K.box(wallMat, 3.0, 7.0, 204, sx, 0, -5), "concrete");
+  }
+  K.solid(K.box(wallMat, 144, 7.0, 3.0, 0, 0, -106), "concrete");
+  K.solid(K.box(wallMat, 144, 7.0, 3.0, 0, 0, 96), "concrete");
+
+  // ---- Zone 1: South Perimeter Wall (z = +54) with 3 breach gaps + Twin Watchtowers ----
+  K.solid(K.box(wallMat, 44, 4.2, 1.0, -46, 0, 54), "concrete");
+  K.solid(K.box(wallMat, 15, 4.2, 1.0, -10.5, 0, 54), "concrete");
+  K.solid(K.box(wallMat, 15, 4.2, 1.0, 10.5, 0, 54), "concrete");
+  K.solid(K.box(wallMat, 44, 4.2, 1.0, 46, 0, 54), "concrete");
+
+  // Twin climbable sniper watchtowers at (-14, 54) and (+14, 54), deck y = 4.5m
+  for (const tx of [-14, 14]) {
+    K.solid(K.box(darkSteel, 4.4, 4.5, 4.4, tx, 0, 54), "metal");
+    K.parapet(tx, 54, 4.4, 4.4, 4.5, darkSteel);
+    K.stairs({ x: tx + (tx < 0 ? -3.2 : 3.2), z: 60.5, alongZ: true, dir: -1, steps: 15, rise: 0.3, run: 0.52, width: 1.4, mat: stairMat });
+  }
+  K.sandbag(0, 62, 0, 6);
+  K.truck(-22, 66, 0.25, 0x3b4248);
+  K.truck(22, 66, -0.25, 0x3b4248);
+
+  // ---- Zone 2: West Armory Bunker (-34, 24) & East Comms Bunker (+34, 24) ----
+  K.enterable({ x: -34, z: 24, w: 14, d: 10, h: 4.4, facade: citadelF, roof: "flat", roofMat: bunkerRoof, doors: ["N", "S", "E"], windows: ["W"], partition: "z", walkableRoof: true, parapet: true, emissive: 0.65 });
+  K.enterable({ x: 34, z: 24, w: 14, d: 10, h: 4.4, facade: citadelF, roof: "flat", roofMat: bunkerRoof, doors: ["N", "S", "W"], windows: ["E"], partition: "z", walkableRoof: true, parapet: true, emissive: 0.65 });
+  K.stairs({ x: -42.5, z: 29.5, alongZ: true, dir: -1, steps: 15, rise: 0.3, run: 0.55, width: 1.5, mat: stairMat });
+  K.stairs({ x: 42.5, z: 29.5, alongZ: true, dir: -1, steps: 15, rise: 0.3, run: 0.55, width: 1.5, mat: stairMat });
+
+  // Courtyard shipping containers & armored transport cover
+  K.containerRow(-14, 38, 2);
+  K.containerRow(14, 38, 2);
+  K.containerRow(-22, 8, 2);
+  K.containerRow(22, 8, 2);
+  K.truck(0, 26, Math.PI / 2, 0x323b45);
+  K.sandbag(-8, 20, 0, 6);
+  K.sandbag(8, 20, 0, 6);
+
+  // ---- Zone 3: 48m Central Elevated Skyway Catwalk (z = -4, y = 3.6m) ----
+  const skyDeck = K.mesh(darkSteel, bevelledBox(48, 0.36, 4.4, 0.04), 0, 3.58, -4);
+  K.solid(skyDeck, "metal");
+  K.parapet(0, -4, 48, 4.4, 3.76, darkSteel);
+  for (const sx of [-20, -8, 8, 20]) {
+    K.solid(K.box(darkSteel, 0.7, 3.4, 0.7, sx, 0, -4), "metal");
+  }
+  K.stairs({ x: -25.2, z: 3.5, alongZ: true, dir: -1, steps: 12, rise: 0.3, run: 0.52, width: 1.5, mat: stairMat });
+  K.stairs({ x: 25.2, z: 3.5, alongZ: true, dir: -1, steps: 12, rise: 0.3, run: 0.52, width: 1.5, mat: stairMat });
+
+  // ---- 4 Sabotage Lattice Relays (destroyables) ----
+  const relayMat = new THREE.MeshStandardMaterial({ color: 0x5b21b6, roughness: 0.45, metalness: 0.45 });
+  const mastMat = new THREE.MeshStandardMaterial({ color: 0x333842, metalness: 0.7, roughness: 0.4 });
+  for (const [rx, rz] of [[-34, 14], [34, 14], [-14, -14], [14, -14]] as const) {
+    const grp = new THREE.Group();
+    grp.position.set(rx, 0, rz);
+    const box = new THREE.Mesh(new THREE.BoxGeometry(1.8, 1.8, 1.8), relayMat);
+    box.position.y = 0.9;
+    box.castShadow = true;
+    box.receiveShadow = true;
+    box.userData.kind = "metal";
+    box.userData.destroyable = true;
+    grp.add(box);
+    const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 4.4, 8), mastMat);
+    mast.position.y = 3.1;
+    grp.add(mast);
+    const orb = new THREE.Mesh(
+      new THREE.SphereGeometry(0.18, 10, 8),
+      new THREE.MeshStandardMaterial({ color: 0xc084fc, emissive: 0xa855f7, emissiveIntensity: 3.5 }),
+    );
+    orb.position.y = 5.4;
+    grp.add(orb);
+    content.add(grp);
+    K.colliders.push(box);
+    K.destroyables.push(box);
+    K.beacon(orb, 4, K.rng() * 6);
+  }
+
+  // ---- Zone 4: Inner Citadel Wall (z = -28) + Enterable Citadel Core + Vault & Barracks ----
+  K.solid(K.box(wallMat, 40, 4.4, 1.0, -48, 0, -28), "concrete");
+  K.solid(K.box(wallMat, 18, 4.4, 1.0, -13, 0, -28), "concrete");
+  K.solid(K.box(wallMat, 18, 4.4, 1.0, 13, 0, -28), "concrete");
+  K.solid(K.box(wallMat, 40, 4.4, 1.0, 48, 0, -28), "concrete");
+
+  // Main Citadel Fortress Core (0, -48): 22m x 16m enterable command hall leading through to North Helipad
+  const hallMat = materialFor(0x282d36, { roughness: 0.6, metalness: 0.25, family: "stone", seed: 103 });
+  const hallFloor = K.mesh(hallMat, new THREE.BoxGeometry(22, 0.14, 16), 0, 0.07, -48);
+  hallFloor.receiveShadow = true;
+  K.solid(hallFloor, "concrete");
+  const hH = 4.8;
+  for (const hz of [-55.8, -40.2]) {
+    for (const sx of [-7.0, 7.0]) {
+      K.solid(K.box(hallMat, 8.0, hH, 0.45, sx, 0, hz), "concrete");
+    }
+    K.solid(K.box(hallMat, 6.0, hH - 3.2, 0.45, 0, 3.2, hz), "concrete");
+  }
+  for (const sx of [-10.8, 10.8]) {
+    K.solid(K.box(hallMat, 0.45, hH, 16.0, sx, 0, -48), "concrete");
+  }
+  for (const [cx, cz] of [[-5.6, -48], [5.6, -48], [-5.6, -43], [5.6, -43]] as const) {
+    K.solid(K.box(hallMat, 0.9, hH, 0.9, cx, 0, cz), "concrete");
+  }
+  const upperFortMat = K.wallFaceMat(citadelF, 22, 24, 0.65);
+  const upperFort = K.mesh(upperFortMat, new THREE.BoxGeometry(22, 24, 16), 0, 4.8 + 12, -48);
+  upperFort.castShadow = true;
+  upperFort.receiveShadow = true;
+  content.add(upperFort);
+  K.colliderBox(22, 24, 16, 0, 4.8, -48, 0, "concrete");
+  K.roof(0, -48, 22, 16, 28.8, "flat", bunkerRoof);
+  K.parapet(0, -48, 22, 16, 28.8, bunkerRoof);
+  K.antennaArray(0, -48, 29.2, 0.1);
+
+  // West Citadel Barracks (-24, -46, climbable roof y = 4.2m) & East Detention Vault (+24, -46 holding Mara)
+  K.enterable({ x: -24, z: -46, w: 10, d: 9, h: 4.2, facade: citadelF, roof: "flat", roofMat: bunkerRoof, doors: ["N", "S", "E"], windows: ["W"], walkableRoof: true, parapet: true, emissive: 0.6 });
+  K.stairs({ x: -30.5, z: -41.5, alongZ: true, dir: -1, steps: 14, rise: 0.3, run: 0.55, width: 1.4, mat: stairMat });
+  K.enterable({ x: 24, z: -46, w: 10, d: 9, h: 4.2, facade: citadelF, roof: "flat", roofMat: bunkerRoof, doors: ["N", "S", "W"], windows: ["E"], walkableRoof: true, parapet: true, emissive: 0.6 });
+
+  // North Helipad Arena cover & extraction pad at (0, -84)
+  K.sandbag(-8, -68, 0.2, 6);
+  K.sandbag(8, -68, -0.2, 6);
+  K.crate(new THREE.MeshStandardMaterial({ color: 0x6b5335, roughness: 0.82 }), -10, -76, 1.3, 0.3);
+  K.crate(new THREE.MeshStandardMaterial({ color: 0x6b5335, roughness: 0.82 }), 10, -76, 1.3, -0.3);
+  K.helipad(0, -84);
+
+  // Atmospheric streetlights & heavy alpine rain
+  for (let z = 76; z >= -76; z -= 18) {
+    K.streetlight(-22, z, Math.PI / 2);
+    K.streetlight(22, z, -Math.PI / 2);
+  }
+  const rainGeo = new THREE.BufferGeometry();
+  const rainCount = 1100;
+  const rainPos = new Float32Array(rainCount * 3);
+  for (let i = 0; i < rainCount; i++) {
+    rainPos[i * 3] = (K.rng() - 0.5) * 180;
+    rainPos[i * 3 + 1] = K.rng() * 50;
+    rainPos[i * 3 + 2] = (K.rng() - 0.5) * 200;
+  }
+  rainGeo.setAttribute("position", new THREE.BufferAttribute(rainPos, 3));
+  const rain = new THREE.Points(rainGeo, new THREE.PointsMaterial({ color: 0x94b8dc, size: 0.08, transparent: true, opacity: 0.42, depthWrite: false }));
+  K.scene.add(rain);
+  K.extras.push({
+    update: (dt: number) => {
+      const p = rain.geometry.attributes.position as THREE.BufferAttribute;
+      for (let i = 0; i < rainCount; i++) {
+        p.array[i * 3 + 1] -= 28 * dt;
+        if (p.array[i * 3 + 1] < 0) p.array[i * 3 + 1] = 50;
+      }
+      p.needsUpdate = true;
+    },
+  });
+
+  return finish(K, ambient);
+}
+
 /* ====================== result helpers ====================== */
 export interface LevelResult extends World {
   aabbs: THREE.Box3[];
@@ -3055,11 +3511,11 @@ function finish(K: Kit, ambient: ReturnType<typeof setupAmbient>): LevelResult {
   const groundHeightAt = (x: number, z: number, y: number): number => {
     let best = 0;
     for (const box of K.aabbs) {
-      // small forward tolerance so a step's top is caught as the player reaches its riser
-      if (x < box.min.x - 0.3 || x > box.max.x + 0.3) continue;
-      if (z < box.min.z - 0.3 || z > box.max.z + 0.3) continue;
       const top = box.max.y;
       if (top > y + 0.6) continue; // surface too high to be the ground we stand on
+      const pad = top > y + 0.05 && top <= y + 0.58 ? 0.52 : 0.22;
+      if (x < box.min.x - pad || x > box.max.x + pad) continue;
+      if (z < box.min.z - pad || z > box.max.z + pad) continue;
       if (top > best) best = top;
     }
     return best;
@@ -3085,6 +3541,7 @@ export function buildLevel(missionId: number, content: THREE.Object3D, main: THR
     case 3: return buildDowntown(content, main, renderer);
     case 4: return buildPort(content, main, renderer);
     case 5: return buildHQ(content, main, renderer);
+    case 6: return buildCitadel(content, main, renderer);
     default: return buildRange(content, main, renderer);
   }
 }
