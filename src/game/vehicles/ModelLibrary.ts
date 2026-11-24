@@ -19,13 +19,12 @@ export interface CarModel {
   height: number;
 }
 
-const FERRARI_SKEW = (13.5 * Math.PI) / 180;
 const ORIENTATION: Record<TrafficId, number> = {
   golf: 0,
   mercedes: 0,
   audi: Math.PI,
   mustang: 0,
-  ferrari: Math.PI + FERRARI_SKEW,
+  ferrari: Math.PI,
   r8: Math.PI,
   challenger: Math.PI,
   rangerover: Math.PI,
