@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { computeWestgateGpsRoute, type MinimapData } from "../game/city/MinimapData";
+import { WESTGATE_CONTRACT_SPOTS } from "../game/city/WestgateActivities";
 import { WESTGATE_TELEPORTS } from "../game/city/WestgateWorld";
 
 export interface MinimapLiveSample {
@@ -10,6 +11,7 @@ export interface MinimapLiveSample {
   speedKmh: number;
   vehicles: { x: number; z: number; isNpc: boolean; active: boolean }[];
   traps?: { id: string; x: number; z: number; beaten: boolean }[];
+  contracts?: { missionId: number; x: number; z: number; unlocked: boolean; completed: boolean }[];
 }
 
 interface WestgateMinimapProps {
@@ -55,6 +57,10 @@ function subdividePolyline(pts: [number, number][], maxStep = 18): [number, numb
 
 const GPS_SPOTS = [
   { id: null as string | null, label: "Scenic Loop" },
+  ...WESTGATE_CONTRACT_SPOTS.map((c) => ({
+    id: `contract:${c.missionId}` as string | null,
+    label: `Contract C${c.missionId} · ${c.districtLabel}`,
+  })),
   ...WESTGATE_TELEPORTS.filter((t) =>
     [
       "downtown",
@@ -88,10 +94,15 @@ export function WestgateMinimap({
     else setLocalTargetId(id);
   };
 
-  const targetSpot = useMemo(
-    () => (activeTargetId ? WESTGATE_TELEPORTS.find((t) => t.id === activeTargetId) ?? null : null),
-    [activeTargetId],
-  );
+  const targetSpot = useMemo(() => {
+    if (!activeTargetId) return null;
+    if (activeTargetId.startsWith("contract:")) {
+      const mid = Number(activeTargetId.slice("contract:".length));
+      const c = WESTGATE_CONTRACT_SPOTS.find((s) => s.missionId === mid);
+      return c ? { id: activeTargetId, x: c.x, z: c.z } : null;
+    }
+    return WESTGATE_TELEPORTS.find((t) => t.id === activeTargetId) ?? null;
+  }, [activeTargetId]);
 
   // Precompile static Path2D objects once for Westgate Bay's roads & geography
   const compiled = useMemo(() => {
@@ -360,6 +371,30 @@ export function WestgateMinimap({
           ctx.lineWidth = 1.4 / zoom;
           ctx.strokeStyle = "#0a0d08";
           ctx.stroke();
+        }
+      }
+
+      // Campaign Contract Beacons (M0–M6) linking Westgate Bay to Campaign Missions
+      if (sample.contracts) {
+        const rC = 7.4 / zoom;
+        for (const c of sample.contracts) {
+          ctx.beginPath();
+          ctx.arc(c.x, c.z, rC, 0, TAU);
+          ctx.fillStyle = c.completed ? "#fbbf24" : c.unlocked ? "#f97316" : "#64748b";
+          ctx.fill();
+          ctx.lineWidth = 1.8 / zoom;
+          ctx.strokeStyle = "#0a0d08";
+          ctx.stroke();
+
+          ctx.save();
+          ctx.translate(c.x, c.z);
+          ctx.rotate(sample.heading);
+          ctx.font = `900 ${Math.max(8, Math.round(9.5 / zoom))}px ui-monospace, SFMono-Regular, monospace`;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillStyle = "#090b08";
+          ctx.fillText(`C${c.missionId}`, 0, 0.5 / zoom);
+          ctx.restore();
         }
       }
 

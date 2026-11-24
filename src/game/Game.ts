@@ -24,6 +24,7 @@ import { WEATHER_MODES, type WeatherMode } from "./vehicles/weather";
 import { VehicleAudio, type EngineHud } from "./vehicles/audio/VehicleAudio";
 import { TIME_OF_DAY_LABELS, TIME_OF_DAY_MODES, type TimeOfDayMode } from "./city/WestgateWorld";
 import type { MinimapData } from "./city/MinimapData";
+import { characterUrl, loadCharacterId } from "./characters";
 export { loadSave, SAVE_KEY };
 
 export type CameraPreset = "close" | "chase" | "far" | "hood" | "bumper" | "free";
@@ -119,6 +120,16 @@ export interface HudState {
   timeOfDay: TimeOfDayMode;
   timeOfDayLabel: string;
   activityToast: { title: string; subtitle: string; accent: string } | null;
+  nearbyContract: {
+    missionId: number;
+    codename: string;
+    name: string;
+    location: string;
+    unlocked: boolean;
+    completed: boolean;
+    accent: string;
+  } | null;
+  hasOpenWorldReturn: boolean;
   cameraPreset: CameraPreset;
   credits: number;
   vehicle: { active: boolean; name: string; kind: string; speedKmh: number; rpm: number; gear: number; redline: number; nearbyName: string | null } | null;
@@ -131,6 +142,8 @@ export type Held = "fire" | "ads" | "sprint" | "crouch";
 export interface GameCallbacks {
   onHud: (s: HudState) => void;
   onMissionEnd: (mission: MissionDef, success: boolean, reward?: MissionReward) => void;
+  /** player character GLB URL (defaults to the saved Rocketbox operator) */
+  characterUrl?: string;
 }
 
 function disposeObject(obj: THREE.Object3D) {
@@ -155,6 +168,8 @@ export class Game {
   world!: World;
   level: LevelResult | null = null;
   rig!: SoldierRig;
+  /** character GLB URL the current rig was loaded from (reload on change) */
+  private rigUrl: string | null = null;
   fx = new CombatFX();
   sfx = new Sfx();
 
@@ -251,6 +266,8 @@ export class Game {
   private vehAudio = new VehicleAudio();
   private engineHud: EngineHud | null = null;
   private crashAudioCd = 0;
+  private nearbyContractSpot: { missionId: number; x: number; z: number; yawDeg: number } | null = null;
+  private openWorldReturnSpot: { x: number; z: number; yawDeg: number } | null = null;
 
   constructor(
     private container: HTMLElement,
@@ -357,20 +374,42 @@ export class Game {
     fill.position.set(-1.6, 1.8, 3.6);
     this.missionRoot.add(hemi, key, rim, fill);
 
+    const wantUrl = characterUrl(loadCharacterId());
+    await this.ensurePlayerRig(wantUrl);
+    if (!this.menuHangar || this.disposed) return;
+
+    const save = loadSave();
+    this.stats = getPlayerStats(save);
+    this.poseRigForMenuHangar(save);
+
+    this.emitHud();
+    this.startLoop();
+  }
+
+  private async ensurePlayerRig(wantUrl: string) {
+    if (this.rig && this.rigUrl !== wantUrl) {
+      this.rig.dispose();
+      this.rig = undefined as unknown as SoldierRig;
+    }
     if (!this.rig) {
-      this.rig = await SoldierRig.load(this.scene, (p) => {
-        this.progress = Math.round(p * 100);
-        this.emitHud();
-      });
+      this.rigUrl = wantUrl;
+      this.rig = await SoldierRig.load(
+        this.scene,
+        (p) => {
+          this.progress = Math.round(p * 100);
+          this.emitHud();
+        },
+        wantUrl,
+      );
       if (this.disposed) return;
       this.rig.initArsenal();
       this.rig.rifle.muzzle.add(this.fx.flash);
       this.attachRigEvents();
     }
-    if (!this.menuHangar || this.disposed) return;
+  }
 
-    const save = loadSave();
-    this.stats = getPlayerStats(save);
+  private poseRigForMenuHangar(save = loadSave()) {
+    if (!this.rig) return;
     this.rig.respawn(new THREE.Vector3(0, 0.1, 0));
     this.rig.root.position.y = 0.1;
     this.rig.groundY = 0.1;
@@ -390,9 +429,16 @@ export class Game {
     this.rig.setAppearance(save.appearance);
     this.rig.aimPoint.set(Math.sin(this.menuYaw) * 10, 1.32, Math.cos(this.menuYaw) * 10);
     for (let i = 0; i < 20; i++) this.rig.update(0.05, 0.1);
+  }
 
-    this.emitHud();
-    this.startLoop();
+  /** Hot-swap the player's 3D character model (e.g. from the Operator Customizer). */
+  async setPlayerCharacter(url: string) {
+    await this.ensurePlayerRig(url);
+    if (this.disposed) return;
+    if (this.menuHangar) {
+      this.poseRigForMenuHangar(loadSave());
+      this.emitHud();
+    }
   }
 
   previewWeapon(idx: number) {
@@ -450,9 +496,21 @@ export class Game {
   }
 
   /* ------------------------------------------------------------ */
-  async startMission(id: number, cb: GameCallbacks) {
+  async startMission(id: number, cb: GameCallbacks, opts?: { fromOpenWorld?: boolean }) {
     this.menuHangar = false;
     this.cb = cb;
+    if (opts?.fromOpenWorld && this.mission?.id === -1 && this.rig) {
+      const av = this.level?.vehicles?.activeVehicle;
+      const rx = av ? av.pos.x : this.rig.root.position.x;
+      const rz = av ? av.pos.z : this.rig.root.position.z;
+      const rYaw = THREE.MathUtils.radToDeg(av ? av.yaw : this.camYaw);
+      this.openWorldReturnSpot = { x: rx, z: rz, yawDeg: rYaw };
+    } else if (!opts?.fromOpenWorld && id !== -1) {
+      this.openWorldReturnSpot = null;
+    }
+    this.nearbyContractSpot = null;
+    this.vehAudio.setActive(false);
+    this.engineHud = null;
     this.phase = "loading";
     this.stats = getPlayerStats();
     this.maxHealth = this.stats.maxHp;
@@ -524,17 +582,10 @@ export class Game {
     this.level = buildLevel(mission.id, this.missionRoot, this.scene, this.renderer);
     this.world = this.level;
 
-    // player rig (loaded once, reused across missions)
-    if (!this.rig) {
-      this.rig = await SoldierRig.load(this.scene, (p) => {
-        this.progress = Math.round(p * 100);
-        this.emitHud();
-      });
-      if (this.disposed) return;
-      this.rig.initArsenal();
-      this.rig.rifle.muzzle.add(this.fx.flash);
-      this.attachRigEvents();
-    }
+    // player rig (loaded once, reloaded when the selected character changes)
+    const wantUrl = cb.characterUrl ?? characterUrl(loadCharacterId());
+    await this.ensurePlayerRig(wantUrl);
+    if (this.disposed) return;
     const sp = mission.spawn;
     this.rig.worldBound = mission.id === -1 ? 1185 : 260;
     const spawnY = this.level.groundHeightAt(sp[0], sp[1], 200);
@@ -600,6 +651,7 @@ export class Game {
       built++;
       this.progress = Math.round((built / totalEnemies) * 100);
       this.emitHud();
+      if (built % 2 === 0) await new Promise((r) => setTimeout(r, 0));
     }
 
     // Pooled SpotLights for closest night guards' tactical flashlights
@@ -748,6 +800,11 @@ export class Game {
           break;
         case "KeyV":
           this.tryTakedown();
+          break;
+        case "KeyG":
+          if (this.mission?.id === -1 && this.nearbyContractSpot && this.phase === "ready" && !this.paused) {
+            this.launchNearbyContract();
+          }
           break;
         case "KeyF":
           this.tryToggleVehicle();
@@ -1396,6 +1453,7 @@ export class Game {
 
   /* ------------------------------------------------------------ */
   private frame(rawDt: number) {
+    if (this.phase === "loading") return;
     const rig = this.rig;
     const dt = rawDt * this.timeScale;
 
@@ -1534,6 +1592,10 @@ export class Game {
               this.activityToastTimer = 4.0;
             }
           }
+          const nearC = this.level.activities.findNearbyContract(activeVeh.pos, 9.0);
+          this.nearbyContractSpot = nearC
+            ? { missionId: nearC.missionId, x: nearC.x, z: nearC.z, yawDeg: nearC.yawDeg }
+            : null;
         }
 
         if (this.vehCam.preset === "free") {
@@ -1599,6 +1661,15 @@ export class Game {
           this.nearbyVehicleName = nearV ? nearV.spec.name : null;
         } else {
           this.nearbyVehicleName = null;
+        }
+        if (this.mission?.id === -1 && this.level?.activities) {
+          this.level.activities.update(dt, rig.root.position, rig.speed, false);
+          const nearC = this.level.activities.findNearbyContract(rig.root.position, 8.5);
+          this.nearbyContractSpot = nearC
+            ? { missionId: nearC.missionId, x: nearC.x, z: nearC.z, yawDeg: nearC.yawDeg }
+            : null;
+        } else {
+          this.nearbyContractSpot = null;
         }
         this.level?.updateWeatherFx?.(dt, this.camera.position, this.camera, rig.speed);
 
@@ -1904,6 +1975,48 @@ export class Game {
       this.camYaw = nearV.yaw;
       this.camPitch = 0.14;
       this.emitHud();
+      return;
+    }
+
+    if (this.mission?.id === -1 && this.nearbyContractSpot) {
+      this.launchNearbyContract();
+    }
+  }
+
+  launchNearbyContract() {
+    if (!this.nearbyContractSpot) return;
+    const threshold = Math.max(1, loadSave().unlocked);
+    if (this.nearbyContractSpot.missionId > threshold) {
+      this.activityToast = {
+        title: `Contract C${this.nearbyContractSpot.missionId} Locked`,
+        subtitle: `Complete Contract C${this.nearbyContractSpot.missionId - 1} first`,
+        accent: "#f87171",
+      };
+      this.activityToastTimer = 3.0;
+      this.emitHud();
+      return;
+    }
+    this.launchContractFromOpenWorld(this.nearbyContractSpot.missionId);
+  }
+
+  launchContractFromOpenWorld(missionId: number) {
+    if (!this.cb) return;
+    if (document.pointerLockElement) document.exitPointerLock();
+    this.paused = false;
+    this.pausedRendered = false;
+    void this.startMission(missionId, this.cb, { fromOpenWorld: true });
+  }
+
+  async returnToOpenWorld() {
+    if (!this.cb) return;
+    if (document.pointerLockElement) document.exitPointerLock();
+    const ret = this.openWorldReturnSpot;
+    this.openWorldReturnSpot = null;
+    this.paused = false;
+    this.pausedRendered = false;
+    await this.startMission(-1, this.cb);
+    if (ret && !this.disposed) {
+      this.teleportTo(ret.x, ret.z, ret.yawDeg);
     }
   }
 
@@ -1923,6 +2036,14 @@ export class Game {
       this.yaw = this.camYaw = r;
     }
     this.level.update(0.016, this.rig.root.position);
+    if (this.mission?.id === -1 && this.level.activities) {
+      const nearC = this.level.activities.findNearbyContract(this.rig.root.position, 8.5);
+      this.nearbyContractSpot = nearC
+        ? { missionId: nearC.missionId, x: nearC.x, z: nearC.z, yawDeg: nearC.yawDeg }
+        : null;
+    } else {
+      this.nearbyContractSpot = null;
+    }
     this.emitHud();
   }
 
@@ -1938,6 +2059,7 @@ export class Game {
     speedKmh: number;
     vehicles: { x: number; z: number; isNpc: boolean; active: boolean }[];
     traps: { id: string; x: number; z: number; beaten: boolean }[];
+    contracts: { missionId: number; x: number; z: number; unlocked: boolean; completed: boolean }[];
   } | null {
     if (!this.rig || this.mission?.id !== -1) return null;
     const vehiclesMgr = this.level?.vehicles;
@@ -1959,6 +2081,7 @@ export class Game {
       }
     }
     const traps = this.level?.activities ? this.level.activities.getTrapSummaries() : [];
+    const contracts = this.level?.activities ? this.level.activities.getContractSummaries() : [];
     return {
       x,
       z,
@@ -1967,6 +2090,7 @@ export class Game {
       speedKmh: activeVeh ? Math.round(Math.abs(activeVeh.speed) * 3.6) : 0,
       vehicles: nearbyVehicles,
       traps,
+      contracts,
     };
   }
 
@@ -2041,7 +2165,24 @@ export class Game {
     const weatherLabel = this.level?.getWeatherLabel?.() ?? "Clear";
     const timeOfDay = this.level?.timeOfDay ?? "afternoon";
     const timeOfDayLabel = TIME_OF_DAY_LABELS[timeOfDay];
-    const credits = loadSave().currencies.credits;
+    const save = loadSave();
+    const credits = save.currencies.credits;
+    let nearbyContract: HudState["nearbyContract"] = null;
+    if (isOpenWorld && this.nearbyContractSpot) {
+      const cm = MISSIONS.find((mi) => mi.id === this.nearbyContractSpot!.missionId);
+      if (cm) {
+        nearbyContract = {
+          missionId: cm.id,
+          codename: cm.codename,
+          name: cm.name,
+          location: cm.location,
+          unlocked: cm.id <= Math.max(1, save.unlocked),
+          completed: !!save.records[cm.id]?.completed,
+          accent: cm.accent,
+        };
+      }
+    }
+    const hasOpenWorldReturn = !isOpenWorld && this.openWorldReturnSpot !== null;
     this.onHud({
       loading: this.phase === "loading",
       progress: this.progress,
@@ -2093,6 +2234,8 @@ export class Game {
       timeOfDay,
       timeOfDayLabel,
       activityToast: this.activityToast,
+      nearbyContract,
+      hasOpenWorldReturn,
       cameraPreset: this.vehCam.preset,
       credits,
       vehicle,

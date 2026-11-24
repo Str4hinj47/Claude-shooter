@@ -7,16 +7,28 @@ import { buildEquipment, type SoldierEquipment } from "./equipment";
 import type { SoldierAppearance } from "../game/progression";
 import { Spring, clamp, damp, dampAngle, easeInOut, lerp, smoothstep, wrapAngle } from "./math";
 
-let cachedGltfPromise: Promise<GLTF> | null = null;
-function loadCachedSoldierGltf(onProgress?: (p: number) => void): Promise<GLTF> {
-  if (!cachedGltfPromise) {
-    cachedGltfPromise = new GLTFLoader().loadAsync(soldierUrl, (e) => {
+interface CalibrationData {
+  walkN: number;
+  runN: number;
+  walkStride: number;
+  runStride: number;
+  walkOff: number;
+  runOff: number;
+}
+
+const cachedGltfMap = new Map<string, Promise<GLTF>>();
+const calibratedCache = new Map<string, CalibrationData>();
+function loadCachedSoldierGltf(url: string, onProgress?: (p: number) => void): Promise<GLTF> {
+  let promise = cachedGltfMap.get(url);
+  if (!promise) {
+    promise = new GLTFLoader().loadAsync(url, (e) => {
       if (e.total) onProgress?.(e.loaded / e.total);
     });
+    cachedGltfMap.set(url, promise);
   } else {
     onProgress?.(1);
   }
-  return cachedGltfPromise;
+  return promise;
 }
 
 /* ------------------------------------------------------------------ */
@@ -129,6 +141,12 @@ export class SoldierRig {
   private actions!: { idle: THREE.AnimationAction; walk: THREE.AnimationAction; run: THREE.AnimationAction };
   private bones: Record<string, THREE.Object3D> = {};
   private handBind = {} as Record<Side, HandBind>;
+  /** bind-pose hips local position (restored each frame when clips don't animate it) */
+  private bindHipsLocal = new THREE.Vector3();
+  /** true when a locomotion clip has a Hips position track (Mixamo mocap does, Rocketbox doesn't) */
+  private hipsPosAnimated = true;
+  /** true when loaded from a custom Rocketbox character GLB (baked clothing/gear, no procedural vest) */
+  readonly isRocketbox: boolean;
   rifle: Rifle;
   private weapons = new Map<WeaponId, Rifle>();
   weaponMagSize = MAG_SIZE;
@@ -219,14 +237,30 @@ export class SoldierRig {
   private tmpV = new THREE.Vector3();
   private time = 0;
 
-  private constructor(scene: THREE.Object3D) {
+  private constructor(scene: THREE.Object3D, isRocketbox = false) {
     this.scene = scene;
+    this.isRocketbox = isRocketbox;
     this.rifle = buildRifle();
     this.rifle.group.scale.setScalar(WS);
     scene.add(this.rifle.group);
     this.weapons.set("carbine", this.rifle);
     this.root.add(this.fall);
     scene.add(this.root);
+  }
+
+  /** Remove character root and all weapon meshes from the scene (used when switching operators). */
+  dispose() {
+    this.scene.remove(this.root);
+    for (const w of this.weapons.values()) {
+      this.scene.remove(w.group);
+    }
+    for (const p of this.props) {
+      this.scene.remove(p.obj);
+    }
+    if (this.weaponProp) {
+      this.scene.remove(this.weaponProp.obj);
+      this.weaponProp = null;
+    }
   }
 
   /** Swap to a single weapon model (used by mission-specific enemy factions). */
@@ -291,15 +325,21 @@ export class SoldierRig {
   /* ---------------------------------------------------------------- */
   /*  Loading + calibration                                            */
   /* ---------------------------------------------------------------- */
-  static async load(scene: THREE.Object3D, onProgress?: (p: number) => void): Promise<SoldierRig> {
-    const rig = new SoldierRig(scene);
-    const gltf = await loadCachedSoldierGltf(onProgress);
+  static async load(
+    scene: THREE.Object3D,
+    onProgress?: (p: number) => void,
+    modelUrl?: string,
+  ): Promise<SoldierRig> {
+    const isRocketbox = !!modelUrl;
+    const url = modelUrl ?? soldierUrl;
+    const rig = new SoldierRig(scene, isRocketbox);
+    const gltf = await loadCachedSoldierGltf(url, onProgress);
     const clonedScene = SkeletonUtils.clone(gltf.scene) as THREE.Group;
-    rig.setup({ scene: clonedScene, animations: gltf.animations });
+    rig.setup({ scene: clonedScene, animations: gltf.animations }, url);
     return rig;
   }
 
-  private setup(gltf: { scene: THREE.Group; animations: THREE.AnimationClip[] }) {
+  private setup(gltf: { scene: THREE.Group; animations: THREE.AnimationClip[] }, cacheKey?: string) {
     const model = gltf.scene;
     this.model = model;
     // the source asset faces -Z; the rig's convention is +Z forward
@@ -375,16 +415,27 @@ export class SoldierRig {
       a.setEffectiveWeight(0);
     });
     this.actions.idle.setEffectiveWeight(1);
-    this.calibrate();
+    // does any clip animate the hips position? (decides whether applyLegs
+    // must restore the bind offset before lowering — see captureBind)
+    this.hipsPosAnimated = gltf.animations.some((c) =>
+      c.tracks.some((t) => t.name.includes("Hips.position")),
+    );
+    this.calibrate(cacheKey);
     this.mixer.update(0);
     model.updateMatrixWorld(true);
   }
 
   private captureBind() {
+    // remember the bind hips offset: applyLegs() lowers hips every frame, and
+    // if no clip animates hips position the mixer never resets it — without
+    // restoring the bind offset the lowering would accumulate and sink the
+    // character through the ground (Rocketbox clips have no pelvis position
+    // tracks; Mixamo clips do).
+    this.bindHipsLocal.copy(this.bones.Hips.position);
     const modelQInv = this.model.getWorldQuaternion(new THREE.Quaternion()).invert();
     (["Left", "Right"] as Side[]).forEach((side) => {
       const hand = this.bones[`${side}Hand`];
-      const mid = this.bones[`${side}HandMiddle1`];
+      const mid = this.bones[`${side}HandMiddle1`] ?? this.bones[`${side}HandMiddle`];
       const hp = hand.getWorldPosition(new THREE.Vector3());
       const mp = mid.getWorldPosition(new THREE.Vector3());
       const f0 = mp.sub(hp).normalize();
@@ -393,12 +444,25 @@ export class SoldierRig {
       const bindQ = modelQInv.clone().multiply(hand.getWorldQuaternion(new THREE.Quaternion()));
       const fingers: HandBind["fingers"] = {};
       FINGERS.forEach((fn) => {
-        fingers[fn] = [1, 2, 3].map((i) => {
-          const b = this.bones[`${side}Hand${fn}${i}`];
-          const child = this.bones[`${side}Hand${fn}${i + 1}`];
+        // Finger chains differ per rig: Mixamo has 4 numbered segments (1-4),
+        // Rocketbox/Bip01 has an unnumbered base + 2 numbered segments.
+        const numbered = [1, 2, 3, 4]
+          .map((i) => this.bones[`${side}Hand${fn}${i}`])
+          .filter((b): b is THREE.Object3D => !!b);
+        const base = this.bones[`${side}Hand${fn}`];
+        const chain = base ? [base, ...numbered] : numbered;
+        fingers[fn] = chain.slice(0, 3).map((b, idx) => {
           const bp = b.getWorldPosition(new THREE.Vector3());
-          const cp = child.getWorldPosition(new THREE.Vector3());
-          const dir = cp.sub(bp).normalize();
+          const next = chain[idx + 1];
+          let dir: THREE.Vector3;
+          if (next) {
+            dir = next.getWorldPosition(new THREE.Vector3()).sub(bp).normalize();
+          } else {
+            const prev = chain[idx - 1];
+            dir = prev
+              ? bp.clone().sub(prev.getWorldPosition(new THREE.Vector3())).normalize()
+              : new THREE.Vector3(0, 0, 1);
+          }
           const axis = new THREE.Vector3().crossVectors(dir, p0).normalize(); // curls toward palm
           const bq = modelQInv.clone().multiply(b.getWorldQuaternion(new THREE.Quaternion()));
           return { bone: b, bindLocal: b.quaternion.clone(), axis: axis.applyQuaternion(bq.invert()) };
@@ -410,14 +474,26 @@ export class SoldierRig {
 
   /** Attach the procedural tactical loadout directly to the Mixamo bones. */
   private buildEquipment() {
-    if (!this.model || this.equipment) return;
+    if (this.isRocketbox || !this.model || this.equipment) return;
     const eq = buildEquipment();
     eq.attach(this.bones);
     this.equipment = eq;
   }
 
   /** Measure ground speed + phase of the walk/run clips so feet don't skate. */
-  private calibrate() {
+  private calibrate(cacheKey?: string) {
+    if (cacheKey) {
+      const cached = calibratedCache.get(cacheKey);
+      if (cached) {
+        this.walkN = cached.walkN;
+        this.runN = cached.runN;
+        this.walkStride = cached.walkStride;
+        this.runStride = cached.runStride;
+        this.walkOff = cached.walkOff;
+        this.runOff = cached.runOff;
+        return;
+      }
+    }
     const foot = this.bones["LeftFoot"];
     const N = 96;
     const out: Record<string, { speed: number; off: number; dur: number }> = {};
@@ -464,6 +540,16 @@ export class SoldierRig {
     this.runStride = this.runN * out.run.dur;
     this.walkOff = out.walk.off;
     this.runOff = out.run.off;
+    if (cacheKey) {
+      calibratedCache.set(cacheKey, {
+        walkN: this.walkN,
+        runN: this.runN,
+        walkStride: this.walkStride,
+        runStride: this.runStride,
+        walkOff: this.walkOff,
+        runOff: this.runOff,
+      });
+    }
     // eslint-disable-next-line no-console
     console.info("[SoldierRig] calibrated", { raw: [out.walk.speed, out.run.speed, out.walk.dur, out.run.dur], scale: this.model.scale.x, walkN: this.walkN, runN: this.runN, walkOff: this.walkOff, runOff: this.runOff });
   }
@@ -939,6 +1025,9 @@ export class SoldierRig {
     const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
     // lower hips (and push them back a little for balance)
     const hips = B.Hips;
+    // restore bind offset first when clips don't animate hips position,
+    // otherwise last frame's lowering persists and accumulates (sink bug)
+    if (!this.hipsPosAnimated) hips.position.copy(this.bindHipsLocal);
     const hp = hips.getWorldPosition(new THREE.Vector3());
     hp.y -= depth;
     hp.addScaledVector(fwd, -depth * 0.35);
@@ -1021,8 +1110,13 @@ export class SoldierRig {
     // save pose before IK so we can blend out on death
     const armBones = [B.LeftArm, B.LeftForeArm, B.LeftHand, B.RightArm, B.RightForeArm, B.RightHand];
     FINGERS.forEach((f) => {
-      [1, 2, 3].forEach((i) => {
-        armBones.push(B[`Left${"Hand"}${f}${i}`], B[`Right${"Hand"}${f}${i}`]);
+      const names = [
+        `LeftHand${f}`,
+        `RightHand${f}`,
+        ...[1, 2, 3].flatMap((i) => [`LeftHand${f}${i}`, `RightHand${f}${i}`]),
+      ];
+      names.forEach((n) => {
+        if (B[n]) armBones.push(B[n]);
       });
     });
     const saved = this.ikW < 0.999 ? armBones.map((b) => b.quaternion.clone()) : null;
@@ -1334,6 +1428,10 @@ export class SoldierRig {
   /** Apply full player customization (armor color/finish, tactical gear color/modules, visor glow, weapon skin). */
   setAppearance(app: SoldierAppearance) {
     if (!this.model) return;
+    for (const w of this.weapons.values()) {
+      tintWeapon(w, app.weaponFinish);
+    }
+    if (this.isRocketbox) return;
     const armor = new THREE.Color(app.armorColor);
     const gear = new THREE.Color(app.gearColor);
     const visor = new THREE.Color(app.visorColor);
@@ -1371,10 +1469,6 @@ export class SoldierRig {
         }
       });
     });
-
-    for (const w of this.weapons.values()) {
-      tintWeapon(w, app.weaponFinish);
-    }
   }
 
   /** Slight height variation so no two soldiers are identical. */

@@ -7,7 +7,14 @@ import {
   type ObjectiveState,
 } from "./game/Game";
 import { MISSIONS, OPEN_WORLD_MISSION, type MissionDef } from "./game/story";
-import { WESTGATE_TELEPORTS } from "./game/city";
+import { WESTGATE_CONTRACT_SPOTS, WESTGATE_TELEPORTS } from "./game/city";
+import {
+  CHARACTERS,
+  characterPreview,
+  characterUrl,
+  loadCharacterId,
+  saveCharacterId,
+} from "./game/characters";
 import {
   canAfford,
   DEFAULT_APPEARANCE,
@@ -35,7 +42,6 @@ import { WEATHER_MODES, type WeatherMode } from "./game/vehicles/weather";
 import { TIME_OF_DAY_LABELS, TIME_OF_DAY_MODES, type TimeOfDayMode } from "./game/city/WestgateWorld";
 import { WestgateMinimap } from "./components/WestgateMinimap";
 import { WEAPONS } from "./character/rifle";
-import soldierUrl from "./assets/soldier.glb?url";
 import creditsIcon from "./assets/currencies/credits.png";
 import intelIcon from "./assets/currencies/intel.png";
 import salvageIcon from "./assets/currencies/salvage.png";
@@ -95,6 +101,8 @@ const initial: HudState = {
   timeOfDay: "afternoon",
   timeOfDayLabel: "Afternoon",
   activityToast: null,
+  nearbyContract: null,
+  hasOpenWorldReturn: false,
   cameraPreset: "close",
   credits: 180,
   vehicle: null,
@@ -115,6 +123,7 @@ const KEYS: [string, string][] = [
   ["Scroll Wheel", "Zoom Optic (ADS)"],
   ["1 – 4", "Switch Weapon"],
   ["F (hold / press)", "Interact / Enter & Exit Car"],
+  ["G", "Launch Nearby Contract (Westgate)"],
   ["C", "Crouch (on foot) / Cycle Camera (driving)"],
   ["B", "Cycle Weather (Auto / Clear / Rain / Snow)"],
   ["V", "Silent Takedown"],
@@ -200,10 +209,12 @@ export default function App() {
     return next;
   });
   const [upgradeTab, setUpgradeTab] = useState<UpgradeCategory>("weapons");
-  const [customTab, setCustomTab] = useState<"colors" | "gear">("colors");
+  const [customTab, setCustomTab] = useState<"operator" | "colors" | "gear">("operator");
+  const [characterId, setCharacterId] = useState<string>(loadCharacterId);
   const [, setCamTick] = useState(0);
   const [gpsTargetId, setGpsTargetId] = useState<string | null>(null);
   const [endInfo, setEndInfo] = useState<{ mission: MissionDef; success: boolean; reward?: MissionReward } | null>(null);
+  const selectedCharacter = CHARACTERS.find((c) => c.id === characterId) ?? CHARACTERS[0];
 
   const handleBuyCar = (carId: CarId) => {
     const updated = purchaseCar(carId);
@@ -255,7 +266,14 @@ export default function App() {
         setEndInfo({ mission, success, reward });
         setSave(loadSave());
       },
+      characterUrl: characterUrl(characterId),
     });
+  };
+
+  const handleSelectCharacter = (id: string) => {
+    setCharacterId(id);
+    saveCharacterId(id);
+    void game.current?.setPlayerCharacter(characterUrl(id));
   };
 
   const exitToScreen = (target: Exclude<Screen, "playing">) => {
@@ -310,8 +328,8 @@ export default function App() {
 
   const download = () => {
     const a = document.createElement("a");
-    a.href = soldierUrl;
-    a.download = "soldier_rigged.glb";
+    a.href = characterUrl(characterId);
+    a.download = `${characterId}_rigged.glb`;
     a.click();
   };
 
@@ -440,14 +458,22 @@ export default function App() {
                     onClick={() => setScreen("customize")}
                     className="flex items-center justify-between rounded-lg border border-white/12 bg-white/[0.04] px-5 py-3 text-left transition hover:border-cyan-400/45 hover:bg-white/[0.09]"
                   >
-                    <div>
-                      <div className="text-xs font-bold uppercase tracking-[0.2em] text-white">Customize Operative</div>
-                      <div className="text-[11px] text-zinc-400">Armor paint, visor optics, weapon skin &amp; tactical gear</div>
+                    <div className="flex items-center gap-3">
+                      <img
+                        src={characterPreview(selectedCharacter.id)}
+                        alt={selectedCharacter.name}
+                        className="h-9 w-9 rounded-md border border-white/20 object-cover object-top"
+                      />
+                      <div>
+                        <div className="text-xs font-bold uppercase tracking-[0.2em] text-white">
+                          Operator · {selectedCharacter.name}
+                        </div>
+                        <div className="text-[11px] text-zinc-400">12 playable characters, weapon camo &amp; tactical gear</div>
+                      </div>
                     </div>
-                    <span
-                      className="h-3.5 w-3.5 rounded-full border border-white/30"
-                      style={{ background: save.appearance.armorColor }}
-                    />
+                    <span className="rounded-full bg-cyan-400/15 px-2.5 py-0.5 font-mono text-[10px] font-bold uppercase text-cyan-300">
+                      12 Models
+                    </span>
                   </button>
 
                   <button
@@ -519,7 +545,7 @@ export default function App() {
               {/* Right-side hint over the 3D soldier */}
               <div className="pointer-events-none hidden self-end pb-2 text-right lg:block">
                 <div className="font-mono text-[10px] uppercase tracking-[0.3em] text-zinc-500">
-                  Drag to rotate operative · {WEAPONS[save.selectedWeapon]?.name}
+                  Drag to rotate {selectedCharacter.name} · {WEAPONS[save.selectedWeapon]?.name}
                 </div>
               </div>
             </div>
@@ -587,6 +613,7 @@ export default function App() {
                       <span>Sector: <b className="text-zinc-200">{selectedMission.location}</b></span>
                       <span>Time: <b className="text-zinc-200">{selectedMission.timeOfDay}</b></span>
                       <span>Guards: <b className="text-zinc-200">{selectedMission.enemies.length} · {selectedMission.tintName}</b></span>
+                      <span>Operator: <b className="text-cyan-300">{selectedCharacter.name}</b></span>
                     </div>
                   </div>
 
@@ -787,23 +814,33 @@ export default function App() {
           {/* ================= CUSTOMIZE OPERATIVE SCREEN ================= */}
           {screen === "customize" && (
             <div className="pointer-events-auto relative z-10 flex flex-1 overflow-hidden px-8 py-6">
-              <div className="flex w-full max-w-xl flex-col gap-4 overflow-y-auto pr-2">
+              <div className="flex w-full max-w-2xl flex-col gap-4 overflow-y-auto pr-2">
                 {/* Tabs + Quick Randomize/Reset */}
                 <div className="flex items-center justify-between gap-3">
-                  <div className="grid flex-1 grid-cols-2 gap-2">
+                  <div className="grid flex-1 grid-cols-3 gap-2">
+                    <button
+                      onClick={() => setCustomTab("operator")}
+                      className={`rounded-lg border py-2 text-xs font-bold uppercase tracking-[0.16em] transition ${
+                        customTab === "operator"
+                          ? "border-amber-400/75 bg-amber-400/15 text-amber-200"
+                          : "border-white/10 bg-black/55 text-zinc-400 hover:text-zinc-200"
+                      }`}
+                    >
+                      Operator (12)
+                    </button>
                     <button
                       onClick={() => setCustomTab("colors")}
-                      className={`rounded-lg border py-2 text-xs font-bold uppercase tracking-[0.18em] transition ${
+                      className={`rounded-lg border py-2 text-xs font-bold uppercase tracking-[0.16em] transition ${
                         customTab === "colors"
                           ? "border-cyan-400/70 bg-cyan-400/15 text-cyan-200"
                           : "border-white/10 bg-black/55 text-zinc-400 hover:text-zinc-200"
                       }`}
                     >
-                      Colors &amp; Finish
+                      Camo &amp; Paint
                     </button>
                     <button
                       onClick={() => setCustomTab("gear")}
-                      className={`rounded-lg border py-2 text-xs font-bold uppercase tracking-[0.18em] transition ${
+                      className={`rounded-lg border py-2 text-xs font-bold uppercase tracking-[0.16em] transition ${
                         customTab === "gear"
                           ? "border-cyan-400/70 bg-cyan-400/15 text-cyan-200"
                           : "border-white/10 bg-black/55 text-zinc-400 hover:text-zinc-200"
@@ -825,6 +862,56 @@ export default function App() {
                     Reset
                   </button>
                 </div>
+
+                {customTab === "operator" && (
+                  <div className="space-y-3 rounded-xl border border-white/10 bg-black/65 p-4 backdrop-blur-md">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-bold uppercase tracking-[0.28em] text-zinc-300">
+                        Choose Your Operator
+                      </span>
+                      <span className="font-mono text-xs text-zinc-400">
+                        Active: <b className="text-amber-300">{selectedCharacter.name}</b>
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2.5 sm:grid-cols-4">
+                      {CHARACTERS.map((c) => {
+                        const selected = c.id === characterId;
+                        return (
+                          <button
+                            key={c.id}
+                            onClick={() => handleSelectCharacter(c.id)}
+                            className={`group relative overflow-hidden rounded-xl border text-left transition ${
+                              selected
+                                ? "border-amber-400/80 bg-amber-400/12 shadow-[0_0_20px_rgba(245,197,66,0.16)]"
+                                : "border-white/10 bg-white/[0.03] hover:bg-white/[0.08]"
+                            }`}
+                            title={c.blurb}
+                          >
+                            <div className="aspect-[4/3] w-full overflow-hidden bg-black">
+                              <img
+                                src={characterPreview(c.id)}
+                                alt={c.name}
+                                className="h-full w-full object-cover object-top transition group-hover:scale-105"
+                                loading="lazy"
+                              />
+                            </div>
+                            <div className="p-2">
+                              <div className={`text-[11px] font-black uppercase tracking-wide ${selected ? "text-amber-300" : "text-zinc-200"}`}>
+                                {c.name}
+                              </div>
+                              <div className="mt-0.5 truncate text-[10px] text-zinc-500">{c.blurb}</div>
+                            </div>
+                            {selected && (
+                              <div className="absolute right-2 top-2 rounded-full bg-amber-400 px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wider text-black">
+                                ✓
+                              </div>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
 
                 {customTab === "colors" && (
                   <div className="space-y-4">
@@ -1255,7 +1342,7 @@ export default function App() {
                     onClick={download}
                     className="rounded-md border border-sky-400/40 bg-sky-500/15 px-4 py-2 text-[11px] font-bold uppercase tracking-widest text-sky-200 transition hover:bg-sky-500/30"
                   >
-                    Download Vanguard Rig (GLB)
+                    Download {selectedCharacter.name} Rig (GLB)
                   </button>
                   <button
                     onClick={() => setSave(resetSave())}
@@ -1620,6 +1707,38 @@ export default function App() {
             </div>
           )}
 
+          {/* [G] / [F] nearby campaign contract beacon in Westgate Bay */}
+          {hud.isOpenWorld && hud.nearbyContract && !hud.interact && !hud.dead && (
+            <div
+              className={`pointer-events-none absolute left-1/2 -translate-x-1/2 ${
+                hud.vehicle && !hud.vehicle.active && hud.vehicle.nearbyName ? "bottom-36" : "bottom-24"
+              }`}
+            >
+              <div
+                className="flex items-center gap-3 rounded-xl border bg-black/85 px-5 py-2.5 shadow-2xl backdrop-blur-md"
+                style={{ borderColor: hud.nearbyContract.unlocked ? `${hud.nearbyContract.accent}aa` : "rgba(148,163,184,0.4)" }}
+              >
+                <span
+                  className="rounded px-2 py-0.5 font-mono text-[11px] font-black uppercase text-black"
+                  style={{ background: hud.nearbyContract.unlocked ? hud.nearbyContract.accent : "#64748b" }}
+                >
+                  {hud.nearbyContract.unlocked ? "[G]" : "LOCKED"}
+                </span>
+                <div className="text-left">
+                  <div className="font-mono text-[10px] font-bold uppercase tracking-[0.22em]" style={{ color: hud.nearbyContract.accent }}>
+                    Contract C{hud.nearbyContract.missionId} · {hud.nearbyContract.codename}
+                    {hud.nearbyContract.completed ? " · Cleared" : ""}
+                  </div>
+                  <div className="text-xs font-black uppercase tracking-wider text-white">
+                    {hud.nearbyContract.unlocked
+                      ? `Start ${hud.nearbyContract.name}`
+                      : `Clear Contract C${hud.nearbyContract.missionId - 1} First`}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Westgate Bay Vector Minimap (bottom-left) */}
           {hud.isOpenWorld && hud.phase === "ready" && !hud.dead && (() => {
             const minimapData = game.current?.getMinimapData();
@@ -1764,13 +1883,21 @@ export default function App() {
                   <CurrencyBadge kind="salvage" amount={endInfo.reward.salvage} compact />
                 </div>
               )}
-              <div className="flex gap-4">
+              <div className="flex flex-wrap justify-center gap-4">
                 <button
                   onClick={() => game.current?.respawn()}
                   className="rounded-md border border-white/30 bg-white/10 px-7 py-2.5 text-sm font-bold uppercase tracking-widest backdrop-blur transition hover:bg-white/25"
                 >
                   Retry mission
                 </button>
+                {hud.hasOpenWorldReturn && (
+                  <button
+                    onClick={() => void game.current?.returnToOpenWorld()}
+                    className="rounded-md border border-sky-400/50 bg-sky-500/20 px-7 py-2.5 text-sm font-bold uppercase tracking-widest text-sky-200 backdrop-blur transition hover:bg-sky-500/35"
+                  >
+                    Return to Westgate Bay
+                  </button>
+                )}
                 <button
                   onClick={() => exitToScreen("upgrades")}
                   className="rounded-md border border-amber-400/40 bg-amber-400/15 px-7 py-2.5 text-sm font-bold uppercase tracking-widest text-amber-300 backdrop-blur transition hover:bg-amber-400/30"
@@ -1823,7 +1950,15 @@ export default function App() {
                   >
                     Armory
                   </button>
-                  <div className="flex gap-3">
+                  <div className="flex flex-wrap gap-3">
+                    {hud.hasOpenWorldReturn && (
+                      <button
+                        onClick={() => void game.current?.returnToOpenWorld()}
+                        className="rounded-md border border-sky-400/50 bg-sky-500/20 px-5 py-2.5 text-sm font-bold uppercase tracking-widest text-sky-200 transition hover:bg-sky-500/35"
+                      >
+                        Return to Westgate Bay
+                      </button>
+                    )}
                     <button
                       onClick={() => exitToScreen("home")}
                       className="rounded-md border border-white/15 px-4 py-2.5 text-sm font-bold uppercase tracking-widest text-zinc-300 transition hover:bg-white/10"
@@ -2037,6 +2172,74 @@ export default function App() {
                         </div>
                       </div>
 
+                      {/* Campaign Contracts in Westgate Bay */}
+                      <div className="rounded-xl border border-amber-400/25 bg-amber-950/15 p-3">
+                        <div className="mb-2 flex items-center justify-between text-[10px] font-bold uppercase tracking-[0.25em] text-amber-300">
+                          <span>Campaign Contracts (C0–C6)</span>
+                          <span className="font-mono text-[9px] text-zinc-400">Walk/Drive to Beacon [G] or Launch</span>
+                        </div>
+                        <div className="max-h-36 space-y-1.5 overflow-y-auto pr-1">
+                          {WESTGATE_CONTRACT_SPOTS.map((spot) => {
+                            const cm = MISSIONS.find((mi) => mi.id === spot.missionId);
+                            if (!cm) return null;
+                            const unlocked = cm.id <= Math.max(1, save.unlocked);
+                            const cleared = !!save.records[cm.id]?.completed;
+                            const gpsId = `contract:${cm.id}`;
+                            const isGps = gpsTargetId === gpsId;
+                            return (
+                              <div
+                                key={cm.id}
+                                className="flex items-center justify-between gap-1.5 rounded border border-white/10 bg-white/[0.03] px-2 py-1.5 text-left"
+                              >
+                                <div className="min-w-0 flex-1">
+                                  <div className="truncate text-[11px] font-bold text-zinc-100">
+                                    <span className="font-mono text-amber-300">C{cm.id}</span> · {cm.codename}
+                                    {cleared && <span className="ml-1.5 text-[9px] text-emerald-300">✓</span>}
+                                  </div>
+                                  <div className="truncate text-[9px] text-zinc-400">{spot.districtLabel}</div>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setGpsTargetId(isGps ? null : gpsId);
+                                    game.current?.setPaused(false);
+                                  }}
+                                  className={`shrink-0 rounded border px-1.5 py-1 font-mono text-[9px] font-bold uppercase transition ${
+                                    isGps
+                                      ? "border-cyan-400 bg-cyan-400/25 text-cyan-200"
+                                      : "border-white/10 bg-white/[0.04] text-zinc-400 hover:border-cyan-400/50 hover:text-cyan-200"
+                                  }`}
+                                >
+                                  GPS
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    game.current?.teleportTo(spot.x, spot.z + 6, spot.yawDeg);
+                                    game.current?.setPaused(false);
+                                  }}
+                                  className="shrink-0 rounded border border-white/10 bg-white/[0.04] px-1.5 py-1 font-mono text-[9px] font-bold uppercase text-zinc-300 transition hover:border-sky-400/50 hover:text-sky-200"
+                                >
+                                  Warp
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={!unlocked}
+                                  onClick={() => game.current?.launchContractFromOpenWorld(cm.id)}
+                                  className={`shrink-0 rounded px-2 py-1 font-mono text-[9px] font-black uppercase transition ${
+                                    unlocked
+                                      ? "bg-amber-400 text-black hover:bg-amber-300"
+                                      : "cursor-not-allowed bg-white/5 text-zinc-600"
+                                  }`}
+                                >
+                                  {unlocked ? "Play" : "Lock"}
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+
                       {/* Sector Fast-Travel & GPS */}
                       <div className="rounded-xl border border-sky-400/20 bg-sky-950/20 p-3">
                         <div className="mb-2 flex items-center justify-between text-[10px] font-bold uppercase tracking-[0.25em] text-sky-300">
@@ -2103,6 +2306,14 @@ export default function App() {
                   >
                     Restart mission
                   </button>
+                  {hud.hasOpenWorldReturn && (
+                    <button
+                      onClick={() => void game.current?.returnToOpenWorld()}
+                      className="w-full rounded-md border border-sky-400/40 bg-sky-500/15 py-2.5 text-xs font-bold uppercase tracking-widest text-sky-200 transition hover:bg-sky-500/25"
+                    >
+                      Return to Westgate Bay
+                    </button>
+                  )}
                   <button
                     onClick={() => exitToScreen("garage")}
                     className="w-full rounded-md border border-emerald-400/35 py-2.5 text-xs font-bold uppercase tracking-widest text-emerald-300 transition hover:bg-emerald-400/10"
