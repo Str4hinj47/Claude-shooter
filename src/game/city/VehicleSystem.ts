@@ -486,9 +486,24 @@ export class WestgateVehicleManager {
         void this.streamModel(v.modelId);
       }
 
-      // Update per-vehicle headlights, taillights, and brake glow
+      // Update per-vehicle headlights, taillights, brake glow & turn signals
       if (camera && v.modelRoot && v.group.visible && (d2 < 160 * 160 || v === this.activeVehicle)) {
         updateVehicleLights(v.modelRoot, camera, darkness, braking);
+        const ind = v.modelRoot.userData.indicatorState as
+          | { left: { value: number }; right: { value: number }; viewZ: { value: number } }
+          | undefined;
+        if (ind) {
+          const blink = ((performance.now() * 0.004) | 0) % 2 === 0 ? 1 : 0;
+          if (v === this.activeVehicle) {
+            ind.left.value = v.steerAngle > 0.14 ? blink : 0;
+            ind.right.value = v.steerAngle < -0.14 ? blink : 0;
+          } else {
+            ind.left.value = 0;
+            ind.right.value = 0;
+          }
+          const fwdDot = (camera.position.x - v.pos.x) * Math.sin(v.yaw) + (camera.position.z - v.pos.z) * Math.cos(v.yaw);
+          ind.viewZ.value = fwdDot < 0 ? 1 : -1;
+        }
       }
     }
   }
@@ -533,45 +548,104 @@ export class WestgateVehicleManager {
     this.advanceVehicleKinematics(v, dt);
   }
 
+  private isBlockedAt(x: number, gy: number, z: number, radius: number): boolean {
+    this.playerBox.set(
+      new THREE.Vector3(x - radius, gy + 0.35, z - radius),
+      new THREE.Vector3(x + radius, gy + 1.7, z + radius),
+    );
+    const hits = this.bridge.spatialAABBs.queryRect(x - radius, z - radius, x + radius, z + radius);
+    for (const h of hits) {
+      if (h.max.y <= gy + 0.5 || h.min.y >= gy + 1.75) continue;
+      this.aabbHit.copy(h);
+      if (this.aabbHit.intersectsBox(this.playerBox)) return true;
+    }
+    return false;
+  }
+
   private advanceVehicleKinematics(v: DriveableVehicle, dt: number): void {
     const prevX = v.pos.x;
     const prevZ = v.pos.z;
     const fx = Math.sin(v.yaw);
     const fz = Math.cos(v.yaw);
-    const nextX = THREE.MathUtils.clamp(prevX + fx * v.speed * dt, -1180, 1180);
-    const nextZ = THREE.MathUtils.clamp(prevZ + fz * v.speed * dt, -1180, 1180);
+    const targetX = THREE.MathUtils.clamp(prevX + fx * v.speed * dt, -1180, 1180);
+    const targetZ = THREE.MathUtils.clamp(prevZ + fz * v.speed * dt, -1180, 1180);
 
-    const gy = this.bridge.groundHeightAt(nextX, nextZ, v.pos.y + 1.8);
+    const gy = this.bridge.groundHeightAt(targetX, targetZ, v.pos.y + 1.8);
     if (gy < -0.6) {
-      v.speed *= -0.25;
+      v.speed *= -0.22;
       v.physState.speed = v.speed;
+      this.syncTransform(v, 0);
       return;
     }
 
-    const r = v.width * 0.52;
-    this.playerBox.set(
-      new THREE.Vector3(nextX - r, gy + 0.3, nextZ - r),
-      new THREE.Vector3(nextX + r, gy + 1.7, nextZ + r),
-    );
-    const hits = this.bridge.spatialAABBs.queryRect(nextX - r, nextZ - r, nextX + r, nextZ + r);
-    let blocked = false;
-    for (const h of hits) {
-      if (h.max.y <= gy + 0.45 || h.min.y >= gy + 1.75) continue;
-      this.aabbHit.copy(h);
-      if (this.aabbHit.intersectsBox(this.playerBox)) {
-        blocked = true;
-        break;
+    const r = v.width * 0.5;
+    let resolvedX = targetX;
+    let resolvedZ = targetZ;
+    let hitX = false;
+    let hitZ = false;
+
+    if (this.isBlockedAt(targetX, gy, targetZ, r)) {
+      // Axis-separated wall slide: keep whichever axis stays clear so curbs & walls slide cleanly
+      const xClear = !this.isBlockedAt(targetX, gy, prevZ, r);
+      const zClear = !this.isBlockedAt(prevX, gy, targetZ, r);
+      if (xClear && !zClear) {
+        resolvedZ = prevZ;
+        hitZ = true;
+      } else if (zClear && !xClear) {
+        resolvedX = prevX;
+        hitX = true;
+      } else if (xClear && zClear) {
+        resolvedZ = prevZ;
+        hitZ = true;
+      } else {
+        resolvedX = prevX;
+        resolvedZ = prevZ;
+        hitX = hitZ = true;
       }
     }
 
-    if (blocked) {
-      v.speed *= -0.2;
-      v.physState.speed = v.speed;
-    } else {
-      v.pos.set(nextX, gy, nextZ);
+    // Vehicle-to-vehicle physical separation & bump transfer
+    for (const other of this.vehicles) {
+      if (other === v) continue;
+      const dx = resolvedX - other.pos.x;
+      const dz = resolvedZ - other.pos.z;
+      if (Math.abs(dx) > 6 || Math.abs(dz) > 6 || Math.abs(gy - other.pos.y) > 2.2) continue;
+      const minSep = (v.width + other.width) * 0.55 + 0.25;
+      const d2 = dx * dx + dz * dz;
+      if (d2 > 0.0001 && d2 < minSep * minSep) {
+        const d = Math.sqrt(d2);
+        const nx = dx / d;
+        const nz = dz / d;
+        const overlap = minSep - d;
+        resolvedX += nx * overlap * 0.65;
+        resolvedZ += nz * overlap * 0.65;
+        if (!other.isNpcTraffic) {
+          other.pos.x -= nx * overlap * 0.35;
+          other.pos.z -= nz * overlap * 0.35;
+          other.speed += (fx * nx + fz * nz) * -v.speed * 0.35;
+        } else {
+          // Momentarily stun bumped NPC traffic
+          other.speed = 0;
+        }
+        v.speed *= 0.62;
+        v.physState.speed = v.speed;
+      }
     }
 
-    this.syncTransform(v, v.speed * dt);
+    if (hitX && hitZ) {
+      v.speed *= -0.18;
+      v.physState.speed = v.speed;
+    } else if (hitX || hitZ) {
+      // Gentle tangential friction when scraping a wall
+      const align = hitX ? Math.abs(fx) : Math.abs(fz);
+      v.speed *= Math.max(0.25, 1 - align * 0.65);
+      v.physState.speed = v.speed;
+    }
+
+    const finalY = this.bridge.groundHeightAt(resolvedX, resolvedZ, v.pos.y + 1.8);
+    v.pos.set(resolvedX, finalY < -0.6 ? v.pos.y : finalY, resolvedZ);
+    const moved = Math.hypot(resolvedX - prevX, resolvedZ - prevZ) * Math.sign(v.speed || 1);
+    this.syncTransform(v, moved);
   }
 
   private updateNpcTrafficVehicle(v: DriveableVehicle, dt: number, playerPos: THREE.Vector3): void {
@@ -588,9 +662,25 @@ export class WestgateVehicleManager {
     const dzP = playerPos.z - v.pos.z;
     const fwdDist = dxP * fx + dzP * fz;
     const latDist = Math.abs(-dxP * fz + dzP * fx);
-    const yieldToPlayer = fwdDist > 0 && fwdDist < 12 && latDist < 2.8;
+    let yieldAhead = fwdDist > 0 && fwdDist < 12 && latDist < 2.8;
 
-    const targetSpd = yieldToPlayer ? 0 : v.laneSpeed;
+    // Also maintain safe following distance behind ahead vehicles in the same corridor
+    if (!yieldAhead) {
+      for (const other of this.vehicles) {
+        if (other === v) continue;
+        const odx = other.pos.x - v.pos.x;
+        const odz = other.pos.z - v.pos.z;
+        if (Math.abs(odx) > 14 || Math.abs(odz) > 14) continue;
+        const oFwd = odx * fx + odz * fz;
+        const oLat = Math.abs(-odx * fz + odz * fx);
+        if (oFwd > 0.5 && oFwd < 10.5 && oLat < 2.5) {
+          yieldAhead = true;
+          break;
+        }
+      }
+    }
+
+    const targetSpd = yieldAhead ? 0 : v.laneSpeed;
     v.speed += (targetSpd - v.speed) * Math.min(1, dt * 3.5);
 
     let activeLane = v.lane!;

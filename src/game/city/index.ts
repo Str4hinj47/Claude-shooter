@@ -16,5 +16,6 @@ export * from "./FoothillsDistrict";
 export * from "./PortAirportDistrict";
 export * from "./WestgateProps";
 export * from "./VehicleSystem";
+export * from "./WestgateActivities";
 export * from "./MinimapData";
 export * from "./WestgateWorld";

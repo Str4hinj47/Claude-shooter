@@ -14,6 +14,7 @@ import { registerPortAirportDistrict } from "./PortAirportDistrict";
 import { populateWestgateProps } from "./WestgateProps";
 import { WestgateVehicleManager } from "./VehicleSystem";
 import { buildMinimapData, type MinimapData } from "./MinimapData";
+import { WestgateActivityManager } from "./WestgateActivities";
 import {
   createWeatherState,
   stepWeather,
@@ -60,15 +61,28 @@ export const WESTGATE_TELEPORTS: WestgateTeleportSpot[] = [
   { id: "south_airport", label: "South Airport Terminal Loop", x: -120, z: 850, yawDeg: 0 },
 ];
 
+export type TimeOfDayMode = "afternoon" | "sunset" | "night" | "dawn";
+export const TIME_OF_DAY_MODES: TimeOfDayMode[] = ["afternoon", "sunset", "night", "dawn"];
+export const TIME_OF_DAY_LABELS: Record<TimeOfDayMode, string> = {
+  afternoon: "Afternoon",
+  sunset: "Sunset",
+  night: "Night",
+  dawn: "Dawn",
+};
+
 export interface WestgateLevelResult extends LevelResult {
   openWorld: OpenWorldEngine;
   vehicles: WestgateVehicleManager;
+  activities: WestgateActivityManager;
   minimapData: MinimapData;
   getDistrictAt: typeof getDistrictAt;
   weather: WeatherState;
   setWeatherMode: (mode: WeatherMode) => void;
   getWeatherLabel: () => string;
   getWeatherGrip: () => number;
+  timeOfDay: TimeOfDayMode;
+  setTimeOfDay: (mode: TimeOfDayMode) => void;
+  getTimeOfDayDarkness: () => number;
   updateWeatherFx: (
     dt: number,
     camPos: THREE.Vector3,
@@ -133,15 +147,21 @@ export function buildWestgateWorld(
     THREE.MathUtils.degToRad(215),
   );
   const skyScene = new THREE.Scene();
-  skyScene.add(buildCoastalDaySky(sunDir));
+  const skyMesh = buildCoastalDaySky(sunDir);
+  skyScene.add(skyMesh);
 
   const cubeRT = new THREE.WebGLCubeRenderTarget(256, { type: THREE.HalfFloatType });
   const cubeCam = new THREE.CubeCamera(1, 10000, cubeRT);
-  cubeCam.update(renderer, skyScene);
-  main.background = cubeRT.texture;
   const pmrem = new THREE.PMREMGenerator(renderer);
-  main.environment = pmrem.fromCubemap(cubeRT.texture).texture;
-  pmrem.dispose();
+  let envRT: THREE.WebGLRenderTarget | null = null;
+  const rebuildSkyAndIBL = () => {
+    cubeCam.update(renderer, skyScene);
+    main.background = cubeRT.texture;
+    envRT?.dispose?.();
+    envRT = pmrem.fromCubemap(cubeRT.texture);
+    main.environment = envRT.texture;
+  };
+  rebuildSkyAndIBL();
   main.environmentIntensity = 0.45;
   main.fog = new THREE.FogExp2(0xadd0e8, 0.00038);
   renderer.toneMappingExposure = 0.92;
@@ -220,12 +240,14 @@ export function buildWestgateWorld(
   engine.finalizeStaticWorld(WESTGATE_SPAWN[0], WESTGATE_SPAWN[1]);
   content.add(engine.root);
 
-  // 9. Spawn driveable Overtake car fleet & ambient NPC road traffic
+  // 9. Spawn driveable Overtake car fleet & ambient NPC road traffic + Speed Traps
   const vehicles = new WestgateVehicleManager(engine);
   content.add(vehicles.root);
+  const activities = new WestgateActivityManager(terrainAt);
+  content.add(activities.root);
   const minimapData = buildMinimapData(engine.roads);
 
-  // 10. Rain & snow precipitation + tire road spray
+  // 10. Rain & snow precipitation + tire road spray + Time-of-Day lighting
   const weather = createWeatherState("auto");
   const precipitation = new Precipitation(main);
   const spray = new RoadSpray(main);
@@ -234,6 +256,76 @@ export function buildWestgateWorld(
   const snowFogColor = new THREE.Color(0xcbd6e2);
   const bgWeatherColor = new THREE.Color();
   let weatherElapsed = 0;
+
+  let currentTimeOfDay: TimeOfDayMode = "afternoon";
+  let todBaseSun = 2.25;
+  let todBaseHemi = 0.68;
+  let todDarkness = 0;
+
+  const applyTimeOfDay = (mode: TimeOfDayMode) => {
+    currentTimeOfDay = mode;
+    const u = (skyMesh.material as THREE.ShaderMaterial).uniforms;
+    if (mode === "afternoon") {
+      sunDir.setFromSphericalCoords(1, THREE.MathUtils.degToRad(90 - 42), THREE.MathUtils.degToRad(215));
+      u.uZenith.value.setHex(0x1f5ca6);
+      u.uMidSky.value.setHex(0x4c93d4);
+      u.uHorizon.value.setHex(0xadd0e8);
+      baseFogColor.setHex(0xadd0e8);
+      sun.color.setHex(0xfff1dc);
+      hemi.color.setHex(0x9bc8ef);
+      hemi.groundColor.setHex(0x564e3e);
+      todBaseSun = 2.25;
+      todBaseHemi = 0.68;
+      todDarkness = 0;
+      main.environmentIntensity = 0.45;
+      renderer.toneMappingExposure = 0.92;
+    } else if (mode === "sunset") {
+      sunDir.setFromSphericalCoords(1, THREE.MathUtils.degToRad(90 - 9), THREE.MathUtils.degToRad(258));
+      u.uZenith.value.setHex(0x1e2b58);
+      u.uMidSky.value.setHex(0x9b4d6e);
+      u.uHorizon.value.setHex(0xf59e6c);
+      baseFogColor.setHex(0xd4876e);
+      sun.color.setHex(0xff9f5a);
+      hemi.color.setHex(0xc68899);
+      hemi.groundColor.setHex(0x3b2d2b);
+      todBaseSun = 1.55;
+      todBaseHemi = 0.52;
+      todDarkness = 0.58;
+      main.environmentIntensity = 0.34;
+      renderer.toneMappingExposure = 0.95;
+    } else if (mode === "night") {
+      sunDir.setFromSphericalCoords(1, THREE.MathUtils.degToRad(90 - 38), THREE.MathUtils.degToRad(140));
+      u.uZenith.value.setHex(0x050914);
+      u.uMidSky.value.setHex(0x0c1730);
+      u.uHorizon.value.setHex(0x182747);
+      baseFogColor.setHex(0x131d33);
+      sun.color.setHex(0x9ab8f5);
+      hemi.color.setHex(0x3a5280);
+      hemi.groundColor.setHex(0x151822);
+      todBaseSun = 0.48;
+      todBaseHemi = 0.32;
+      todDarkness = 0.96;
+      main.environmentIntensity = 0.22;
+      renderer.toneMappingExposure = 0.98;
+    } else {
+      // dawn
+      sunDir.setFromSphericalCoords(1, THREE.MathUtils.degToRad(90 - 14), THREE.MathUtils.degToRad(86));
+      u.uZenith.value.setHex(0x284b7a);
+      u.uMidSky.value.setHex(0x7398bd);
+      u.uHorizon.value.setHex(0xf0c9a8);
+      baseFogColor.setHex(0xd6c0b0);
+      sun.color.setHex(0xffd2a6);
+      hemi.color.setHex(0xa8bfd8);
+      hemi.groundColor.setHex(0x4a423a);
+      todBaseSun = 1.65;
+      todBaseHemi = 0.58;
+      todDarkness = 0.35;
+      main.environmentIntensity = 0.38;
+      renderer.toneMappingExposure = 0.92;
+    }
+    u.uSunDir.value.copy(sunDir).normalize();
+    rebuildSkyAndIBL();
+  };
 
   const updateWeatherFx = (
     dt: number,
@@ -257,7 +349,7 @@ export function buildWestgateWorld(
       spray.update(dt, camPos, 0, 1.8, 4.2, 0, 0, 0);
     }
 
-    // Subtle atmospheric fog, overcast sky & sun attenuation for rain / snow
+    // Subtle atmospheric fog, overcast sky & sun attenuation for rain / snow + time of day
     const storm = Math.max(weather.rain, weather.snow);
     const fog = main.fog as THREE.FogExp2 | null;
     if (fog) {
@@ -265,7 +357,7 @@ export function buildWestgateWorld(
         .copy(baseFogColor)
         .lerp(stormFogColor, Math.min(1, weather.rain * 1.35))
         .lerp(snowFogColor, Math.min(1, weather.snow * 1.35));
-      fog.density = 0.00038 + weather.rain * 0.0022 + weather.snow * 0.0032;
+      fog.density = (currentTimeOfDay === "night" ? 0.00048 : 0.00038) + weather.rain * 0.0022 + weather.snow * 0.0032;
     }
     if (storm > 0.12 && fog) {
       bgWeatherColor.copy(fog.color).multiplyScalar(weather.rain > weather.snow ? 0.8 : 0.96);
@@ -273,8 +365,8 @@ export function buildWestgateWorld(
     } else {
       main.background = cubeRT.texture;
     }
-    sun.intensity = 2.25 * (1 - storm * 0.55);
-    hemi.intensity = 0.68 + weather.snow * 0.25 - weather.rain * 0.12;
+    sun.intensity = todBaseSun * (1 - storm * 0.55);
+    hemi.intensity = todBaseHemi + weather.snow * 0.2 - weather.rain * 0.1;
   };
 
   const update = (dt: number, focus: THREE.Vector3) => {
@@ -300,6 +392,7 @@ export function buildWestgateWorld(
     heightSystem: engine.heightSystem,
     openWorld: engine,
     vehicles,
+    activities,
     minimapData,
     getDistrictAt,
     weather,
@@ -321,10 +414,18 @@ export function buildWestgateWorld(
     },
     getWeatherLabel: () => weatherLabel(weather),
     getWeatherGrip: () => weatherGrip(weather),
+    get timeOfDay() {
+      return currentTimeOfDay;
+    },
+    setTimeOfDay: applyTimeOfDay,
+    getTimeOfDayDarkness: () => todDarkness,
     updateWeatherFx,
     disposeExtra: () => {
       precipitation.dispose();
       spray.dispose();
+      cubeRT.dispose();
+      envRT?.dispose?.();
+      pmrem.dispose();
     },
   };
 }

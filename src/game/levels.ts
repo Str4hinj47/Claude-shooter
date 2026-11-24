@@ -35,7 +35,9 @@ import {
   WorldHeightSystem,
   type DistrictInfo,
   type MinimapData,
+  type TimeOfDayMode,
   type WalkableSurface,
+  type WestgateActivityManager,
   type WestgateVehicleManager,
 } from "./city";
 import type { WeatherMode, WeatherState } from "./vehicles/weather";
@@ -3655,12 +3657,16 @@ export interface LevelResult extends World {
   heightSystem?: WorldHeightSystem;
   openWorld?: OpenWorldEngine;
   vehicles?: WestgateVehicleManager;
+  activities?: WestgateActivityManager;
   minimapData?: MinimapData;
   getDistrictAt?: (x: number, z: number) => DistrictInfo;
   weather?: WeatherState;
   setWeatherMode?: (mode: WeatherMode) => void;
   getWeatherLabel?: () => string;
   getWeatherGrip?: () => number;
+  timeOfDay?: TimeOfDayMode;
+  setTimeOfDay?: (mode: TimeOfDayMode) => void;
+  getTimeOfDayDarkness?: () => number;
   updateWeatherFx?: (
     dt: number,
     camPos: THREE.Vector3,

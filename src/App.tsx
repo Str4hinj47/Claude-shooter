@@ -32,6 +32,7 @@ import {
 } from "./game/progression";
 import { CARS, PAINT_COLORS, type CarId } from "./game/vehicles/catalog";
 import { WEATHER_MODES, type WeatherMode } from "./game/vehicles/weather";
+import { TIME_OF_DAY_LABELS, TIME_OF_DAY_MODES, type TimeOfDayMode } from "./game/city/WestgateWorld";
 import { WestgateMinimap } from "./components/WestgateMinimap";
 import { WEAPONS } from "./character/rifle";
 import soldierUrl from "./assets/soldier.glb?url";
@@ -91,6 +92,9 @@ const initial: HudState = {
   district: null,
   weatherMode: "auto",
   weatherLabel: "Clear",
+  timeOfDay: "afternoon",
+  timeOfDayLabel: "Afternoon",
+  activityToast: null,
   cameraPreset: "close",
   credits: 180,
   vehicle: null,
@@ -1526,10 +1530,17 @@ export default function App() {
             </div>
           )}
 
-          {/* top-right pause button + weather/camera + FPS */}
+          {/* top-right pause button + weather/time/camera + FPS */}
           <div className="absolute right-5 top-5 flex items-center gap-2">
             {hud.isOpenWorld && (
               <>
+                <button
+                  onClick={() => game.current?.cycleTimeOfDay()}
+                  className="rounded-md border border-indigo-400/30 bg-black/55 px-2.5 py-1.5 font-mono text-[10px] font-bold uppercase tracking-widest text-indigo-200 backdrop-blur transition hover:bg-black/80"
+                  title="Cycle time of day [T]"
+                >
+                  [T] {hud.timeOfDayLabel}
+                </button>
                 <button
                   onClick={() => game.current?.cycleWeatherMode()}
                   className="rounded-md border border-sky-400/30 bg-black/55 px-2.5 py-1.5 font-mono text-[10px] font-bold uppercase tracking-widest text-sky-200 backdrop-blur transition hover:bg-black/80"
@@ -1556,6 +1567,26 @@ export default function App() {
               {hud.paused ? "Resume" : "Pause"}
             </button>
           </div>
+
+          {/* Westgate Speed Trap / District Discovery Toast */}
+          {hud.isOpenWorld && hud.activityToast && (
+            <div
+              key={hud.activityToast.title}
+              className="pointer-events-none absolute top-20 left-1/2 -translate-x-1/2 animate-[fadeIn_0.25s_ease] text-center"
+            >
+              <div
+                className="rounded-xl border bg-black/80 px-5 py-2.5 shadow-xl backdrop-blur-md"
+                style={{ borderColor: `${hud.activityToast.accent}66` }}
+              >
+                <div className="text-xs font-black uppercase tracking-[0.2em]" style={{ color: hud.activityToast.accent }}>
+                  {hud.activityToast.title}
+                </div>
+                <div className="mt-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-zinc-200">
+                  {hud.activityToast.subtitle}
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* dialogue */}
           {hud.dialogue && (
@@ -1817,6 +1848,29 @@ export default function App() {
                   </div>
                   {hud.isOpenWorld && (
                     <div className="space-y-3 text-left">
+                      {/* Time of Day (Afternoon / Sunset / Night / Dawn) */}
+                      <div className="rounded-xl border border-indigo-400/20 bg-indigo-950/15 p-3">
+                        <div className="mb-2 flex items-center justify-between text-[10px] font-bold uppercase tracking-[0.25em] text-indigo-300">
+                          <span>Time of Day [T]</span>
+                          <span className="font-mono text-zinc-300">{hud.timeOfDayLabel}</span>
+                        </div>
+                        <div className="grid grid-cols-4 gap-1.5">
+                          {(TIME_OF_DAY_MODES as TimeOfDayMode[]).map((tod) => (
+                            <button
+                              key={tod}
+                              onClick={() => game.current?.setTimeOfDay(tod)}
+                              className={`rounded border py-1.5 text-[11px] font-bold uppercase transition ${
+                                hud.timeOfDay === tod
+                                  ? "border-indigo-400 bg-indigo-400/20 text-indigo-200"
+                                  : "border-white/10 bg-white/[0.04] text-zinc-300 hover:bg-white/10"
+                              }`}
+                            >
+                              {TIME_OF_DAY_LABELS[tod]}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
                       {/* Weather (Auto / Clear / Rain / Snow) */}
                       <div className="rounded-xl border border-cyan-400/20 bg-cyan-950/15 p-3">
                         <div className="mb-2 flex items-center justify-between text-[10px] font-bold uppercase tracking-[0.25em] text-cyan-300">

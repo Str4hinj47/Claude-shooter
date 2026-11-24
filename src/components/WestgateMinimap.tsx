@@ -9,6 +9,7 @@ export interface MinimapLiveSample {
   driving: boolean;
   speedKmh: number;
   vehicles: { x: number; z: number; isNpc: boolean; active: boolean }[];
+  traps?: { id: string; x: number; z: number; beaten: boolean }[];
 }
 
 interface WestgateMinimapProps {
@@ -343,6 +344,24 @@ export function WestgateMinimap({
       ctx.globalAlpha = 1;
       ctx.shadowBlur = 0;
       ctx.shadowColor = "rgba(0,0,0,0)";
+
+      // Speed Trap camera diamonds (cyan -> gold once target speed is beaten)
+      if (sample.traps) {
+        const s = 4.6 / zoom;
+        for (const tr of sample.traps) {
+          ctx.beginPath();
+          ctx.moveTo(tr.x, tr.z - s);
+          ctx.lineTo(tr.x + s, tr.z);
+          ctx.lineTo(tr.x, tr.z + s);
+          ctx.lineTo(tr.x - s, tr.z);
+          ctx.closePath();
+          ctx.fillStyle = tr.beaten ? "#fbbf24" : "#22d3ee";
+          ctx.fill();
+          ctx.lineWidth = 1.4 / zoom;
+          ctx.strokeStyle = "#0a0d08";
+          ctx.stroke();
+        }
+      }
 
       // Nearby hero cars (amber) & NPC traffic (soft slate-white)
       for (const v of sample.vehicles) {

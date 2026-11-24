@@ -21,6 +21,7 @@ import {
 } from "./progression";
 import { type CarId } from "./vehicles/catalog";
 import { WEATHER_MODES, type WeatherMode } from "./vehicles/weather";
+import { TIME_OF_DAY_LABELS, TIME_OF_DAY_MODES, type TimeOfDayMode } from "./city/WestgateWorld";
 import type { MinimapData } from "./city/MinimapData";
 export { loadSave, SAVE_KEY };
 
@@ -114,6 +115,9 @@ export interface HudState {
   district: { id: string; name: string; subtitle: string } | null;
   weatherMode: WeatherMode;
   weatherLabel: string;
+  timeOfDay: TimeOfDayMode;
+  timeOfDayLabel: string;
+  activityToast: { title: string; subtitle: string; accent: string } | null;
   cameraPreset: CameraPreset;
   credits: number;
   vehicle: { active: boolean; name: string; kind: string; speedKmh: number; nearbyName: string | null } | null;
@@ -241,6 +245,8 @@ export class Game {
   private freePitch = 0;
   private freeIdle = 0;
   private driveDistAcc = 0;
+  private activityToast: { title: string; subtitle: string; accent: string } | null = null;
+  private activityToastTimer = 0;
 
   constructor(
     private container: HTMLElement,
@@ -730,6 +736,9 @@ export class Game {
           break;
         case "KeyB":
           if (this.mission?.id === -1 && this.phase === "ready") this.cycleWeatherMode();
+          break;
+        case "KeyT":
+          if (this.mission?.id === -1 && this.phase === "ready") this.cycleTimeOfDay();
           break;
         case "KeyV":
           this.tryTakedown();
@@ -1445,9 +1454,15 @@ export class Game {
     const dead = rig.dead;
     const vehicles = this.level?.vehicles;
     const gripScale = this.level?.getWeatherGrip?.() ?? 1.0;
-    const darkness = this.level?.weather
+    const weatherDarkness = this.level?.weather
       ? Math.max(this.level.weather.rain * 0.55, this.level.weather.snow * 0.45)
       : 0;
+    const todDarkness = this.level?.getTimeOfDayDarkness?.() ?? 0;
+    const darkness = Math.min(1, Math.max(weatherDarkness, todDarkness));
+    if (this.activityToastTimer > 0) {
+      this.activityToastTimer = Math.max(0, this.activityToastTimer - rawDt);
+      if (this.activityToastTimer === 0) this.activityToast = null;
+    }
     if (this.phase === "ready") {
       const k = this.keys;
       const activeVeh = vehicles?.activeVehicle ?? null;
@@ -1468,6 +1483,35 @@ export class Game {
           if (this.driveDistAcc >= 500) {
             this.driveDistAcc -= 500;
             awardDrivingCredits(35);
+          }
+        }
+
+        // Westgate Bay Speed Traps & District Discovery
+        if (this.mission?.id === -1 && this.level?.activities) {
+          const hit = this.level.activities.update(dt, activeVeh.pos, activeVeh.speed, true);
+          if (hit) {
+            awardDrivingCredits(hit.reward);
+            this.activityToast = {
+              title: `${hit.trap.name} · ${hit.kmh} km/h`,
+              subtitle: hit.beatTarget
+                ? `TARGET ${hit.trap.targetKmh} KM/H CLEARED${hit.isRecord ? " · NEW RECORD" : ""} · +${hit.reward} Cr`
+                : `Target ${hit.trap.targetKmh} km/h · +${hit.reward} Cr`,
+              accent: hit.beatTarget ? "#fbbf24" : "#22d3ee",
+            };
+            this.activityToastTimer = 4.0;
+          }
+          const distInfo = this.level.getDistrictAt?.(activeVeh.pos.x, activeVeh.pos.z);
+          if (distInfo && !this.level.activities.discoveredDistricts.has(distInfo.id)) {
+            this.level.activities.discoveredDistricts.add(distInfo.id);
+            if (this.level.activities.discoveredDistricts.size > 1) {
+              awardDrivingCredits(75);
+              this.activityToast = {
+                title: `Discovered ${distInfo.name}`,
+                subtitle: `${distInfo.subtitle} · +75 Cr`,
+                accent: "#34d399",
+              };
+              this.activityToastTimer = 4.0;
+            }
           }
         }
 
@@ -1786,6 +1830,18 @@ export class Game {
     this.setWeatherMode(WEATHER_MODES[(idx + 1) % WEATHER_MODES.length]);
   }
 
+  setTimeOfDay(mode: TimeOfDayMode) {
+    this.level?.setTimeOfDay?.(mode);
+    this.pausedRendered = false;
+    this.emitHud();
+  }
+
+  cycleTimeOfDay() {
+    const cur = this.level?.timeOfDay ?? "afternoon";
+    const idx = TIME_OF_DAY_MODES.indexOf(cur);
+    this.setTimeOfDay(TIME_OF_DAY_MODES[(idx + 1) % TIME_OF_DAY_MODES.length]);
+  }
+
   summonSelectedCar(carId: CarId, paintHex?: string | null) {
     if (!this.level?.vehicles || !this.rig) return;
     this.level.vehicles.summonPlayerCar(carId, paintHex, this.rig.root.position, this.camYaw);
@@ -1853,6 +1909,7 @@ export class Game {
     driving: boolean;
     speedKmh: number;
     vehicles: { x: number; z: number; isNpc: boolean; active: boolean }[];
+    traps: { id: string; x: number; z: number; beaten: boolean }[];
   } | null {
     if (!this.rig || this.mission?.id !== -1) return null;
     const vehiclesMgr = this.level?.vehicles;
@@ -1873,6 +1930,7 @@ export class Game {
         }
       }
     }
+    const traps = this.level?.activities ? this.level.activities.getTrapSummaries() : [];
     return {
       x,
       z,
@@ -1880,6 +1938,7 @@ export class Game {
       driving: !!activeVeh,
       speedKmh: activeVeh ? Math.round(Math.abs(activeVeh.speed) * 3.6) : 0,
       vehicles: nearbyVehicles,
+      traps,
     };
   }
 
@@ -1949,6 +2008,8 @@ export class Game {
         : null;
     const weatherMode = this.level?.weather?.mode ?? "auto";
     const weatherLabel = this.level?.getWeatherLabel?.() ?? "Clear";
+    const timeOfDay = this.level?.timeOfDay ?? "afternoon";
+    const timeOfDayLabel = TIME_OF_DAY_LABELS[timeOfDay];
     const credits = loadSave().currencies.credits;
     this.onHud({
       loading: this.phase === "loading",
@@ -1998,6 +2059,9 @@ export class Game {
       district,
       weatherMode,
       weatherLabel,
+      timeOfDay,
+      timeOfDayLabel,
+      activityToast: this.activityToast,
       cameraPreset: this.vehCam.preset,
       credits,
       vehicle,

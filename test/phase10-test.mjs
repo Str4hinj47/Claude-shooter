@@ -140,6 +140,18 @@ check(level.minimapData.defaultLoop.length > 40, "Default Westgate scenic GPS lo
 const gpsRoute = computeWestgateGpsRoute(level.minimapData, 24, -82, -706, 40);
 check(gpsRoute.length > 20, `Expected road-guided GPS route >20 points to Del Sol Pier, got ${gpsRoute.length}`);
 
+// 9. Verify Time-of-Day presets & Westgate Bay Speed Traps
+check(level.timeOfDay === "afternoon" && level.getTimeOfDayDarkness() === 0, "Initial timeOfDay should be afternoon");
+level.setTimeOfDay("night");
+check(level.timeOfDay === "night" && level.getTimeOfDayDarkness() > 0.9, "Night mode should report >0.9 darkness");
+level.setTimeOfDay("sunset");
+check(level.timeOfDay === "sunset" && level.getTimeOfDayDarkness() > 0.4, "Sunset mode should report >0.4 darkness");
+
+check(level.activities.traps.length === 10, `Expected 10 Speed Traps, got ${level.activities.traps.length}`);
+const trapPos = level.activities.traps[0].pos.clone();
+const trapHit = level.activities.update(1 / 60, trapPos, 40, true);
+check(!!trapHit && trapHit.kmh >= 140 && trapHit.beatTarget && trapHit.reward > 0, "Driving fast through Speed Trap should award target bonus");
+
 level.disposeExtra?.();
 vm.dispose();
 level.openWorld.dispose();
