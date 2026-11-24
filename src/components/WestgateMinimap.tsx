@@ -478,8 +478,20 @@ export function WestgateMinimap({
       >
         <canvas
           ref={canvasRef}
-          className="block h-full w-full rounded-full shadow-[0_14px_38px_rgba(0,0,0,0.52)]"
+          className="block h-full w-full rounded-full shadow-[0_18px_48px_rgba(0,0,0,0.72)]"
         />
+        {/* Architectural tactical corner ticks around radar */}
+        <svg
+          viewBox="0 0 184 184"
+          aria-hidden="true"
+          className="pointer-events-none absolute -inset-1 size-[calc(100%+8px)]"
+        >
+          <path d="M18 4 H4 V18" fill="none" stroke="#ff3b30" strokeWidth="1.5" opacity="0.85" />
+          <path d="M166 4 H180 V18" fill="none" stroke="rgba(242,239,233,0.45)" strokeWidth="1.2" />
+          <path d="M4 166 V180 H18" fill="none" stroke="rgba(242,239,233,0.45)" strokeWidth="1.2" />
+          <path d="M180 166 V180 H166" fill="none" stroke="#ff3b30" strokeWidth="1.5" opacity="0.85" />
+          <circle cx="92" cy="92" r="88" fill="none" stroke="rgba(242,239,233,0.18)" strokeWidth="1" strokeDasharray="3 7" />
+        </svg>
         {/* Fixed white navigation pointer: never rotates or moves; the world moves beneath it */}
         <svg
           viewBox="0 0 52 60"
@@ -501,24 +513,25 @@ export function WestgateMinimap({
         </svg>
       </div>
 
-      {/* Compact GPS & zoom pill row */}
-      <div className="pointer-events-auto flex items-center gap-1.5">
+      {/* Sharp chamfered GPS & zoom telemetry strip */}
+      <div className="pointer-events-auto flex items-center gap-1">
         <button
           type="button"
           onClick={cycleGps}
           title="Click to cycle GPS destination"
-          className="flex items-center gap-1.5 rounded-md border border-white/15 bg-black/65 px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-wider text-zinc-200 backdrop-blur transition hover:border-cyan-400/50 hover:bg-black/85"
+          data-augmented-ui="tl-clip br-clip border inlay"
+          className="voss-panel-sharp flex cursor-pointer items-center gap-2 px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-[#f2efe9] transition hover:text-[#38bdf8]"
         >
-          <span className="h-1.5 w-1.5 rounded-full bg-cyan-400 shadow-[0_0_6px_#22d3ee]" />
-          <span className="text-cyan-300">GPS</span>
+          <span className="h-1.5 w-1.5 bg-[#38bdf8] shadow-[0_0_8px_#38bdf8]" />
+          <span className="text-[#38bdf8]">GPS</span>
           <span className="max-w-[125px] truncate">{curSpot.label}</span>
-          {distLabel && <span className="text-zinc-400">· {distLabel}</span>}
+          {distLabel && <span className="text-[#8a909e] tabular-nums">{distLabel}</span>}
         </button>
         <button
           type="button"
           onClick={() => setZoomBase((z) => clamp(Number((z - 0.18).toFixed(2)), 0.45, 1.85))}
           title="Zoom out minimap"
-          className="rounded-md border border-white/15 bg-black/65 px-2 py-1 font-mono text-[11px] font-bold text-zinc-200 backdrop-blur transition hover:bg-black/85"
+          className="cursor-pointer border border-white/15 bg-[#0a0c10]/90 px-2 py-1 font-mono text-[11px] font-bold text-[#f2efe9] transition hover:border-[#ff3b30] hover:text-[#ff3b30]"
         >
           −
         </button>
@@ -526,7 +539,7 @@ export function WestgateMinimap({
           type="button"
           onClick={() => setZoomBase((z) => clamp(Number((z + 0.18).toFixed(2)), 0.45, 1.85))}
           title="Zoom in minimap"
-          className="rounded-md border border-white/15 bg-black/65 px-2 py-1 font-mono text-[11px] font-bold text-zinc-200 backdrop-blur transition hover:bg-black/85"
+          className="cursor-pointer border border-white/15 bg-[#0a0c10]/90 px-2 py-1 font-mono text-[11px] font-bold text-[#f2efe9] transition hover:border-[#ff3b30] hover:text-[#ff3b30]"
         >
           +
         </button>
