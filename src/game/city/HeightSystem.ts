@@ -81,18 +81,18 @@ export class WorldHeightSystem {
     let best = this.terrainAt(x, z);
 
     // 1. Check nearby AABBs (flat platforms, steps, roofs, curbs)
-    const boxes = this.aabbs.queryPoint(x, z, 0.55, this.scratchBoxes);
+    const boxes = this.aabbs.queryPoint(x, z, 0.45, this.scratchBoxes);
     for (let i = 0; i < boxes.length; i++) {
       const box = boxes[i];
       const top = box.max.y;
-      if (top > y + 0.6) continue;
-      const pad = top > y + 0.05 && top <= y + 0.58 ? 0.52 : 0.22;
+      if (top > y + 0.62) continue;
+      const pad = top > y + 0.05 && top <= y + 0.60 ? 0.26 : 0.16;
       if (x < box.min.x - pad || x > box.max.x + pad) continue;
       if (z < box.min.z - pad || z > box.max.z + pad) continue;
       if (top > best) best = top;
     }
 
-    // 2. Check nearby sloped/curved walkable surfaces (bridges, overpasses, ramps)
+    // 2. Check nearby sloped/curved walkable surfaces (bridges, overpasses, stair ramps)
     if (this.surfaces.length > 0) {
       const stamp = ++this.surfaceStamp;
       const minCx = Math.floor((x - 0.5) * this.invCell);
@@ -111,9 +111,9 @@ export class WorldHeightSystem {
 
             const s = this.surfaces[sid];
             if (x < s.minX || x > s.maxX || z < s.minZ || z > s.maxZ) continue;
-            if (s.minY > y + 0.65) continue;
+            if (s.minY > y + 0.72) continue;
             const h = s.heightAt(x, z);
-            if (h !== null && h <= y + 0.65 && h > best) {
+            if (h !== null && h <= y + 0.72 && h > best) {
               best = h;
             }
           }

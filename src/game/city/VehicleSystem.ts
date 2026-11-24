@@ -11,6 +11,11 @@ import {
 import { ModelLibrary, setDoorsOpen } from "../vehicles/ModelLibrary";
 import { spinWheels } from "../vehicles/wheels";
 import { addVehicleLights, disposeVehicleLights, updateVehicleLights } from "../vehicles/vehicleLights";
+import {
+  createOvertakeVehicleState,
+  stepFreeRoamVehicle,
+  type OvertakeVehicleState,
+} from "../vehicles/physics";
 import { loadSave } from "../progression";
 
 export type VehicleClass = CarId;
@@ -34,6 +39,7 @@ export interface DriveableVehicle {
   yaw: number;
   speed: number; // m/s signed
   steerAngle: number;
+  physState: OvertakeVehicleState;
   isNpcTraffic: boolean;
   lane?: TrafficLane | null;
   laneT: number;
@@ -251,6 +257,7 @@ export class WestgateVehicleManager {
       yaw,
       speed: opts.speed ?? 0,
       steerAngle: 0,
+      physState: createOvertakeVehicleState(yaw),
       isNpcTraffic: opts.isNpcTraffic,
       lane: opts.lane ?? null,
       laneT: opts.laneT ?? 0,
@@ -260,6 +267,7 @@ export class WestgateVehicleManager {
       doorAnim: 0,
       doorTimer: 0,
     };
+    v.physState.speed = v.speed;
 
     if (this.library.has(modelId)) {
       this.attachLoadedModel(v);
@@ -401,6 +409,14 @@ export class WestgateVehicleManager {
     v.isNpcTraffic = false;
     v.lane = null;
     v.doorTimer = 0.28;
+    v.physState.speed = v.speed;
+    v.physState.yaw = v.yaw;
+    v.physState.yawRate = 0;
+    v.physState.steer = 0;
+    v.physState.steerAngle = v.steerAngle;
+    v.physState.accel = 0;
+    v.physState.latAccel = 0;
+    v.physState.slip = 0;
     // Upgrade NPC shading castShadow when player enters
     if (v.modelRoot) {
       v.modelRoot.traverse((o) => {
@@ -415,8 +431,8 @@ export class WestgateVehicleManager {
     v.driverActive = false;
     v.doorTimer = 0.28;
     this.activeVehicle = null;
-    const leftX = -Math.cos(v.yaw);
-    const leftZ = Math.sin(v.yaw);
+    const leftX = Math.cos(v.yaw);
+    const leftZ = -Math.sin(v.yaw);
     const exit = new THREE.Vector3(v.pos.x + leftX * (v.width * 0.5 + 1.15), v.pos.y, v.pos.z + leftZ * (v.width * 0.5 + 1.15));
     exit.y = this.bridge.groundHeightAt(exit.x, exit.z, v.pos.y + 1.6);
     return exit;
@@ -479,42 +495,40 @@ export class WestgateVehicleManager {
 
   private updatePlayerVehicle(v: DriveableVehicle, dt: number, input: VehicleInput, gripScale: number): void {
     const phys = v.spec.physics;
-    const maxRev = -v.spec.maxSpeed * 0.34;
+    const st = v.physState;
+    st.speed = v.speed;
+    st.yaw = v.yaw;
 
-    if (input.handbrake) {
-      const decel = phys.brake * 1.35 * gripScale * dt;
-      if (Math.abs(v.speed) <= decel) v.speed = 0;
-      else v.speed -= Math.sign(v.speed) * decel;
-    } else if (input.throttle > 0.05) {
-      if (v.speed < -0.5) {
-        v.speed += phys.brake * 1.4 * gripScale * dt;
-      } else {
-        const speedRatio = Math.max(0, v.speed / v.spec.maxSpeed);
-        const pull = v.spec.accel * (1 - 0.58 * speedRatio * speedRatio);
-        v.speed = Math.min(v.spec.maxSpeed, v.speed + pull * input.throttle * dt);
-      }
-    } else if (input.throttle < -0.05) {
-      if (v.speed > 0.5) {
-        v.speed = Math.max(0, v.speed - phys.brake * 1.3 * gripScale * dt);
-      } else {
-        v.speed = Math.max(maxRev, v.speed + v.spec.accel * 0.6 * input.throttle * dt);
-      }
-    } else {
-      const drag = (1.6 + phys.drag * v.speed * v.speed * 18) * dt;
-      if (Math.abs(v.speed) <= drag) v.speed = 0;
-      else v.speed -= Math.sign(v.speed) * drag;
+    const params = {
+      maxSpeed: v.spec.maxSpeed,
+      accel: v.spec.accel,
+      brake: phys.brake,
+      grip: phys.grip * gripScale,
+      surfaceGrip: gripScale,
+      wheelbase: phys.wheelbase,
+      maxSteer: phys.maxSteer,
+      understeer: phys.understeer,
+      yawResponse: phys.yawResponse,
+      steerResponse: phys.steerResponse,
+      drag: phys.drag,
+    };
+
+    const freeInput = {
+      throttle: Math.max(0, input.throttle),
+      brake: Math.max(0, -input.throttle),
+      steer: input.steer,
+      handbrake: input.handbrake,
+    };
+
+    const steps = Math.max(1, Math.ceil(dt / (1 / 120)));
+    const h = dt / steps;
+    for (let i = 0; i < steps; i++) {
+      stepFreeRoamVehicle(st, freeInput, params, h);
     }
 
-    const speedFactor = Math.min(1, Math.abs(v.speed) / 4.2);
-    const highSpeedTighten = 1 / (1 + phys.understeer * v.speed * v.speed);
-    const targetSteer = input.steer * phys.maxSteer * highSpeedTighten * (0.45 + 0.55 * gripScale);
-    v.steerAngle += (targetSteer - v.steerAngle) * Math.min(1, phys.steerResponse * dt);
-
-    if (speedFactor > 0.02) {
-      const dirSign = v.speed >= 0 ? 1 : -1;
-      const yawRate = (v.speed / phys.wheelbase) * Math.tan(v.steerAngle * 0.85) * speedFactor * gripScale;
-      v.yaw += yawRate * dirSign * dt;
-    }
+    v.speed = st.speed;
+    v.yaw = st.yaw;
+    v.steerAngle = st.steerAngle;
 
     this.advanceVehicleKinematics(v, dt);
   }
@@ -530,6 +544,7 @@ export class WestgateVehicleManager {
     const gy = this.bridge.groundHeightAt(nextX, nextZ, v.pos.y + 1.8);
     if (gy < -0.6) {
       v.speed *= -0.25;
+      v.physState.speed = v.speed;
       return;
     }
 
@@ -551,6 +566,7 @@ export class WestgateVehicleManager {
 
     if (blocked) {
       v.speed *= -0.2;
+      v.physState.speed = v.speed;
     } else {
       v.pos.set(nextX, gy, nextZ);
     }

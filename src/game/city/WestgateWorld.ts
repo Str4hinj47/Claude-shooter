@@ -13,6 +13,7 @@ import { registerFoothillsDistrict } from "./FoothillsDistrict";
 import { registerPortAirportDistrict } from "./PortAirportDistrict";
 import { populateWestgateProps } from "./WestgateProps";
 import { WestgateVehicleManager } from "./VehicleSystem";
+import { buildMinimapData, type MinimapData } from "./MinimapData";
 import {
   createWeatherState,
   stepWeather,
@@ -62,6 +63,7 @@ export const WESTGATE_TELEPORTS: WestgateTeleportSpot[] = [
 export interface WestgateLevelResult extends LevelResult {
   openWorld: OpenWorldEngine;
   vehicles: WestgateVehicleManager;
+  minimapData: MinimapData;
   getDistrictAt: typeof getDistrictAt;
   weather: WeatherState;
   setWeatherMode: (mode: WeatherMode) => void;
@@ -200,7 +202,13 @@ export function buildWestgateWorld(
 
   // 6. Roundabout islands & 5 architectural bridge superstructures
   const landmarkColliders: THREE.Object3D[] = [];
-  buildWestgateRoadLandmarks(content, engine.roads, terrainAt, landmarkColliders, engine.spatialAABBs);
+  buildWestgateRoadLandmarks(
+    content,
+    engine.roads,
+    terrainAt,
+    landmarkColliders,
+    engine.spatialAABBs,
+  );
   for (const c of landmarkColliders) {
     engine.spatialColliders.insert(c);
   }
@@ -215,6 +223,7 @@ export function buildWestgateWorld(
   // 9. Spawn driveable Overtake car fleet & ambient NPC road traffic
   const vehicles = new WestgateVehicleManager(engine);
   content.add(vehicles.root);
+  const minimapData = buildMinimapData(engine.roads);
 
   // 10. Rain & snow precipitation + tire road spray
   const weather = createWeatherState("auto");
@@ -291,6 +300,7 @@ export function buildWestgateWorld(
     heightSystem: engine.heightSystem,
     openWorld: engine,
     vehicles,
+    minimapData,
     getDistrictAt,
     weather,
     setWeatherMode: (mode: WeatherMode) => {

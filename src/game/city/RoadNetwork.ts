@@ -155,78 +155,6 @@ interface LaneSampleRef {
   sampleIdx: number;
 }
 
-function makeAsphaltRoadTexture(lanesPerDir: number, hasMedian: boolean, isOneWay: boolean): THREE.CanvasTexture {
-  const w = 512;
-  const h = 512;
-  const c = document.createElement("canvas");
-  c.width = w;
-  c.height = h;
-  const g = c.getContext("2d")!;
-
-  // Asphalt base
-  g.fillStyle = "#2b2e33";
-  g.fillRect(0, 0, w, h);
-
-  // Subtle aggregate speckle
-  for (let i = 0; i < 4500; i++) {
-    const x = ((i * 7919) % 509);
-    const y = ((i * 6271) % 509);
-    g.fillStyle = i % 3 === 0 ? "rgba(255,255,255,0.045)" : "rgba(0,0,0,0.09)";
-    g.fillRect(x, y, 2, 2);
-  }
-
-  // Subtle tire wear tracks
-  const laneTotal = lanesPerDir * (isOneWay ? 1 : 2);
-  const lanePx = w / Math.max(1, laneTotal);
-  for (let l = 0; l < laneTotal; l++) {
-    const cx = (l + 0.5) * lanePx;
-    g.fillStyle = "rgba(12,13,16,0.16)";
-    g.fillRect(cx - lanePx * 0.24, 0, lanePx * 0.14, h);
-    g.fillRect(cx + lanePx * 0.10, 0, lanePx * 0.14, h);
-  }
-
-  // White solid outer edge lines
-  g.fillStyle = "rgba(235, 238, 242, 0.78)";
-  g.fillRect(8, 0, 5, h);
-  g.fillRect(w - 13, 0, 5, h);
-
-  // Center line (double yellow for two-way)
-  if (!isOneWay) {
-    const mid = w * 0.5;
-    if (hasMedian) {
-      g.fillStyle = "#202327";
-      g.fillRect(mid - 14, 0, 28, h);
-    }
-    g.fillStyle = "rgba(244, 185, 52, 0.9)";
-    g.fillRect(mid - 7, 0, 4, h);
-    g.fillRect(mid + 3, 0, 4, h);
-  }
-
-  // Dashed lane dividers within each direction
-  g.fillStyle = "rgba(235, 238, 242, 0.75)";
-  const dashStep = h / 4;
-  for (let d = 1; d < lanesPerDir; d++) {
-    if (isOneWay) {
-      const x = d * lanePx;
-      for (let y = 16; y < h; y += dashStep) g.fillRect(x - 2, y, 4, dashStep * 0.45);
-    } else {
-      const xR = w * 0.5 + (d / lanesPerDir) * (w * 0.5);
-      const xL = w * 0.5 - (d / lanesPerDir) * (w * 0.5);
-      for (let y = 16; y < h; y += dashStep) {
-        g.fillRect(xR - 2, y, 4, dashStep * 0.45);
-        g.fillRect(xL - 2, y, 4, dashStep * 0.45);
-      }
-    }
-  }
-
-  const tex = new THREE.CanvasTexture(c);
-  tex.wrapS = THREE.ClampToEdgeWrapping;
-  tex.wrapT = THREE.RepeatWrapping;
-  tex.anisotropy = 8;
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
-}
-
 /**
  * Spline-based multi-tier city road & directional traffic lane graph.
  * Designed so the player walks/fights across curved streets & bridges today and
@@ -868,10 +796,9 @@ export class RoadNetwork {
       const key = `${seg.lanesPerDir}|${seg.hasMedian}|${!!seg.spec.isOneWay}`;
       let mat = roadMatCache.get(key);
       if (!mat) {
-        const tex = makeAsphaltRoadTexture(seg.lanesPerDir, seg.hasMedian, !!seg.spec.isOneWay);
         mat = new THREE.MeshStandardMaterial({
-          map: tex,
-          roughness: 0.86,
+          color: 0x2b2e33,
+          roughness: 0.9,
           metalness: 0.04,
           polygonOffset: true,
           polygonOffsetFactor: -1,
@@ -906,7 +833,7 @@ export class RoadNetwork {
         positions[vi + 5] = rz;
 
         const ui = i * 4;
-        const vCoord = sp.s / 14;
+        const vCoord = sp.s;
         uvs[ui] = 0;
         uvs[ui + 1] = vCoord;
         uvs[ui + 2] = 1;

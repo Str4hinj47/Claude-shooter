@@ -6,3 +6,4 @@ export * from "./ModelLibrary";
 export * from "./weather";
 export * from "./Precipitation";
 export * from "./RoadSpray";
+export * from "./physics";

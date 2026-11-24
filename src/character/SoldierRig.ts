@@ -162,9 +162,8 @@ export class SoldierRig {
   grounded = true;
   vy = 0;
   groundY = 0;
-  stepHeight = 0.55; // max ledge height the player auto-steps up (stairs)
+  stepHeight = 0.58; // max ledge height the player auto-steps up (stairs / roof lips)
   worldBound = 260;
-  private lastGroundY = 0;
   bodyYaw = 0;
   private turning = false;
   private sprinting = false;
@@ -590,7 +589,6 @@ export class SoldierRig {
     this.vy = 0;
     this.grounded = true;
     this.groundY = 0;
-    this.lastGroundY = 0;
     this.mag = MAG_SIZE;
     this.reserve = 120;
     this.weaponAttached = true;
@@ -668,8 +666,6 @@ export class SoldierRig {
 
     // vertical
     const groundLevel = this.groundY;
-    const onGround = this.root.position.y <= groundLevel + 0.001;
-    const step = this.stepHeight > 0 && wantMove && !this.dead;
     if (!this.grounded) {
       this.vy -= 15 * dt;
       this.root.position.y += this.vy * dt;
@@ -681,32 +677,29 @@ export class SoldierRig {
         this.sLand.kick(impact * 0.5);
         this.events.onLand?.(clamp(impact / 6, 0.2, 1));
       }
-    } else if (onGround) {
-      // walking on the current surface: follow its height
-      this.root.position.y = groundLevel;
-      this.vy = 0;
-      // step-up: a small ledge ahead is lifted over smoothly instead of blocking
-      if (step && this.stepHeight > 0) {
-        const dY = Math.max(0, groundLevel - (this.lastGroundY ?? groundLevel));
-        if (dY > 0 && dY <= this.stepHeight) {
-          this.root.position.y = groundLevel;
-          this.lastGroundY = groundLevel;
-          this.events.onLand?.(clamp(dY / this.stepHeight * 0.5, 0.1, 0.8));
-        }
-      }
-      if (Math.abs(groundLevel - (this.lastGroundY ?? groundLevel)) > 0.25) {
-        this.events.onLand?.(0.5);
-      }
-      this.lastGroundY = groundLevel;
-    } else if (wantMove && this.root.position.y - groundLevel <= 0.38) {
-      // walking down stairs / small step-downs: stay grounded and follow tread smoothly
-      this.root.position.y = damp(this.root.position.y, groundLevel, 26, dt);
-      if (this.root.position.y - groundLevel < 0.015) this.root.position.y = groundLevel;
-      this.vy = 0;
-      this.lastGroundY = groundLevel;
     } else {
-      // grounded state but surface dropped below (fell off a ledge)
-      this.grounded = false;
+      const dy = groundLevel - this.root.position.y;
+      if (dy >= -0.005 && dy <= this.stepHeight + 0.1) {
+        // walking flat, up a smooth stair ramp, or stepping onto a low ledge
+        if (dy <= 0.14) {
+          this.root.position.y = groundLevel;
+        } else {
+          this.root.position.y = damp(this.root.position.y, groundLevel, 28, dt);
+          if (groundLevel - this.root.position.y < 0.015) this.root.position.y = groundLevel;
+        }
+        this.vy = 0;
+      } else if (wantMove && dy < -0.005 && dy >= -0.58) {
+        // walking down stairs / ramps: stay grounded and follow tread smoothly
+        this.root.position.y = damp(this.root.position.y, groundLevel, 26, dt);
+        if (this.root.position.y - groundLevel < 0.015) this.root.position.y = groundLevel;
+        this.vy = 0;
+      } else if (dy < -0.58) {
+        // grounded state but surface dropped below (fell off a ledge)
+        this.grounded = false;
+      } else {
+        this.root.position.y = groundLevel;
+        this.vy = 0;
+      }
     }
 
     // body yaw

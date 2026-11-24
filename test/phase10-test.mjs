@@ -38,8 +38,9 @@ THREE.PMREMGenerator.prototype.fromScene = function () {
 };
 THREE.PMREMGenerator.prototype.dispose = function () {};
 
-const { buildWestgateWorld } = await import("../src/game/city/index.ts");
+const { buildWestgateWorld, computeWestgateGpsRoute } = await import("../src/game/city/index.ts");
 const { CARS } = await import("../src/game/vehicles/catalog.ts");
+const { createOvertakeVehicleState, stepFreeRoamVehicle } = await import("../src/game/vehicles/physics.ts");
 const { loadSave, purchaseCar, selectOwnedCar, awardDrivingCredits } = await import("../src/game/progression.ts");
 const { stepWeather, weatherGrip, weatherLabel } = await import("../src/game/vehicles/weather.ts");
 
@@ -81,7 +82,7 @@ if (near) {
   check(vm.activeVehicle === near, "activeVehicle should be set after enterVehicle");
 
   for (let i = 0; i < 30; i++) {
-    vm.update(1 / 30, { throttle: 1, steer: 0.4, handbrake: false }, near.pos);
+    vm.update(1 / 30, { throttle: 1, steer: 0.85, handbrake: false }, near.pos);
   }
   const movedDist = near.pos.distanceTo(startPos);
   check(near.speed > 8, `Expected Range Rover to accelerate >8 m/s, got ${near.speed}`);
@@ -122,6 +123,22 @@ for (let i = 0; i < 90; i++) stepWeather(level.weather, 0.1, 0.1);
 check(level.weather.snow > 0.8 && level.weather.snowCover > 0.3, "Snow mode should build snow & snow cover");
 check(weatherLabel(level.weather) === "Snow", `Expected Snow label, got ${weatherLabel(level.weather)}`);
 check(weatherGrip(level.weather) < 0.9, "Snow should reduce tire grip");
+
+// 6. Verify Overtake free-roam physics module (progressive rack, slip, handbrake, reverse)
+const pst = createOvertakeVehicleState(0);
+for (let i = 0; i < 60; i++) {
+  stepFreeRoamVehicle(pst, { throttle: 1, brake: 0, steer: 0.8, handbrake: false }, { maxSpeed: 54, accel: 10, grip: 1.0 }, 1 / 60);
+}
+check(pst.speed > 7 && Math.abs(pst.yaw) > 0.1 && Math.abs(pst.latAccel) > 0.5, "Overtake physics should accelerate & corner via bicycle model");
+stepFreeRoamVehicle(pst, { throttle: 0, brake: 0, steer: 1, handbrake: true }, { maxSpeed: 54, accel: 10, grip: 1.0 }, 1 / 60);
+check(pst.accel < 0, "Handbrake should decelerate vehicle");
+
+// 8. Verify MinimapData & Westgate Bay road-graph GPS routing
+check(level.minimapData.roads.length >= 25, `Expected >=25 road polylines in minimapData, got ${level.minimapData.roads.length}`);
+check(level.minimapData.roundabouts.length === 5, `Expected 5 roundabouts in minimapData, got ${level.minimapData.roundabouts.length}`);
+check(level.minimapData.defaultLoop.length > 40, "Default Westgate scenic GPS loop should have >40 spline points");
+const gpsRoute = computeWestgateGpsRoute(level.minimapData, 24, -82, -706, 40);
+check(gpsRoute.length > 20, `Expected road-guided GPS route >20 points to Del Sol Pier, got ${gpsRoute.length}`);
 
 level.disposeExtra?.();
 vm.dispose();

@@ -3,7 +3,6 @@
 /* ------------------------------------------------------------------ */
 import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
-import { createLightPoolMaterial, createVolumetricBeamMaterial } from "./shaders";
 import type { InteractDef } from "./story";
 
 export interface InteractableInstance {
@@ -365,7 +364,10 @@ export function createInteractableProp(def: InteractDef): InteractableInstance {
     grp.add(sideGrp);
 
     // Subtle cyan screen spill pool across the desk
-    const spill = new THREE.Mesh(new THREE.PlaneGeometry(1.15, 0.65), createLightPoolMaterial(0x22d3ee, 0.24));
+    const spill = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.15, 0.65),
+      new THREE.MeshBasicMaterial({ color: 0x22d3ee, transparent: true, opacity: 0.08, depthWrite: false, blending: THREE.AdditiveBlending }),
+    );
     spill.rotation.x = -Math.PI / 2;
     spill.position.set(0.12, 0.79, 0.04);
     grp.add(spill);
@@ -479,7 +481,10 @@ export function createInteractableProp(def: InteractDef): InteractableInstance {
     );
     lampBulb.position.set(-0.39, 1.04, -0.17);
     grp.add(lampBulb);
-    const deskPool = new THREE.Mesh(new THREE.PlaneGeometry(0.95, 0.56), createLightPoolMaterial(0xfde68a, 0.24));
+    const deskPool = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.95, 0.56),
+      new THREE.MeshBasicMaterial({ color: 0xfde68a, transparent: true, opacity: 0.08, depthWrite: false, blending: THREE.AdditiveBlending }),
+    );
     deskPool.rotation.x = -Math.PI / 2;
     deskPool.position.set(0.02, 0.793, 0.02);
     grp.add(deskPool);
@@ -603,10 +608,10 @@ export function createInteractableProp(def: InteractDef): InteractableInstance {
       laserMeshes.push(b2);
     }
 
-    // Museum pin-spot volumetric glow beam
+    // Museum pin-spot subtle glow cone
     spotBeam = new THREE.Mesh(
-      new THREE.ConeGeometry(0.32, 0.72, 18, 1, true),
-      createVolumetricBeamMaterial(gemGlow, 0.22),
+      new THREE.ConeGeometry(0.32, 0.72, 16, 1, true),
+      new THREE.MeshBasicMaterial({ color: gemGlow, transparent: true, opacity: 0.08, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }),
     );
     spotBeam.position.set(0, 1.32, 0);
     grp.add(spotBeam);
@@ -654,7 +659,10 @@ export function createInteractableProp(def: InteractDef): InteractableInstance {
     lidLed.position.set(0, 1.42, -0.25);
     grp.add(lidLed);
 
-    const chestPool = new THREE.Mesh(new THREE.PlaneGeometry(0.76, 0.46), createLightPoolMaterial(0xfde68a, 0.32));
+    const chestPool = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.76, 0.46),
+      new THREE.MeshBasicMaterial({ color: 0xfde68a, transparent: true, opacity: 0.1, depthWrite: false, blending: THREE.AdditiveBlending }),
+    );
     chestPool.rotation.x = -Math.PI / 2;
     chestPool.position.set(0, 0.998, 0);
     grp.add(chestPool);

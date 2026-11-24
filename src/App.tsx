@@ -32,6 +32,7 @@ import {
 } from "./game/progression";
 import { CARS, PAINT_COLORS, type CarId } from "./game/vehicles/catalog";
 import { WEATHER_MODES, type WeatherMode } from "./game/vehicles/weather";
+import { WestgateMinimap } from "./components/WestgateMinimap";
 import { WEAPONS } from "./character/rifle";
 import soldierUrl from "./assets/soldier.glb?url";
 import creditsIcon from "./assets/currencies/credits.png";
@@ -197,6 +198,7 @@ export default function App() {
   const [upgradeTab, setUpgradeTab] = useState<UpgradeCategory>("weapons");
   const [customTab, setCustomTab] = useState<"colors" | "gear">("colors");
   const [, setCamTick] = useState(0);
+  const [gpsTargetId, setGpsTargetId] = useState<string | null>(null);
   const [endInfo, setEndInfo] = useState<{ mission: MissionDef; success: boolean; reward?: MissionReward } | null>(null);
 
   const handleBuyCar = (carId: CarId) => {
@@ -1587,6 +1589,20 @@ export default function App() {
             </div>
           )}
 
+          {/* Westgate Bay Vector Minimap (bottom-left) */}
+          {hud.isOpenWorld && hud.phase === "ready" && !hud.dead && (() => {
+            const minimapData = game.current?.getMinimapData();
+            return minimapData ? (
+              <WestgateMinimap
+                data={minimapData}
+                getSample={() => game.current?.getMinimapSample() ?? null}
+                paused={hud.paused}
+                gpsTargetId={gpsTargetId}
+                onChangeGpsTarget={setGpsTargetId}
+              />
+            ) : null;
+          })()}
+
           {/* right: weapons + ammo + health (or speedometer when driving) */}
           {hud.phase !== "loading" && (
             <div className="pointer-events-none absolute bottom-5 right-5 w-72 space-y-2 text-right">
@@ -1953,24 +1969,53 @@ export default function App() {
                         </div>
                       </div>
 
-                      {/* Sector Fast-Travel */}
+                      {/* Sector Fast-Travel & GPS */}
                       <div className="rounded-xl border border-sky-400/20 bg-sky-950/20 p-3">
-                        <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.25em] text-sky-300">
-                          Sector Fast-Travel
+                        <div className="mb-2 flex items-center justify-between text-[10px] font-bold uppercase tracking-[0.25em] text-sky-300">
+                          <span>Sector Fast-Travel &amp; GPS</span>
+                          {gpsTargetId && (
+                            <button
+                              type="button"
+                              onClick={() => setGpsTargetId(null)}
+                              className="font-mono text-[9px] text-cyan-300 underline hover:text-white"
+                            >
+                              Clear GPS
+                            </button>
+                          )}
                         </div>
                         <div className="grid max-h-32 grid-cols-2 gap-1.5 overflow-y-auto pr-1">
-                          {WESTGATE_TELEPORTS.map((spot) => (
-                            <button
-                              key={spot.id}
-                              onClick={() => {
-                                game.current?.teleportTo(spot.x, spot.z, spot.yawDeg);
-                                game.current?.setPaused(false);
-                              }}
-                              className="rounded border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-left text-[11px] font-semibold text-zinc-200 transition hover:border-sky-400/50 hover:bg-sky-500/15"
-                            >
-                              {spot.label}
-                            </button>
-                          ))}
+                          {WESTGATE_TELEPORTS.map((spot) => {
+                            const isGps = gpsTargetId === spot.id;
+                            return (
+                              <div key={spot.id} className="flex items-stretch gap-1">
+                                <button
+                                  onClick={() => {
+                                    game.current?.teleportTo(spot.x, spot.z, spot.yawDeg);
+                                    game.current?.setPaused(false);
+                                  }}
+                                  className="min-w-0 flex-1 truncate rounded border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-left text-[11px] font-semibold text-zinc-200 transition hover:border-sky-400/50 hover:bg-sky-500/15"
+                                  title={`Teleport to ${spot.label}`}
+                                >
+                                  {spot.label}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setGpsTargetId(isGps ? null : spot.id);
+                                    game.current?.setPaused(false);
+                                  }}
+                                  title="Set GPS Route"
+                                  className={`shrink-0 rounded border px-1.5 font-mono text-[9px] font-bold uppercase transition ${
+                                    isGps
+                                      ? "border-cyan-400 bg-cyan-400/25 text-cyan-200"
+                                      : "border-white/10 bg-white/[0.04] text-zinc-400 hover:border-cyan-400/50 hover:text-cyan-200"
+                                  }`}
+                                >
+                                  GPS
+                                </button>
+                              </div>
+                            );
+                          })}
                         </div>
                       </div>
                     </div>

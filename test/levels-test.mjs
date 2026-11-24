@@ -38,6 +38,7 @@ THREE.PMREMGenerator.prototype.fromScene = function () {
 THREE.PMREMGenerator.prototype.dispose = function () {};
 
 const { buildLevel } = await import("../src/game/levels.ts");
+const { resolveCircleAABBs } = await import("../src/game/Enemy.ts");
 const { MISSIONS } = await import("../src/game/story.ts");
 
 const fakeRenderer = { toneMappingExposure: 1 };
@@ -117,6 +118,64 @@ function validateMission(m) {
   // 7. all mission spawn points on reasonable ground height (y≈0)
   for (const e of m.enemies) {
     if (e.y === undefined) ok(Math.abs(e.y ?? 0) < 0.1, `${m.id} enemy y drift`);
+  }
+
+  // 8. stair climbing simulation (verify smooth climb & descent with zero wall-snagging)
+  const stairCases = {
+    1: [
+      { label: "Guardhouse stairs", x0: 10.6, z0: 33.4, dx: 1, dz: 0, dist: 6.2, minTop: 2.8 },
+      { label: "Bell-tower stairs", x0: -8.9, z0: -10.2, dx: 1, dz: 0, dist: 5.5, minTop: 2.1 },
+    ],
+    2: [
+      { label: "Meridian 2F stairs", x0: -7.5, z0: -12.5, dx: 1, dz: 0, dist: 6.8, minTop: 3.1 },
+    ],
+    3: [
+      { label: "Skybridge stairs", x0: -8.6, z0: 9.8, dx: 0, dz: -1, dist: 7.4, minTop: 3.4 },
+    ],
+    4: [
+      { label: "Container stairs", x0: -16.0, z0: 3.4, dx: 0, dz: -1, dist: 4.6, minTop: 2.3 },
+      { label: "Customs roof stairs", x0: -19.8, z0: 17.8, dx: 0, dz: 1, dist: 8.2, minTop: 3.9 },
+    ],
+    5: [
+      { label: "Barracks stairs", x0: -26.0, z0: 15.2, dx: 0, dz: -1, dist: 8.2, minTop: 3.9 },
+    ],
+    6: [
+      { label: "Skyway stairs", x0: -25.2, z0: 4.2, dx: 0, dz: -1, dist: 7.0, minTop: 3.4 },
+    ],
+  }[m.id];
+
+  if (stairCases) {
+    for (const sc of stairCases) {
+      const pos = new THREE.Vector3(sc.x0, 0, sc.z0);
+      const speed = 5.4;
+      const dt = 1 / 60;
+      const stepsN = Math.ceil(sc.dist / (speed * dt));
+      let prevY = 0;
+      let maxJump = 0;
+      for (let i = 0; i < stepsN; i++) {
+        pos.x += sc.dx * speed * dt;
+        pos.z += sc.dz * speed * dt;
+        const gy = level.groundHeightAt(pos.x, pos.z, pos.y);
+        if (gy <= pos.y + 0.58) pos.y = gy;
+        resolveCircleAABBs(pos, 0.42, level.spatial ?? level.aabbs, 0.58);
+        const gy2 = level.groundHeightAt(pos.x, pos.z, pos.y);
+        if (gy2 <= pos.y + 0.58) pos.y = gy2;
+        maxJump = Math.max(maxJump, Math.abs(pos.y - prevY));
+        prevY = pos.y;
+      }
+      ok(pos.y >= sc.minTop, `M${m.id} ${sc.label} climbed only to y=${pos.y.toFixed(2)} (expected >=${sc.minTop})`);
+      ok(maxJump < 0.25, `M${m.id} ${sc.label} single-frame Y jump too large: ${maxJump.toFixed(3)}m`);
+
+      // Walk back down
+      for (let i = 0; i < stepsN; i++) {
+        pos.x -= sc.dx * speed * dt;
+        pos.z -= sc.dz * speed * dt;
+        const gy = level.groundHeightAt(pos.x, pos.z, pos.y);
+        if (pos.y - gy <= 0.58) pos.y = gy;
+        resolveCircleAABBs(pos, 0.42, level.spatial ?? level.aabbs, 0.58);
+      }
+      ok(pos.y <= 0.15, `M${m.id} ${sc.label} descent stuck at y=${pos.y.toFixed(2)}`);
+    }
   }
 
   return { colliders: colliderCount, aabbs: level.aabbs.length, destroyables: level.destroyables.length };

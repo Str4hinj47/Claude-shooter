@@ -353,10 +353,49 @@ export class ModelLibrary {
     });
 
     const wheels: THREE.Group[] = [];
+    const doors: THREE.Object3D[] = [];
     inner.traverse((o) => {
       if (o.name.startsWith("wheel_pivot_")) wheels.push(o as THREE.Group);
+      if (/^door_(fl|fr|rl|rr)$/.test(o.name)) doors.push(o);
     });
+
+    // Identify ONLY the single front driver-side door (-X in wrapper space, closest to -Z front)
+    // and compute its outward Y-swing sign from its hinge pivot and mesh centroid.
+    wrapper.updateMatrixWorld(true);
+    const invWrapper = new THREE.Matrix4().copy(wrapper.matrixWorld).invert();
+    let driverDoor: THREE.Object3D | null = null;
+    let driverDoorSign = -1;
+    let bestScore = Infinity;
+    const tmpBox = new THREE.Box3();
+    const tmpPt = new THREE.Vector3();
+    const tmpCenter = new THREE.Vector3();
+    for (const door of doors) {
+      door.getWorldPosition(tmpPt).applyMatrix4(invWrapper);
+      tmpBox.makeEmpty();
+      door.traverse((child) => {
+        const cm = child as THREE.Mesh;
+        if (!cm.isMesh || !cm.geometry) return;
+        if (!cm.geometry.boundingBox) cm.geometry.computeBoundingBox();
+        if (!cm.geometry.boundingBox) return;
+        const m = new THREE.Matrix4().multiplyMatrices(invWrapper, cm.matrixWorld);
+        const bb = cm.geometry.boundingBox.clone().applyMatrix4(m);
+        tmpBox.union(bb);
+      });
+      if (tmpBox.isEmpty()) continue;
+      tmpBox.getCenter(tmpCenter);
+      const score = (tmpPt.x < 0 ? 0 : 10) + tmpCenter.z;
+      if (score < bestScore) {
+        bestScore = score;
+        driverDoor = door;
+        const outX = Math.sign(tmpPt.x) || -1;
+        const armZ = tmpCenter.z - tmpPt.z;
+        driverDoorSign = Math.sign(outX * armZ) || -1;
+      }
+    }
+
     wrapper.userData.wheels = wheels;
+    wrapper.userData.driverDoor = driverDoor;
+    wrapper.userData.driverDoorSign = driverDoorSign;
     wrapper.userData.brakeMaterials = [...lightCopies.values(), ...brakeIndicatorCopies];
     wrapper.userData.headlightMaterials = [...headlightCopies.values(), ...headlightIndicators];
     wrapper.userData.indicatorMaterials = indicatorCopies;
@@ -368,12 +407,17 @@ export class ModelLibrary {
 export function setDoorsOpen(carRoot: THREE.Object3D, amount: number): void {
   const clamped = Math.max(0, Math.min(1, amount));
   const maxRad = (62 * Math.PI) / 180;
+  let handled = false;
   carRoot.traverse((obj) => {
-    const n = obj.name;
-    if (n === "door_fl" || n === "door_rl") {
-      obj.rotation.y = -maxRad * clamped;
-    } else if (n === "door_fr" || n === "door_rr") {
-      obj.rotation.y = maxRad * clamped;
+    const door = obj.userData?.driverDoor as THREE.Object3D | null | undefined;
+    if (door) {
+      const sign = typeof obj.userData.driverDoorSign === "number" ? obj.userData.driverDoorSign : -1;
+      door.rotation.y = sign * maxRad * clamped;
+      handled = true;
     }
   });
+  if (!handled) {
+    const fallback = carRoot.getObjectByName("door_fl");
+    if (fallback) fallback.rotation.y = -maxRad * clamped;
+  }
 }

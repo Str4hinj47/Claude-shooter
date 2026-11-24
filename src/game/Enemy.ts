@@ -8,7 +8,6 @@ import * as THREE from "three";
 import { SoldierRig } from "../character/SoldierRig";
 import { CombatFX, Sfx } from "./fx";
 import { clamp } from "../character/math";
-import { createVolumetricBeamMaterial } from "./shaders";
 import type { EnemySpawn, MissionDef } from "./story";
 import { BOSS_HP } from "./story";
 import { SpatialAABBGrid } from "./city/SpatialIndex";
@@ -47,8 +46,12 @@ export function resolveCircleAABBs(
 ) {
   const list = Array.isArray(aabbs) ? aabbs : aabbs.queryPoint(pos.x, pos.z, radius + 0.15, _resolveScratch);
   const bodyTop = pos.y + 1.8;
+
+  // Pass 1: push horizontally out of tall walls / obstacles that cannot be stepped onto
   for (const b of list) {
-    if (bodyTop <= b.min.y + 0.02 || pos.y >= b.max.y - 0.03) continue; // no vertical overlap (standing on/above top)
+    if (bodyTop <= b.min.y + 0.02 || pos.y >= b.max.y - 0.03) continue;
+    const rise = b.max.y - pos.y;
+    if (step > 0 && rise > 0.02 && rise <= step + 0.06) continue;
     const cx = clamp(pos.x, b.min.x, b.max.x);
     const cz = clamp(pos.z, b.min.z, b.max.z);
     const dx = pos.x - cx;
@@ -56,18 +59,29 @@ export function resolveCircleAABBs(
     const d2 = dx * dx + dz * dz;
     if (d2 >= radius * radius || d2 < 1e-6) continue;
     const d = Math.sqrt(d2);
-    // step-up: a low ledge in front — lift the body onto its top rather than blocking
-    if (step > 0) {
-      const top = b.max.y;
-      const rise = top - pos.y;
-      if (rise > 0.02 && rise <= step + 0.1) {
-        pos.y = top;
-        continue; // consumed this AABB (standing on it); no horizontal push
-      }
-    }
     const push = (radius - d) / d;
     pos.x += dx * push;
     pos.z += dz * push;
+  }
+
+  // Pass 2: cleanly step onto low ledges / curbs within `step` height
+  if (step > 0) {
+    let bestTop = Infinity;
+    for (const b of list) {
+      if (bodyTop <= b.min.y + 0.02 || pos.y >= b.max.y - 0.03) continue;
+      const rise = b.max.y - pos.y;
+      if (rise <= 0.02 || rise > step + 0.06) continue;
+      const cx = clamp(pos.x, b.min.x, b.max.x);
+      const cz = clamp(pos.z, b.min.z, b.max.z);
+      const dx = pos.x - cx;
+      const dz = pos.z - cz;
+      if (dx * dx + dz * dz < radius * radius && b.max.y < bestTop) {
+        bestTop = b.max.y;
+      }
+    }
+    if (bestTop < Infinity) {
+      pos.y = bestTop;
+    }
   }
 }
 
@@ -111,8 +125,6 @@ export class Fighter {
   private flashlightMount: THREE.Object3D | null = null;
   private flashlightLens: THREE.Mesh | null = null;
   private flashlightBeam: THREE.Mesh | null = null;
-  private flashlightMat: THREE.ShaderMaterial | null = null;
-  private beamTime = Math.random() * 10;
 
   constructor(host: CombatHost, spawn: EnemySpawn, mission: MissionDef, hp: number, boss: boolean) {
     this.host = host;
@@ -178,8 +190,15 @@ export class Fighter {
     lens.position.set(0, 0, 0.056);
     mount.add(lens);
 
-    const beamMat = createVolumetricBeamMaterial(0xcfe8ff, 0.17, 1.9);
-    const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.032, 2.1, 1, 20, 1, true), beamMat);
+    const beamMat = new THREE.MeshBasicMaterial({
+      color: 0xcfe8ff,
+      transparent: true,
+      opacity: 0.075,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+    });
+    const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.032, 2.0, 1, 16, 1, true), beamMat);
     beam.scale.set(1, 14.5, 1);
     beam.rotation.x = -Math.PI / 2;
     beam.position.set(0, 0, 7.3);
@@ -190,7 +209,6 @@ export class Fighter {
     this.flashlightMount = mount;
     this.flashlightLens = lens;
     this.flashlightBeam = beam;
-    this.flashlightMat = beamMat;
   }
 
   getFlashlightWorld(originOut: THREE.Vector3, targetOut: THREE.Vector3): boolean {
@@ -543,10 +561,6 @@ export class Fighter {
       rig.aimYaw = this.baseYaw + Math.sin(this.yawSweep) * 0.65;
       rig.aimPitch = -0.05;
       rig.aimPoint.set(my.x + Math.sin(rig.aimYaw) * 18, my.y + 1.25, my.z + Math.cos(rig.aimYaw) * 18);
-    }
-    if (this.flashlightMat) {
-      this.beamTime += dt;
-      this.flashlightMat.uniforms.uTime.value = this.beamTime;
     }
 
     const mv = rig.input.move;

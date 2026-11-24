@@ -27,7 +27,6 @@ import {
   scatterInstances,
 } from "./kit/geom";
 import { materialFor } from "./kit/surface";
-import { createLightPoolMaterial, createVolumetricBeamMaterial } from "./shaders";
 import {
   buildWestgateWorld,
   OpenWorldEngine,
@@ -35,6 +34,8 @@ import {
   SpatialColliderGrid,
   WorldHeightSystem,
   type DistrictInfo,
+  type MinimapData,
+  type WalkableSurface,
   type WestgateVehicleManager,
 } from "./city";
 import type { WeatherMode, WeatherState } from "./vehicles/weather";
@@ -535,7 +536,7 @@ class Kit {
   destroyables: THREE.Mesh[] = [];
   beacons: Beacon[] = [];
   streetLamps: StreetLampInfo[] = [];
-  lampCones: THREE.ShaderMaterial[] = [];
+  walkableSurfaces: WalkableSurface[] = [];
   extras: { update: (dt: number) => void }[] = [];
   rng: () => number;
   scene: THREE.Object3D;
@@ -1007,8 +1008,14 @@ class Kit {
       );
       m.castShadow = true;
       m.receiveShadow = true;
+      m.userData.kind = "concrete";
       this.scene.add(m);
-      this.colliderBox(alongZ ? width : run, h, alongZ ? run : width, sx, 0, sz, 0, "concrete");
+      this.colliders.push(m);
+      // Under-stair solid block so ground units can't walk underneath tall stairs,
+      // recessed 0.55m below the ramp surface so climbers never snag on step risers.
+      if (h > 0.7) {
+        this.colliderBox(alongZ ? width : run, h - 0.55, alongZ ? run : width, sx, 0, sz, 0, "concrete");
+      }
       // non-slip tread nosing on leading top edge of step
       const nosing = this.mesh(
         sideMat,
@@ -1020,6 +1027,35 @@ class Kit {
       );
       this.scene.add(nosing);
     }
+
+    // Smooth inclined ramp surface covering the full stair flight (seamless climbing & descending)
+    const totalRun = steps * run;
+    const totalRise = steps * rise;
+    const startCoord = (alongZ ? z : x) - dir * (run * 0.5);
+    const endCoord = startCoord + dir * totalRun;
+    const minAlong = Math.min(startCoord, endCoord) - 0.35;
+    const maxAlong = Math.max(startCoord, endCoord) + 0.35;
+    const halfLat = width * 0.5 + 0.16;
+    const minX = alongZ ? x - halfLat : minAlong;
+    const maxX = alongZ ? x + halfLat : maxAlong;
+    const minZ = alongZ ? minAlong : z - halfLat;
+    const maxZ = alongZ ? maxAlong : z + halfLat;
+    this.walkableSurfaces.push({
+      id: `stairs_${this.walkableSurfaces.length}`,
+      minX,
+      maxX,
+      minZ,
+      maxZ,
+      minY: 0,
+      maxY: totalRise,
+      heightAt: (px, pz) => {
+        if (px < minX || px > maxX || pz < minZ || pz > maxZ) return null;
+        const coord = alongZ ? pz : px;
+        const t = ((coord - startCoord) * dir) / totalRun;
+        if (t < -0.25 / totalRun || t > 1 + 0.35 / totalRun) return null;
+        return Math.max(0, Math.min(totalRise, t * totalRise));
+      },
+    });
     // handrails on both sides
     const railMat = materialFor(0x2a2d30, { roughness: 0.5, metalness: 0.85 });
     const railLen = Math.hypot((steps - 1) * run, (steps - 1) * rise) + 0.35;
@@ -1433,20 +1469,19 @@ class Kit {
     );
 
     if (lit) {
-      // volumetric light cone + ground pool
-      const coneMat = createVolumetricBeamMaterial(color, 0.13, 1.75);
-      const cone = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 2.75, 1, 20, 1, true), coneMat);
+      const coneMat = new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: 0.045,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        side: THREE.DoubleSide,
+      });
+      const cone = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 2.75, 1, 16, 1, true), coneMat);
       cone.scale.set(1, 4.86, 1);
       cone.position.set(0, 2.43, 1.62);
       cone.renderOrder = 2;
       grp.add(cone);
-      this.lampCones.push(coneMat);
-
-      const pool = new THREE.Mesh(new THREE.PlaneGeometry(7.0, 7.0), createLightPoolMaterial(color, 0.24));
-      pool.rotation.x = -Math.PI / 2;
-      pool.position.set(0, 0.024, 1.62);
-      pool.renderOrder = 1;
-      grp.add(pool);
 
       const sinR = Math.sin(ry);
       const cosR = Math.cos(ry);
@@ -2293,7 +2328,7 @@ class Kit {
 /* ====================== mission worlds ====================== */
 
 /* ---------------- M0: range (existing world) ---------------- */
-function indexLevelSpatial(colliders: THREE.Object3D[], aabbs: THREE.Box3[]) {
+function indexLevelSpatial(colliders: THREE.Object3D[], aabbs: THREE.Box3[], walkableSurfaces: WalkableSurface[] = []) {
   const spatial = new SpatialAABBGrid(32);
   spatial.insertMany(aabbs);
   const spatialColliders = new SpatialColliderGrid(32);
@@ -2307,6 +2342,7 @@ function indexLevelSpatial(colliders: THREE.Object3D[], aabbs: THREE.Box3[]) {
     else spatialColliders.insert(c, tmpBox);
   }
   const heightSystem = new WorldHeightSystem(() => 0, spatial);
+  for (const s of walkableSurfaces) heightSystem.addSurface(s);
   return { spatial, spatialColliders, heightSystem };
 }
 
@@ -2441,12 +2477,12 @@ function buildVillage(content: THREE.Object3D, main: THREE.Scene, renderer: THRE
   content.add(part(bevelledBox(3.4, 0.85, 0.25, 0.03), parapetMat, [13.2, 3.65, 32.45])); // south-west (leaves x=15..18 open)
   // landing bridge + stone stairs ascending +X along south wall onto the guardhouse roof (y = 3.0m)
   const stairStone = materialFor(0x9a9284, { roughness: 0.92, family: "stone", seed: 110 });
-  K.stairs({ x: 11.4, z: 33.4, steps: 10, rise: 0.3, run: 0.55, width: 1.5, mat: stairStone });
-  const gLand = K.mesh(stairStone, bevelledBox(2.2, 0.28, 2.0, 0.03), 17.0, 3.06, 33.1);
+  K.stairs({ x: 11.4, z: 33.4, steps: 10, rise: 0.33, run: 0.55, width: 1.5, mat: stairStone });
+  const gLand = K.mesh(stairStone, bevelledBox(2.0, 0.28, 2.0, 0.03), 17.65, 3.18, 33.1);
   gLand.castShadow = true;
   gLand.receiveShadow = true;
   content.add(gLand);
-  K.colliderBox(2.2, 3.2, 2.0, 17.0, 0, 33.1, 0, "concrete");
+  K.colliderBox(2.0, 3.32, 2.0, 17.65, 0, 33.1, 0, "concrete");
   // guardhouse rooftop sandbag cover + crate
   const rBag = K.mesh(materialFor(0x8d8163, { roughness: 0.94, family: "fabric", seed: 18 }), new RoundedBoxGeometry(0.65, 0.32, 1.8, 3, 0.08), 12.2, 3.52, 29);
   content.add(rBag);
@@ -2665,8 +2701,8 @@ function buildConstruction(content: THREE.Object3D, main: THREE.Scene, renderer:
     sl.receiveShadow = true;
     K.solid(sl, "concrete");
   }
-  // 2nd floor concrete stair (climbs +X from x=-6.7..x=-1.65 at z=-12.5 onto y=3.36m deck)
-  K.stairs({ x: -6.7, z: -12.5, steps: 11, rise: 0.305, run: 0.56, width: 1.5, mat: concreteDark });
+  // 2nd floor concrete stair (climbs +X from x=-6.9..x=-1.2 at z=-12.5 flush onto y=3.36m deck)
+  K.stairs({ x: -6.9, z: -12.5, steps: 11, rise: 0.306, run: 0.54, width: 1.5, mat: concreteDark });
   // 2nd floor low concrete cover + safety rails
   const railMat = materialFor(0xd87a1c, { roughness: 0.7 });
   K.solid(K.box(concreteDark, 3.8, 1.05, 0.4, 4.5, 3.36, -9.6), "concrete");
@@ -2918,9 +2954,9 @@ function buildDowntown(content: THREE.Object3D, main: THREE.Scene, renderer: THR
     content.add(part(bevelledBox(0.5, 3.3, 0.5, 0.03), skyMat, [sx, 1.65, 2]));
   }
   K.solid(K.box(skyMat, 1.8, 0.95, 0.45, 0, 3.6, 1.2), "concrete");
-  // twin staircases climbing along -Z from south sidewalks up onto the skybridge (z=8.5 -> z=3.6)
-  K.stairs({ x: -8.6, z: 8.6, alongZ: true, dir: -1, steps: 12, rise: 0.3, run: 0.5, width: 1.4, mat: skyMat });
-  K.stairs({ x: 8.6, z: 8.6, alongZ: true, dir: -1, steps: 12, rise: 0.3, run: 0.5, width: 1.4, mat: skyMat });
+  // twin staircases climbing along -Z from south sidewalks up flush onto the skybridge (z=9.1 -> z=3.6)
+  K.stairs({ x: -8.6, z: 9.1, alongZ: true, dir: -1, steps: 12, rise: 0.3, run: 0.48, width: 1.4, mat: skyMat });
+  K.stairs({ x: 8.6, z: 9.1, alongZ: true, dir: -1, steps: 12, rise: 0.3, run: 0.48, width: 1.4, mat: skyMat });
 
   // stairs onto the shop rooftops + relay substation deck near (18, -26)
   K.stairs({ x: -9.8, z: 29.5, alongZ: true, dir: -1, steps: 14, rise: 0.31, run: 0.55, width: 1.3, mat: skyMat });
@@ -3100,9 +3136,9 @@ function buildPort(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.W
   K.containerRow(-18, 10, 3, 0.1);
   K.containerRow(18, 10, 3, -0.1);
 
-  // staircase up a container stack for an elevated vantage over the dock
-  K.stairs({ x: -15.4, z: 2, steps: 5, rise: 0.5, run: 0.7, width: 1.4, mat: new THREE.MeshStandardMaterial({ color: 0x8a6a3a, roughness: 0.7, metalness: 0.3 }) });
-  K.stairs({ x: 15.4, z: 2, steps: 5, rise: 0.5, run: 0.7, width: 1.4, mat: new THREE.MeshStandardMaterial({ color: 0x3a6a8a, roughness: 0.7, metalness: 0.3 }) });
+  // staircase up a container stack at (-16, -2) and (+16, -2) for an elevated vantage over the dock
+  K.stairs({ x: -16.0, z: 2.85, alongZ: true, dir: -1, steps: 8, rise: 0.325, run: 0.46, width: 1.4, mat: new THREE.MeshStandardMaterial({ color: 0x8a6a3a, roughness: 0.7, metalness: 0.3 }) });
+  K.stairs({ x: 16.0, z: 2.85, alongZ: true, dir: -1, steps: 8, rise: 0.325, run: 0.46, width: 1.4, mat: new THREE.MeshStandardMaterial({ color: 0x3a6a8a, roughness: 0.7, metalness: 0.3 }) });
 
   // floodlight towers (with crossbar head mounting twin lamps)
   const poleMat = materialFor(0x2a2d30, { roughness: 0.55, metalness: 0.75 });
@@ -3619,6 +3655,7 @@ export interface LevelResult extends World {
   heightSystem?: WorldHeightSystem;
   openWorld?: OpenWorldEngine;
   vehicles?: WestgateVehicleManager;
+  minimapData?: MinimapData;
   getDistrictAt?: (x: number, z: number) => DistrictInfo;
   weather?: WeatherState;
   setWeatherMode?: (mode: WeatherMode) => void;
@@ -3647,12 +3684,8 @@ function finish(K: Kit, ambient: ReturnType<typeof setupAmbient>): LevelResult {
     K.scene.add(sl, sl.target);
     lampLights.push(sl);
   }
-  let lampTime = 0;
-
   const update = (_dt: number, focus: THREE.Vector3) => {
     ambient.update(_dt, focus);
-    lampTime += _dt;
-    for (const m of K.lampCones) m.uniforms.uTime.value = lampTime;
 
     if (lampLights.length > 0 && K.streetLamps.length > 0) {
       const sorted = K.streetLamps
@@ -3679,7 +3712,7 @@ function finish(K: Kit, ambient: ReturnType<typeof setupAmbient>): LevelResult {
     });
     K.extras.forEach((e) => e.update(_dt));
   };
-  const { spatial, spatialColliders, heightSystem } = indexLevelSpatial(K.colliders, K.aabbs);
+  const { spatial, spatialColliders, heightSystem } = indexLevelSpatial(K.colliders, K.aabbs, K.walkableSurfaces);
   const groundHeightAt = (x: number, z: number, y: number): number => heightSystem.groundHeightAt(x, z, y);
   return {
     colliders: K.colliders,

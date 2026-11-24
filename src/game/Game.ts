@@ -1,16 +1,10 @@
 import * as THREE from "three";
-import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
-import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
-import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
-import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
-import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { SoldierRig, MAG_SIZE, type RigStatus } from "../character/SoldierRig";
 import { WEAPONS } from "../character/rifle";
 import { type World, type SurfaceKind } from "./world";
 import { buildLevel, type LevelResult } from "./levels";
 import { CombatFX, Sfx } from "./fx";
-import { CinematicPostShader } from "./shaders";
 import { Spring, clamp, damp, lerp } from "../character/math";
 import { Ally, Enemy, Fighter, RescueNPC, resolveCircleAABBs, type CombatHost } from "./Enemy";
 import { MISSIONS, OPEN_WORLD_MISSION, type DialogueLine, type MissionDef, type ObjectiveDef } from "./story";
@@ -27,6 +21,7 @@ import {
 } from "./progression";
 import { type CarId } from "./vehicles/catalog";
 import { WEATHER_MODES, type WeatherMode } from "./vehicles/weather";
+import type { MinimapData } from "./city/MinimapData";
 export { loadSave, SAVE_KEY };
 
 export type CameraPreset = "close" | "chase" | "far" | "hood" | "bumper" | "free";
@@ -198,15 +193,11 @@ export class Game {
   private weaponIdx = 0;
   private weaponAmmo = WEAPONS.map((w) => ({ mag: w.magSize, reserve: w.reserveMax, adsFov: w.adsFovDefault }));
   private adsFovSmooth = WEAPONS[0].adsFovDefault;
-  private composer: EffectComposer;
-  private bloomPass: UnrealBloomPass;
-  private gradePass: ShaderPass;
   private hangarEnv: THREE.Texture | null = null;
   private guardFlashlights: THREE.SpotLight[] = [];
   private tmpFlashOrigin = new THREE.Vector3();
   private tmpFlashTarget = new THREE.Vector3();
   private rayScratch: THREE.Object3D[] = [];
-  private postTime = 0;
 
   /* mission state */
   private cb: GameCallbacks | null = null;
@@ -266,20 +257,6 @@ export class Game {
     this.renderer.domElement.tabIndex = 0;
     container.appendChild(this.renderer.domElement);
 
-    const w0 = container.clientWidth || window.innerWidth;
-    const h0 = container.clientHeight || window.innerHeight;
-    const rt = new THREE.WebGLRenderTarget(w0, h0, {
-      type: THREE.HalfFloatType,
-      samples: this.renderer.capabilities.isWebGL2 ? 2 : 0,
-    });
-    this.composer = new EffectComposer(this.renderer, rt);
-    this.composer.addPass(new RenderPass(this.scene, this.camera));
-    this.bloomPass = new UnrealBloomPass(new THREE.Vector2(w0, h0), 0.34, 0.55, 0.86);
-    this.composer.addPass(this.bloomPass);
-    this.gradePass = new ShaderPass(CinematicPostShader);
-    this.composer.addPass(this.gradePass);
-    this.composer.addPass(new OutputPass());
-
     this.camera.position.set(0.6, 1.8, -3);
     this.scene.add(this.missionRoot);
     this.scene.add(this.fx.group);
@@ -312,9 +289,6 @@ export class Game {
     }
     this.camera.far = 400;
     this.camera.updateProjectionMatrix();
-    this.bloomPass.strength = 0.34;
-    this.bloomPass.radius = 0.55;
-    this.bloomPass.threshold = 0.86;
 
     if (this.missionRoot.children.length > 0) {
       this.scene.remove(this.missionRoot);
@@ -477,15 +451,6 @@ export class Game {
     this.camera.fov = 62;
     this.camera.far = mission.id === -1 ? 1800 : 400;
     this.camera.updateProjectionMatrix();
-    if (mission.id === -1) {
-      this.bloomPass.strength = 0.14;
-      this.bloomPass.radius = 0.28;
-      this.bloomPass.threshold = 1.15;
-    } else {
-      this.bloomPass.strength = 0.34;
-      this.bloomPass.radius = 0.55;
-      this.bloomPass.threshold = 0.86;
-    }
 
     // reset mission state
     this.firstContact = false;
@@ -879,8 +844,6 @@ export class Game {
     this.renderer.setSize(w, h, false);
     this.renderer.domElement.style.width = "100%";
     this.renderer.domElement.style.height = "100%";
-    this.composer?.setSize(w, h);
-    this.bloomPass?.setSize(w, h);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     const s = (h * this.renderer.getPixelRatio()) / (2 * Math.tan(THREE.MathUtils.degToRad(this.camera.fov) / 2));
@@ -1192,7 +1155,7 @@ export class Game {
       if (this.extractBeacon) {
         this.extractBeacon.visible = allDone;
         if (allDone) {
-          (this.extractBeacon.material as THREE.MeshBasicMaterial).opacity = 0.14 + Math.sin(this.postTime * 3.5) * 0.05;
+          (this.extractBeacon.material as THREE.MeshBasicMaterial).opacity = 0.14 + Math.sin(performance.now() * 0.0035) * 0.05;
         }
       }
     }
@@ -1388,15 +1351,8 @@ export class Game {
     }
   }
 
-  private renderFrame(rawDt: number) {
-    this.postTime += rawDt;
-    const u = this.gradePass.uniforms;
-    u.uTime.value = this.postTime;
-    u.uNight.value = this.menuHangar ? 0.55 : this.mission?.night ? 1.0 : 0.0;
-    u.uAds.value = this.menuHangar ? 0.0 : this.adsBlend;
-    const hpRatio = this.maxHealth > 0 ? clamp(1 - this.health / this.maxHealth, 0, 1) : 0;
-    u.uDamage.value = this.menuHangar || !this.rig || this.rig.dead ? 0.0 : clamp((hpRatio - 0.35) * 1.5, 0, 1);
-    this.composer.render();
+  private renderFrame(_rawDt: number) {
+    this.renderer.render(this.scene, this.camera);
   }
 
   private updateGuardFlashlights() {
@@ -1560,7 +1516,16 @@ export class Game {
         /* ---- character ---- */
         const gy = this.level!.groundHeightAt(rig.root.position.x, rig.root.position.z, rig.root.position.y);
         rig.update(dt, gy);
-        resolveCircleAABBs(rig.root.position, 0.55, this.level!.spatial ?? this.level!.aabbs, rig.stepHeight);
+        resolveCircleAABBs(rig.root.position, 0.42, this.level!.spatial ?? this.level!.aabbs, rig.stepHeight);
+        if (rig.grounded) {
+          const gyAfter = this.level!.groundHeightAt(rig.root.position.x, rig.root.position.z, rig.root.position.y);
+          if (Math.abs(gyAfter - rig.root.position.y) <= rig.stepHeight + 0.05) {
+            rig.root.position.y = Math.abs(gyAfter - rig.root.position.y) <= 0.14
+              ? gyAfter
+              : damp(rig.root.position.y, gyAfter, 28, dt);
+            rig.groundY = rig.root.position.y;
+          }
+        }
 
         /* ---- ambient NPC traffic & nearby driveable check ---- */
         if (vehicles) {
@@ -1877,6 +1842,47 @@ export class Game {
     this.emitHud();
   }
 
+  getMinimapData(): MinimapData | null {
+    return this.level?.minimapData ?? null;
+  }
+
+  getMinimapSample(): {
+    x: number;
+    z: number;
+    heading: number;
+    driving: boolean;
+    speedKmh: number;
+    vehicles: { x: number; z: number; isNpc: boolean; active: boolean }[];
+  } | null {
+    if (!this.rig || this.mission?.id !== -1) return null;
+    const vehiclesMgr = this.level?.vehicles;
+    const activeVeh = vehiclesMgr?.activeVehicle ?? null;
+    const x = activeVeh ? activeVeh.pos.x : this.rig.root.position.x;
+    const z = activeVeh ? activeVeh.pos.z : this.rig.root.position.z;
+    const rawYaw = activeVeh ? activeVeh.yaw : this.camYaw;
+    const heading = Math.atan2(Math.sin(rawYaw), -Math.cos(rawYaw));
+
+    const nearbyVehicles: { x: number; z: number; isNpc: boolean; active: boolean }[] = [];
+    if (vehiclesMgr) {
+      for (const v of vehiclesMgr.vehicles) {
+        if (v === activeVeh) continue;
+        const dx = v.pos.x - x;
+        const dz = v.pos.z - z;
+        if (dx * dx + dz * dz < 420 * 420) {
+          nearbyVehicles.push({ x: v.pos.x, z: v.pos.z, isNpc: v.isNpcTraffic, active: false });
+        }
+      }
+    }
+    return {
+      x,
+      z,
+      heading,
+      driving: !!activeVeh,
+      speedKmh: activeVeh ? Math.round(Math.abs(activeVeh.speed) * 3.6) : 0,
+      vehicles: nearbyVehicles,
+    };
+  }
+
   /* ------------------------------------------------------------ */
   private emitHud() {
     const r = this.rig;
@@ -2014,7 +2020,6 @@ export class Game {
     this.level?.vehicles?.dispose();
     this.level?.openWorld?.dispose();
     if (document.pointerLockElement) document.exitPointerLock();
-    this.composer.dispose();
     this.hangarEnv?.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();
