@@ -11,6 +11,7 @@ import {
 import { ModelLibrary, setDoorsOpen } from "../vehicles/ModelLibrary";
 import { spinWheels } from "../vehicles/wheels";
 import { addVehicleLights, disposeVehicleLights, updateVehicleLights } from "../vehicles/vehicleLights";
+import { chooseTrafficModel, chooseTrafficPaint } from "../vehicles/traffic-appearance.mjs";
 import {
   createOvertakeVehicleState,
   stepFreeRoamVehicle,
@@ -170,21 +171,38 @@ export class WestgateVehicleManager {
   private readonly yawQuat = new THREE.Quaternion();
   private readonly aabbHit = new THREE.Box3();
   private readonly playerBox = new THREE.Box3();
+  private readonly streamingIds = new Set<TrafficId>();
   private disposed = false;
-  private streamBusy = false;
+  lastImpact = 0;
 
   constructor(private readonly bridge: VehicleKitWorldBridge) {
     this.root.name = "WestgateVehicles";
     this.spawnAll();
     if (typeof window !== "undefined" && typeof fetch === "function") {
       const save = loadSave();
+      // Preload selected car immediately, then stream Overtake NPC cars & trucks in background
       void this.streamModel(save.selectedCar);
+      const preloadOrder: TrafficId[] = [
+        "semi",
+        "kraz",
+        "rangerover",
+        "mercedes",
+        "r8",
+        "ferrari",
+        "mustang",
+        "golf",
+        "audi",
+        "challenger",
+      ];
+      for (const id of preloadOrder) {
+        if (id !== save.selectedCar) void this.streamModel(id);
+      }
     }
   }
 
   private async streamModel(id: TrafficId): Promise<void> {
-    if (this.disposed || this.streamBusy || this.library.has(id)) return;
-    this.streamBusy = true;
+    if (this.disposed || this.streamingIds.has(id) || this.library.has(id)) return;
+    this.streamingIds.add(id);
     try {
       const loaded = await this.library.loadModel(id);
       if (this.disposed || !loaded) return;
@@ -194,7 +212,7 @@ export class WestgateVehicleManager {
         }
       }
     } finally {
-      this.streamBusy = false;
+      this.streamingIds.delete(id);
     }
   }
 
@@ -309,25 +327,24 @@ export class WestgateVehicleManager {
       });
     });
 
-    // 2. Ambient NPC road traffic along Westgate Bay's 149 connected lanes (Overtake cars + trucks)
-    const npcPool: TrafficId[] = [
-      "golf",
-      "mustang",
-      "challenger",
-      "mercedes",
-      "audi",
-      "rangerover",
-      "r8",
-      "ferrari",
-      "semi",
-      "kraz",
-    ];
-    const spawns = this.bridge.sampleTrafficSpawnPoints(26, 38);
+    // 2. Ambient NPC road traffic along Westgate Bay's 149 connected lanes (authentic Overtake cars & trucks)
+    const carIds: TrafficId[] = ["golf", "mustang", "challenger", "mercedes", "audi", "rangerover", "r8", "ferrari"];
+    const heavyIds: TrafficId[] = ["semi", "kraz"];
+    const spawns = this.bridge.sampleTrafficSpawnPoints(44, 34);
+    const spawnedForAppearance: { s: number; id: string; paint: number }[] = [];
     spawns.forEach((sp, idx) => {
       const lane = this.bridge.roads.getLane(sp.laneId) ?? null;
       if (!lane) return;
-      const modelId = npcPool[idx % npcPool.length];
-      const paintHex = modelId === "semi" || modelId === "kraz" ? undefined : TRAFFIC_COLORS[idx % TRAFFIC_COLORS.length];
+      const allowTruck = sp.tier === "freeway" || sp.tier === "arterial";
+      const pool = allowTruck && idx % 6 === 0 ? heavyIds : carIds;
+      const distMetric = sp.position.x + sp.position.z * 0.7;
+      const modelId = chooseTrafficModel(pool, spawnedForAppearance, distMetric);
+      const paintHex =
+        modelId === "semi" || modelId === "kraz"
+          ? undefined
+          : chooseTrafficPaint(TRAFFIC_COLORS, spawnedForAppearance, distMetric);
+      spawnedForAppearance.push({ s: distMetric, id: modelId, paint: paintHex ?? 0x475569 });
+
       const pos = sp.position.clone();
       pos.y = this.bridge.groundHeightAt(pos.x, pos.z, pos.y + 1.0);
       const spec = specFor(modelId);
@@ -446,6 +463,7 @@ export class WestgateVehicleManager {
     camera?: THREE.Camera,
     darkness = 0,
   ): void {
+    this.lastImpact = 0;
     const safeDt = Math.min(Math.max(dt, 0), 0.05);
     for (const v of this.vehicles) {
       const braking = v === this.activeVehicle ? input.handbrake || (input.throttle < -0.1 && v.speed > 0.5) : false;
@@ -482,7 +500,7 @@ export class WestgateVehicleManager {
       const dz = v.pos.z - playerPos.z;
       const d2 = dx * dx + dz * dz;
       v.group.visible = v === this.activeVehicle || d2 < 240 * 240;
-      if (!v.modelRoot && v.group.visible && !this.streamBusy && typeof window !== "undefined" && typeof fetch === "function") {
+      if (!v.modelRoot && v.group.visible && typeof window !== "undefined" && typeof fetch === "function") {
         void this.streamModel(v.modelId);
       }
 
@@ -627,12 +645,18 @@ export class WestgateVehicleManager {
           // Momentarily stun bumped NPC traffic
           other.speed = 0;
         }
+        if (v === this.activeVehicle && Math.abs(v.speed) > 4) {
+          this.lastImpact = Math.max(this.lastImpact, Math.min(1, Math.abs(v.speed) / 22));
+        }
         v.speed *= 0.62;
         v.physState.speed = v.speed;
       }
     }
 
     if (hitX && hitZ) {
+      if (v === this.activeVehicle && Math.abs(v.speed) > 5) {
+        this.lastImpact = Math.max(this.lastImpact, Math.min(1, Math.abs(v.speed) / 24));
+      }
       v.speed *= -0.18;
       v.physState.speed = v.speed;
     } else if (hitX || hitZ) {

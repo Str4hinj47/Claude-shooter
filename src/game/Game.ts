@@ -21,6 +21,7 @@ import {
 } from "./progression";
 import { type CarId } from "./vehicles/catalog";
 import { WEATHER_MODES, type WeatherMode } from "./vehicles/weather";
+import { VehicleAudio, type EngineHud } from "./vehicles/audio/VehicleAudio";
 import { TIME_OF_DAY_LABELS, TIME_OF_DAY_MODES, type TimeOfDayMode } from "./city/WestgateWorld";
 import type { MinimapData } from "./city/MinimapData";
 export { loadSave, SAVE_KEY };
@@ -120,7 +121,7 @@ export interface HudState {
   activityToast: { title: string; subtitle: string; accent: string } | null;
   cameraPreset: CameraPreset;
   credits: number;
-  vehicle: { active: boolean; name: string; kind: string; speedKmh: number; nearbyName: string | null } | null;
+  vehicle: { active: boolean; name: string; kind: string; speedKmh: number; rpm: number; gear: number; redline: number; nearbyName: string | null } | null;
   weapons: { slot: number; shortName: string; category: string; mag: number; reserve: number }[];
 }
 
@@ -247,6 +248,9 @@ export class Game {
   private driveDistAcc = 0;
   private activityToast: { title: string; subtitle: string; accent: string } | null = null;
   private activityToastTimer = 0;
+  private vehAudio = new VehicleAudio();
+  private engineHud: EngineHud | null = null;
+  private crashAudioCd = 0;
 
   constructor(
     private container: HTMLElement,
@@ -287,6 +291,8 @@ export class Game {
 
     if (this.rig) this.rig.setVisible(true);
     this.nearbyVehicleName = null;
+    this.vehAudio.setActive(false);
+    this.engineHud = null;
     if (this.level?.openWorld) {
       this.level.disposeExtra?.();
       this.level.vehicles?.dispose();
@@ -874,6 +880,9 @@ export class Game {
   setPaused(v: boolean) {
     this.paused = v;
     this.pausedRendered = false;
+    if (this.level?.vehicles?.activeVehicle) {
+      this.vehAudio.setActive(!v);
+    }
     if (v && document.pointerLockElement) document.exitPointerLock();
     this.startLoop();
     this.emitHud();
@@ -1463,6 +1472,7 @@ export class Game {
       this.activityToastTimer = Math.max(0, this.activityToastTimer - rawDt);
       if (this.activityToastTimer === 0) this.activityToast = null;
     }
+    if (this.crashAudioCd > 0) this.crashAudioCd = Math.max(0, this.crashAudioCd - rawDt);
     if (this.phase === "ready") {
       const k = this.keys;
       const activeVeh = vehicles?.activeVehicle ?? null;
@@ -1472,6 +1482,16 @@ export class Game {
         const steer = (k.has("KeyA") ? 1 : 0) - (k.has("KeyD") ? 1 : 0);
         const handbrake = k.has("Space");
         vehicles!.update(dt, { throttle, steer, handbrake }, activeVeh.pos, gripScale, this.camera, darkness);
+        if (vehicles!.lastImpact > 0.15 && this.crashAudioCd <= 0) {
+          this.vehAudio.crash(vehicles!.lastImpact);
+          this.crashAudioCd = 0.28;
+        }
+        const engThrottle = throttle > 0 ? throttle : activeVeh.speed < -0.5 && throttle < 0 ? 0.55 : 0;
+        const engBrake = handbrake ? 1 : throttle < 0 && activeVeh.speed > 0.5 ? -throttle : 0;
+        this.engineHud = this.vehAudio.engine(activeVeh.speed, engThrottle, engBrake);
+        const blink = ((performance.now() * 0.004) | 0) % 2 === 0;
+        const sigSide = activeVeh.steerAngle > 0.14 ? "left" : activeVeh.steerAngle < -0.14 ? "right" : null;
+        this.vehAudio.setSignal(sigSide, sigSide !== null && blink);
         rig.setVisible(false);
         rig.root.position.copy(activeVeh.pos);
         rig.groundY = activeVeh.pos.y;
@@ -1491,6 +1511,7 @@ export class Game {
           const hit = this.level.activities.update(dt, activeVeh.pos, activeVeh.speed, true);
           if (hit) {
             awardDrivingCredits(hit.reward);
+            this.vehAudio.radarChime(hit.beatTarget);
             this.activityToast = {
               title: `${hit.trap.name} · ${hit.kmh} km/h`,
               subtitle: hit.beatTarget
@@ -1776,6 +1797,7 @@ export class Game {
     this.freeYaw = 0;
     this.freePitch = 0;
     this.freeIdle = 0;
+    this.vehAudio.setPerspective(this.vehCam.preset === "hood" || this.vehCam.preset === "bumper" ? "cabin" : "exterior");
     this.saveVehicleCameraSettings();
     this.pausedRendered = false;
     this.startLoop();
@@ -1859,6 +1881,8 @@ export class Game {
 
     if (vehicles.activeVehicle) {
       const exitPos = vehicles.exitVehicle();
+      this.vehAudio.setActive(false);
+      this.engineHud = null;
       this.rig.setVisible(true);
       if (exitPos) {
         this.rig.root.position.copy(exitPos);
@@ -1871,6 +1895,10 @@ export class Game {
     const nearV = vehicles.findNearestEnterable(this.rig.root.position);
     if (nearV) {
       vehicles.enterVehicle(nearV);
+      const audioCar: CarId = nearV.modelId === "semi" || nearV.modelId === "kraz" ? "rangerover" : nearV.modelId;
+      this.vehAudio.setCar(audioCar);
+      this.vehAudio.setPerspective(this.vehCam.preset === "hood" || this.vehCam.preset === "bumper" ? "cabin" : "exterior");
+      this.vehAudio.setActive(true);
       this.rig.setVisible(false);
       this.crouchToggle = false;
       this.camYaw = nearV.yaw;
@@ -1995,16 +2023,19 @@ export class Game {
       ? this.level.getDistrictAt(r.root.position.x, r.root.position.z)
       : null;
     const av = this.level?.vehicles?.activeVehicle ?? null;
-    const vehicle = av
+    const vehicle: HudState["vehicle"] = av
       ? {
           active: true,
           name: av.spec.name,
           kind: av.spec.klass,
           speedKmh: Math.round(Math.abs(av.speed) * 3.6),
+          rpm: Math.round(this.engineHud?.rpm ?? 850),
+          gear: this.engineHud?.gear ?? 1,
+          redline: this.engineHud?.redline ?? 7000,
           nearbyName: null,
         }
       : this.nearbyVehicleName
-        ? { active: false, name: this.nearbyVehicleName, kind: "", speedKmh: 0, nearbyName: this.nearbyVehicleName }
+        ? { active: false, name: this.nearbyVehicleName, kind: "", speedKmh: 0, rpm: 0, gear: 0, redline: 7000, nearbyName: this.nearbyVehicleName }
         : null;
     const weatherMode = this.level?.weather?.mode ?? "auto";
     const weatherLabel = this.level?.getWeatherLabel?.() ?? "Clear";
@@ -2083,6 +2114,7 @@ export class Game {
     this.level?.disposeExtra?.();
     this.level?.vehicles?.dispose();
     this.level?.openWorld?.dispose();
+    this.vehAudio.dispose();
     if (document.pointerLockElement) document.exitPointerLock();
     this.hangarEnv?.dispose();
     this.renderer.dispose();

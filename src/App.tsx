@@ -1642,14 +1642,28 @@ export default function App() {
                   <div className="text-[11px] font-bold uppercase tracking-[0.22em] text-sky-300">
                     {hud.vehicle.name}
                   </div>
-                  <div className="font-mono leading-none">
-                    <span className="text-6xl font-black tabular-nums text-white drop-shadow-lg">
-                      {String(hud.vehicle.speedKmh).padStart(2, "0")}
+                  <div className="flex items-baseline justify-end gap-3 font-mono leading-none">
+                    <span className="rounded border border-sky-400/40 bg-sky-400/15 px-2 py-0.5 text-sm font-black text-sky-200">
+                      G{Math.max(1, hud.vehicle.gear)}
                     </span>
-                    <span className="ml-1.5 text-lg font-bold uppercase text-sky-300">km/h</span>
+                    <div>
+                      <span className="text-6xl font-black tabular-nums text-white drop-shadow-lg">
+                        {String(hud.vehicle.speedKmh).padStart(2, "0")}
+                      </span>
+                      <span className="ml-1.5 text-lg font-bold uppercase text-sky-300">km/h</span>
+                    </div>
+                  </div>
+                  <div className="ml-auto h-1.5 w-48 overflow-hidden rounded-full bg-white/15">
+                    <div
+                      className="h-full transition-[width] duration-75"
+                      style={{
+                        width: `${Math.min(100, Math.round((hud.vehicle.rpm / Math.max(1000, hud.vehicle.redline)) * 100))}%`,
+                        backgroundColor: hud.vehicle.rpm > hud.vehicle.redline * 0.86 ? "#f43f5e" : "#38bdf8",
+                      }}
+                    />
                   </div>
                   <div className="font-mono text-[10px] uppercase tracking-wider text-zinc-400">
-                    W/S Drive · A/D Steer · [C] Cam ({hud.cameraPreset}) · [B] {hud.weatherLabel} · [F] Exit
+                    {hud.vehicle.rpm} RPM · W/S Drive · A/D Steer · [C] Cam ({hud.cameraPreset}) · [B] {hud.weatherLabel} · [T] {hud.timeOfDayLabel} · [F] Exit
                   </div>
                 </>
               ) : (

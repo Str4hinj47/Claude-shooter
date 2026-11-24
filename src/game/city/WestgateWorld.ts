@@ -11,6 +11,7 @@ import { registerOldQuarterDistrict } from "./OldQuarterDistrict";
 import { registerWestCoastDistrict } from "./WestCoastDistrict";
 import { registerFoothillsDistrict } from "./FoothillsDistrict";
 import { registerPortAirportDistrict } from "./PortAirportDistrict";
+import { registerWestgateInfill } from "./WestgateInfill";
 import { populateWestgateProps } from "./WestgateProps";
 import { WestgateVehicleManager } from "./VehicleSystem";
 import { buildMinimapData, type MinimapData } from "./MinimapData";
@@ -211,6 +212,7 @@ export function buildWestgateWorld(
   registerWestCoastDistrict(dispatcher, engine.roads, engine.heightSystem);
   registerFoothillsDistrict(dispatcher, engine.roads, engine.heightSystem);
   registerPortAirportDistrict(dispatcher, engine.roads);
+  registerWestgateInfill(dispatcher);
 
   const terrainMesh = buildWestgateTerrainMesh(terrainAt, 2400, 160);
   content.add(terrainMesh);

@@ -774,8 +774,9 @@ export class RoadNetwork {
   }
 
   /**
-   * Builds 3D spline ribbon meshes for asphalt carriageways, raised concrete sidewalks,
-   * bridge deck slabs, parapets, and support piers.
+   * Builds 3D spline ribbon meshes for asphalt carriageways with road markings,
+   * unified intersection aprons & crosswalks (eliminating Z-fighting & overlap seams),
+   * clipped paver sidewalks with granite curbs, bridge decks, parapets, and support piers.
    */
   buildMeshes(
     parent: THREE.Object3D,
@@ -786,8 +787,141 @@ export class RoadNetwork {
     const group = new THREE.Group();
     group.name = "CityRoadNetwork";
 
+    const makeAsphaltTex = (lanesPerDir: number, hasMedian: boolean, isOneWay: boolean, withLines: boolean) => {
+      const w = 256;
+      const h = 256;
+      const c = document.createElement("canvas");
+      c.width = w;
+      c.height = h;
+      const g = c.getContext("2d")!;
+      g.fillStyle = "#2b2f35";
+      g.fillRect(0, 0, w, h);
+      // Mineral aggregate grain
+      for (let i = 0; i < 1600; i++) {
+        const px = (i * 73 + (i >> 3) * 19) % w;
+        const py = (i * 137 + (i >> 4) * 31) % h;
+        g.fillStyle = i % 3 === 0 ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.08)";
+        g.fillRect(px, py, 2, 2);
+      }
+      if (withLines) {
+        // Subtle tire wear tracks
+        const totalLanes = isOneWay ? lanesPerDir : lanesPerDir * 2;
+        for (let l = 0; l < totalLanes; l++) {
+          const cx = ((l + 0.5) / totalLanes) * w;
+          g.fillStyle = "rgba(0,0,0,0.11)";
+          g.fillRect(cx - w * 0.035, 0, w * 0.07, h);
+        }
+        // Solid white outer edge lines
+        g.fillStyle = "#d8dce0";
+        g.fillRect(w * 0.03, 0, Math.max(2, w * 0.018), h);
+        g.fillRect(w * 0.952, 0, Math.max(2, w * 0.018), h);
+
+        if (!isOneWay) {
+          if (hasMedian) {
+            // Raised/painted center median band + yellow inner edge lines
+            g.fillStyle = "#484d54";
+            g.fillRect(w * 0.455, 0, w * 0.09, h);
+            g.fillStyle = "#eab308";
+            g.fillRect(w * 0.445, 0, 3, h);
+            g.fillRect(w * 0.545, 0, 3, h);
+          } else {
+            // Double yellow centerline
+            g.fillStyle = "#eab308";
+            g.fillRect(w * 0.484, 0, 3, h);
+            g.fillRect(w * 0.506, 0, 3, h);
+          }
+          // Dashed white multi-lane dividers
+          if (lanesPerDir >= 2) {
+            g.fillStyle = "#e2e8f0";
+            for (let li = 1; li < lanesPerDir; li++) {
+              const fracL = 0.04 + (li / lanesPerDir) * (hasMedian ? 0.40 : 0.44);
+              const fracR = 1.0 - fracL;
+              for (let y = 12; y < h; y += 64) {
+                g.fillRect(fracL * w - 1.5, y, 3, 28);
+                g.fillRect(fracR * w - 1.5, y, 3, 28);
+              }
+            }
+          }
+        } else if (lanesPerDir >= 2) {
+          g.fillStyle = "#e2e8f0";
+          for (let li = 1; li < lanesPerDir; li++) {
+            const frac = li / lanesPerDir;
+            for (let y = 12; y < h; y += 64) {
+              g.fillRect(frac * w - 1.5, y, 3, 28);
+            }
+          }
+        }
+      }
+      const tex = new THREE.CanvasTexture(c);
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+      tex.colorSpace = THREE.SRGBColorSpace;
+      return tex;
+    };
+
+    const makeSidewalkPaverTex = () => {
+      const s = 256;
+      const c = document.createElement("canvas");
+      c.width = c.height = s;
+      const g = c.getContext("2d")!;
+      g.fillStyle = "#a5abb2";
+      g.fillRect(0, 0, s, s);
+      const cols = 4;
+      const rows = 4;
+      const cw = s / cols;
+      const ch = s / rows;
+      for (let r = 0; r < rows; r++) {
+        for (let col = 0; col < cols; col++) {
+          const shade = ((r * 7 + col * 13) % 5) - 2;
+          const v = 166 + shade * 4;
+          g.fillStyle = `rgb(${v}, ${v + 3}, ${v + 7})`;
+          g.fillRect(col * cw + 2, r * ch + 2, cw - 4, ch - 4);
+        }
+      }
+      g.strokeStyle = "rgba(45, 50, 58, 0.36)";
+      g.lineWidth = 2;
+      for (let i = 0; i <= cols; i++) {
+        g.beginPath();
+        g.moveTo(i * cw, 0);
+        g.lineTo(i * cw, s);
+        g.stroke();
+      }
+      for (let i = 0; i <= rows; i++) {
+        g.beginPath();
+        g.moveTo(0, i * ch);
+        g.lineTo(s, i * ch);
+        g.stroke();
+      }
+      const tex = new THREE.CanvasTexture(c);
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+      tex.colorSpace = THREE.SRGBColorSpace;
+      return tex;
+    };
+
     const roadMatCache = new Map<string, THREE.MeshStandardMaterial>();
-    const sidewalkMat = new THREE.MeshStandardMaterial({ color: 0x9aa0a6, roughness: 0.9, metalness: 0.03 });
+    const junctionAsphaltMat = new THREE.MeshStandardMaterial({
+      map: makeAsphaltTex(1, false, false, false),
+      color: 0xffffff,
+      roughness: 0.9,
+      metalness: 0.04,
+      polygonOffset: true,
+      polygonOffsetFactor: -3,
+      polygonOffsetUnits: -3,
+    });
+    const sidewalkMat = new THREE.MeshStandardMaterial({
+      map: makeSidewalkPaverTex(),
+      color: 0xffffff,
+      roughness: 0.88,
+      metalness: 0.03,
+    });
+    const curbMat = new THREE.MeshStandardMaterial({ color: 0x767c84, roughness: 0.82, metalness: 0.06 });
+    const crosswalkMat = new THREE.MeshStandardMaterial({
+      color: 0xe6eaef,
+      roughness: 0.78,
+      metalness: 0.02,
+      polygonOffset: true,
+      polygonOffsetFactor: -4,
+      polygonOffsetUnits: -4,
+    });
     const deckMat = new THREE.MeshStandardMaterial({ color: 0x6f747b, roughness: 0.86, metalness: 0.08 });
     const parapetMat = new THREE.MeshStandardMaterial({ color: 0x8a8f96, roughness: 0.82, metalness: 0.1 });
     const pierMat = new THREE.MeshStandardMaterial({ color: 0x5d6268, roughness: 0.9, metalness: 0.06 });
@@ -797,7 +931,8 @@ export class RoadNetwork {
       let mat = roadMatCache.get(key);
       if (!mat) {
         mat = new THREE.MeshStandardMaterial({
-          color: 0x2b2e33,
+          map: makeAsphaltTex(seg.lanesPerDir, seg.hasMedian, !!seg.spec.isOneWay, true),
+          color: 0xffffff,
           roughness: 0.9,
           metalness: 0.04,
           polygonOffset: true,
@@ -809,6 +944,120 @@ export class RoadNetwork {
       return mat;
     };
 
+    // --- 1. Detect all unified at-grade intersections (nodes + 2D road crossings) ---
+    interface JunctionHub {
+      x: number;
+      y: number;
+      z: number;
+      r: number;
+      isRoundabout: boolean;
+    }
+    const hubs: JunctionHub[] = [];
+    const roundabouts = Array.from(this.nodes.values()).filter((n) => n.kind === "roundabout");
+
+    for (const node of this.nodes.values()) {
+      if (node.kind === "roundabout") {
+        const rbR = node.radius ?? 18;
+        hubs.push({ x: node.x, y: node.y, z: node.z, r: rbR + 7.2, isRoundabout: true });
+      } else if (node.kind === "signal" || node.kind === "yield" || node.kind === "merge") {
+        let maxHalf = 5.5;
+        for (const seg of this.segments) {
+          if (seg.spec.startNodeId === node.id || seg.spec.endNodeId === node.id) {
+            maxHalf = Math.max(maxHalf, seg.carriagewayWidth * 0.5);
+          }
+        }
+        hubs.push({ x: node.x, y: node.y, z: node.z, r: maxHalf + 2.4, isRoundabout: false });
+      }
+    }
+
+    // Also find mid-segment 2D crossings between distinct non-bridge segments
+    const groundSegs = this.segments.filter((s) => !s.spec.isBridge);
+    const addOrMergeHub = (hx: number, hy: number, hz: number, hr: number) => {
+      for (const h of hubs) {
+        if ((h.x - hx) * (h.x - hx) + (h.z - hz) * (h.z - hz) < 16 * 16) {
+          if (!h.isRoundabout) h.r = Math.max(h.r, hr);
+          return;
+        }
+      }
+      hubs.push({ x: hx, y: hy, z: hz, r: hr, isRoundabout: false });
+    };
+
+    for (let i = 0; i < groundSegs.length; i++) {
+      const a = groundSegs[i];
+      for (let j = i + 1; j < groundSegs.length; j++) {
+        const b = groundSegs[j];
+        if (
+          a.bounds.maxX < b.bounds.minX ||
+          a.bounds.minX > b.bounds.maxX ||
+          a.bounds.maxZ < b.bounds.minZ ||
+          a.bounds.minZ > b.bounds.maxZ
+        ) {
+          continue;
+        }
+        for (let ia = 0; ia < a.samples.length - 1; ia++) {
+          const p1 = a.samples[ia];
+          const p2 = a.samples[ia + 1];
+          for (let ib = 0; ib < b.samples.length - 1; ib++) {
+            const p3 = b.samples[ib];
+            const p4 = b.samples[ib + 1];
+            const den = (p1.x - p2.x) * (p3.z - p4.z) - (p1.z - p2.z) * (p3.x - p4.x);
+            if (Math.abs(den) < 1e-4) continue;
+            const t = ((p1.x - p3.x) * (p3.z - p4.z) - (p1.z - p3.z) * (p3.x - p4.x)) / den;
+            const u = -((p1.x - p2.x) * (p1.z - p3.z) - (p1.z - p2.z) * (p1.x - p3.x)) / den;
+            if (t >= 0 && t <= 1 && u >= 0 && u <= 1) {
+              const ix = p1.x + t * (p2.x - p1.x);
+              const iz = p1.z + t * (p2.z - p1.z);
+              const iy = (p1.y + t * (p2.y - p1.y) + p3.y + u * (p4.y - p3.y)) * 0.5;
+              const hr = Math.max(a.carriagewayWidth, b.carriagewayWidth) * 0.5 + 2.2;
+              addOrMergeHub(ix, iy, iz, hr);
+            }
+          }
+        }
+      }
+    }
+
+    // Helper: check if a sidewalk/curb sample lies inside a crossing non-bridge road or junction hub
+    const pointInsideOtherRoad = (x: number, z: number, ownerSeg: CompiledRoadSegment): boolean => {
+      for (const h of hubs) {
+        const dx = x - h.x;
+        const dz = z - h.z;
+        if (dx * dx + dz * dz < (h.r - 0.35) * (h.r - 0.35)) return true;
+      }
+      if (!ownerSeg.spec.isBridge) {
+        for (const other of groundSegs) {
+          if (other === ownerSeg) continue;
+          if (
+            x < other.bounds.minX - other.carriagewayWidth ||
+            x > other.bounds.maxX + other.carriagewayWidth ||
+            z < other.bounds.minZ - other.carriagewayWidth ||
+            z > other.bounds.maxZ + other.carriagewayWidth
+          ) {
+            continue;
+          }
+          const padHalf = other.carriagewayWidth * 0.5 + 0.45;
+          const pad2 = padHalf * padHalf;
+          for (let k = 0; k < other.samples.length - 1; k++) {
+            const sa = other.samples[k];
+            const sb = other.samples[k + 1];
+            const abx = sb.x - sa.x;
+            const abz = sb.z - sa.z;
+            const len2 = abx * abx + abz * abz;
+            let u = 0;
+            if (len2 > 1e-6) {
+              u = ((x - sa.x) * abx + (z - sa.z) * abz) / len2;
+              if (u < 0) u = 0;
+              else if (u > 1) u = 1;
+            }
+            const dx = x - (sa.x + abx * u);
+            const dz = z - (sa.z + abz * u);
+            if (dx * dx + dz * dz < pad2) return true;
+          }
+        }
+      }
+      return false;
+    };
+
+    // --- 2. Build road carriageways, clipped paver sidewalks + granite curbs, and bridges ---
     for (const seg of this.segments) {
       const n = seg.samples.length;
       const halfC = seg.carriagewayWidth * 0.5;
@@ -833,7 +1082,7 @@ export class RoadNetwork {
         positions[vi + 5] = rz;
 
         const ui = i * 4;
-        const vCoord = sp.s;
+        const vCoord = sp.s / 12.0;
         uvs[ui] = 0;
         uvs[ui + 1] = vCoord;
         uvs[ui + 2] = 1;
@@ -861,16 +1110,46 @@ export class RoadNetwork {
       group.add(roadMesh);
       collidersOut?.push(roadMesh);
 
-      // Raised concrete sidewalks on each edge
+      // Raised paver sidewalks + darker granite curb borders, cleanly clipped at intersections!
       if (seg.hasSidewalk && seg.sidewalkWidth > 0) {
+        const curbW = 0.28;
         for (const side of [-1, 1] as const) {
           const inner = halfC;
+          const curbEdge = halfC + curbW;
           const outer = halfC + seg.sidewalkWidth;
-          const swMesh = this.buildSideRibbonBox(seg.samples, side * inner, side * outer, 0.18, 0.04, sidewalkMat);
-          swMesh.receiveShadow = true;
-          swMesh.userData.kind = "concrete";
-          group.add(swMesh);
-          collidersOut?.push(swMesh);
+          const checkOff = side * (halfC + Math.min(1.0, seg.sidewalkWidth * 0.4));
+
+          let run: RoadSample[] = [];
+          const flushRun = () => {
+            if (run.length < 2) {
+              run = [];
+              return;
+            }
+            const curbMesh = this.buildSideRibbonBox(run, side * inner, side * curbEdge, 0.19, 0.04, curbMat);
+            curbMesh.receiveShadow = true;
+            curbMesh.userData.kind = "concrete";
+            group.add(curbMesh);
+            collidersOut?.push(curbMesh);
+
+            const swMesh = this.buildSideRibbonBox(run, side * curbEdge, side * outer, 0.18, 0.04, sidewalkMat, true);
+            swMesh.receiveShadow = true;
+            swMesh.userData.kind = "concrete";
+            group.add(swMesh);
+            collidersOut?.push(swMesh);
+            run = [];
+          };
+
+          for (let i = 0; i < n; i++) {
+            const sp = seg.samples[i];
+            const px = sp.x + sp.rx * checkOff;
+            const pz = sp.z + sp.rz * checkOff;
+            if (pointInsideOtherRoad(px, pz, seg)) {
+              flushRun();
+            } else {
+              run.push(sp);
+            }
+          }
+          flushRun();
         }
       }
 
@@ -951,6 +1230,89 @@ export class RoadNetwork {
       }
     }
 
+    // --- 3. Build Unified Intersection Asphalt Pads, Crosswalks & Roundabout Rings ---
+    const stripeGeo = new THREE.PlaneGeometry(0.42, 2.2);
+    stripeGeo.rotateX(-Math.PI / 2);
+    const stopBarGeo = new THREE.PlaneGeometry(1, 0.36);
+    stopBarGeo.rotateX(-Math.PI / 2);
+
+    for (const h of hubs) {
+      if (h.isRoundabout) continue;
+      // Unified asphalt junction disc sitting cleanly over overlapping road ribbons (zero Z-fighting)
+      const padGeo = new THREE.CircleGeometry(h.r, 24);
+      padGeo.rotateX(-Math.PI / 2);
+      const pad = new THREE.Mesh(padGeo, junctionAsphaltMat);
+      pad.position.set(h.x, h.y + 0.052, h.z);
+      pad.receiveShadow = true;
+      pad.userData.kind = "concrete";
+      group.add(pad);
+      collidersOut?.push(pad);
+
+      // Paint crisp crosswalk zebra bars & stop lines on every entering ground road arm
+      const seenAngles: number[] = [];
+      for (const seg of groundSegs) {
+        if (
+          h.x < seg.bounds.minX - h.r - 6 ||
+          h.x > seg.bounds.maxX + h.r + 6 ||
+          h.z < seg.bounds.minZ - h.r - 6 ||
+          h.z > seg.bounds.maxZ + h.r + 6
+        ) {
+          continue;
+        }
+        // Check samples just outside junction radius h.r + 0.8..h.r + 3.2
+        for (let i = 0; i < seg.samples.length; i++) {
+          const sp = seg.samples[i];
+          const dx = sp.x - h.x;
+          const dz = sp.z - h.z;
+          const dist = Math.hypot(dx, dz);
+          if (dist < h.r + 0.4 || dist > h.r + 3.4) continue;
+          const ang = Math.atan2(dz, dx);
+          if (seenAngles.some((a) => Math.abs(Math.atan2(Math.sin(a - ang), Math.cos(a - ang))) < 0.35)) continue;
+          seenAngles.push(ang);
+
+          const yaw = Math.atan2(sp.tx, sp.tz);
+          const halfC = seg.carriagewayWidth * 0.5 - 0.6;
+          for (let off = -halfC + 0.6; off <= halfC - 0.6; off += 1.15) {
+            const zebra = new THREE.Mesh(stripeGeo, crosswalkMat);
+            zebra.position.set(sp.x + sp.rx * off, sp.y + 0.058, sp.z + sp.rz * off);
+            zebra.rotation.y = yaw;
+            group.add(zebra);
+          }
+          // Stop bar slightly outward from crosswalk
+          const outSign = dx * sp.tx + dz * sp.tz >= 0 ? 1 : -1;
+          const stopBar = new THREE.Mesh(stopBarGeo, crosswalkMat);
+          stopBar.scale.x = seg.carriagewayWidth - 0.8;
+          stopBar.position.set(sp.x + outSign * sp.tx * 1.65, sp.y + 0.058, sp.z + outSign * sp.tz * 1.65);
+          stopBar.rotation.y = yaw;
+          group.add(stopBar);
+        }
+      }
+    }
+
+    for (const rb of roundabouts) {
+      const rbR = rb.radius ?? 18;
+      const innerR = Math.max(4, rbR - 5.5);
+      const outerR = rbR + 7.2;
+      const ringGeo = new THREE.RingGeometry(innerR, outerR, 40);
+      ringGeo.rotateX(-Math.PI / 2);
+      const ringMesh = new THREE.Mesh(ringGeo, junctionAsphaltMat);
+      ringMesh.position.set(rb.x, rb.y + 0.054, rb.z);
+      ringMesh.receiveShadow = true;
+      ringMesh.userData.kind = "concrete";
+      group.add(ringMesh);
+      collidersOut?.push(ringMesh);
+
+      // Outer paver sidewalk collar around roundabout
+      const collarGeo = new THREE.RingGeometry(outerR, outerR + 2.6, 40);
+      collarGeo.rotateX(-Math.PI / 2);
+      const collarMesh = new THREE.Mesh(collarGeo, sidewalkMat);
+      collarMesh.position.set(rb.x, rb.y + 0.14, rb.z);
+      collarMesh.receiveShadow = true;
+      collarMesh.userData.kind = "concrete";
+      group.add(collarMesh);
+      collidersOut?.push(collarMesh);
+    }
+
     parent.add(group);
     return group;
   }
@@ -962,12 +1324,14 @@ export class RoadNetwork {
     height: number,
     yBaseOffset: number,
     material: THREE.Material,
+    withUVs = false,
   ): THREE.Mesh {
     const n = samples.length;
     const minO = Math.min(offsetA, offsetB);
     const maxO = Math.max(offsetA, offsetB);
     // 4 verts per cross-section: outer-bottom, outer-top, inner-top, inner-bottom
     const positions = new Float32Array(n * 4 * 3);
+    const uvs = withUVs ? new Float32Array(n * 4 * 2) : null;
     const indices: number[] = [];
 
     for (let i = 0; i < n; i++) {
@@ -997,6 +1361,19 @@ export class RoadNetwork {
       positions[v + 10] = y0;
       positions[v + 11] = bz;
 
+      if (uvs) {
+        const ui = i * 8;
+        const vs = sp.s / 4.0;
+        uvs[ui] = 0;
+        uvs[ui + 1] = vs;
+        uvs[ui + 2] = 0;
+        uvs[ui + 3] = vs;
+        uvs[ui + 4] = 1;
+        uvs[ui + 5] = vs;
+        uvs[ui + 6] = 1;
+        uvs[ui + 7] = vs;
+      }
+
       if (i < n - 1) {
         const a = i * 4;
         const b = (i + 1) * 4;
@@ -1013,6 +1390,7 @@ export class RoadNetwork {
 
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    if (uvs) geo.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
     geo.setIndex(indices);
     geo.computeVertexNormals();
     return new THREE.Mesh(geo, material);
