@@ -18,7 +18,7 @@ export function bevelledBox(
 ): THREE.BufferGeometry {
   const key = `${width.toFixed(3)}|${height.toFixed(3)}|${depth.toFixed(3)}|${bevel.toFixed(3)}|${segments}`;
   const cached = boxGeoCache.get(key);
-  if (cached) return cached;
+  if (cached) return cached.clone();
 
   const b = Math.max(0.001, Math.min(bevel, width / 2.08, height / 2.08, depth / 2.08));
   const w = Math.max(0.001, width / 2 - b);
@@ -43,7 +43,7 @@ export function bevelledBox(
   geo.translate(0, 0, -(depth / 2 - b));
   geo.computeVertexNormals();
   boxGeoCache.set(key, geo);
-  return geo;
+  return geo.clone();
 }
 
 export function part(
@@ -612,7 +612,7 @@ export function craftedBarrel(color: THREE.ColorRepresentation = 0x9b2c22, metal
     const r1 = prof(y1 / h);
     const rc = prof(yc / h);
     const w = ((2 * Math.PI * rc) / staves) * 0.94;
-    const g = bevelledBox(w, ch * 1.02, 0.05, 0.01);
+    const g = bevelledBox(w, ch * 1.02, 0.05, 0.01).clone();
     g.rotateX(Math.atan2(r1 - r0, ch));
     g.translate(0, yc, rc - 0.025);
     const pls: InstancePlacement[] = [];
@@ -662,7 +662,7 @@ export function craftedWell(seed = 1): THREE.Group {
 
   for (let c = 0; c < courses; c++) {
     const bw = ((2 * Math.PI * radius) / blocks) * 0.9;
-    const geo = bevelledBox(bw, ch * 0.94, wall, 0.018);
+    const geo = bevelledBox(bw, ch * 0.94, wall, 0.018).clone();
     geo.translate(0, ch / 2 + c * ch, radius - wall / 2);
     const pls: InstancePlacement[] = [];
     for (let i = 0; i < blocks; i++) {
@@ -675,7 +675,7 @@ export function craftedWell(seed = 1): THREE.Group {
     group.add(scatterInstances(geo, stone, pls));
   }
 
-  const capGeo = bevelledBox(((2 * Math.PI * radius) / blocks) * 1.03, 0.08, wall + 0.08, 0.015);
+  const capGeo = bevelledBox(((2 * Math.PI * radius) / blocks) * 1.03, 0.08, wall + 0.08, 0.015).clone();
   capGeo.translate(0, drumH + 0.04, radius - wall / 2);
   group.add(
     scatterInstances(
@@ -897,7 +897,7 @@ const rockShapeCache = new Map<number, THREE.BufferGeometry>();
 function boulderShape(detail: number, amount: number, seed: number): THREE.BufferGeometry {
   const key = detail * 1000 + Math.round(amount * 100) * 10 + (seed % 9);
   const hit = rockShapeCache.get(key);
-  if (hit) return hit;
+  if (hit) return hit.clone();
 
   const rng = seeded(seed);
   const geo = new THREE.IcosahedronGeometry(1, detail);
@@ -919,7 +919,7 @@ function boulderShape(detail: number, amount: number, seed: number): THREE.Buffe
   geo.translate(-(bb.min.x + bb.max.x) / 2, -bb.min.y, -(bb.min.z + bb.max.z) / 2);
   geo.scale(1 / sz.x, 1 / sz.y, 1 / sz.z);
   rockShapeCache.set(key, geo);
-  return geo;
+  return geo.clone();
 }
 
 export function craftedRockCluster(scale = 1.0, seed = 1, rockColor: THREE.ColorRepresentation = "#7a7770"): THREE.Group {

@@ -2524,7 +2524,7 @@ function buildVillage(content: THREE.Object3D, main: THREE.Scene, renderer: THRE
     facade: villageStone,
     roof: "flat",
     roofMat: guardRoofMat,
-    doors: ["S", "E"],
+    doors: ["S", "W"],
     windows: ["N"],
     emissive: 0.5,
     ry: -Math.PI / 2,
