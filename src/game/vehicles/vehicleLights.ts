@@ -11,6 +11,18 @@ export const LAMP_POSITIONS: Record<TrafficId, Lamps> = {
   r8: { front: [0.65, 0.56, -1.91], rear: [0.65, 0.69, 2.06] },
   challenger: { front: [0.65, 0.73, -2.3], rear: [0.59, 0.87, 2.39] },
   rangerover: { front: [0.74, 0.78, -2.46], rear: [0.8, 0.88, 2.41] },
+  sedan: { front: [0.56, 0.58, -2.06], rear: [0.62, 0.74, 2.08] },
+  offroad: { front: [0.68, 0.92, -2.08], rear: [0.68, 0.98, 2.18] },
+  compact: { front: [0.62, 0.55, -2.0], rear: [0.6, 0.8, 1.95] },
+  hatch: { front: [0.58, 0.5, -1.65], rear: [0.56, 0.72, 1.62] },
+  crossover: { front: [0.7, 0.65, -1.95], rear: [0.66, 0.9, 1.92] },
+  taxi: { front: [0.62, 0.54, -2.05], rear: [0.6, 0.78, 1.95] },
+  police_cruiser: { front: [0.64, 0.54, -1.9], rear: [0.62, 0.78, 1.88] },
+  van: { front: [0.76, 0.68, -2.02], rear: [0.76, 0.8, 2.02] },
+  delivery: { front: [0.82, 0.74, -2.55], rear: [0.82, 0.85, 2.55] },
+  garbage_truck: { front: [0.92, 0.78, -2.95], rear: [0.92, 0.92, 2.95] },
+  ambulance: { front: [0.82, 0.76, -2.58], rear: [0.82, 0.88, 2.58] },
+  firetruck: { front: [0.9, 0.8, -2.92], rear: [0.9, 0.92, 2.92] },
   semi: { front: [0.75, 0.74, -8.08], rear: [0.84, 0.76, 7.99] },
   kraz: { front: [0.79, 0.78, -4.08], rear: [0.85, 0.85, 3.9] },
 };
@@ -35,12 +47,14 @@ function glowTexture() {
 export type VehicleLights = {
   front: THREE.Sprite[];
   rear: THREE.Sprite[];
+  signalFront: THREE.Sprite[];
+  signalRear: THREE.Sprite[];
   beam?: THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial>;
 };
 
 export function addVehicleLights(group: THREE.Group, id: TrafficId, npc: boolean): VehicleLights {
   const profile = LAMP_POSITIONS[id];
-  const make = (pos: [number, number, number], color: number, size: number, name: string) =>
+  const make = (pos: [number, number, number], color: number, size: number, name: string, outX = 0) =>
     [-1, 1].map((side) => {
       const sprite = new THREE.Sprite(
         new THREE.SpriteMaterial({
@@ -54,7 +68,7 @@ export function addVehicleLights(group: THREE.Group, id: TrafficId, npc: boolean
         }),
       );
       sprite.name = name;
-      sprite.position.set(side * pos[0], pos[1], pos[2]);
+      sprite.position.set(side * (pos[0] + outX), pos[1], pos[2]);
       sprite.scale.set(size, size * 0.7, 1);
       group.add(sprite);
       return sprite;
@@ -62,6 +76,8 @@ export function addVehicleLights(group: THREE.Group, id: TrafficId, npc: boolean
   const lights: VehicleLights = {
     front: make(profile.front, 0xe7f5ff, 0.3, "front-lamp-glow"),
     rear: make(profile.rear, 0xff1712, 0.34, "rear-lamp-glow"),
+    signalFront: make([profile.front[0], profile.front[1], profile.front[2] - 0.06], 0xff8c12, 0.44, "front-signal-glow", 0.15),
+    signalRear: make([profile.rear[0], profile.rear[1], profile.rear[2] + 0.06], 0xff8c12, 0.48, "rear-signal-glow", 0.12),
   };
   if (npc) {
     const length = 12;
@@ -90,7 +106,14 @@ export function addVehicleLights(group: THREE.Group, id: TrafficId, npc: boolean
 }
 
 const cameraLocal = new THREE.Vector3();
-export function updateVehicleLights(group: THREE.Group, camera: THREE.Camera, darkness: number, braking: boolean) {
+export function updateVehicleLights(
+  group: THREE.Group,
+  camera: THREE.Camera,
+  darkness: number,
+  braking: boolean,
+  signalSide: "left" | "right" | null = null,
+  signalLit = false,
+) {
   const lights = group.userData.vehicleLights as VehicleLights | undefined;
   if (!lights) return;
   group.updateWorldMatrix(true, false);
@@ -103,14 +126,26 @@ export function updateVehicleLights(group: THREE.Group, camera: THREE.Camera, da
     mat.emissiveIntensity = mat.name === "headlight__r8" ? 0.3 + d * 0.42 : 0.45 + d * 0.5;
   }
   for (const mat of (group.userData.brakeMaterials ?? []) as THREE.MeshStandardMaterial[]) {
-    mat.emissiveIntensity = braking && !mat.userData.selectiveBrake ? 2.6 : 0.55;
+    mat.emissiveIntensity = braking && !mat.userData.selectiveBrake ? 2.8 : 0.55;
   }
   const ind = group.userData.indicatorState as { brake?: { value: number } } | undefined;
   if (ind?.brake) ind.brake.value = braking ? 1 : 0;
   for (const sprite of lights.front) sprite.material.opacity = frontVisible ? 0.3 + d * 0.52 : 0;
   for (const sprite of lights.rear) sprite.material.opacity = rearVisible ? (braking ? 0.85 : 0.35 + d * 0.34) : 0;
+  const leftLit = signalSide === "left" && signalLit;
+  const rightLit = signalSide === "right" && signalLit;
+  // Model local space: -X is vehicle left (with Math.PI wrapper rotation when mounted, left/right sprites index 0=-X, 1=+X)
+  if (lights.signalFront?.length === 2) {
+    lights.signalFront[0].material.opacity = frontVisible && leftLit ? 0.88 : 0;
+    lights.signalFront[1].material.opacity = frontVisible && rightLit ? 0.88 : 0;
+  }
+  if (lights.signalRear?.length === 2) {
+    lights.signalRear[0].material.opacity = rearVisible && leftLit ? 0.92 : 0;
+    lights.signalRear[1].material.opacity = rearVisible && rightLit ? 0.92 : 0;
+  }
   if (lights.beam) {
-    lights.beam.material.uniforms.strength.value = 0.08 + d * 0.45;
+    const beamFade = THREE.MathUtils.smoothstep(d, 0.15, 0.65);
+    lights.beam.material.uniforms.strength.value = beamFade * 0.48;
   }
 }
 

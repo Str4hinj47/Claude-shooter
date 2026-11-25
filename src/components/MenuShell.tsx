@@ -22,20 +22,35 @@ import { CHARACTERS, characterPreview, type CharacterDef } from "../game/charact
 import {
   canAfford,
   DEFAULT_APPEARANCE,
+  DEFAULT_WEAPON_CONFIGS,
+  DIFFICULTY_PROFILES,
   getPlayerStats,
   getUpgradeLevel,
+  getWeaponCustomConfig,
+  getWeaponModEffects,
   previewMissionBaseReward,
   UPGRADES,
   type ArmorFinish,
   type CurrencyKey,
+  type DifficultyMode,
   type NvgMode,
   type SaveData,
   type SoldierAppearance,
   type UpgradeCategory,
+  type WeaponCustomConfig,
   type WeaponFinish,
+  type WeaponSlotId,
 } from "../game/progression";
 import { CARS, PAINT_COLORS, type CarId } from "../game/vehicles/catalog";
-import { WEAPONS } from "../character/rifle";
+import {
+  WEAPONS,
+  WEAPON_MAG_OPTS,
+  WEAPON_MUZZLE_OPTS,
+  WEAPON_OPTIC_OPTS,
+  WEAPON_PART_FINISHES,
+  WEAPON_RETICLE_COLORS,
+  WEAPON_UNDERBARREL_OPTS,
+} from "../character/rifle";
 import { DossierShell, TacticalButton } from "./ui/VectorFrame";
 
 export type Screen = "home" | "missions" | "upgrades" | "customize" | "garage" | "controls" | "playing";
@@ -43,12 +58,15 @@ export type Screen = "home" | "missions" | "upgrades" | "customize" | "garage" |
 const KEYS: [string, string][] = [
   ["W A S D", "Move"],
   ["MOUSE", "Aim / Look"],
-  ["LMB", "Fire (Silenced)"],
-  ["RMB", "Aim Down Sights"],
-  ["SCROLL", "Zoom Optic (ADS)"],
-  ["1 – 4", "Switch Weapon"],
-  ["F", "Interact / Enter & Exit Car"],
-  ["G", "Launch Nearby Contract (Westgate)"],
+  ["LMB", "Fire (Reveals Holstered)"],
+  ["RMB", "Aim Down Sights (Reveals Holstered)"],
+  ["SCROLL", "Switch Weapon / Zoom Optic (ADS)"],
+  ["TAB (HOLD)", "Weapon Wheel (Move Mouse to Pick)"],
+  ["H", "Holster / Draw Weapon"],
+  ["1 – 5", "Direct Weapon Slot (1 Pistol · 2–5 Long Guns)"],
+  ["F", "Interact / Enter & Exit Vehicle or Boat"],
+  ["G", "Carry Body / Stash in Trunk / Dump at Sea / Start Activity"],
+  ["M", "Full Tactical Map (Westgate Bay)"],
   ["C", "Crouch / Cycle Vehicle Camera"],
   ["B", "Cycle Weather (Clear / Rain / Snow)"],
   ["T", "Cycle Time of Day"],
@@ -56,8 +74,8 @@ const KEYS: [string, string][] = [
   ["SHIFT", "Sprint (Loud)"],
   ["SPACE", "Jump"],
   ["R", "Reload"],
-  ["Q / E", "Lean Left / Right"],
-  ["TAB", "Showcase Orbit"],
+  ["Q / E", "Lean Left / Right (On Foot) · Left / Right Blinkers (Driving)"],
+  ["O / ~", "Showcase Orbit Camera"],
   ["ESC", "Pause / Sector Dispatch"],
 ];
 
@@ -151,8 +169,12 @@ interface MenuShellProps {
   onSelectCharacter: (id: string) => void;
   onBuyUpgrade: (id: string) => void;
   onSelectWeapon: (idx: number) => void;
+  onUpdateWeaponConfig: (weaponId: WeaponSlotId, patch: Partial<WeaponCustomConfig>) => void;
+  onResetWeaponConfig: (weaponId: WeaponSlotId) => void;
+  onFocusWeaponBench: (focus: boolean) => void;
   onUpdateAppearance: (patch: Partial<SoldierAppearance>) => void;
   onRandomizeAppearance: () => void;
+  onSetDifficulty: (mode: DifficultyMode) => void;
   onBuyCar: (carId: CarId) => void;
   onSelectCar: (carId: CarId, paintHex?: string | null) => void;
   onDownloadGlb: () => void;
@@ -179,8 +201,12 @@ export function MenuShell({
   onSelectCharacter,
   onBuyUpgrade,
   onSelectWeapon,
+  onUpdateWeaponConfig,
+  onResetWeaponConfig,
+  onFocusWeaponBench,
   onUpdateAppearance,
   onRandomizeAppearance,
+  onSetDifficulty,
   onBuyCar,
   onSelectCar,
   onDownloadGlb,
@@ -188,10 +214,14 @@ export function MenuShell({
 }: MenuShellProps) {
   const stats = getPlayerStats(save);
   const [garageCarId, setGarageCarId] = useState<CarId>(save.selectedCar);
+  const [armoryMode, setArmoryMode] = useState<"bench" | "upgrades">("bench");
   const featuredCar = CARS.find((c) => c.id === garageCarId) ?? CARS[0];
   const featuredOwned = save.ownedCars.includes(featuredCar.id);
   const featuredActive = save.selectedCar === featuredCar.id;
   const featuredPaint = save.carPaints[featuredCar.id] ?? featuredCar.color;
+  const activeWeaponSpec = WEAPONS[save.selectedWeapon] ?? WEAPONS[0];
+  const activeWeaponCfg = getWeaponCustomConfig(save, activeWeaponSpec.id);
+  const activeWeaponMods = getWeaponModEffects(activeWeaponCfg);
 
   const navItems: {
     id: Exclude<Screen, "playing">;
@@ -620,12 +650,41 @@ export function MenuShell({
                     </ul>
                   </div>
 
-                  <div className="border border-white/10 bg-black/35 p-4">
-                    <div className="mb-2.5 font-mono text-[10px] font-bold uppercase tracking-[0.26em] text-[#8a909e]">
-                      CONTRACT PAYOUT
+                  <div className="border border-white/10 bg-black/35 p-4 space-y-3">
+                    <div className="font-mono text-[10px] font-bold uppercase tracking-[0.26em] text-[#8a909e]">
+                      THREAT TIER &amp; CONTRACT PAYOUT
+                    </div>
+                    <div className="grid grid-cols-3 gap-1.5">
+                      {(["operative", "veteran", "shadow"] as DifficultyMode[]).map((mode) => {
+                        const prof = DIFFICULTY_PROFILES[mode];
+                        const active = (save.difficulty ?? "operative") === mode;
+                        return (
+                          <button
+                            key={mode}
+                            type="button"
+                            onClick={() => onSetDifficulty(mode)}
+                            title={prof.subtitle}
+                            className={`cursor-pointer border px-2 py-1.5 text-left transition ${
+                              active
+                                ? mode === "shadow"
+                                  ? "border-[#ff3b30] bg-[#ff3b30]/18 text-[#f2efe9]"
+                                  : mode === "veteran"
+                                    ? "border-[#e5a93c] bg-[#e5a93c]/18 text-[#f2efe9]"
+                                    : "border-[#2dd4bf] bg-[#2dd4bf]/15 text-[#f2efe9]"
+                                : "border-white/10 bg-black/40 text-[#8a909e] hover:text-[#f2efe9]"
+                            }`}
+                          >
+                            <div className="font-mono text-[10px] font-bold uppercase tracking-wider">
+                              {prof.label}
+                            </div>
+                            <div className="font-mono text-[9px] opacity-80">{prof.rewardMult.toFixed(2).replace(/\.00$/, ".0")}× Cr</div>
+                          </button>
+                        );
+                      })}
                     </div>
                     {(() => {
-                      const r = previewMissionBaseReward(selectedMission.id);
+                      const diffMode: DifficultyMode = save.difficulty ?? "operative";
+                      const r = previewMissionBaseReward(selectedMission.id, diffMode);
                       return (
                         <div className="space-y-2.5">
                           <div className="flex flex-wrap gap-4">
@@ -663,8 +722,8 @@ export function MenuShell({
             {/* Silenced Weapon Selector */}
             <div data-augmented-ui="tr-clip bl-clip border inlay" className="voss-panel-sharp p-4">
               <div className="mb-2.5 flex items-center justify-between font-mono text-[10px] uppercase tracking-[0.24em]">
-                <span className="text-[#8a909e]">EQUIP SILENCED PRIMARY</span>
-                <span className="font-bold text-[#e5a93c]">{WEAPONS[save.selectedWeapon]?.name}</span>
+                <span className="text-[#8a909e]">ACTIVE PRIMARY // LIVE 3D PREVIEW</span>
+                <span className="font-bold text-[#e5a93c]">{activeWeaponSpec.name}</span>
               </div>
               <div className="grid grid-cols-4 gap-2">
                 {WEAPONS.map((w, idx) => {
@@ -689,95 +748,330 @@ export function MenuShell({
               </div>
             </div>
 
-            {/* Category Angled Vector Tabs */}
-            <div className="flex flex-wrap gap-2">
-              {UPGRADE_TABS.map((t) => (
-                <TacticalButton
-                  key={t.id}
-                  shape="tab"
-                  tone={upgradeTab === t.id ? "gold" : "ghost"}
-                  onClick={() => setUpgradeTab(t.id)}
-                  className="flex-1 text-[11px]"
-                >
-                  {t.label}
-                </TacticalButton>
-              ))}
+            {/* Armory Mode Toggle: Modular Gunsmith Bench vs Field Upgrades */}
+            <div className="grid grid-cols-2 gap-2">
+              <TacticalButton
+                shape="tab"
+                tone={armoryMode === "bench" ? "signal" : "ghost"}
+                onClick={() => {
+                  setArmoryMode("bench");
+                  onFocusWeaponBench(true);
+                }}
+                className="text-[11px]"
+              >
+                Modular Gunsmith Bench
+              </TacticalButton>
+              <TacticalButton
+                shape="tab"
+                tone={armoryMode === "upgrades" ? "gold" : "ghost"}
+                onClick={() => {
+                  setArmoryMode("upgrades");
+                  onFocusWeaponBench(false);
+                }}
+                className="text-[11px]"
+              >
+                Ballistic &amp; Rig Upgrades
+              </TacticalButton>
             </div>
 
-            {/* Upgrade Rows */}
-            <div className="space-y-2.5">
-              {UPGRADES.filter((u) => u.category === upgradeTab).map((u) => {
-                const lvl = getUpgradeLevel(save, u.id);
-                const maxed = lvl >= u.maxLevel;
-                const cost = maxed ? null : u.costs[lvl];
-                const affordable = cost ? canAfford(save.currencies, cost) : false;
-                return (
-                  <div
-                    key={u.id}
-                    data-augmented-ui="br-clip border inlay"
-                    className="voss-panel p-4"
-                  >
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <div className="flex items-center gap-3">
-                          <h3 className="font-display text-xl font-extrabold uppercase tracking-wide text-[#f2efe9]">
-                            {u.name}
-                          </h3>
-                          <span className="font-mono text-[10px] font-bold text-[#e5a93c]">
-                            TIER {lvl}/{u.maxLevel}
-                          </span>
-                        </div>
-                        <p className="mt-0.5 text-xs text-[#8a909e]">{u.subtitle}</p>
-                      </div>
-                      <div className="flex gap-1 pt-1">
-                        {Array.from({ length: u.maxLevel }).map((_, i) => (
-                          <span
-                            key={i}
-                            className={`h-2 w-5 ${i < lvl ? "bg-[#ff3b30]" : "bg-white/12"}`}
-                          />
-                        ))}
-                      </div>
+            {armoryMode === "bench" && (
+              <div className="space-y-3">
+                {/* Live Tuning Telemetry Bar */}
+                <div className="flex flex-wrap items-center justify-between gap-2 border border-white/12 bg-[#0c0e14]/90 px-4 py-2.5 font-mono text-[10px] uppercase">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <span className="text-[#8a909e]">
+                      MAG <b className="text-[#f2efe9]">{Math.round(activeWeaponSpec.magSize * stats.magMult * activeWeaponMods.magMult)}</b>
+                    </span>
+                    <span className="text-[#8a909e]">
+                      RECOIL <b className="text-[#2dd4bf]">{Math.round(activeWeaponMods.recoilMult * 100)}%</b>
+                    </span>
+                    <span className="text-[#8a909e]">
+                      SPREAD <b className="text-[#38bdf8]">{Math.round(activeWeaponMods.spreadMult * 100)}%</b>
+                    </span>
+                    <span className={activeWeaponMods.suppressed ? "text-[#2dd4bf]" : "text-[#e5a93c]"}>
+                      {activeWeaponMods.suppressed ? "SUPPRESSED" : "LOUD BRAKE"}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => onFocusWeaponBench(true)}
+                      className="cursor-pointer border border-[#38bdf8]/40 px-2 py-0.5 text-[9px] text-[#38bdf8] hover:bg-[#38bdf8]/15"
+                    >
+                      Zoom Gun
+                    </button>
+                    <button
+                      onClick={() => onResetWeaponConfig(activeWeaponSpec.id)}
+                      className="inline-flex cursor-pointer items-center gap-1 border border-white/15 px-2 py-0.5 text-[9px] text-[#8a909e] hover:text-[#f2efe9]"
+                    >
+                      <RotateCcw className="size-2.5" />
+                      Default
+                    </button>
+                  </div>
+                </div>
+
+                {/* 4 Attachment Slots */}
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {/* Optic */}
+                  <div data-augmented-ui="br-clip border inlay" className="voss-panel p-3.5 space-y-2">
+                    <div className="font-mono text-[10px] font-bold uppercase tracking-[0.22em] text-[#38bdf8]">
+                      01 · OPTIC RAIL
                     </div>
-
-                    <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-white/10 pt-3">
-                      <div className="flex items-center gap-2 font-mono text-[11px]">
-                        <span className="text-[#8a909e]">
-                          {lvl > 0 ? u.effectLabels[lvl - 1] : "BASE"}
-                        </span>
-                        {!maxed && (
-                          <>
-                            <span className="text-white/30">→</span>
-                            <span className="font-bold text-[#2dd4bf]">{u.effectLabels[lvl]}</span>
-                          </>
-                        )}
-                      </div>
-
-                      {maxed ? (
-                        <span className="border border-[#2dd4bf]/45 bg-[#2dd4bf]/10 px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-widest text-[#2dd4bf]">
-                          MAXED
-                        </span>
-                      ) : (
-                        <div className="flex items-center gap-3">
-                          <div className="flex items-center gap-3">
-                            {(Object.entries(cost!) as [CurrencyKey, number][]).map(([k, v]) => (
-                              <CurrencyInline key={k} kind={k} amount={v} compact />
-                            ))}
-                          </div>
-                          <TacticalButton
-                            tone={affordable ? "gold" : "ghost"}
-                            disabled={!affordable}
-                            onClick={() => onBuyUpgrade(u.id)}
-                            className="px-4 py-1.5 pb-2.5 text-[10px]"
+                    <div className="grid grid-cols-2 gap-1.5">
+                      {WEAPON_OPTIC_OPTS.map((o) => {
+                        const on = activeWeaponCfg.optic === o.id;
+                        return (
+                          <button
+                            key={o.id}
+                            onClick={() => onUpdateWeaponConfig(activeWeaponSpec.id, { optic: o.id })}
+                            title={o.note}
+                            className={`cursor-pointer border px-2.5 py-1.5 text-left transition ${
+                              on
+                                ? "border-[#38bdf8] bg-[#38bdf8]/15 text-[#f2efe9]"
+                                : "border-white/10 bg-white/[0.03] text-[#8a909e] hover:text-[#f2efe9]"
+                            }`}
                           >
-                            Upgrade
-                          </TacticalButton>
-                        </div>
-                      )}
+                            <div className="font-display text-xs font-bold uppercase">{o.label}</div>
+                            <div className="truncate font-mono text-[9px] opacity-75">{o.note}</div>
+                          </button>
+                        );
+                      })}
                     </div>
                   </div>
-                );
-              })}
-            </div>
+
+                  {/* Muzzle */}
+                  <div data-augmented-ui="br-clip border inlay" className="voss-panel p-3.5 space-y-2">
+                    <div className="font-mono text-[10px] font-bold uppercase tracking-[0.22em] text-[#e5a93c]">
+                      02 · MUZZLE DEVICE
+                    </div>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      {WEAPON_MUZZLE_OPTS.map((m) => {
+                        const on = activeWeaponCfg.muzzle === m.id;
+                        return (
+                          <button
+                            key={m.id}
+                            onClick={() => onUpdateWeaponConfig(activeWeaponSpec.id, { muzzle: m.id })}
+                            title={m.note}
+                            className={`cursor-pointer border px-2.5 py-1.5 text-left transition ${
+                              on
+                                ? "border-[#e5a93c] bg-[#e5a93c]/15 text-[#f2efe9]"
+                                : "border-white/10 bg-white/[0.03] text-[#8a909e] hover:text-[#f2efe9]"
+                            }`}
+                          >
+                            <div className="font-display text-xs font-bold uppercase">{m.label}</div>
+                            <div className="truncate font-mono text-[9px] opacity-75">{m.note}</div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Underbarrel */}
+                  <div data-augmented-ui="br-clip border inlay" className="voss-panel p-3.5 space-y-2">
+                    <div className="font-mono text-[10px] font-bold uppercase tracking-[0.22em] text-[#2dd4bf]">
+                      03 · UNDERBARREL &amp; LASER
+                    </div>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      {WEAPON_UNDERBARREL_OPTS.map((u) => {
+                        const on = activeWeaponCfg.underbarrel === u.id;
+                        return (
+                          <button
+                            key={u.id}
+                            onClick={() => onUpdateWeaponConfig(activeWeaponSpec.id, { underbarrel: u.id })}
+                            title={u.note}
+                            className={`cursor-pointer border px-2.5 py-1.5 text-left transition ${
+                              on
+                                ? "border-[#2dd4bf] bg-[#2dd4bf]/15 text-[#f2efe9]"
+                                : "border-white/10 bg-white/[0.03] text-[#8a909e] hover:text-[#f2efe9]"
+                            }`}
+                          >
+                            <div className="font-display text-xs font-bold uppercase">{u.label}</div>
+                            <div className="truncate font-mono text-[9px] opacity-75">{u.note}</div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Magazine */}
+                  <div data-augmented-ui="br-clip border inlay" className="voss-panel p-3.5 space-y-2">
+                    <div className="font-mono text-[10px] font-bold uppercase tracking-[0.22em] text-[#ff3b30]">
+                      04 · MAGAZINE WELL
+                    </div>
+                    <div className="grid grid-cols-3 gap-1.5">
+                      {WEAPON_MAG_OPTS.map((mg) => {
+                        const on = activeWeaponCfg.magazine === mg.id;
+                        return (
+                          <button
+                            key={mg.id}
+                            onClick={() => onUpdateWeaponConfig(activeWeaponSpec.id, { magazine: mg.id })}
+                            title={mg.note}
+                            className={`cursor-pointer border px-2 py-1.5 text-left transition ${
+                              on
+                                ? "border-[#ff3b30] bg-[#ff3b30]/15 text-[#f2efe9]"
+                                : "border-white/10 bg-white/[0.03] text-[#8a909e] hover:text-[#f2efe9]"
+                            }`}
+                          >
+                            <div className="font-display text-xs font-bold uppercase">{mg.label}</div>
+                            <div className="truncate font-mono text-[8px] opacity-75">{mg.note}</div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Per-Part Coatings & Reticle Tint */}
+                <div data-augmented-ui="tl-clip br-clip border inlay" className="voss-panel-sharp p-4 space-y-3">
+                  <div className="font-mono text-[10px] font-bold uppercase tracking-[0.24em] text-[#8a909e]">
+                    PER-PART CERAKOTE &amp; RETICLE FINISH ({DEFAULT_WEAPON_CONFIGS[activeWeaponSpec.id] ? activeWeaponSpec.shortName : ""})
+                  </div>
+                  {(
+                    [
+                      ["bodyFinish", "Receiver & Frame"],
+                      ["accentFinish", "Stock & Handguard"],
+                      ["hardwareFinish", "Rail & Hardware"],
+                    ] as const
+                  ).map(([field, label]) => (
+                    <div key={field} className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-mono text-[10px] uppercase tracking-wider text-[#cfd4de]">{label}</span>
+                      <div className="flex flex-wrap gap-1.5">
+                        {WEAPON_PART_FINISHES.map((f) => {
+                          const on = activeWeaponCfg[field] === f.id;
+                          return (
+                            <button
+                              key={f.id}
+                              onClick={() => onUpdateWeaponConfig(activeWeaponSpec.id, { [field]: f.id })}
+                              title={f.name}
+                              className={`flex cursor-pointer items-center gap-1.5 border px-2 py-1 text-[10px] transition ${
+                                on
+                                  ? "border-white bg-white/15 text-[#f2efe9]"
+                                  : "border-white/12 bg-black/40 text-[#8a909e] hover:text-[#f2efe9]"
+                              }`}
+                            >
+                              <span className="h-2.5 w-2.5 border border-white/30" style={{ background: f.swatch }} />
+                              <span className="hidden sm:inline">{f.name}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                  <div className="flex items-center justify-between border-t border-white/10 pt-2.5">
+                    <span className="font-mono text-[10px] uppercase tracking-wider text-[#cfd4de]">Optic / Laser Reticle</span>
+                    <div className="flex gap-1.5">
+                      {WEAPON_RETICLE_COLORS.map((rc) => {
+                        const on = activeWeaponCfg.reticleColor.toLowerCase() === rc.hex.toLowerCase();
+                        return (
+                          <button
+                            key={rc.hex}
+                            onClick={() => onUpdateWeaponConfig(activeWeaponSpec.id, { reticleColor: rc.hex })}
+                            title={rc.name}
+                            className={`h-6 w-6 cursor-pointer border transition ${
+                              on ? "scale-110 border-white" : "border-white/25 hover:scale-105"
+                            }`}
+                            style={{ background: rc.hex }}
+                          />
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {armoryMode === "upgrades" && (
+              <>
+                {/* Category Angled Vector Tabs */}
+                <div className="flex flex-wrap gap-2">
+                  {UPGRADE_TABS.map((t) => (
+                    <TacticalButton
+                      key={t.id}
+                      shape="tab"
+                      tone={upgradeTab === t.id ? "gold" : "ghost"}
+                      onClick={() => setUpgradeTab(t.id)}
+                      className="flex-1 text-[11px]"
+                    >
+                      {t.label}
+                    </TacticalButton>
+                  ))}
+                </div>
+
+                {/* Upgrade Rows */}
+                <div className="space-y-2.5">
+                  {UPGRADES.filter((u) => u.category === upgradeTab).map((u) => {
+                    const lvl = getUpgradeLevel(save, u.id);
+                    const maxed = lvl >= u.maxLevel;
+                    const cost = maxed ? null : u.costs[lvl];
+                    const affordable = cost ? canAfford(save.currencies, cost) : false;
+                    return (
+                      <div
+                        key={u.id}
+                        data-augmented-ui="br-clip border inlay"
+                        className="voss-panel p-4"
+                      >
+                        <div className="flex items-start justify-between gap-4">
+                          <div>
+                            <div className="flex items-center gap-3">
+                              <h3 className="font-display text-xl font-extrabold uppercase tracking-wide text-[#f2efe9]">
+                                {u.name}
+                              </h3>
+                              <span className="font-mono text-[10px] font-bold text-[#e5a93c]">
+                                TIER {lvl}/{u.maxLevel}
+                              </span>
+                            </div>
+                            <p className="mt-0.5 text-xs text-[#8a909e]">{u.subtitle}</p>
+                          </div>
+                          <div className="flex gap-1 pt-1">
+                            {Array.from({ length: u.maxLevel }).map((_, i) => (
+                              <span
+                                key={i}
+                                className={`h-2 w-5 ${i < lvl ? "bg-[#ff3b30]" : "bg-white/12"}`}
+                              />
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-white/10 pt-3">
+                          <div className="flex items-center gap-2 font-mono text-[11px]">
+                            <span className="text-[#8a909e]">
+                              {lvl > 0 ? u.effectLabels[lvl - 1] : "BASE"}
+                            </span>
+                            {!maxed && (
+                              <>
+                                <span className="text-white/30">→</span>
+                                <span className="font-bold text-[#2dd4bf]">{u.effectLabels[lvl]}</span>
+                              </>
+                            )}
+                          </div>
+
+                          {maxed ? (
+                            <span className="border border-[#2dd4bf]/45 bg-[#2dd4bf]/10 px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-widest text-[#2dd4bf]">
+                              MAXED
+                            </span>
+                          ) : (
+                            <div className="flex items-center gap-3">
+                              <div className="flex items-center gap-3">
+                                {(Object.entries(cost!) as [CurrencyKey, number][]).map(([k, v]) => (
+                                  <CurrencyInline key={k} kind={k} amount={v} compact />
+                                ))}
+                              </div>
+                              <TacticalButton
+                                tone={affordable ? "gold" : "ghost"}
+                                disabled={!affordable}
+                                onClick={() => onBuyUpgrade(u.id)}
+                                className="px-4 py-1.5 pb-2.5 text-[10px]"
+                              >
+                                Upgrade
+                              </TacticalButton>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -836,7 +1130,7 @@ export function MenuShell({
                     ACTIVE: <b className="text-[#ff3b30]">{selectedCharacter.name}</b>
                   </span>
                 </div>
-                <div className="grid grid-cols-3 gap-2.5 sm:grid-cols-4">
+                <div className="grid grid-cols-3 gap-2.5">
                   {CHARACTERS.map((c, idx) => {
                     const selected = c.id === characterId;
                     return (
@@ -882,6 +1176,21 @@ export function MenuShell({
                     );
                   })}
                 </div>
+              </div>
+            )}
+
+            {characterId !== "vanguard" && (customTab === "colors" || customTab === "gear") && (
+              <div className="flex items-center justify-between gap-3 border border-[#e5a93c]/40 bg-[#e5a93c]/10 px-3.5 py-2.5 font-mono text-[10px] text-[#fde68a]">
+                <span>
+                  <b>{selectedCharacter.name}</b> uses uniform tinting only. Switch to <b>Vanguard Tactical</b> for modular armor, NVGs, backpack &amp; headset gear.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => onSelectCharacter("vanguard")}
+                  className="shrink-0 cursor-pointer border border-[#e5a93c]/60 bg-[#e5a93c]/20 px-2.5 py-1 font-bold uppercase tracking-wider text-[#f2efe9] hover:bg-[#e5a93c]/35"
+                >
+                  Use Vanguard
+                </button>
               </div>
             )}
 

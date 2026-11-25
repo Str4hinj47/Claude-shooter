@@ -52,6 +52,8 @@ export class OpenWorldEngine implements VehicleKitWorldBridge {
   private readonly staticRoadRoot = new THREE.Group();
   private readonly staticPropsRoot = new THREE.Group();
   private readonly rayScratch: THREE.Object3D[] = [];
+  private lastShadowCullX = Infinity;
+  private lastShadowCullZ = Infinity;
 
   constructor(opts: OpenWorldEngineOptions = {}) {
     this.root.name = "WestgateBayOpenWorld";
@@ -102,12 +104,27 @@ export class OpenWorldEngine implements VehicleKitWorldBridge {
     // Build instanced prop batches & register pole/tree AABBs
     this.props.build(this.staticPropsRoot, this.spatialAABBs);
 
+    // Freeze static road & prop world matrices to skip per-frame CPU traversal
+    this.staticRoadRoot.traverse((o) => {
+      o.updateMatrix();
+      o.matrixAutoUpdate = false;
+    });
+    this.staticPropsRoot.updateMatrix();
+    this.staticPropsRoot.matrixAutoUpdate = false;
+
     // Prewarm chunks around player spawn so frame 1 is complete
     this.chunks.prewarm(spawnX, spawnZ);
   }
 
   update(focus: THREE.Vector3): void {
     this.chunks.update(focus);
+    const dx = focus.x - this.lastShadowCullX;
+    const dz = focus.z - this.lastShadowCullZ;
+    if (dx * dx + dz * dz >= 16) {
+      this.lastShadowCullX = focus.x;
+      this.lastShadowCullZ = focus.z;
+      this.props.updateShadowCulling(focus.x, focus.z);
+    }
   }
 
   groundHeightAt(x: number, z: number, y: number): number {

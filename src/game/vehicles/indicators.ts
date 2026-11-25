@@ -91,7 +91,7 @@ export function indicatorMaterial(
       .replace(
         "#include <emissivemap_fragment>",
         `#include <emissivemap_fragment>
-        totalEmissiveRadiance = mix(totalEmissiveRadiance, ${color} * 2.0, signalOn);
+        totalEmissiveRadiance = mix(totalEmissiveRadiance, ${color} * 2.8, signalOn);
         totalEmissiveRadiance *= 1.0 - signalOff * 0.95;
         ${
           id === "golf"
@@ -170,7 +170,7 @@ export function addFrontIndicator(
       .replace(
         "#include <emissivemap_fragment>",
         `#include <emissivemap_fragment>
-        totalEmissiveRadiance = mix(totalEmissiveRadiance, vec3(1.0, 0.24, 0.004) * 2.0, fOn);
+        totalEmissiveRadiance = mix(totalEmissiveRadiance, vec3(1.0, 0.28, 0.008) * 2.8, fOn);
         totalEmissiveRadiance *= 1.0 - fOff * 0.9;
       `,
       );

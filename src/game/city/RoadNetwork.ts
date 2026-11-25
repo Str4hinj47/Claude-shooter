@@ -171,7 +171,129 @@ export class RoadNetwork {
   private readonly invCell = 1 / 32;
   private readonly roadGrid = new Map<number, SampleRef[]>();
   private readonly laneGrid = new Map<number, LaneSampleRef[]>();
+  private readonly asphaltMaterials: THREE.MeshStandardMaterial[] = [];
+  private readonly weatherUniforms = {
+    uWet: { value: 0 },
+    uSnowCover: { value: 0 },
+    uWeatherTime: { value: 0 },
+  };
+  private lastWetness = -1;
   private compiled = false;
+
+  private attachWeatherShader(
+    mat: THREE.MeshStandardMaterial,
+    opts: { isSidewalk?: boolean; isRibbon?: boolean } = {},
+  ): THREE.MeshStandardMaterial {
+    const isSidewalk = !!opts.isSidewalk;
+    const isRibbon = !!opts.isRibbon;
+    mat.onBeforeCompile = (shader) => {
+      shader.uniforms.uWet = this.weatherUniforms.uWet;
+      shader.uniforms.uSnowCover = this.weatherUniforms.uSnowCover;
+      shader.uniforms.uWeatherTime = this.weatherUniforms.uWeatherTime;
+      shader.vertexShader = shader.vertexShader
+        .replace(
+          "#include <common>",
+          `#include <common>
+          varying vec3 vRoadWorldPos;
+          varying vec2 vRoadRawUv;`,
+        )
+        .replace(
+          "#include <begin_vertex>",
+          `#include <begin_vertex>
+          vRoadWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+          #ifdef USE_UV
+            vRoadRawUv = uv;
+          #else
+            vRoadRawUv = vec2(0.5);
+          #endif`,
+        );
+
+      shader.fragmentShader = shader.fragmentShader
+        .replace(
+          "#include <common>",
+          `#include <common>
+          uniform float uWet;
+          uniform float uSnowCover;
+          uniform float uWeatherTime;
+          varying vec3 vRoadWorldPos;
+          varying vec2 vRoadRawUv;
+          float rnHash(vec2 p) {
+            return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+          }
+          float rnNoise(vec2 p) {
+            vec2 i = floor(p);
+            vec2 f = fract(p);
+            vec2 u = f * f * (3.0 - 2.0 * f);
+            return mix(
+              mix(rnHash(i), rnHash(i + vec2(1.0, 0.0)), u.x),
+              mix(rnHash(i + vec2(0.0, 1.0)), rnHash(i + vec2(1.0, 1.0)), u.x),
+              u.y
+            );
+          }`,
+        )
+        .replace(
+          "#include <color_fragment>",
+          `#include <color_fragment>
+          float rwN1 = rnNoise(vRoadWorldPos.xz * 0.095);
+          float rwN2 = rnNoise(vRoadWorldPos.xz * 0.48);
+          float rwPuddle = smoothstep(0.42, 0.72, rwN1 * 0.7 + rwN2 * 0.3);
+          float rwWet = clamp(uWet, 0.0, 1.0);
+          if (rwWet > 0.005) {
+            float wetDark = ${isSidewalk ? "0.72" : "0.48"};
+            diffuseColor.rgb *= mix(1.0, wetDark, rwWet * (0.42 + 0.58 * rwPuddle));
+          }
+          float rwSnow = clamp(uSnowCover, 0.0, 1.0);
+          if (rwSnow > 0.005) {
+            ${
+              isSidewalk
+                ? `float snowCov = smoothstep(0.12, 0.85, rwSnow * 1.2 - rwN2 * 0.25);`
+                : isRibbon
+                  ? `
+                    float edgeSnow = smoothstep(0.30, 0.49, abs(vRoadRawUv.x - 0.5));
+                    float centerMed = 1.0 - smoothstep(0.0, 0.08, abs(vRoadRawUv.x - 0.5));
+                    float rutL = smoothstep(0.035, 0.095, abs(abs(vRoadRawUv.x - 0.5) - 0.16));
+                    float rutR = smoothstep(0.035, 0.095, abs(abs(vRoadRawUv.x - 0.5) - 0.28));
+                    float rutClear = mix(0.28, 1.0, rutL * rutR);
+                    float drift = smoothstep(0.22, 0.86, rwSnow * 1.12 - rwN1 * 0.35);
+                    float snowCov = clamp(max(max(edgeSnow, centerMed * 0.85) * rwSnow, drift * rutClear * 0.82), 0.0, 0.94);`
+                  : `float snowCov = smoothstep(0.24, 0.88, rwSnow * 1.05 - rwN1 * 0.34) * 0.76;`
+            }
+            vec3 snowCol = vec3(0.87, 0.92, 0.98) * mix(0.94, 1.03, rwN2);
+            diffuseColor.rgb = mix(diffuseColor.rgb, snowCol, snowCov);
+          }`,
+        )
+        .replace(
+          "#include <roughnessmap_fragment>",
+          `#include <roughnessmap_fragment>
+          if (uWet > 0.005) {
+            float pMask = smoothstep(0.42, 0.72, rnNoise(vRoadWorldPos.xz * 0.095) * 0.7 + rnNoise(vRoadWorldPos.xz * 0.48) * 0.3);
+            float dryR = roughnessFactor;
+            float wetR = ${isSidewalk ? "mix(0.48, 0.16, pMask)" : "mix(0.32, 0.06, pMask)"};
+            roughnessFactor = mix(dryR, wetR, clamp(uWet, 0.0, 1.0));
+          }
+          if (uSnowCover > 0.005) {
+            roughnessFactor = mix(roughnessFactor, 0.86, clamp(uSnowCover * 0.78, 0.0, 1.0));
+          }`,
+        )
+        .replace(
+          "#include <normal_fragment_maps>",
+          `#include <normal_fragment_maps>
+          if (uWet > 0.04) {
+            vec2 cell = floor(vRoadWorldPos.xz * 0.95);
+            vec2 fUv = fract(vRoadWorldPos.xz * 0.95) - vec2(0.5);
+            float h = rnHash(cell);
+            float phase = fract(uWeatherTime * 1.85 + h * 7.0);
+            float d = length(fUv);
+            float ring = sin((d - phase * 0.48) * 42.0) * exp(-abs(d - phase * 0.48) * 16.0) * (1.0 - phase);
+            float pMaskN = smoothstep(0.44, 0.74, rnNoise(vRoadWorldPos.xz * 0.095));
+            vec2 rip = normalize(fUv + vec2(0.0001)) * ring * 0.14 * uWet * pMaskN;
+            normal = normalize(normal + (viewMatrix * vec4(rip.x, 0.0, rip.y, 0.0)).xyz);
+          }`,
+        );
+    };
+    mat.customProgramCacheKey = () => `road-weather-${isSidewalk ? "sw" : isRibbon ? "rib" : "pad"}-v1`;
+    return mat;
+  }
 
   addNode(node: RoadNodeSpec): this {
     this.nodes.set(node.id, node);
@@ -567,6 +689,10 @@ export class RoadNetwork {
     return Array.from(this.nodes.values());
   }
 
+  getNode(id: string): RoadNodeSpec | undefined {
+    return this.nodes.get(id);
+  }
+
   /**
    * Fast O(1) spatial query returning road distance, elevation, and tangent at (x, z).
    * Used by terrain carving (Phase 1), building exclusion (Phases 2-8), and minimap overlays.
@@ -787,79 +913,234 @@ export class RoadNetwork {
     const group = new THREE.Group();
     group.name = "CityRoadNetwork";
 
-    const makeAsphaltTex = (lanesPerDir: number, hasMedian: boolean, isOneWay: boolean, withLines: boolean) => {
-      const w = 256;
-      const h = 256;
+    const hasBrowserTexLoader = typeof document !== "undefined" && typeof Image !== "undefined";
+    const roadTexLoader = hasBrowserTexLoader ? new THREE.TextureLoader() : null;
+    const roadAlbedoListeners: Array<(img: HTMLImageElement) => void> = [];
+    let loadedRoadAlbedoImg: HTMLImageElement | null = null;
+    let roadNormalBaseTex: THREE.Texture | null = null;
+
+    if (roadTexLoader) {
+      roadTexLoader.load("/textures/road/asphalt-albedo.jpg", (tex) => {
+        const img = tex.image as HTMLImageElement | undefined;
+        if (!img) return;
+        loadedRoadAlbedoImg = img;
+        for (const fn of roadAlbedoListeners) fn(img);
+        roadAlbedoListeners.length = 0;
+      });
+      roadNormalBaseTex = roadTexLoader.load("/textures/road/asphalt-normal.jpg");
+      roadNormalBaseTex.wrapS = roadNormalBaseTex.wrapT = THREE.RepeatWrapping;
+      roadNormalBaseTex.anisotropy = 4;
+    }
+
+    const getAsphaltNormalMap = (acrossMetres: number, alongMetres = 16.0): THREE.Texture | null => {
+      if (!roadNormalBaseTex) return null;
+      const t = roadNormalBaseTex.clone();
+      t.wrapS = t.wrapT = THREE.RepeatWrapping;
+      t.repeat.set(Math.max(1, acrossMetres / 3.2), alongMetres / 3.2);
+      t.anisotropy = 4;
+      t.needsUpdate = true;
+      return t;
+    };
+
+    const makeAsphaltTex = (
+      lanesPerDir: number,
+      laneWidth: number,
+      shoulder: number,
+      medianWidth: number,
+      carriagewayWidth: number,
+      hasMedian: boolean,
+      isOneWay: boolean,
+      withLines: boolean,
+    ) => {
+      const w = 1024;
+      const h = 1024;
       const c = document.createElement("canvas");
       c.width = w;
       c.height = h;
       const g = c.getContext("2d")!;
-      g.fillStyle = "#2b2f35";
-      g.fillRect(0, 0, w, h);
-      // Mineral aggregate grain
-      for (let i = 0; i < 1600; i++) {
-        const px = (i * 73 + (i >> 3) * 19) % w;
-        const py = (i * 137 + (i >> 4) * 31) % h;
-        g.fillStyle = i % 3 === 0 ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.08)";
-        g.fillRect(px, py, 2, 2);
-      }
-      if (withLines) {
-        // Subtle tire wear tracks
-        const totalLanes = isOneWay ? lanesPerDir : lanesPerDir * 2;
-        for (let l = 0; l < totalLanes; l++) {
-          const cx = ((l + 0.5) / totalLanes) * w;
-          g.fillStyle = "rgba(0,0,0,0.11)";
-          g.fillRect(cx - w * 0.035, 0, w * 0.07, h);
-        }
-        // Solid white outer edge lines
-        g.fillStyle = "#d8dce0";
-        g.fillRect(w * 0.03, 0, Math.max(2, w * 0.018), h);
-        g.fillRect(w * 0.952, 0, Math.max(2, w * 0.018), h);
 
-        if (!isOneWay) {
-          if (hasMedian) {
-            // Raised/painted center median band + yellow inner edge lines
-            g.fillStyle = "#484d54";
-            g.fillRect(w * 0.455, 0, w * 0.09, h);
-            g.fillStyle = "#eab308";
-            g.fillRect(w * 0.445, 0, 3, h);
-            g.fillRect(w * 0.545, 0, 3, h);
-          } else {
-            // Double yellow centerline
-            g.fillStyle = "#eab308";
-            g.fillRect(w * 0.484, 0, 3, h);
-            g.fillRect(w * 0.506, 0, 3, h);
+      const paintAsphalt = (baseImg?: HTMLImageElement) => {
+        if (baseImg) {
+          const tilesX = Math.max(1, Math.round(carriagewayWidth / 3.2));
+          const tilesY = 5; // 16m V repeat / 3.2m Overtake tile size
+          const tw = w / tilesX;
+          const th = h / tilesY;
+          for (let ix = 0; ix < tilesX; ix++) {
+            for (let iy = 0; iy < tilesY; iy++) {
+              g.drawImage(baseImg, ix * tw, iy * th, tw + 0.5, th + 0.5);
+            }
           }
-          // Dashed white multi-lane dividers
-          if (lanesPerDir >= 2) {
-            g.fillStyle = "#e2e8f0";
-            for (let li = 1; li < lanesPerDir; li++) {
-              const fracL = 0.04 + (li / lanesPerDir) * (hasMedian ? 0.40 : 0.44);
-              const fracR = 1.0 - fracL;
-              for (let y = 12; y < h; y += 64) {
-                g.fillRect(fracL * w - 1.5, y, 3, 28);
-                g.fillRect(fracR * w - 1.5, y, 3, 28);
+          // Subtle Overtake 0xb2b5ba multiplier feel while keeping lane paint crisp
+          g.fillStyle = "rgba(18, 22, 28, 0.24)";
+          g.fillRect(0, 0, w, h);
+        } else {
+          g.fillStyle = "#262a30";
+          g.fillRect(0, 0, w, h);
+          for (let i = 0; i < 6500; i++) {
+            const px = (i * 197 + (i >> 3) * 53) % w;
+            const py = (i * 313 + (i >> 4) * 89) % h;
+            g.fillStyle = i % 3 === 0 ? "rgba(255,255,255,0.038)" : "rgba(0,0,0,0.095)";
+            g.fillRect(px, py, 2, 2);
+          }
+        }
+
+        if (withLines && carriagewayWidth > 0.1) {
+          const ppm = w / carriagewayWidth;
+          const dirCount = isOneWay ? 1 : 2;
+
+          if (isOneWay) {
+            for (let l = 0; l < lanesPerDir; l++) {
+              const lx = (shoulder + (l + 0.5) * laneWidth) * ppm;
+              g.fillStyle = "rgba(10,12,16,0.16)";
+              g.fillRect(lx - laneWidth * 0.24 * ppm, 0, laneWidth * 0.16 * ppm, h);
+              g.fillRect(lx + laneWidth * 0.08 * ppm, 0, laneWidth * 0.16 * ppm, h);
+            }
+          } else {
+            for (let l = 0; l < lanesPerDir; l++) {
+              const off = medianWidth * 0.5 + (l + 0.5) * laneWidth;
+              for (const s of [-1, 1]) {
+                const lx = (carriagewayWidth * 0.5 + s * off) * ppm;
+                g.fillStyle = "rgba(10,12,16,0.16)";
+                g.fillRect(lx - laneWidth * 0.22 * ppm, 0, laneWidth * 0.14 * ppm, h);
+                g.fillRect(lx + laneWidth * 0.08 * ppm, 0, laneWidth * 0.14 * ppm, h);
               }
             }
           }
-        } else if (lanesPerDir >= 2) {
-          g.fillStyle = "#e2e8f0";
-          for (let li = 1; li < lanesPerDir; li++) {
-            const frac = li / lanesPerDir;
-            for (let y = 12; y < h; y += 64) {
-              g.fillRect(frac * w - 1.5, y, 3, 28);
+
+          const lineW = Math.max(4, Math.round(0.14 * ppm));
+          const edgeInset = Math.max(0.15, shoulder) * ppm;
+          g.fillStyle = "#e6eaef";
+          g.fillRect(edgeInset - lineW * 0.5, 0, lineW, h);
+          g.fillRect(w - edgeInset - lineW * 0.5, 0, lineW, h);
+
+          if (!isOneWay && dirCount === 2) {
+            const midX = w * 0.5;
+            if (hasMedian && medianWidth > 0.2) {
+              const medHalfPx = medianWidth * 0.5 * ppm;
+              g.fillStyle = "#1d2026";
+              g.fillRect(midX - medHalfPx, 0, medHalfPx * 2, h);
+              g.fillStyle = "#eab308";
+              g.fillRect(midX - medHalfPx - lineW, 0, lineW, h);
+              g.fillRect(midX + medHalfPx, 0, lineW, h);
+            } else {
+              const yW = Math.max(4, Math.round(0.12 * ppm));
+              const gap = Math.max(4, Math.round(0.14 * ppm));
+              g.fillStyle = "#eab308";
+              g.fillRect(midX - gap * 0.5 - yW, 0, yW, h);
+              g.fillRect(midX + gap * 0.5, 0, yW, h);
+            }
+
+            if (lanesPerDir >= 2) {
+              const dashW = Math.max(3, Math.round(0.12 * ppm));
+              g.fillStyle = "#e2e8f0";
+              for (let li = 1; li < lanesPerDir; li++) {
+                const off = (medianWidth * 0.5 + li * laneWidth) * ppm;
+                for (let y = 64; y < h; y += 512) {
+                  g.fillRect(midX - off - dashW * 0.5, y, dashW, 192);
+                  g.fillRect(midX + off - dashW * 0.5, y, dashW, 192);
+                }
+              }
+            }
+          } else if (lanesPerDir >= 2) {
+            const dashW = Math.max(3, Math.round(0.12 * ppm));
+            g.fillStyle = "#e2e8f0";
+            for (let li = 1; li < lanesPerDir; li++) {
+              const lx = (shoulder + li * laneWidth) * ppm;
+              for (let y = 64; y < h; y += 512) {
+                g.fillRect(lx - dashW * 0.5, y, dashW, 192);
+              }
             }
           }
         }
-      }
+      };
+
+      paintAsphalt(loadedRoadAlbedoImg ?? undefined);
       const tex = new THREE.CanvasTexture(c);
       tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
       tex.colorSpace = THREE.SRGBColorSpace;
+      tex.minFilter = THREE.LinearMipmapLinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      tex.anisotropy = 4;
+
+      if (!loadedRoadAlbedoImg && roadTexLoader) {
+        roadAlbedoListeners.push((img) => {
+          paintAsphalt(img);
+          tex.needsUpdate = true;
+        });
+      }
+      return tex;
+    };
+
+    const makeRoundaboutTex = () => {
+      const s = 1024;
+      const c = document.createElement("canvas");
+      c.width = c.height = s;
+      const g = c.getContext("2d")!;
+
+      const paintRoundabout = (baseImg?: HTMLImageElement) => {
+        if (baseImg) {
+          const tiles = 10;
+          const tw = s / tiles;
+          for (let ix = 0; ix < tiles; ix++) {
+            for (let iy = 0; iy < tiles; iy++) {
+              g.drawImage(baseImg, ix * tw, iy * tw, tw + 0.5, tw + 0.5);
+            }
+          }
+          g.fillStyle = "rgba(18, 22, 28, 0.24)";
+          g.fillRect(0, 0, s, s);
+        } else {
+          g.fillStyle = "#262a30";
+          g.fillRect(0, 0, s, s);
+          for (let i = 0; i < 6000; i++) {
+            const px = (i * 197 + (i >> 3) * 53) % s;
+            const py = (i * 313 + (i >> 4) * 89) % s;
+            g.fillStyle = i % 3 === 0 ? "rgba(255,255,255,0.036)" : "rgba(0,0,0,0.09)";
+            g.fillRect(px, py, 2, 2);
+          }
+        }
+        const cx = s * 0.5;
+        const cy = s * 0.5;
+        g.strokeStyle = "#e2e8f0";
+        g.lineWidth = 7;
+        g.beginPath();
+        g.arc(cx, cy, s * 0.472, 0, Math.PI * 2);
+        g.stroke();
+
+        g.strokeStyle = "#eab308";
+        g.lineWidth = 6;
+        g.beginPath();
+        g.arc(cx, cy, s * 0.258, 0, Math.PI * 2);
+        g.stroke();
+
+        g.strokeStyle = "#e2e8f0";
+        g.lineWidth = 5;
+        for (let k = 0; k < 18; k++) {
+          const a0 = (k / 18) * Math.PI * 2;
+          const a1 = a0 + (Math.PI * 2) / 36;
+          g.beginPath();
+          g.arc(cx, cy, s * 0.365, a0, a1);
+          g.stroke();
+        }
+      };
+
+      paintRoundabout(loadedRoadAlbedoImg ?? undefined);
+      const tex = new THREE.CanvasTexture(c);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.minFilter = THREE.LinearMipmapLinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      tex.anisotropy = 4;
+
+      if (!loadedRoadAlbedoImg && roadTexLoader) {
+        roadAlbedoListeners.push((img) => {
+          paintRoundabout(img);
+          tex.needsUpdate = true;
+        });
+      }
       return tex;
     };
 
     const makeSidewalkPaverTex = () => {
-      const s = 256;
+      const s = 512;
       const c = document.createElement("canvas");
       c.width = c.height = s;
       const g = c.getContext("2d")!;
@@ -898,22 +1179,44 @@ export class RoadNetwork {
     };
 
     const roadMatCache = new Map<string, THREE.MeshStandardMaterial>();
-    const junctionAsphaltMat = new THREE.MeshStandardMaterial({
-      map: makeAsphaltTex(1, false, false, false),
-      color: 0xffffff,
-      roughness: 0.9,
-      metalness: 0.04,
-      polygonOffset: true,
-      polygonOffsetFactor: -3,
-      polygonOffsetUnits: -3,
-    });
-    const sidewalkMat = new THREE.MeshStandardMaterial({
-      map: makeSidewalkPaverTex(),
-      color: 0xffffff,
-      roughness: 0.88,
-      metalness: 0.03,
-    });
+    const junctionAsphaltMat = this.attachWeatherShader(
+      new THREE.MeshStandardMaterial({
+        map: makeAsphaltTex(1, 3.5, 0.3, 0, 7.6, false, false, false),
+        normalMap: getAsphaltNormalMap(14, 14),
+        normalScale: new THREE.Vector2(0.58, 0.58),
+        color: 0xffffff,
+        roughness: 0.94,
+        metalness: 0.02,
+        polygonOffset: true,
+        polygonOffsetFactor: -3,
+        polygonOffsetUnits: -3,
+      }),
+    );
+    const roundaboutAsphaltMat = this.attachWeatherShader(
+      new THREE.MeshStandardMaterial({
+        map: makeRoundaboutTex(),
+        normalMap: getAsphaltNormalMap(32, 32),
+        normalScale: new THREE.Vector2(0.58, 0.58),
+        color: 0xffffff,
+        roughness: 0.94,
+        metalness: 0.02,
+        polygonOffset: true,
+        polygonOffsetFactor: -3,
+        polygonOffsetUnits: -3,
+      }),
+    );
+    this.asphaltMaterials.push(junctionAsphaltMat, roundaboutAsphaltMat);
+    const sidewalkMat = this.attachWeatherShader(
+      new THREE.MeshStandardMaterial({
+        map: makeSidewalkPaverTex(),
+        color: 0xffffff,
+        roughness: 0.88,
+        metalness: 0.03,
+      }),
+      { isSidewalk: true },
+    );
     const curbMat = new THREE.MeshStandardMaterial({ color: 0x767c84, roughness: 0.82, metalness: 0.06 });
+    const medianMat = new THREE.MeshStandardMaterial({ color: 0x828890, roughness: 0.84, metalness: 0.04 });
     const crosswalkMat = new THREE.MeshStandardMaterial({
       color: 0xe6eaef,
       roughness: 0.78,
@@ -927,19 +1230,34 @@ export class RoadNetwork {
     const pierMat = new THREE.MeshStandardMaterial({ color: 0x5d6268, roughness: 0.9, metalness: 0.06 });
 
     const getRoadMat = (seg: CompiledRoadSegment) => {
-      const key = `${seg.lanesPerDir}|${seg.hasMedian}|${!!seg.spec.isOneWay}`;
+      const key = `${seg.lanesPerDir}|${seg.laneWidth}|${seg.shoulder}|${seg.medianWidth}|${seg.hasMedian}|${!!seg.spec.isOneWay}`;
       let mat = roadMatCache.get(key);
       if (!mat) {
-        mat = new THREE.MeshStandardMaterial({
-          map: makeAsphaltTex(seg.lanesPerDir, seg.hasMedian, !!seg.spec.isOneWay, true),
-          color: 0xffffff,
-          roughness: 0.9,
-          metalness: 0.04,
-          polygonOffset: true,
-          polygonOffsetFactor: -1,
-          polygonOffsetUnits: -1,
-        });
+        mat = this.attachWeatherShader(
+          new THREE.MeshStandardMaterial({
+            map: makeAsphaltTex(
+              seg.lanesPerDir,
+              seg.laneWidth,
+              seg.shoulder,
+              seg.medianWidth,
+              seg.carriagewayWidth,
+              seg.hasMedian,
+              !!seg.spec.isOneWay,
+              true,
+            ),
+            normalMap: getAsphaltNormalMap(seg.carriagewayWidth, 16.0),
+            normalScale: new THREE.Vector2(0.58, 0.58),
+            color: 0xffffff,
+            roughness: 0.94,
+            metalness: 0.02,
+            polygonOffset: true,
+            polygonOffsetFactor: -1,
+            polygonOffsetUnits: -1,
+          }),
+          { isRibbon: true },
+        );
         roadMatCache.set(key, mat);
+        this.asphaltMaterials.push(mat);
       }
       return mat;
     };
@@ -1082,7 +1400,7 @@ export class RoadNetwork {
         positions[vi + 5] = rz;
 
         const ui = i * 4;
-        const vCoord = sp.s / 12.0;
+        const vCoord = sp.s / 16.0;
         uvs[ui] = 0;
         uvs[ui + 1] = vCoord;
         uvs[ui + 2] = 1;
@@ -1110,9 +1428,33 @@ export class RoadNetwork {
       group.add(roadMesh);
       collidersOut?.push(roadMesh);
 
-      // Raised paver sidewalks + darker granite curb borders, cleanly clipped at intersections!
+      // Raised 3D concrete median island along divided non-bridge arterials & freeways
+      if (seg.hasMedian && seg.medianWidth > 0.4 && !seg.spec.isBridge) {
+        const medHalf = Math.max(0.22, seg.medianWidth * 0.5 - 0.14);
+        let medRun: RoadSample[] = [];
+        const flushMed = () => {
+          if (medRun.length < 2) {
+            medRun = [];
+            return;
+          }
+          const medMesh = this.buildSideRibbonBox(medRun, -medHalf, medHalf, 0.26, -0.1, medianMat, true, true);
+          medMesh.receiveShadow = true;
+          medMesh.userData.kind = "concrete";
+          group.add(medMesh);
+          collidersOut?.push(medMesh);
+          medRun = [];
+        };
+        for (let i = 0; i < n; i++) {
+          const sp = seg.samples[i];
+          if (pointInsideOtherRoad(sp.x, sp.z, seg)) flushMed();
+          else medRun.push(sp);
+        }
+        flushMed();
+      }
+
+      // Raised brushed-concrete sidewalks + granite curb borders, cleanly clipped & ramped at intersections!
       if (seg.hasSidewalk && seg.sidewalkWidth > 0) {
-        const curbW = 0.28;
+        const curbW = 0.26;
         for (const side of [-1, 1] as const) {
           const inner = halfC;
           const curbEdge = halfC + curbW;
@@ -1125,13 +1467,13 @@ export class RoadNetwork {
               run = [];
               return;
             }
-            const curbMesh = this.buildSideRibbonBox(run, side * inner, side * curbEdge, 0.19, 0.04, curbMat);
+            const curbMesh = this.buildSideRibbonBox(run, side * inner, side * curbEdge, 0.39, -0.22, curbMat, true, true);
             curbMesh.receiveShadow = true;
             curbMesh.userData.kind = "concrete";
             group.add(curbMesh);
             collidersOut?.push(curbMesh);
 
-            const swMesh = this.buildSideRibbonBox(run, side * curbEdge, side * outer, 0.18, 0.04, sidewalkMat, true);
+            const swMesh = this.buildSideRibbonBox(run, side * curbEdge, side * outer, 0.39, -0.22, sidewalkMat, true, true);
             swMesh.receiveShadow = true;
             swMesh.userData.kind = "concrete";
             group.add(swMesh);
@@ -1293,28 +1635,146 @@ export class RoadNetwork {
       const rbR = rb.radius ?? 18;
       const innerR = Math.max(4, rbR - 5.5);
       const outerR = rbR + 7.2;
-      const ringGeo = new THREE.RingGeometry(innerR, outerR, 40);
-      ringGeo.rotateX(-Math.PI / 2);
-      const ringMesh = new THREE.Mesh(ringGeo, junctionAsphaltMat);
-      ringMesh.position.set(rb.x, rb.y + 0.054, rb.z);
+
+      // Custom UV-mapped roundabout asphalt ring so circular dashed lane markings render cleanly
+      const segs = 48;
+      const ringPos = new Float32Array((segs + 1) * 2 * 3);
+      const ringUv = new Float32Array((segs + 1) * 2 * 2);
+      const ringIdx: number[] = [];
+      for (let i = 0; i <= segs; i++) {
+        const a = (i / segs) * Math.PI * 2;
+        const ca = Math.cos(a);
+        const sa = Math.sin(a);
+        const vi = i * 6;
+        ringPos[vi] = rb.x + ca * innerR;
+        ringPos[vi + 1] = rb.y + 0.056;
+        ringPos[vi + 2] = rb.z + sa * innerR;
+        ringPos[vi + 3] = rb.x + ca * outerR;
+        ringPos[vi + 4] = rb.y + 0.056;
+        ringPos[vi + 5] = rb.z + sa * outerR;
+
+        // Map circle in UV space [0..1] around center (0.5, 0.5)
+        const ui = i * 4;
+        const rInNorm = (innerR / outerR) * 0.5;
+        ringUv[ui] = 0.5 + ca * rInNorm;
+        ringUv[ui + 1] = 0.5 + sa * rInNorm;
+        ringUv[ui + 2] = 0.5 + ca * 0.5;
+        ringUv[ui + 3] = 0.5 + sa * 0.5;
+
+        if (i < segs) {
+          const k = i * 2;
+          ringIdx.push(k, k + 2, k + 1, k + 1, k + 2, k + 3);
+        }
+      }
+      const ringGeo = new THREE.BufferGeometry();
+      ringGeo.setAttribute("position", new THREE.BufferAttribute(ringPos, 3));
+      ringGeo.setAttribute("uv", new THREE.BufferAttribute(ringUv, 2));
+      ringGeo.setIndex(ringIdx);
+      ringGeo.computeVertexNormals();
+      const ringMesh = new THREE.Mesh(ringGeo, roundaboutAsphaltMat);
       ringMesh.receiveShadow = true;
       ringMesh.userData.kind = "concrete";
       group.add(ringMesh);
       collidersOut?.push(ringMesh);
 
-      // Outer paver sidewalk collar around roundabout
-      const collarGeo = new THREE.RingGeometry(outerR, outerR + 2.6, 40);
-      collarGeo.rotateX(-Math.PI / 2);
-      const collarMesh = new THREE.Mesh(collarGeo, sidewalkMat);
-      collarMesh.position.set(rb.x, rb.y + 0.14, rb.z);
-      collarMesh.receiveShadow = true;
-      collarMesh.userData.kind = "concrete";
-      group.add(collarMesh);
-      collidersOut?.push(collarMesh);
+      // Solid 3D roundabout granite curb + outer brushed concrete sidewalk collar (clipped at road entrances)
+      const collarSamples: RoadSample[] = [];
+      const collarSteps = 64;
+      const collarMidR = outerR + 1.3;
+      for (let i = 0; i <= collarSteps; i++) {
+        const a = (i / collarSteps) * Math.PI * 2;
+        const ca = Math.cos(a);
+        const sa = Math.sin(a);
+        collarSamples.push({
+          s: i * ((Math.PI * 2 * collarMidR) / collarSteps),
+          x: rb.x + ca * collarMidR,
+          y: rb.y,
+          z: rb.z + sa * collarMidR,
+          tx: -sa,
+          ty: 0,
+          tz: ca,
+          rx: ca,
+          rz: sa,
+        });
+      }
+      let cRun: RoadSample[] = [];
+      const flushCollar = () => {
+        if (cRun.length < 2) {
+          cRun = [];
+          return;
+        }
+        const rbCurb = this.buildSideRibbonBox(cRun, -1.3, -1.04, 0.39, -0.22, curbMat, true, true);
+        rbCurb.receiveShadow = true;
+        rbCurb.userData.kind = "concrete";
+        group.add(rbCurb);
+        collidersOut?.push(rbCurb);
+
+        const rbSw = this.buildSideRibbonBox(cRun, -1.04, 1.35, 0.39, -0.22, sidewalkMat, true, true);
+        rbSw.receiveShadow = true;
+        rbSw.userData.kind = "concrete";
+        group.add(rbSw);
+        collidersOut?.push(rbSw);
+        cRun = [];
+      };
+      for (let i = 0; i < collarSamples.length; i++) {
+        const sp = collarSamples[i];
+        let blocked = false;
+        for (const seg of groundSegs) {
+          const pad = seg.carriagewayWidth * 0.5 + 0.6;
+          const pad2 = pad * pad;
+          for (let k = 0; k < seg.samples.length - 1; k++) {
+            const sa = seg.samples[k];
+            const sb = seg.samples[k + 1];
+            const abx = sb.x - sa.x;
+            const abz = sb.z - sa.z;
+            const len2 = abx * abx + abz * abz;
+            let u = 0;
+            if (len2 > 1e-6) {
+              u = ((sp.x - sa.x) * abx + (sp.z - sa.z) * abz) / len2;
+              if (u < 0) u = 0;
+              else if (u > 1) u = 1;
+            }
+            const dx = sp.x - (sa.x + abx * u);
+            const dz = sp.z - (sa.z + abz * u);
+            if (dx * dx + dz * dz < pad2) {
+              blocked = true;
+              break;
+            }
+          }
+          if (blocked) break;
+        }
+        if (blocked) flushCollar();
+        else cRun.push(sp);
+      }
+      flushCollar();
     }
 
     parent.add(group);
     return group;
+  }
+
+  /** Updates road rain puddles, ripple animation, and snow accumulation/tire tracks. */
+  setWeatherSurface(wet: number, snowCover: number, timeSec: number): void {
+    const w = Math.max(0, Math.min(1, wet));
+    const s = Math.max(0, Math.min(1, snowCover));
+    this.weatherUniforms.uWet.value = w;
+    this.weatherUniforms.uSnowCover.value = s;
+    this.weatherUniforms.uWeatherTime.value = timeSec;
+    this.setWetness(w);
+  }
+
+  /** Shifts asphalt roughness & environment reflectivity smoothly during rain/storms. */
+  setWetness(wet: number): void {
+    const w = Math.max(0, Math.min(1, wet));
+    if (Math.abs(w - this.lastWetness) < 0.015) return;
+    this.lastWetness = w;
+    const rough = 0.94 - w * 0.68;
+    const envMult = 0.75 + w * 0.85;
+    for (let i = 0; i < this.asphaltMaterials.length; i++) {
+      const m = this.asphaltMaterials[i];
+      m.roughness = rough;
+      m.envMapIntensity = envMult;
+    }
   }
 
   private buildSideRibbonBox(
@@ -1325,74 +1785,118 @@ export class RoadNetwork {
     yBaseOffset: number,
     material: THREE.Material,
     withUVs = false,
+    taperEnds = false,
   ): THREE.Mesh {
     const n = samples.length;
     const minO = Math.min(offsetA, offsetB);
     const maxO = Math.max(offsetA, offsetB);
-    // 4 verts per cross-section: outer-bottom, outer-top, inner-top, inner-bottom
-    const positions = new Float32Array(n * 4 * 3);
-    const uvs = withUVs ? new Float32Array(n * 4 * 2) : null;
+    const width = Math.max(0.05, maxO - minO);
+    const tileScale = 1.6;
+
+    // Split vertices per face (top, left side, right side, start cap, end cap) so normals are crisp 90° edges!
+    const pos: number[] = [];
+    const norm: number[] = [];
+    const uv: number[] = [];
     const indices: number[] = [];
 
+    const yTopAt = (i: number, sp: RoadSample): number => {
+      let h = height;
+      if (taperEnds && n >= 3) {
+        if (i === 0 || i === n - 1) h = Math.max(0.06, height - 0.115);
+      }
+      return sp.y + yBaseOffset + h;
+    };
+
+    // 1. Top face (2 verts per sample, pure +Y normal, square metric UVs)
+    const topBase = 0;
+    for (let i = 0; i < n; i++) {
+      const sp = samples[i];
+      const y1 = yTopAt(i, sp);
+      pos.push(
+        sp.x + sp.rx * minO, y1, sp.z + sp.rz * minO,
+        sp.x + sp.rx * maxO, y1, sp.z + sp.rz * maxO,
+      );
+      norm.push(0, 1, 0, 0, 1, 0);
+      if (withUVs) {
+        const v = sp.s / tileScale;
+        uv.push(0, v, width / tileScale, v);
+      }
+      if (i < n - 1) {
+        const a = topBase + i * 2;
+        const b = a + 2;
+        indices.push(a, a + 1, b, a + 1, b + 1, b);
+      }
+    }
+
+    // 2. Left (minO) vertical side face
+    const leftBase = pos.length / 3;
     for (let i = 0; i < n; i++) {
       const sp = samples[i];
       const y0 = sp.y + yBaseOffset;
-      const y1 = y0 + height;
+      const y1 = yTopAt(i, sp);
+      const ax = sp.x + sp.rx * minO;
+      const az = sp.z + sp.rz * minO;
+      pos.push(ax, y0, az, ax, y1, az);
+      norm.push(-sp.rx, 0, -sp.rz, -sp.rx, 0, -sp.rz);
+      if (withUVs) {
+        const v = sp.s / tileScale;
+        uv.push(0, v, 0.25, v);
+      }
+      if (i < n - 1) {
+        const a = leftBase + i * 2;
+        const b = a + 2;
+        indices.push(a, a + 1, b, a + 1, b + 1, b);
+      }
+    }
+
+    // 3. Right (maxO) vertical side face
+    const rightBase = pos.length / 3;
+    for (let i = 0; i < n; i++) {
+      const sp = samples[i];
+      const y0 = sp.y + yBaseOffset;
+      const y1 = yTopAt(i, sp);
+      const bx = sp.x + sp.rx * maxO;
+      const bz = sp.z + sp.rz * maxO;
+      pos.push(bx, y1, bz, bx, y0, bz);
+      norm.push(sp.rx, 0, sp.rz, sp.rx, 0, sp.rz);
+      if (withUVs) {
+        const v = sp.s / tileScale;
+        uv.push(0.25, v, 0, v);
+      }
+      if (i < n - 1) {
+        const a = rightBase + i * 2;
+        const b = a + 2;
+        indices.push(a, a + 1, b, a + 1, b + 1, b);
+      }
+    }
+
+    // 4. Start & end solid vertical caps
+    const addCap = (sp: RoadSample, idx: number, flip: boolean) => {
+      const y0 = sp.y + yBaseOffset;
+      const y1 = yTopAt(idx, sp);
       const ax = sp.x + sp.rx * minO;
       const az = sp.z + sp.rz * minO;
       const bx = sp.x + sp.rx * maxO;
       const bz = sp.z + sp.rz * maxO;
-
-      const v = i * 12;
-      // 0: minO bottom
-      positions[v] = ax;
-      positions[v + 1] = y0;
-      positions[v + 2] = az;
-      // 1: minO top
-      positions[v + 3] = ax;
-      positions[v + 4] = y1;
-      positions[v + 5] = az;
-      // 2: maxO top
-      positions[v + 6] = bx;
-      positions[v + 7] = y1;
-      positions[v + 8] = bz;
-      // 3: maxO bottom
-      positions[v + 9] = bx;
-      positions[v + 10] = y0;
-      positions[v + 11] = bz;
-
-      if (uvs) {
-        const ui = i * 8;
-        const vs = sp.s / 4.0;
-        uvs[ui] = 0;
-        uvs[ui + 1] = vs;
-        uvs[ui + 2] = 0;
-        uvs[ui + 3] = vs;
-        uvs[ui + 4] = 1;
-        uvs[ui + 5] = vs;
-        uvs[ui + 6] = 1;
-        uvs[ui + 7] = vs;
-      }
-
-      if (i < n - 1) {
-        const a = i * 4;
-        const b = (i + 1) * 4;
-        // Top face (1 -> 2, outward +Y)
-        indices.push(a + 1, a + 2, b + 1, a + 2, b + 2, b + 1);
-        // Min-offset side face (0 -> 1, outward +R_neg)
-        indices.push(a + 0, a + 1, b + 0, a + 1, b + 1, b + 0);
-        // Max-offset side face (2 -> 3, outward +R_pos)
-        indices.push(a + 2, a + 3, b + 2, a + 3, b + 3, b + 2);
-        // Bottom face (3 -> 0, outward -Y)
-        indices.push(a + 0, b + 0, a + 3, a + 3, b + 0, b + 3);
-      }
+      const base = pos.length / 3;
+      const nx = flip ? sp.tx : -sp.tx;
+      const nz = flip ? sp.tz : -sp.tz;
+      pos.push(ax, y0, az, bx, y0, bz, bx, y1, bz, ax, y1, az);
+      norm.push(nx, 0, nz, nx, 0, nz, nx, 0, nz, nx, 0, nz);
+      if (withUVs) uv.push(0, 0, 1, 0, 1, 1, 0, 1);
+      if (flip) indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+      else indices.push(base, base + 2, base + 1, base, base + 3, base + 2);
+    };
+    if (n >= 2) {
+      addCap(samples[0], 0, false);
+      addCap(samples[n - 1], n - 1, true);
     }
 
     const geo = new THREE.BufferGeometry();
-    geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-    if (uvs) geo.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
+    geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+    geo.setAttribute("normal", new THREE.Float32BufferAttribute(norm, 3));
+    if (withUVs) geo.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2));
     geo.setIndex(indices);
-    geo.computeVertexNormals();
     return new THREE.Mesh(geo, material);
   }
 }

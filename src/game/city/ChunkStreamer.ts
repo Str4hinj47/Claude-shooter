@@ -17,6 +17,8 @@ export interface CityChunk {
   readonly lodGroup: THREE.Group;
   readonly colliders: THREE.Object3D[];
   readonly aabbs: THREE.Box3[];
+  shadowCasters?: THREE.Mesh[];
+  shadowsActive?: boolean;
   aabbIds: number[];
   collidersRegistered: boolean;
   built: boolean;
@@ -43,6 +45,30 @@ export interface ChunkStats {
   near: number;
   lod: number;
   culled: number;
+}
+
+function freezeChunkMatricesAndCacheShadows(chunk: CityChunk): void {
+  const casters: THREE.Mesh[] = [];
+  chunk.nearGroup.traverse((o) => {
+    o.updateMatrix();
+    o.matrixAutoUpdate = false;
+    const m = o as THREE.Mesh;
+    if (m.isMesh && m.castShadow) casters.push(m);
+  });
+  chunk.lodGroup.traverse((o) => {
+    o.updateMatrix();
+    o.matrixAutoUpdate = false;
+  });
+  chunk.shadowCasters = casters;
+  chunk.shadowsActive = true;
+}
+
+function setChunkShadows(chunk: CityChunk, active: boolean): void {
+  if (chunk.shadowsActive === active || !chunk.shadowCasters) return;
+  chunk.shadowsActive = active;
+  for (let i = 0; i < chunk.shadowCasters.length; i++) {
+    chunk.shadowCasters[i].castShadow = active;
+  }
 }
 
 function disposeGroup(group: THREE.Group): void {
@@ -80,6 +106,10 @@ export class ChunkStreamer {
   private readonly buildFn: ChunkBuildFn;
   private readonly spatialAABBs?: SpatialAABBGrid;
   private readonly spatialColliders?: SpatialColliderGrid;
+  private readonly pendingBuildsTmp: { chunk: CityChunk; d2: number }[] = [];
+  private lastFocusX = Infinity;
+  private lastFocusZ = Infinity;
+  private hasPendingBuilds = false;
 
   constructor(buildFn: ChunkBuildFn, opts: ChunkStreamerOptions = {}) {
     this.buildFn = buildFn;
@@ -156,9 +186,11 @@ export class ChunkStreamer {
       if (d2 <= r2) {
         if (!c.built) {
           this.buildFn(c);
+          freezeChunkMatricesAndCacheShadows(c);
           c.built = true;
         }
         this.setChunkState(c, d2 <= near2 ? "near" : "lod");
+        if (c.state === "near") setChunkShadows(c, d2 <= 125 * 125);
       }
     }
   }
@@ -166,6 +198,13 @@ export class ChunkStreamer {
   update(focus: THREE.Vector3): void {
     const fx = focus.x;
     const fz = focus.z;
+    const dfx = fx - this.lastFocusX;
+    const dfz = fz - this.lastFocusZ;
+    if (!this.hasPendingBuilds && dfx * dfx + dfz * dfz < 12.25) {
+      return;
+    }
+    this.lastFocusX = fx;
+    this.lastFocusZ = fz;
 
     const nearEnter2 = this.nearRadius * this.nearRadius;
     const nearExit2 = (this.nearRadius + this.hysteresis) * (this.nearRadius + this.hysteresis);
@@ -173,7 +212,8 @@ export class ChunkStreamer {
     const lodExit2 = (this.lodRadius + this.hysteresis) * (this.lodRadius + this.hysteresis);
 
     // Collect unbuilt chunks inside lodRadius sorted closest-first
-    const pendingBuilds: { chunk: CityChunk; d2: number }[] = [];
+    const pendingBuilds = this.pendingBuildsTmp;
+    pendingBuilds.length = 0;
 
     for (let i = 0; i < this.chunks.length; i++) {
       const c = this.chunks[i];
@@ -195,6 +235,7 @@ export class ChunkStreamer {
         pendingBuilds.push({ chunk: c, d2 });
       } else if (c.built) {
         this.setChunkState(c, nextState);
+        if (c.state === "near") setChunkShadows(c, d2 <= 125 * 125);
       }
     }
 
@@ -204,9 +245,15 @@ export class ChunkStreamer {
       for (let i = 0; i < budget; i++) {
         const { chunk, d2 } = pendingBuilds[i];
         this.buildFn(chunk);
+        freezeChunkMatricesAndCacheShadows(chunk);
         chunk.built = true;
         this.setChunkState(chunk, d2 <= nearEnter2 ? "near" : "lod");
+        if (chunk.state === "near") setChunkShadows(chunk, d2 <= 125 * 125);
       }
+      this.hasPendingBuilds = pendingBuilds.length > budget;
+      pendingBuilds.length = 0;
+    } else {
+      this.hasPendingBuilds = false;
     }
   }
 

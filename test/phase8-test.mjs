@@ -50,7 +50,7 @@ const engine = level.openWorld;
 // 1. Phase 8 Instanced Prop Dressing stats
 const stats = engine.getStats();
 console.log("Westgate Bay Full City stats:", JSON.stringify(stats));
-check(stats.props.prototypes === 6, `Expected 6 prop prototypes, got ${stats.props.prototypes}`);
+check(stats.props.prototypes === 13, `Expected 13 prop prototypes, got ${stats.props.prototypes}`);
 check(stats.props.instances > 600, `Expected >600 instanced city props, got ${stats.props.instances}`);
 check(stats.props.colliders > 500, `Expected >500 prop AABB colliders, got ${stats.props.colliders}`);
 

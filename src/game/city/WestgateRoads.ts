@@ -1,4 +1,6 @@
 import * as THREE from "three";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
+import { materialFor } from "../kit/surface";
 import { RoadNetwork, type RoadNodeSpec, type RoadSegmentSpec } from "./RoadNetwork";
 import type { TerrainHeightFn } from "./HeightSystem";
 import { SpatialAABBGrid } from "./SpatialIndex";
@@ -580,6 +582,17 @@ function makeStrut(
   return mesh;
 }
 
+const bridgeGlowMats: THREE.MeshStandardMaterial[] = [];
+const bridgeBeaconMats: THREE.MeshStandardMaterial[] = [];
+
+export function setBridgeLandmarkDarkness(darkness: number): void {
+  const d = Math.max(0, Math.min(1, darkness));
+  const glow = 0.25 + d * 3.4;
+  const beacon = 1.0 + d * 3.2;
+  for (let i = 0; i < bridgeGlowMats.length; i++) bridgeGlowMats[i].emissiveIntensity = glow;
+  for (let i = 0; i < bridgeBeaconMats.length; i++) bridgeBeaconMats[i].emissiveIntensity = beacon;
+}
+
 /**
  * Builds the 5 roundabout islands + architectural superstructures for all 5 bridges
  * (cable-stayed pylons & cables, parabolic arch ribs, flyover gantries, canyon trusses, bascule lift towers).
@@ -594,19 +607,36 @@ export function buildWestgateRoadLandmarks(
   const group = new THREE.Group();
   group.name = "WestgateRoadLandmarks";
 
-  const asphaltMat = new THREE.MeshStandardMaterial({ color: 0x2b2e33, roughness: 0.88, metalness: 0.04 });
-  const curbMat = new THREE.MeshStandardMaterial({ color: 0xa2a7ad, roughness: 0.88, metalness: 0.04 });
-  const turfMat = new THREE.MeshStandardMaterial({ color: 0x456b3b, roughness: 0.94, metalness: 0.0 });
-  const pylonOrangeMat = new THREE.MeshStandardMaterial({ color: 0xc2492d, roughness: 0.52, metalness: 0.35 });
-  const cableMat = new THREE.MeshStandardMaterial({ color: 0xd0d7e0, roughness: 0.35, metalness: 0.8 });
-  const steelDarkMat = new THREE.MeshStandardMaterial({ color: 0x3b424c, roughness: 0.45, metalness: 0.78 });
-  const archWhiteMat = new THREE.MeshStandardMaterial({ color: 0xd9dde3, roughness: 0.65, metalness: 0.22 });
+  const asphaltMat = materialFor(0x2b2e33, { roughness: 0.86, metalness: 0.04, family: "asphalt", seed: 601, repeat: 6 });
+  const curbMat = materialFor(0xa6aba8, { roughness: 0.84, metalness: 0.04, family: "stone", seed: 602, repeat: 4 });
+  const turfMat = materialFor(0x456b3b, { roughness: 0.94, family: "grass", seed: 603, repeat: 6 });
+  const flowerMat = materialFor(0x376632, { roughness: 0.9, family: "grass", seed: 604, repeat: 3 });
+  const waterMat = new THREE.MeshStandardMaterial({
+    color: 0x228ba8,
+    emissive: 0x11495c,
+    emissiveIntensity: 0.4,
+    roughness: 0.1,
+    metalness: 0.55,
+  });
+  const bronzeMat = materialFor(0xb08a48, { roughness: 0.34, metalness: 0.84, family: "metal", seed: 605 });
+  const pylonOrangeMat = materialFor(0xc2492d, { roughness: 0.5, metalness: 0.35, family: "metal", seed: 606 });
+  const cableMat = materialFor(0xd0d7e0, { roughness: 0.35, metalness: 0.8, family: "metal", seed: 607 });
+  const steelDarkMat = materialFor(0x3b424c, { roughness: 0.45, metalness: 0.78, family: "metal", seed: 608 });
+  const archWhiteMat = materialFor(0xd9dde3, { roughness: 0.65, metalness: 0.18, family: "concrete", seed: 609 });
+  const warmGlowMat = new THREE.MeshStandardMaterial({
+    color: 0xfff3d1,
+    emissive: 0xffc663,
+    emissiveIntensity: 0.25,
+    roughness: 0.2,
+  });
   const beaconMat = new THREE.MeshStandardMaterial({
     color: 0xff3b30,
     emissive: 0xff2a1f,
-    emissiveIntensity: 2.8,
+    emissiveIntensity: 1.0,
     roughness: 0.25,
   });
+  bridgeGlowMats.push(warmGlowMat);
+  bridgeBeaconMats.push(beaconMat);
   const gantryGreenMat = new THREE.MeshStandardMaterial({ color: 0x1e5638, roughness: 0.55, metalness: 0.15 });
   const hazardYellowMat = new THREE.MeshStandardMaterial({ color: 0xe6a825, roughness: 0.5, metalness: 0.3 });
 
@@ -618,7 +648,7 @@ export function buildWestgateRoadLandmarks(
     }
   };
 
-  // 1. Roundabout circular carriageways, curbs, central lawns & monuments
+  // 1. Roundabout circular carriageways, stepped stone curbs, landscaped rings & tiered civic fountains
   for (const node of roads.getNodes()) {
     if (node.kind !== "roundabout") continue;
     const r = node.radius ?? 18;
@@ -632,30 +662,75 @@ export function buildWestgateRoadLandmarks(
     ring.receiveShadow = true;
     group.add(ring);
 
-    const island = new THREE.Mesh(new THREE.CylinderGeometry(innerR, innerR + 0.2, 0.26, 36), curbMat);
-    island.position.set(node.x, node.y + 0.13, node.z);
+    // Outer stepped curb + inner textured turf lawn
+    const island = new THREE.Mesh(new THREE.CylinderGeometry(innerR, innerR + 0.25, 0.28, 36), curbMat);
+    island.position.set(node.x, node.y + 0.14, node.z);
     island.receiveShadow = true;
     group.add(island);
 
-    const lawn = new THREE.Mesh(new THREE.CylinderGeometry(innerR - 0.5, innerR - 0.5, 0.28, 36), turfMat);
-    lawn.position.set(node.x, node.y + 0.14, node.z);
+    const lawn = new THREE.Mesh(new THREE.CylinderGeometry(innerR - 0.55, innerR - 0.55, 0.3, 36), turfMat);
+    lawn.position.set(node.x, node.y + 0.15, node.z);
     lawn.receiveShadow = true;
     group.add(lawn);
 
-    const plinth = new THREE.Mesh(new THREE.CylinderGeometry(2.0, 2.7, 2.6, 12), curbMat);
-    plinth.position.set(node.x, node.y + 1.4, node.z);
-    plinth.castShadow = true;
-    plinth.receiveShadow = true;
-    plinth.userData.kind = "concrete";
-    group.add(plinth);
-    registerSolid(plinth);
+    // Sculpted shrub border ring + 6 stone bollards with warm uplights
+    const hedgeRing = new THREE.Mesh(new THREE.TorusGeometry(innerR - 1.6, 0.42, 8, 28), flowerMat);
+    hedgeRing.rotation.x = Math.PI * 0.5;
+    hedgeRing.position.set(node.x, node.y + 0.42, node.z);
+    hedgeRing.castShadow = true;
+    hedgeRing.receiveShadow = true;
+    group.add(hedgeRing);
 
-    const obelisk = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 1.05, 5.2, 8), archWhiteMat);
-    obelisk.position.set(node.x, node.y + 5.1, node.z);
-    obelisk.castShadow = true;
-    obelisk.userData.kind = "concrete";
-    group.add(obelisk);
-    registerSolid(obelisk);
+    for (let b = 0; b < 6; b++) {
+      const a = (b / 6) * Math.PI * 2;
+      const bx = node.x + Math.cos(a) * (innerR - 0.9);
+      const bz = node.z + Math.sin(a) * (innerR - 0.9);
+      const bollard = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.2, 0.85, 8), steelDarkMat);
+      bollard.position.set(bx, node.y + 0.58, bz);
+      bollard.castShadow = true;
+      group.add(bollard);
+      const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.14, 8), warmGlowMat);
+      cap.position.set(bx, node.y + 0.94, bz);
+      group.add(cap);
+    }
+
+    // Tiered granite fountain basin + turquoise water + bronze civic sculpture column
+    const basinOuter = new THREE.Mesh(new THREE.CylinderGeometry(4.4, 4.7, 0.65, 24), curbMat);
+    basinOuter.position.set(node.x, node.y + 0.52, node.z);
+    basinOuter.castShadow = true;
+    basinOuter.receiveShadow = true;
+    basinOuter.userData.kind = "concrete";
+    group.add(basinOuter);
+    registerSolid(basinOuter);
+
+    const pool = new THREE.Mesh(new THREE.CylinderGeometry(3.85, 3.85, 0.14, 24), waterMat);
+    pool.position.set(node.x, node.y + 0.84, node.z);
+    group.add(pool);
+
+    const stepPlinth = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.9, 1.4, 12), curbMat);
+    stepPlinth.position.set(node.x, node.y + 1.4, node.z);
+    stepPlinth.castShadow = true;
+    stepPlinth.userData.kind = "concrete";
+    group.add(stepPlinth);
+    registerSolid(stepPlinth);
+
+    const upperBowl = new THREE.Mesh(new THREE.CylinderGeometry(1.85, 0.85, 0.55, 16), curbMat);
+    upperBowl.position.set(node.x, node.y + 2.25, node.z);
+    upperBowl.castShadow = true;
+    group.add(upperBowl);
+
+    const spire = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.62, 3.6, 12), archWhiteMat);
+    spire.position.set(node.x, node.y + 4.1, node.z);
+    spire.castShadow = true;
+    spire.userData.kind = "concrete";
+    group.add(spire);
+    registerSolid(spire);
+
+    const finial = new THREE.Mesh(new THREE.OctahedronGeometry(0.55, 1), bronzeMat);
+    finial.scale.set(0.85, 1.45, 0.85);
+    finial.position.set(node.x, node.y + 6.3, node.z);
+    finial.castShadow = true;
+    group.add(finial);
   }
 
   // 2. BRIDGE 1: Westgate Golden Cable-Stayed Bay Bridge
@@ -760,17 +835,26 @@ export function buildWestgateRoadLandmarks(
         if (i > 1 && i < steps - 1 && i % 2 === 0) {
           const deckAnchor = new THREE.Vector3(dp.x + rx * side * halfW, dp.y + 0.3, dp.z + rz * side * halfW);
           group.add(makeStrut(pt, deckAnchor, 0.11, 0.11, cableMat));
+          if (side === -1 && i >= 4 && i <= steps - 4) {
+            const oppPt = new THREE.Vector3(dp.x + rx * halfW, dp.y + archRise, dp.z + rz * halfW);
+            group.add(makeStrut(pt, oppPt, 0.24, 0.24, archWhiteMat));
+          }
         }
         prevPt = pt;
       }
     }
   }
 
-  // 4. BRIDGE 3: Midtown Freeway Flyover (overhead directional highway gantry)
-  const br3 = roads.getSegment("fw_midtown_viaduct");
-  if (br3) {
+  // 4. FREEWAY OVERHEAD DIRECTIONAL SIGN GANTRIES (Midtown Viaduct + Coast & Harbor Freeways)
+  for (const [segId, tSamples] of [
+    ["fw_midtown_viaduct", [0.35, 0.68]],
+    ["fw_coast_south", [0.45]],
+    ["fw_harbor_east", [0.5]],
+  ] as const) {
+    const br3 = roads.getSegment(segId);
+    if (!br3) continue;
     const halfW = br3.carriagewayWidth * 0.5 + 0.8;
-    for (const tG of [0.35, 0.68]) {
+    for (const tG of tSamples) {
       const dp = br3.curve.getPointAt(tG);
       const dtan = br3.curve.getTangentAt(tG);
       const hl = Math.hypot(dtan.x, dtan.z) || 1;
@@ -803,7 +887,10 @@ export function buildWestgateRoadLandmarks(
       sign.position.set(dp.x, dp.y + 6.1, dp.z);
       sign.rotation.y = yaw;
       sign.castShadow = true;
-      group.add(postL, postR, beam, sign);
+      const signTrim = new THREE.Mesh(new THREE.BoxGeometry(10.8, 2.45, 0.14), archWhiteMat);
+      signTrim.position.set(dp.x, dp.y + 6.1, dp.z);
+      signTrim.rotation.y = yaw;
+      group.add(postL, postR, beam, signTrim, sign);
     }
   }
 
@@ -888,6 +975,302 @@ export function buildWestgateRoadLandmarks(
         group.add(booth);
         registerSolid(booth);
       }
+    }
+  }
+
+  // 7. Batched Zebra Pedestrian Crosswalk Bars at Signalized Arterial/Collector Intersections
+  const nodeById = new Map(roads.getNodes().map((n) => [n.id, n]));
+  const crosswalkGeos: THREE.BufferGeometry[] = [];
+  for (const seg of roads.getSegments()) {
+    if (seg.spec.isBridge || seg.spec.tier === "freeway" || seg.spec.tier === "ramp") continue;
+    const startNode = seg.spec.startNodeId ? nodeById.get(seg.spec.startNodeId) : undefined;
+    const endNode = seg.spec.endNodeId ? nodeById.get(seg.spec.endNodeId) : undefined;
+    const checks: Array<{ node: typeof startNode; t: number }> = [];
+    if (startNode?.kind === "signal") checks.push({ node: startNode, t: Math.min(0.18, 12.5 / Math.max(20, seg.length)) });
+    if (endNode?.kind === "signal") checks.push({ node: endNode, t: Math.max(0.82, 1 - 12.5 / Math.max(20, seg.length)) });
+    const halfCw = seg.carriagewayWidth * 0.44;
+    const stripeCount = Math.max(4, Math.floor((halfCw * 2) / 1.45));
+    for (const chk of checks) {
+      const sp = seg.curve.getPointAt(chk.t);
+      const tan = seg.curve.getTangentAt(chk.t);
+      const yaw = Math.atan2(tan.x, tan.z);
+      const hl = Math.hypot(tan.x, tan.z) || 1;
+      const rx = -tan.z / hl;
+      const rz = tan.x / hl;
+      const fx = tan.x / hl;
+      const fz = tan.z / hl;
+      for (let i = 0; i < stripeCount; i++) {
+        const u = stripeCount === 1 ? 0 : (i / (stripeCount - 1)) * 2 - 1;
+        const off = u * (halfCw - 0.5);
+        const bar = new THREE.BoxGeometry(0.55, 0.03, 2.35);
+        bar.rotateY(yaw);
+        bar.translate(sp.x + rx * off, sp.y + 0.06, sp.z + rz * off);
+        crosswalkGeos.push(bar);
+      }
+      // Solid white traffic stop bar behind the crosswalk
+      const stopSign = chk.t < 0.5 ? 1 : -1;
+      const stopBar = new THREE.BoxGeometry(halfCw * 1.9, 0.03, 0.45);
+      stopBar.rotateY(yaw);
+      stopBar.translate(sp.x + fx * stopSign * 2.4, sp.y + 0.06, sp.z + fz * stopSign * 2.4);
+      crosswalkGeos.push(stopBar);
+    }
+  }
+  if (crosswalkGeos.length > 0) {
+    const mergedCw = mergeGeometries(crosswalkGeos, false);
+    if (mergedCw) {
+      const cwMesh = new THREE.Mesh(mergedCw, archWhiteMat);
+      cwMesh.receiveShadow = true;
+      group.add(cwMesh);
+    }
+  }
+
+  // 8. Batched Bridge Deck Streetlamp Poles & Warm Luminaires on Bay & Arch Bridges
+  const brLampPoles: THREE.BufferGeometry[] = [];
+  const brLampGlows: THREE.BufferGeometry[] = [];
+  for (const br of [br1, br2]) {
+    if (!br) continue;
+    const halfW = br.carriagewayWidth * 0.5 + 0.55;
+    for (let u = 0.14; u <= 0.86; u += 0.12) {
+      const dp = br.curve.getPointAt(u);
+      const dtan = br.curve.getTangentAt(u);
+      const hl = Math.hypot(dtan.x, dtan.z) || 1;
+      const rx = -dtan.z / hl;
+      const rz = dtan.x / hl;
+      for (const side of [-1, 1] as const) {
+        const px = dp.x + rx * side * halfW;
+        const pz = dp.z + rz * side * halfW;
+        const pole = new THREE.CylinderGeometry(0.08, 0.12, 5.2, 6);
+        pole.translate(px, dp.y + 2.6, pz);
+        brLampPoles.push(pole);
+        const arm = new THREE.BoxGeometry(1.1, 0.08, 0.08);
+        arm.rotateY(Math.atan2(dtan.x, dtan.z) + Math.PI * 0.5);
+        arm.translate(px - rx * side * 0.5, dp.y + 5.18, pz - rz * side * 0.5);
+        brLampPoles.push(arm);
+        const glow = new THREE.BoxGeometry(0.45, 0.1, 0.25);
+        glow.rotateY(Math.atan2(dtan.x, dtan.z) + Math.PI * 0.5);
+        glow.translate(px - rx * side * 0.95, dp.y + 5.1, pz - rz * side * 0.95);
+        brLampGlows.push(glow);
+      }
+    }
+  }
+  if (brLampPoles.length > 0 && brLampGlows.length > 0) {
+    const pGeo = mergeGeometries(brLampPoles, false);
+    const gGeo = mergeGeometries(brLampGlows, false);
+    if (pGeo) group.add(new THREE.Mesh(pGeo, steelDarkMat));
+    if (gGeo) group.add(new THREE.Mesh(gGeo, warmGlowMat));
+  }
+
+  // 9. Batched Bridge Edge Safety Guardrails across all 5 City Bridges
+  const guardGeos: THREE.BufferGeometry[] = [];
+  for (const seg of roads.getSegments()) {
+    if (!seg.spec.isBridge) continue;
+    const halfW = seg.carriagewayWidth * 0.5 + 0.32;
+    const steps = Math.max(8, Math.floor(seg.length / 6.5));
+    for (const side of [-1, 1] as const) {
+      let prevPt: THREE.Vector3 | null = null;
+      for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        const sp = seg.curve.getPointAt(t);
+        const tan = seg.curve.getTangentAt(t);
+        const hl = Math.hypot(tan.x, tan.z) || 1;
+        const rx = -tan.z / hl;
+        const rz = tan.x / hl;
+        const px = sp.x + rx * side * halfW;
+        const pz = sp.z + rz * side * halfW;
+        const post = new THREE.BoxGeometry(0.14, 1.05, 0.14);
+        post.translate(px, sp.y + 0.52, pz);
+        guardGeos.push(post);
+
+        const curPt = new THREE.Vector3(px, sp.y + 0.96, pz);
+        if (prevPt) {
+          const mid = prevPt.clone().add(curPt).multiplyScalar(0.5);
+          const dist = prevPt.distanceTo(curPt);
+          const yaw = Math.atan2(curPt.x - prevPt.x, curPt.z - prevPt.z);
+          const rail = new THREE.BoxGeometry(0.1, 0.1, dist + 0.08);
+          rail.rotateY(yaw);
+          rail.translate(mid.x, mid.y, mid.z);
+          guardGeos.push(rail);
+          if (spatialAABBs) {
+            const cY = Math.abs(Math.cos(yaw));
+            const sY = Math.abs(Math.sin(yaw));
+            const hx = 0.22 * cY + dist * 0.48 * sY;
+            const hz = 0.22 * sY + dist * 0.48 * cY;
+            const yBot = Math.min(prevPt.y, curPt.y) - 0.96;
+            spatialAABBs.insert(
+              new THREE.Box3(
+                new THREE.Vector3(mid.x - hx, yBot, mid.z - hz),
+                new THREE.Vector3(mid.x + hx, yBot + 1.0, mid.z + hz),
+              ),
+            );
+          }
+        }
+        prevPt = curPt;
+      }
+    }
+  }
+  if (guardGeos.length > 0) {
+    const mergedGuard = mergeGeometries(guardGeos, false);
+    if (mergedGuard) {
+      const guardMesh = new THREE.Mesh(mergedGuard, steelDarkMat);
+      guardMesh.castShadow = true;
+      group.add(guardMesh);
+    }
+  }
+
+  // 10. Batched Concrete Jersey Median Barriers along Multi-Lane Freeways + Cat-Eye Road Reflectors
+  const jerseyGeos: THREE.BufferGeometry[] = [];
+  const studGeos: THREE.BufferGeometry[] = [];
+  for (const seg of roads.getSegments()) {
+    if (seg.spec.tier === "freeway" && seg.medianWidth > 0.5) {
+      const steps = Math.max(12, Math.floor(seg.length / 4.0));
+      for (let i = 0; i < steps; i++) {
+        const spA = seg.curve.getPointAt(i / steps);
+        const spB = seg.curve.getPointAt((i + 1) / steps);
+        const mid = spA.clone().add(spB).multiplyScalar(0.5);
+        const len = spA.distanceTo(spB);
+        const yaw = Math.atan2(spB.x - spA.x, spB.z - spA.z);
+        const bar = new THREE.BoxGeometry(0.62, 0.88, len + 0.08);
+        bar.rotateY(yaw);
+        bar.translate(mid.x, mid.y + 0.44, mid.z);
+        jerseyGeos.push(bar);
+        if (spatialAABBs) {
+          const cY = Math.abs(Math.cos(yaw));
+          const sY = Math.abs(Math.sin(yaw));
+          const hx = 0.31 * cY + len * 0.48 * sY;
+          const hz = 0.31 * sY + len * 0.48 * cY;
+          spatialAABBs.insert(
+            new THREE.Box3(
+              new THREE.Vector3(mid.x - hx, mid.y, mid.z - hz),
+              new THREE.Vector3(mid.x + hx, mid.y + 0.88, mid.z + hz),
+            ),
+          );
+        }
+      }
+    }
+    if (seg.spec.tier === "arterial" || seg.spec.tier === "freeway") {
+      const stepCount = Math.max(6, Math.floor(seg.length / 18));
+      for (let i = 1; i < stepCount; i++) {
+        const sp = seg.curve.getPointAt(i / stepCount);
+        const stud = new THREE.BoxGeometry(0.18, 0.05, 0.24);
+        stud.translate(sp.x, sp.y + 0.04, sp.z);
+        studGeos.push(stud);
+      }
+    }
+  }
+  if (jerseyGeos.length > 0) {
+    const jGeo = mergeGeometries(jerseyGeos, false);
+    if (jGeo) {
+      const jMesh = new THREE.Mesh(jGeo, curbMat);
+      jMesh.castShadow = true;
+      jMesh.receiveShadow = true;
+      group.add(jMesh);
+    }
+  }
+  if (studGeos.length > 0) {
+    const sGeo = mergeGeometries(studGeos, false);
+    if (sGeo) group.add(new THREE.Mesh(sGeo, warmGlowMat));
+  }
+
+  // 11. Batched Concrete Hammerhead Support Piers & Crosshead Caps under Bridges & Elevated Viaducts
+  const pierGeos: THREE.BufferGeometry[] = [];
+  for (const segId of [
+    "fw_midtown_viaduct",
+    "fw_harbor_bridge",
+    "art_arch_bridge",
+    "art_canyon_bridge",
+    "col_industrial_bridge",
+  ]) {
+    const seg = roads.getSegment(segId);
+    if (!seg) continue;
+    const steps = Math.max(6, Math.floor(seg.length / 36));
+    const capW = seg.carriagewayWidth * 0.78;
+    for (let i = 1; i < steps; i++) {
+      const t = i / steps;
+      const dp = seg.curve.getPointAt(t);
+      const gY = terrainAt(dp.x, dp.z);
+      const clearance = dp.y - gY;
+      if (clearance < 2.2) continue;
+
+      const dtan = seg.curve.getTangentAt(t);
+      const yaw = Math.atan2(dtan.x, dtan.z);
+      const hl = Math.hypot(dtan.x, dtan.z) || 1;
+      const rx = -dtan.z / hl;
+      const rz = dtan.x / hl;
+
+      const botY = Math.min(gY, -1.5) - 1.0;
+      const topY = dp.y - 1.1;
+      const colH = Math.max(1.0, topY - botY);
+
+      // Twin cylindrical columns + footing plinth + tapered hammerhead pier cap
+      for (const side of [-1, 1] as const) {
+        const px = dp.x + rx * side * (capW * 0.34);
+        const pz = dp.z + rz * side * (capW * 0.34);
+        const col = new THREE.CylinderGeometry(0.85, 1.05, colH, 10);
+        col.translate(px, botY + colH * 0.5, pz);
+        pierGeos.push(col);
+      }
+      const cap = new THREE.BoxGeometry(capW, 1.15, 1.9);
+      cap.rotateY(yaw);
+      cap.translate(dp.x, topY + 0.35, dp.z);
+      pierGeos.push(cap);
+    }
+  }
+  if (pierGeos.length > 0) {
+    const pGeo = mergeGeometries(pierGeos, false);
+    if (pGeo) {
+      const pMesh = new THREE.Mesh(pGeo, curbMat);
+      pMesh.castShadow = true;
+      pMesh.receiveShadow = true;
+      group.add(pMesh);
+    }
+  }
+
+  // 12. Batched Highway Guardrails along Mountain Switchbacks & Elevated Freeway Ramps
+  const rampGuardGeos: THREE.BufferGeometry[] = [];
+  for (const seg of roads.getSegments()) {
+    if (
+      seg.spec.id !== "col_observatory_switchback" &&
+      seg.spec.id !== "loc_foothills_estates" &&
+      seg.spec.tier !== "ramp"
+    ) {
+      continue;
+    }
+    const halfW = seg.carriagewayWidth * 0.5 + 0.38;
+    const steps = Math.max(8, Math.floor(seg.length / 8.0));
+    for (const side of [-1, 1] as const) {
+      let prevPt: THREE.Vector3 | null = null;
+      for (let i = 1; i < steps; i++) {
+        const sp = seg.curve.getPointAt(i / steps);
+        const tan = seg.curve.getTangentAt(i / steps);
+        const hl = Math.hypot(tan.x, tan.z) || 1;
+        const rx = -tan.z / hl;
+        const rz = tan.x / hl;
+        const px = sp.x + rx * side * halfW;
+        const pz = sp.z + rz * side * halfW;
+        const post = new THREE.BoxGeometry(0.12, 0.78, 0.12);
+        post.translate(px, sp.y + 0.39, pz);
+        rampGuardGeos.push(post);
+
+        const curPt = new THREE.Vector3(px, sp.y + 0.66, pz);
+        if (prevPt) {
+          const mid = prevPt.clone().add(curPt).multiplyScalar(0.5);
+          const dist = prevPt.distanceTo(curPt);
+          const yaw = Math.atan2(curPt.x - prevPt.x, curPt.z - prevPt.z);
+          const rail = new THREE.BoxGeometry(0.08, 0.2, dist + 0.08);
+          rail.rotateY(yaw);
+          rail.translate(mid.x, mid.y, mid.z);
+          rampGuardGeos.push(rail);
+        }
+        prevPt = curPt;
+      }
+    }
+  }
+  if (rampGuardGeos.length > 0) {
+    const rgGeo = mergeGeometries(rampGuardGeos, false);
+    if (rgGeo) {
+      const rgMesh = new THREE.Mesh(rgGeo, steelDarkMat);
+      rgMesh.castShadow = true;
+      group.add(rgMesh);
     }
   }
 

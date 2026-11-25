@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Game, type HudState } from "./game/Game";
-import { MISSIONS, type MissionDef } from "./game/story";
+import { MISSIONS, OPEN_WORLD_MISSION, type MissionDef } from "./game/story";
 import {
   CHARACTERS,
   characterUrl,
@@ -9,27 +9,40 @@ import {
 } from "./game/characters";
 import {
   canAfford,
+  DEFAULT_WEAPON_CONFIGS,
   getUpgradeLevel,
+  getWeaponCustomConfig,
   loadSave,
+  purchaseApartment,
   purchaseCar,
   purchaseUpgrade,
   resetSave,
   selectOwnedCar,
+  setDifficultyMode,
   UPGRADES,
+  updateCarCustomConfig,
+  upgradeCarTuning,
   writeSave,
+  type ApartmentId,
   type ArmorFinish,
+  type CarCustomConfig,
+  type DifficultyMode,
   type MissionReward,
   type NvgMode,
   type SaveData,
   type SoldierAppearance,
   type UpgradeCategory,
+  type WeaponCustomConfig,
   type WeaponFinish,
+  type WeaponSlotId,
 } from "./game/progression";
 import type { CarId } from "./game/vehicles/catalog";
+import type { GpsWaypoint } from "./game/city/GpsWaypoint";
 import { WEAPONS } from "./character/rifle";
 import { MenuShell, type Screen } from "./components/MenuShell";
 import { GameHud } from "./components/GameHud";
 import { PauseAndEndOverlays } from "./components/PauseAndEndOverlays";
+import { InteriorModals, type HomeModalKind } from "./components/InteriorModals";
 
 const initial: HudState = {
   loading: true,
@@ -43,6 +56,8 @@ const initial: HudState = {
   reserve: 120,
   health: 100,
   maxHealth: 100,
+  armor: 0,
+  maxArmor: 100,
   status: "Idle",
   speed: 0,
   reloading: false,
@@ -56,16 +71,42 @@ const initial: HudState = {
   fps: 60,
   spread: 0.01,
   hitMarker: 0,
+  hitCrit: false,
+  damageFlash: 0,
+  damageDirRad: 0,
   timeScale: 1,
   paused: false,
   kills: 0,
   weaponIndex: 0,
-  weaponName: "Vanguard M4A1-S",
-  weaponCategory: "Silenced Carbine",
+  weaponName: WEAPONS[0].name,
+  weaponCategory: WEAPONS[0].category,
   zoomFactor: 1.0,
   suppressed: true,
+  holstered: true,
+  weaponWheelOpen: false,
+  mapOpen: false,
+  phoneOpen: false,
+  phoneInitialTab: "home",
+  activeApartment: null,
+  activeGarage: null,
+  homeStation: null,
+  wanted: null,
+  radioStation: null,
+  activeRace: null,
+  aircraft: null,
+  boat: null,
+  carryingBody: false,
+  trunkBodiesCount: 0,
+  parachuting: false,
+  swimming: false,
+  binoculars: { open: false, zoom: "2.6x", rangeM: 0 },
+  stashesFound: 0,
+  totalStashes: 15,
+  nearbyPrompt: null,
+  surveillance: null,
   stealthState: "hidden",
   suspicion: 0,
+  stealthIndicators: [],
   stealthKills: 0,
   alerts: 0,
   takedownReady: false,
@@ -84,6 +125,9 @@ const initial: HudState = {
   hasOpenWorldReturn: false,
   cameraPreset: "close",
   credits: 180,
+  muted: false,
+  sfxVolume: 0.55,
+  engineVolume: 0.72,
   vehicle: null,
   weapons: WEAPONS.map((w) => ({
     slot: w.slot,
@@ -103,7 +147,7 @@ export default function App() {
   const host = useRef<HTMLDivElement>(null);
   const game = useRef<Game | null>(null);
   const [hud, setHud] = useState<HudState>(initial);
-  const [screen, setScreen] = useState<Screen>("home");
+  const [screen, setScreen] = useState<Screen>("playing");
   const [save, setSave] = useState<SaveData>(() => loadSave());
   const [selectedMissionId, setSelectedMissionId] = useState<number>(() => {
     const s = loadSave();
@@ -114,19 +158,39 @@ export default function App() {
   const [characterId, setCharacterId] = useState<string>(loadCharacterId);
   const [, setCamTick] = useState(0);
   const [gpsTargetId, setGpsTargetId] = useState<string | null>(null);
+  const [customWaypoint, setCustomWaypoint] = useState<GpsWaypoint | null>(null);
   const [endInfo, setEndInfo] = useState<{ mission: MissionDef; success: boolean; reward?: MissionReward } | null>(null);
+  const [homeModal, setHomeModal] = useState<{ kind: HomeModalKind; apartmentId?: ApartmentId; carId?: CarId } | null>(null);
 
   const selectedCharacter = CHARACTERS.find((c) => c.id === characterId) ?? CHARACTERS[0];
 
+  const openHomeStationHandler = (kind: HomeModalKind, apartmentId?: ApartmentId, carId?: CarId) => {
+    setSave(loadSave());
+    setHomeModal({ kind, apartmentId, carId });
+  };
+
   useEffect(() => {
     if (!host.current) return;
-    const g = new Game(host.current, setHud);
+    const g = new Game(host.current, setHud, { initialHangar: false });
     game.current = g;
+    void g.startMission(OPEN_WORLD_MISSION.id, {
+      onHud: setHud,
+      onMissionEnd: (mission, success, reward) => {
+        setEndInfo({ mission, success, reward });
+        setSave(loadSave());
+      },
+      onOpenHomeStation: openHomeStationHandler,
+      characterUrl: characterUrl(loadCharacterId()),
+    });
     return () => {
       g.dispose();
       game.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    game.current?.setMenuWeaponFocus(screen === "upgrades");
+  }, [screen]);
 
   const unlockThreshold = Math.max(save.unlocked, 1);
   const nextMission = MISSIONS.find((m) => m.id === Math.min(MISSIONS.length - 1, unlockThreshold)) ?? MISSIONS[1];
@@ -144,6 +208,7 @@ export default function App() {
 
   const startMission = (m: MissionDef) => {
     setEndInfo(null);
+    setHomeModal(null);
     setScreen("playing");
     void game.current?.startMission(m.id, {
       onHud: setHud,
@@ -151,6 +216,7 @@ export default function App() {
         setEndInfo({ mission, success, reward });
         setSave(loadSave());
       },
+      onOpenHomeStation: openHomeStationHandler,
       characterUrl: characterUrl(characterId),
     });
   };
@@ -172,7 +238,7 @@ export default function App() {
     const updated = purchaseUpgrade(id);
     if (!updated) return;
     setSave(updated);
-    game.current?.refreshStats();
+    game.current?.refreshSavedLoadoutAndCar();
   };
 
   const handleSelectMenuWeapon = (idx: number) => {
@@ -184,12 +250,49 @@ export default function App() {
     game.current?.previewWeapon(idx);
   };
 
+  const handleUpdateWeaponConfig = (weaponId: WeaponSlotId, patch: Partial<WeaponCustomConfig>) => {
+    setSave((prev) => {
+      const current = getWeaponCustomConfig(prev, weaponId);
+      const nextMap: Record<WeaponSlotId, WeaponCustomConfig> = {
+        pistol: getWeaponCustomConfig(prev, "pistol"),
+        carbine: getWeaponCustomConfig(prev, "carbine"),
+        smg: getWeaponCustomConfig(prev, "smg"),
+        shotgun: getWeaponCustomConfig(prev, "shotgun"),
+        dmr: getWeaponCustomConfig(prev, "dmr"),
+        [weaponId]: { ...current, ...patch },
+      };
+      const updated: SaveData = { ...prev, weaponConfigs: nextMap };
+      writeSave(updated);
+      game.current?.previewWeaponConfigs(nextMap);
+      game.current?.refreshSavedLoadoutAndCar();
+      return updated;
+    });
+  };
+
+  const handleResetWeaponConfig = (weaponId: WeaponSlotId) => {
+    setSave((prev) => {
+      const nextMap: Record<WeaponSlotId, WeaponCustomConfig> = {
+        pistol: getWeaponCustomConfig(prev, "pistol"),
+        carbine: getWeaponCustomConfig(prev, "carbine"),
+        smg: getWeaponCustomConfig(prev, "smg"),
+        shotgun: getWeaponCustomConfig(prev, "shotgun"),
+        dmr: getWeaponCustomConfig(prev, "dmr"),
+        [weaponId]: { ...DEFAULT_WEAPON_CONFIGS[weaponId] },
+      };
+      const updated: SaveData = { ...prev, weaponConfigs: nextMap };
+      writeSave(updated);
+      game.current?.previewWeaponConfigs(nextMap);
+      return updated;
+    });
+  };
+
   const updateAppearance = (patch: Partial<SoldierAppearance>) => {
     setSave((prev) => {
       const nextApp: SoldierAppearance = { ...prev.appearance, ...patch };
       const updated: SaveData = { ...prev, appearance: nextApp };
       writeSave(updated);
       game.current?.previewAppearance(nextApp);
+      game.current?.refreshSavedLoadoutAndCar();
       return updated;
     });
   };
@@ -215,7 +318,11 @@ export default function App() {
     const updated = purchaseCar(carId);
     if (updated) {
       setSave(updated);
-      game.current?.summonSelectedCar(carId, updated.carPaints[carId]);
+      setHomeModal((m) => (m ? { ...m, carId } : m));
+      if (!homeModal && !hud.activeApartment && !hud.activeGarage) {
+        game.current?.summonSelectedCar(carId, updated.carPaints[carId]);
+      }
+      game.current?.refreshSavedLoadoutAndCar();
     }
   };
 
@@ -223,7 +330,70 @@ export default function App() {
     const updated = selectOwnedCar(carId, paintHex);
     if (updated) {
       setSave(updated);
-      game.current?.summonSelectedCar(carId, updated.carPaints[carId]);
+      setHomeModal((m) => (m ? { ...m, carId } : m));
+      if (!homeModal && !hud.activeApartment && !hud.activeGarage) {
+        game.current?.summonSelectedCar(carId, updated.carPaints[carId]);
+      }
+      game.current?.refreshSavedLoadoutAndCar();
+    }
+  };
+
+  const handleUpdateCarCustom = (
+    carId: CarId,
+    patch: Partial<Omit<CarCustomConfig, "engineLevel" | "handlingLevel" | "brakeLevel">>,
+  ) => {
+    const updated = updateCarCustomConfig(carId, patch);
+    if (updated) {
+      setSave(updated);
+      game.current?.refreshSavedLoadoutAndCar();
+    }
+  };
+
+  const handleUpgradeCarTuning = (carId: CarId, stat: "engine" | "handling" | "brake") => {
+    const updated = upgradeCarTuning(carId, stat);
+    if (updated) {
+      setSave(updated);
+      game.current?.refreshSavedLoadoutAndCar();
+    }
+  };
+
+  const handleBuyApartment = (id: ApartmentId) => {
+    const updated = purchaseApartment(id);
+    if (updated) {
+      setSave(updated);
+      game.current?.refreshSavedLoadoutAndCar();
+    }
+  };
+
+  const handleSetDifficulty = (mode: DifficultyMode) => {
+    setSave(setDifficultyMode(mode));
+  };
+
+  const handleBuyAndEnterApartment = (id: ApartmentId) => {
+    const updated = purchaseApartment(id);
+    if (updated) {
+      setSave(updated);
+      game.current?.refreshSavedLoadoutAndCar();
+      setHomeModal(null);
+      game.current?.setPaused(false);
+      game.current?.enterApartment(id);
+    }
+  };
+
+  const closeHomeModal = () => {
+    setHomeModal(null);
+    game.current?.refreshSavedLoadoutAndCar();
+    game.current?.setPaused(false);
+  };
+
+  const handleDriveOutFromModal = (carId: CarId) => {
+    setHomeModal(null);
+    game.current?.refreshSavedLoadoutAndCar();
+    game.current?.setPaused(false);
+    if (hud.activeGarage) {
+      game.current?.driveCarFromBuildingGarage(carId);
+    } else {
+      game.current?.driveSafehouseCarOut();
     }
   };
 
@@ -263,8 +433,12 @@ export default function App() {
           onSelectCharacter={handleSelectCharacter}
           onBuyUpgrade={handleBuyUpgrade}
           onSelectWeapon={handleSelectMenuWeapon}
+          onUpdateWeaponConfig={handleUpdateWeaponConfig}
+          onResetWeaponConfig={handleResetWeaponConfig}
+          onFocusWeaponBench={(focus) => game.current?.setMenuWeaponFocus(focus)}
           onUpdateAppearance={updateAppearance}
           onRandomizeAppearance={randomizeAppearance}
+          onSetDifficulty={handleSetDifficulty}
           onBuyCar={handleBuyCar}
           onSelectCar={handleSelectCar}
           onDownloadGlb={download}
@@ -276,18 +450,46 @@ export default function App() {
         <>
           <GameHud
             hud={hud}
+            save={save}
             gameRef={game}
             spreadPx={spreadPx}
             gpsTargetId={gpsTargetId}
             setGpsTargetId={setGpsTargetId}
+            customWaypoint={customWaypoint}
+            setCustomWaypoint={setCustomWaypoint}
+            onStartMission={startMission}
+            onBuyCar={handleBuyCar}
+            onSelectCar={handleSelectCar}
+            onBuyApartment={handleBuyApartment}
           />
+          {homeModal && (
+            <InteriorModals
+              modal={homeModal.kind}
+              apartmentId={homeModal.apartmentId}
+              carId={homeModal.carId}
+              save={save}
+              characterId={characterId}
+              onClose={closeHomeModal}
+              onDriveOut={handleDriveOutFromModal}
+              onBuyCar={handleBuyCar}
+              onSelectCar={handleSelectCar}
+              onUpdateCarCustom={handleUpdateCarCustom}
+              onUpgradeCarTuning={handleUpgradeCarTuning}
+              onUpdateWeaponConfig={handleUpdateWeaponConfig}
+              onPurchaseUpgrade={handleBuyUpgrade}
+              onSelectCharacter={handleSelectCharacter}
+              onUpdateAppearance={updateAppearance}
+              onBuyAndEnterApartment={handleBuyAndEnterApartment}
+            />
+          )}
           <PauseAndEndOverlays
-            hud={hud}
+            hud={homeModal ? { ...hud, paused: false } : hud}
             save={save}
             endInfo={endInfo}
             gameRef={game}
             gpsTargetId={gpsTargetId}
             setGpsTargetId={setGpsTargetId}
+            onClearCustomWaypoint={() => setCustomWaypoint(null)}
             setCamTick={setCamTick}
             onExitToScreen={exitToScreen}
             onStartMission={startMission}

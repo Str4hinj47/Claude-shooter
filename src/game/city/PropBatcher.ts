@@ -53,6 +53,7 @@ export class PropBatcher {
   private builtMeshes: THREE.InstancedMesh[] = [];
   private builtColliders = 0;
   private totalPlacements = 0;
+  private readonly hydrants: Array<{ x: number; y: number; z: number; burstUntil: number }> = [];
 
   constructor(bucketSize = 480) {
     this.bucketSize = bucketSize;
@@ -80,6 +81,9 @@ export class PropBatcher {
     }
     list.push(placement);
     this.totalPlacements++;
+    if (protoId === "hydrant") {
+      this.hydrants.push({ x: placement.x, y: placement.y, z: placement.z, burstUntil: 0 });
+    }
   }
 
   build(parent: THREE.Object3D, spatialAABBs?: SpatialAABBGrid, rawAabbOut?: THREE.Box3[]): THREE.Group {
@@ -115,7 +119,9 @@ export class PropBatcher {
         const useTint = !partSpec.preserveBaseColor;
         const mat = useTint ? whiteBasedMaterial(partSpec.material) : partSpec.material;
         const im = new THREE.InstancedMesh(partSpec.geometry, mat, list.length);
-        im.castShadow = partSpec.castShadow ?? true;
+        const baseShadow = partSpec.castShadow ?? true;
+        im.castShadow = baseShadow;
+        im.userData.baseCastShadow = baseShadow;
         im.receiveShadow = partSpec.receiveShadow ?? true;
         im.name = `${key}_p${pIdx}`;
 
@@ -163,6 +169,8 @@ export class PropBatcher {
         if (im.instanceColor) im.instanceColor.needsUpdate = true;
         im.computeBoundingSphere();
         im.computeBoundingBox();
+        im.updateMatrix();
+        im.matrixAutoUpdate = false;
         group.add(im);
         this.builtMeshes.push(im);
       }
@@ -196,6 +204,95 @@ export class PropBatcher {
     return group;
   }
 
+  /** Enables shadow casting only on prop buckets intersecting the local sun shadow frustum. */
+  updateShadowCulling(focusX: number, focusZ: number, halfExtent = 74): void {
+    const minX = focusX - halfExtent;
+    const maxX = focusX + halfExtent;
+    const minZ = focusZ - halfExtent;
+    const maxZ = focusZ + halfExtent;
+    for (let i = 0; i < this.builtMeshes.length; i++) {
+      const im = this.builtMeshes[i];
+      if (!im.userData.baseCastShadow) continue;
+      const bb = im.boundingBox;
+      if (!bb) continue;
+      im.castShadow = bb.max.x >= minX && bb.min.x <= maxX && bb.max.z >= minZ && bb.min.z <= maxZ;
+    }
+  }
+
+  /**
+   * Swaps built InstancedMeshes of `protoId` to upgraded GLB parts while preserving
+   * exact world placement matrices, instance colors, shadow flags, and spatial buckets.
+   */
+  upgradePrototypeMeshes(
+    protoId: string,
+    parts: Array<{ geometry: THREE.BufferGeometry; material: THREE.MeshStandardMaterial; castShadow?: boolean; receiveShadow?: boolean }>,
+  ): void {
+    if (parts.length === 0 || this.builtMeshes.length === 0) return;
+
+    // Group existing InstancedMeshes for this prototype by bucket prefix (`protoId|bx,bz`)
+    const buckets = new Map<string, THREE.InstancedMesh[]>();
+    const prefix = `${protoId}|`;
+    for (const im of this.builtMeshes) {
+      if (!im.name.startsWith(prefix)) continue;
+      const idx = im.name.lastIndexOf("_p");
+      const bKey = idx > 0 ? im.name.slice(0, idx) : im.name;
+      let list = buckets.get(bKey);
+      if (!list) {
+        list = [];
+        buckets.set(bKey, list);
+      }
+      list.push(im);
+    }
+    if (buckets.size === 0) return;
+
+    const toRemove = new Set<THREE.InstancedMesh>();
+    const added: THREE.InstancedMesh[] = [];
+
+    for (const [bKey, oldList] of buckets.entries()) {
+      const ref = oldList[0];
+      const parent = ref.parent;
+      if (!parent) continue;
+      const count = ref.count;
+
+      for (let pIdx = 0; pIdx < parts.length; pIdx++) {
+        const part = parts[pIdx];
+        const mat = whiteBasedMaterial(part.material);
+        const im = new THREE.InstancedMesh(part.geometry, mat, count);
+        im.castShadow = part.castShadow ?? ref.castShadow;
+        im.userData.baseCastShadow = ref.userData.baseCastShadow ?? true;
+        im.receiveShadow = part.receiveShadow ?? ref.receiveShadow;
+        im.name = `${bKey}_p${pIdx}`;
+        im.instanceMatrix.array.set(ref.instanceMatrix.array);
+        im.instanceMatrix.needsUpdate = true;
+        if (ref.instanceColor && im.instanceColor) {
+          im.instanceColor.array.set(ref.instanceColor.array);
+          im.instanceColor.needsUpdate = true;
+        } else if (ref.instanceColor) {
+          const c = new THREE.Color();
+          for (let i = 0; i < count; i++) {
+            ref.getColorAt(i, c);
+            im.setColorAt(i, c);
+          }
+          if (im.instanceColor) im.instanceColor.needsUpdate = true;
+        }
+        im.computeBoundingSphere();
+        im.computeBoundingBox();
+        im.updateMatrix();
+        im.matrixAutoUpdate = false;
+        parent.add(im);
+        added.push(im);
+      }
+
+      for (const old of oldList) {
+        old.removeFromParent();
+        toRemove.add(old);
+      }
+    }
+
+    this.builtMeshes = this.builtMeshes.filter((m) => !toRemove.has(m));
+    this.builtMeshes.push(...added);
+  }
+
   getStats(): PropBatchStats {
     return {
       prototypes: this.prototypes.size,
@@ -205,8 +302,31 @@ export class PropBatcher {
     };
   }
 
+  hitHydrantAtPoint(px: number, py: number, pz: number, nowSec: number): { x: number; y: number; z: number } | null {
+    for (let i = 0; i < this.hydrants.length; i++) {
+      const h = this.hydrants[i];
+      if (Math.hypot(px - h.x, pz - h.z) < 0.72 && py >= h.y - 0.1 && py <= h.y + 1.25) {
+        h.burstUntil = nowSec + 12.0;
+        return { x: h.x, y: h.y, z: h.z };
+      }
+    }
+    return null;
+  }
+
+  getActiveHydrants(nowSec: number, playerX: number, playerZ: number): Array<{ x: number; y: number; z: number }> {
+    const out: Array<{ x: number; y: number; z: number }> = [];
+    for (let i = 0; i < this.hydrants.length; i++) {
+      const h = this.hydrants[i];
+      if (h.burstUntil > nowSec && Math.hypot(h.x - playerX, h.z - playerZ) < 135) {
+        out.push(h);
+      }
+    }
+    return out;
+  }
+
   clearPlacements(): void {
     this.buckets.clear();
+    this.hydrants.length = 0;
     this.totalPlacements = 0;
     this.builtMeshes = [];
     this.builtColliders = 0;

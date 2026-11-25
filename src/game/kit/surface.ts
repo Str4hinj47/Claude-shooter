@@ -9,7 +9,8 @@ export type SurfaceFamily =
   | "brick"
   | "concrete"
   | "asphalt"
-  | "fabric";
+  | "fabric"
+  | "grass";
 
 interface FamilyStyle {
   tileM: number;
@@ -19,15 +20,16 @@ interface FamilyStyle {
 }
 
 export const SURFACE_STYLE: Record<SurfaceFamily, FamilyStyle> = {
-  wood: { tileM: 0.7, normal: 0.25, albedo: 0.76, rough: 0.76 },
-  plaster: { tileM: 1.4, normal: 0.45, albedo: 0.84, rough: 0.88 },
-  stone: { tileM: 1.0, normal: 0.8, albedo: 0.7, rough: 0.82 },
-  "roof-tile": { tileM: 0.45, normal: 0.85, albedo: 0.7, rough: 0.78 },
-  metal: { tileM: 0.6, normal: 0.3, albedo: 0.82, rough: 0.45 },
-  brick: { tileM: 0.9, normal: 0.75, albedo: 0.72, rough: 0.84 },
-  concrete: { tileM: 1.6, normal: 0.5, albedo: 0.78, rough: 0.9 },
-  asphalt: { tileM: 1.8, normal: 0.55, albedo: 0.74, rough: 0.92 },
-  fabric: { tileM: 0.4, normal: 0.45, albedo: 0.8, rough: 0.92 },
+  wood: { tileM: 0.7, normal: 0.34, albedo: 0.72, rough: 0.74 },
+  plaster: { tileM: 1.4, normal: 0.58, albedo: 0.82, rough: 0.88 },
+  stone: { tileM: 1.0, normal: 0.95, albedo: 0.66, rough: 0.82 },
+  "roof-tile": { tileM: 0.45, normal: 0.95, albedo: 0.66, rough: 0.76 },
+  metal: { tileM: 0.6, normal: 0.38, albedo: 0.78, rough: 0.42 },
+  brick: { tileM: 0.9, normal: 0.9, albedo: 0.68, rough: 0.84 },
+  concrete: { tileM: 1.6, normal: 0.62, albedo: 0.75, rough: 0.88 },
+  asphalt: { tileM: 1.8, normal: 0.65, albedo: 0.72, rough: 0.9 },
+  fabric: { tileM: 0.4, normal: 0.55, albedo: 0.78, rough: 0.92 },
+  grass: { tileM: 2.2, normal: 0.72, albedo: 0.64, rough: 0.93 },
 };
 
 export function seeded(seed: number): () => number {
@@ -142,6 +144,14 @@ function drawHeight(family: SurfaceFamily, size: number, rng: () => number): Flo
   } else if (family === "asphalt") {
     const a = [lattice(8, 8, rng), lattice(32, 32, rng), lattice(96, 96, rng)];
     fill((x, y) => 0.35 + 0.4 * fbm(a, x, y) + 0.25 * sample(a[2], x * 2, y * 2));
+  } else if (family === "grass") {
+    const g0 = [lattice(10, 10, rng), lattice(32, 32, rng), lattice(96, 96, rng)];
+    fill((x, y) => {
+      const tuft = fbm(g0, x, y);
+      const blade = sample(g0[2], x * 3.0, y * 3.0);
+      const streak = Math.abs(Math.sin((x * 22 + tuft * 3.2) * Math.PI)) * 0.14;
+      return 0.32 + 0.44 * tuft + 0.22 * blade + streak;
+    });
   } else {
     // fabric
     const f = [lattice(16, 16, rng), lattice(48, 48, rng)];
@@ -180,6 +190,7 @@ function makeCanvasTexture(
   tex.colorSpace = colorSpace;
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   tex.repeat.set(repeat, repeat);
+  tex.anisotropy = 4;
   tex.generateMipmaps = true;
   tex.minFilter = THREE.LinearMipmapLinearFilter;
   tex.needsUpdate = true;
@@ -317,7 +328,8 @@ export function materialFor(color: THREE.ColorRepresentation, opts: MatOpts = {}
     params.emissiveIntensity = emissiveIntensity;
   }
   if (family) {
-    const maps = surfaceMaps(family, seed, 256, repeat);
+    const texSize = typeof document !== "undefined" ? 512 : 128;
+    const maps = surfaceMaps(family, seed, texSize, repeat);
     params.map = maps.map;
     params.normalMap = maps.normalMap;
     params.roughnessMap = maps.roughnessMap;

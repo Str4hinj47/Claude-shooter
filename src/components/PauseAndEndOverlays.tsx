@@ -1,4 +1,4 @@
-import { ArrowUpRight, Car, Compass, MapPin, Navigation, Play, RotateCcw, Shield } from "lucide-react";
+import { ArrowUpRight, Car, Compass, MapPin, Navigation, Play, RotateCcw, Shield, Volume2, VolumeX } from "lucide-react";
 import { CAMERA_ORDER, type CameraPreset, type Game, type HudState } from "../game/Game";
 import { MISSIONS, type MissionDef } from "../game/story";
 import { WESTGATE_CONTRACT_SPOTS, WESTGATE_TELEPORTS } from "../game/city";
@@ -16,6 +16,7 @@ interface PauseAndEndProps {
   gameRef: React.MutableRefObject<Game | null>;
   gpsTargetId: string | null;
   setGpsTargetId: (id: string | null) => void;
+  onClearCustomWaypoint: () => void;
   setCamTick: React.Dispatch<React.SetStateAction<number>>;
   onExitToScreen: (target: Exclude<Screen, "playing">) => void;
   onStartMission: (m: MissionDef) => void;
@@ -30,6 +31,7 @@ export function PauseAndEndOverlays({
   gameRef,
   gpsTargetId,
   setGpsTargetId,
+  onClearCustomWaypoint,
   setCamTick,
   onExitToScreen,
   onStartMission,
@@ -107,22 +109,60 @@ export function PauseAndEndOverlays({
                   {endInfo.mission.name}
                 </div>
               </div>
-              {endInfo.reward?.ghostBonus && (
-                <div className="border border-[#38bdf8]/60 bg-[#38bdf8]/15 px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-[0.22em] text-[#38bdf8]">
-                  GHOST RATING · 0 ALERTS
-                </div>
-              )}
+              <div className="flex flex-wrap items-center gap-2.5">
+                {endInfo.reward?.rank && (
+                  <div
+                    className={`flex h-12 w-12 items-center justify-center border-2 font-display text-3xl font-black ${
+                      endInfo.reward.rank === "S"
+                        ? "border-[#fbbf24] bg-[#fbbf24]/18 text-[#fbbf24]"
+                        : endInfo.reward.rank === "A"
+                          ? "border-[#2dd4bf] bg-[#2dd4bf]/15 text-[#2dd4bf]"
+                          : "border-white/25 bg-white/10 text-[#f2efe9]"
+                    }`}
+                  >
+                    {endInfo.reward.rank}
+                  </div>
+                )}
+                {endInfo.reward?.ghostBonus && (
+                  <div className="border border-[#38bdf8]/60 bg-[#38bdf8]/15 px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-[0.22em] text-[#38bdf8]">
+                    GHOST RATING · 0 ALERTS
+                  </div>
+                )}
+              </div>
             </div>
 
             {endInfo.reward && (
-              <div className="my-5 flex flex-wrap items-center justify-between gap-4 border border-white/10 bg-black/45 px-4 py-3">
-                <span className="font-mono text-[10px] font-bold uppercase tracking-[0.26em] text-[#8a909e]">
-                  WIRE TRANSFER SETTLED
-                </span>
-                <div className="flex flex-wrap gap-5">
-                  <CurrencyInline kind="credits" amount={endInfo.reward.credits} />
-                  <CurrencyInline kind="intel" amount={endInfo.reward.intel} />
-                  <CurrencyInline kind="salvage" amount={endInfo.reward.salvage} />
+              <div className="my-5 space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-4 border border-white/10 bg-black/45 px-4 py-3">
+                  <span className="font-mono text-[10px] font-bold uppercase tracking-[0.26em] text-[#8a909e]">
+                    WIRE TRANSFER SETTLED
+                  </span>
+                  <div className="flex flex-wrap gap-5">
+                    <CurrencyInline kind="credits" amount={endInfo.reward.credits} />
+                    <CurrencyInline kind="intel" amount={endInfo.reward.intel} />
+                    <CurrencyInline kind="salvage" amount={endInfo.reward.salvage} />
+                  </div>
+                </div>
+                <div className="grid grid-cols-4 gap-2 border border-white/10 bg-black/35 px-4 py-2.5 font-mono text-[10px] uppercase">
+                  <div>
+                    <div className="text-[#8a909e]">ACCURACY</div>
+                    <div className="font-bold text-[#f2efe9]">{endInfo.reward.accuracyPct ?? 100}%</div>
+                  </div>
+                  <div>
+                    <div className="text-[#8a909e]">HEADSHOTS</div>
+                    <div className="font-bold text-[#e5a93c]">{endInfo.reward.headshots ?? 0}</div>
+                  </div>
+                  <div>
+                    <div className="text-[#8a909e]">STEALTH</div>
+                    <div className="font-bold text-[#2dd4bf]">{hud.stealthKills}</div>
+                  </div>
+                  <div>
+                    <div className="text-[#8a909e]">TIME</div>
+                    <div className="font-bold text-[#f2efe9]">
+                      {Math.floor((endInfo.reward.durationSec ?? 0) / 60)}:
+                      {String((endInfo.reward.durationSec ?? 0) % 60).padStart(2, "0")}
+                    </div>
+                  </div>
                 </div>
               </div>
             )}
@@ -208,6 +248,19 @@ export function PauseAndEndOverlays({
                   <span>02 · Restart mission</span>
                 </button>
 
+                {hud.isOpenWorld && (
+                  <button
+                    onClick={() => {
+                      gameRef.current?.setPaused(false);
+                      gameRef.current?.setMapOpen(true);
+                    }}
+                    className="flex cursor-pointer items-center gap-3 border border-[#38bdf8]/45 bg-[#38bdf8]/12 px-4 py-2.5 text-left font-mono text-xs font-bold uppercase tracking-[0.18em] text-[#e0f2fe] transition hover:bg-[#38bdf8]/25"
+                  >
+                    <MapPin className="size-3.5 text-[#38bdf8]" />
+                    <span>Open Tactical Map [M]</span>
+                  </button>
+                )}
+
                 {hud.hasOpenWorldReturn && (
                   <button
                     onClick={() => void gameRef.current?.returnToOpenWorld()}
@@ -233,6 +286,68 @@ export function PauseAndEndOverlays({
                   <Shield className="size-3.5" />
                   <span>Armory &amp; Upgrades</span>
                 </button>
+
+                <button
+                  onClick={() => gameRef.current?.toggleMute()}
+                  className="flex cursor-pointer items-center justify-between border border-white/12 bg-white/[0.03] px-4 py-2.5 text-left font-mono text-xs font-bold uppercase tracking-[0.18em] text-[#f2efe9] transition hover:border-white/40 hover:bg-white/[0.08]"
+                >
+                  <span className="flex items-center gap-3">
+                    {hud.muted ? <VolumeX className="size-3.5 text-[#ff3b30]" /> : <Volume2 className="size-3.5 text-[#34d399]" />}
+                    <span>{hud.muted ? "Audio: Muted" : "Audio: Active"}</span>
+                  </span>
+                  <span className="text-[10px] text-[#8a909e]">TOGGLE</span>
+                </button>
+
+                <div className="space-y-1.5 border border-white/10 bg-white/[0.02] px-3.5 py-2.5 font-mono text-[10px] uppercase tracking-wider text-[#cfd4de]">
+                  <label className="flex items-center justify-between gap-2">
+                    <span>Combat SFX</span>
+                    <span className="tabular-nums text-[#8a909e]">{Math.round((hud.sfxVolume ?? 0.55) * 100)}%</span>
+                  </label>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={hud.sfxVolume ?? 0.55}
+                    onChange={(e) => gameRef.current?.setSfxVolume(Number(e.target.value))}
+                    className="h-1 w-full cursor-pointer accent-[#ff3b30]"
+                  />
+                  <label className="flex items-center justify-between gap-2 pt-1">
+                    <span>Vehicle &amp; Radio</span>
+                    <span className="tabular-nums text-[#8a909e]">{Math.round((hud.engineVolume ?? 0.72) * 100)}%</span>
+                  </label>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={hud.engineVolume ?? 0.72}
+                    onChange={(e) => gameRef.current?.setEngineVolume(Number(e.target.value))}
+                    className="h-1 w-full cursor-pointer accent-[#2dd4bf]"
+                  />
+                  <label className="flex items-center justify-between gap-2 pt-1">
+                    <span>Aim Sensitivity</span>
+                    <span className="tabular-nums text-[#8a909e]">{(hud.aimSensitivity ?? 1).toFixed(2)}×</span>
+                  </label>
+                  <input
+                    type="range"
+                    min={0.3}
+                    max={2.5}
+                    step={0.05}
+                    value={hud.aimSensitivity ?? 1}
+                    onChange={(e) => gameRef.current?.setAimSensitivity(Number(e.target.value))}
+                    className="h-1 w-full cursor-pointer accent-[#e5a93c]"
+                  />
+                  <label className="flex cursor-pointer items-center justify-between gap-2 pt-1">
+                    <span>Invert Aim Y-Axis</span>
+                    <input
+                      type="checkbox"
+                      checked={!!hud.invertY}
+                      onChange={(e) => gameRef.current?.setInvertY(e.target.checked)}
+                      className="h-3.5 w-3.5 cursor-pointer accent-[#e5a93c]"
+                    />
+                  </label>
+                </div>
 
                 <button
                   onClick={() => onExitToScreen("home")}
@@ -379,6 +494,18 @@ export function PauseAndEndOverlays({
                         />
                         <span>Auto-Center</span>
                       </label>
+                      <label className="flex items-center gap-1.5">
+                        <input
+                          type="checkbox"
+                          checked={gameRef.current?.getIndicatorSounds() ?? true}
+                          onChange={(e) => {
+                            gameRef.current?.setIndicatorSounds(e.target.checked);
+                            setCamTick((t) => t + 1);
+                          }}
+                          className="accent-[#e5a93c]"
+                        />
+                        <span>Indicator Sounds</span>
+                      </label>
                     </div>
                   </div>
                 )}
@@ -413,6 +540,7 @@ export function PauseAndEndOverlays({
                             type="button"
                             onClick={() => {
                               setGpsTargetId(isGps ? null : gpsId);
+                              onClearCustomWaypoint();
                               gameRef.current?.setPaused(false);
                             }}
                             className={`cursor-pointer border px-1.5 py-1 font-mono text-[9px] font-bold uppercase ${
@@ -502,7 +630,10 @@ export function PauseAndEndOverlays({
                       {gpsTargetId && (
                         <button
                           type="button"
-                          onClick={() => setGpsTargetId(null)}
+                          onClick={() => {
+                            setGpsTargetId(null);
+                            onClearCustomWaypoint();
+                          }}
                           className="cursor-pointer text-[9px] text-[#38bdf8] underline"
                         >
                           CLEAR GPS
@@ -528,6 +659,7 @@ export function PauseAndEndOverlays({
                               type="button"
                               onClick={() => {
                                 setGpsTargetId(isGps ? null : spot.id);
+                                onClearCustomWaypoint();
                                 gameRef.current?.setPaused(false);
                               }}
                               className={`cursor-pointer border px-1.5 font-mono text-[9px] font-bold uppercase ${

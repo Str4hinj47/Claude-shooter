@@ -4,6 +4,9 @@ import * as THREE from "three";
 /*  Textures                                                           */
 /* ------------------------------------------------------------------ */
 export function radialTexture(stops: [number, string][], size = 128) {
+  if (typeof document === "undefined") {
+    return new THREE.Texture();
+  }
   const c = document.createElement("canvas");
   c.width = c.height = size;
   const g = c.getContext("2d")!;
@@ -11,6 +14,49 @@ export function radialTexture(stops: [number, string][], size = 128) {
   stops.forEach(([o, col]) => gr.addColorStop(o, col));
   g.fillStyle = gr;
   g.fillRect(0, 0, size, size);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+function bloodPoolTexture(size = 128): THREE.Texture {
+  if (typeof document === "undefined") {
+    return new THREE.Texture();
+  }
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const g = c.getContext("2d")!;
+  const cx = size / 2;
+  const cy = size / 2;
+  // Irregular multi-lobe organic crimson pool + peripheral splatter droplets
+  const lobes = [
+    [0, 0, size * 0.34],
+    [size * 0.12, -size * 0.08, size * 0.22],
+    [-size * 0.14, size * 0.09, size * 0.2],
+    [size * 0.06, size * 0.15, size * 0.18],
+    [-size * 0.09, -size * 0.13, size * 0.17],
+  ];
+  for (const [ox, oy, r] of lobes) {
+    const gr = g.createRadialGradient(cx + ox, cy + oy, r * 0.1, cx + ox, cy + oy, r);
+    gr.addColorStop(0, "rgba(68, 4, 8, 0.94)");
+    gr.addColorStop(0.55, "rgba(115, 10, 14, 0.85)");
+    gr.addColorStop(0.85, "rgba(135, 14, 18, 0.42)");
+    gr.addColorStop(1, "rgba(90, 8, 12, 0)");
+    g.fillStyle = gr;
+    g.beginPath();
+    g.arc(cx + ox, cy + oy, r, 0, Math.PI * 2);
+    g.fill();
+  }
+  // Spatter dots
+  for (let i = 0; i < 18; i++) {
+    const a = (i / 18) * Math.PI * 2 + (i % 3) * 0.35;
+    const dist = size * (0.28 + ((i * 37) % 100) / 600);
+    const rr = size * (0.015 + ((i * 19) % 10) * 0.0025);
+    g.fillStyle = "rgba(110, 8, 12, 0.78)";
+    g.beginPath();
+    g.arc(cx + Math.cos(a) * dist, cy + Math.sin(a) * dist, rr, 0, Math.PI * 2);
+    g.fill();
+  }
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = THREE.SRGBColorSpace;
   return t;
@@ -48,7 +94,13 @@ export class Particles {
   private sizeA: Float32Array;
   private alphaA: Float32Array;
   private drag: Float32Array;
+  private posAttr: THREE.BufferAttribute;
+  private sizeAttr: THREE.BufferAttribute;
+  private alphaAttr: THREE.BufferAttribute;
+  private colAttr: THREE.BufferAttribute;
   private head = 0;
+  private activeCount = 0;
+  private dirty = false;
   private mat: THREE.ShaderMaterial;
   constructor(
     max: number,
@@ -68,10 +120,14 @@ export class Particles {
     this.alphaA = new Float32Array(max);
     this.drag = new Float32Array(max);
     const geo = new THREE.BufferGeometry();
-    geo.setAttribute("position", new THREE.BufferAttribute(this.pos, 3).setUsage(THREE.DynamicDrawUsage));
-    geo.setAttribute("size", new THREE.BufferAttribute(this.sizeA, 1).setUsage(THREE.DynamicDrawUsage));
-    geo.setAttribute("alpha", new THREE.BufferAttribute(this.alphaA, 1).setUsage(THREE.DynamicDrawUsage));
-    geo.setAttribute("pcolor", new THREE.BufferAttribute(this.col, 3).setUsage(THREE.DynamicDrawUsage));
+    this.posAttr = new THREE.BufferAttribute(this.pos, 3).setUsage(THREE.DynamicDrawUsage);
+    this.sizeAttr = new THREE.BufferAttribute(this.sizeA, 1).setUsage(THREE.DynamicDrawUsage);
+    this.alphaAttr = new THREE.BufferAttribute(this.alphaA, 1).setUsage(THREE.DynamicDrawUsage);
+    this.colAttr = new THREE.BufferAttribute(this.col, 3).setUsage(THREE.DynamicDrawUsage);
+    geo.setAttribute("position", this.posAttr);
+    geo.setAttribute("size", this.sizeAttr);
+    geo.setAttribute("alpha", this.alphaAttr);
+    geo.setAttribute("pcolor", this.colAttr);
     this.mat = new THREE.ShaderMaterial({
       uniforms: { map: { value: tex }, uScale: { value: 600 } },
       vertexShader: vs,
@@ -82,23 +138,36 @@ export class Particles {
     });
     this.points = new THREE.Points(geo, this.mat);
     this.points.frustumCulled = false;
+    this.points.visible = false;
   }
   setScale(s: number) {
     this.mat.uniforms.uScale.value = s;
   }
   emit(p: THREE.Vector3, v: THREE.Vector3, life: number, size: number, grow: number, color: THREE.Color, drag = 0) {
     const i = this.head;
+    const i3 = i * 3;
     this.head = (this.head + 1) % this.max;
-    this.pos.set([p.x, p.y, p.z], i * 3);
-    this.vel.set([v.x, v.y, v.z], i * 3);
+    if (this.life[i] <= 0) this.activeCount++;
+    this.pos[i3] = p.x;
+    this.pos[i3 + 1] = p.y;
+    this.pos[i3 + 2] = p.z;
+    this.vel[i3] = v.x;
+    this.vel[i3 + 1] = v.y;
+    this.vel[i3 + 2] = v.z;
     this.life[i] = life;
     this.maxLife[i] = life;
     this.s0[i] = size;
     this.grow[i] = grow;
-    this.col.set([color.r, color.g, color.b], i * 3);
+    this.col[i3] = color.r;
+    this.col[i3 + 1] = color.g;
+    this.col[i3 + 2] = color.b;
     this.drag[i] = drag;
+    this.dirty = true;
+    this.points.visible = true;
   }
   update(dt: number) {
+    if (this.activeCount === 0 && !this.dirty) return;
+    let alive = 0;
     for (let i = 0; i < this.max; i++) {
       if (this.life[i] <= 0) {
         this.alphaA[i] = 0;
@@ -106,26 +175,36 @@ export class Particles {
         continue;
       }
       this.life[i] -= dt;
-      const k = 1 - Math.max(0, this.life[i]) / this.maxLife[i];
+      if (this.life[i] <= 0) {
+        this.life[i] = 0;
+        this.alphaA[i] = 0;
+        this.sizeA[i] = 0;
+        continue;
+      }
+      const i3 = i * 3;
+      const k = 1 - this.life[i] / this.maxLife[i];
       const d = Math.exp(-this.drag[i] * dt);
-      this.vel[i * 3] *= d;
-      this.vel[i * 3 + 1] = this.vel[i * 3 + 1] * d - this.gravity * dt;
-      this.vel[i * 3 + 2] *= d;
-      this.pos[i * 3] += this.vel[i * 3] * dt;
-      this.pos[i * 3 + 1] += this.vel[i * 3 + 1] * dt;
-      this.pos[i * 3 + 2] += this.vel[i * 3 + 2] * dt;
-      if (this.pos[i * 3 + 1] < 0.01 && this.gravity > 0) {
-        this.pos[i * 3 + 1] = 0.01;
-        this.vel[i * 3 + 1] *= -0.3;
+      this.vel[i3] *= d;
+      this.vel[i3 + 1] = this.vel[i3 + 1] * d - this.gravity * dt;
+      this.vel[i3 + 2] *= d;
+      this.pos[i3] += this.vel[i3] * dt;
+      this.pos[i3 + 1] += this.vel[i3 + 1] * dt;
+      this.pos[i3 + 2] += this.vel[i3 + 2] * dt;
+      if (this.pos[i3 + 1] < 0.01 && this.gravity > 0) {
+        this.pos[i3 + 1] = 0.01;
+        this.vel[i3 + 1] *= -0.3;
       }
       this.sizeA[i] = this.s0[i] + this.grow[i] * k;
       this.alphaA[i] = (1 - k) * (1 - k);
+      alive++;
     }
-    const g = this.points.geometry;
-    (g.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
-    (g.getAttribute("size") as THREE.BufferAttribute).needsUpdate = true;
-    (g.getAttribute("alpha") as THREE.BufferAttribute).needsUpdate = true;
-    (g.getAttribute("pcolor") as THREE.BufferAttribute).needsUpdate = true;
+    this.activeCount = alive;
+    this.points.visible = alive > 0;
+    this.posAttr.needsUpdate = true;
+    this.sizeAttr.needsUpdate = true;
+    this.alphaAttr.needsUpdate = true;
+    this.colAttr.needsUpdate = true;
+    this.dirty = alive > 0;
   }
 }
 
@@ -153,16 +232,30 @@ export class CombatFX {
   readonly sparks: Particles;
   readonly smoke: Particles;
   readonly flashes: Particles;
+  readonly blood: Particles;
+  readonly water: Particles;
   private tracers: Tracer[] = [];
   private casings: Casing[] = [];
   private decals: THREE.Mesh[] = [];
+  private bloodPools: { mesh: THREE.Mesh; t: number; maxScale: number; active: boolean }[] = [];
   private decalHead = 0;
+  private bloodPoolHead = 0;
   private casingHead = 0;
   private tracerHead = 0;
+  private woundGeo = new THREE.SphereGeometry(0.085, 8, 6);
+  private woundMat = new THREE.MeshStandardMaterial({
+    color: 0x5c070b,
+    roughness: 0.25,
+    metalness: 0.08,
+    depthWrite: true,
+  });
   flash: THREE.Group;
   flashLight: THREE.PointLight;
   private flashT = 0;
   private flashMats: THREE.MeshBasicMaterial[] = [];
+  private tmpPos = new THREE.Vector3();
+  private tmpVel = new THREE.Vector3();
+  private tmpCol = new THREE.Color();
 
   constructor() {
     const spark = radialTexture([
@@ -175,10 +268,36 @@ export class CombatFX {
       [0.5, "rgba(255,255,255,0.2)"],
       [1, "rgba(255,255,255,0)"],
     ]);
+    const dropTex = radialTexture([
+      [0, "rgba(255,255,255,0.96)"],
+      [0.45, "rgba(220,220,220,0.88)"],
+      [1, "rgba(180,180,180,0)"],
+    ]);
     this.sparks = new Particles(500, spark, true, 9);
     this.smoke = new Particles(400, soft, false, -0.25);
     this.flashes = new Particles(30, spark, true, 0);
-    this.group.add(this.smoke.points, this.sparks.points, this.flashes.points);
+    this.blood = new Particles(320, dropTex, false, 12.5);
+    this.water = new Particles(220, dropTex, false, 11.0);
+    this.group.add(this.smoke.points, this.sparks.points, this.flashes.points, this.blood.points, this.water.points);
+
+    // Spreading crimson ground blood pools
+    const poolGeo = new THREE.PlaneGeometry(1.15, 1.15);
+    poolGeo.rotateX(-Math.PI / 2);
+    const poolTex = bloodPoolTexture(128);
+    for (let i = 0; i < 64; i++) {
+      const mat = new THREE.MeshBasicMaterial({
+        map: poolTex,
+        transparent: true,
+        depthWrite: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -5,
+        polygonOffsetUnits: -5,
+      });
+      const m = new THREE.Mesh(poolGeo, mat);
+      m.visible = false;
+      this.group.add(m);
+      this.bloodPools.push({ mesh: m, t: 0, maxScale: 1, active: false });
+    }
 
     // tracers
     const tg = new THREE.BoxGeometry(0.012, 0.012, 1);
@@ -279,6 +398,103 @@ export class CombatFX {
     this.sparks.setScale(s);
     this.smoke.setScale(s);
     this.flashes.setScale(s);
+    this.blood.setScale(s);
+    this.water.setScale(s);
+  }
+
+  /** Arterial crimson splatter + mist on bullet/vehicle impact */
+  bloodBurst(p: THREE.Vector3, dir?: THREE.Vector3, intensity = 1) {
+    const count = Math.round(14 * intensity);
+    const baseDir = dir ? dir.clone().normalize() : new THREE.Vector3(0, 0.4, 0);
+    for (let i = 0; i < count; i++) {
+      const spread = 1.6 + Math.random() * 2.8 * intensity;
+      const v = new THREE.Vector3(
+        baseDir.x * (1.2 + Math.random() * 2.2) + (Math.random() - 0.5) * spread,
+        0.7 + Math.random() * 2.4 * intensity,
+        baseDir.z * (1.2 + Math.random() * 2.2) + (Math.random() - 0.5) * spread,
+      );
+      const shade = 0.28 + Math.random() * 0.28;
+      this.blood.emit(
+        p,
+        v,
+        0.38 + Math.random() * 0.35,
+        0.045 + Math.random() * 0.045,
+        0.05,
+        new THREE.Color(shade, 0.02, 0.03),
+        1.1,
+      );
+    }
+    // Fine crimson mist puff
+    for (let i = 0; i < 4; i++) {
+      const mv = new THREE.Vector3(
+        (Math.random() - 0.5) * 0.9,
+        0.2 + Math.random() * 0.6,
+        (Math.random() - 0.5) * 0.9,
+      );
+      this.blood.emit(p, mv, 0.32, 0.12, 0.22, new THREE.Color(0.35, 0.02, 0.03), 3.0);
+    }
+  }
+
+  /** Spreading blood pool on pavement/ground beneath a fallen or wounded character */
+  spawnBloodPool(x: number, y: number, z: number, maxScale = 0.95) {
+    const bp = this.bloodPools[this.bloodPoolHead];
+    this.bloodPoolHead = (this.bloodPoolHead + 1) % this.bloodPools.length;
+    bp.mesh.visible = true;
+    bp.mesh.position.set(x, y + 0.022, z);
+    bp.mesh.rotation.y = Math.random() * Math.PI * 2;
+    bp.mesh.scale.setScalar(0.18);
+    bp.t = 0;
+    bp.maxScale = maxScale * (0.85 + Math.random() * 0.3);
+    bp.active = true;
+  }
+
+  /** Small blood trail drop when carrying a wounded/dead body */
+  bloodDrip(x: number, y: number, z: number) {
+    this.spawnBloodPool(x, y, z, 0.22);
+    this.blood.emit(
+      new THREE.Vector3(x, y + 0.95, z),
+      new THREE.Vector3((Math.random() - 0.5) * 0.25, -0.4, (Math.random() - 0.5) * 0.25),
+      0.32,
+      0.04,
+      0.01,
+      new THREE.Color(0.32, 0.015, 0.02),
+      0.2,
+    );
+  }
+
+  /** Attach a visible dark-crimson wound mark onto a shot NPC's body */
+  attachWoundToCharacter(target: THREE.Object3D, hitHeight = 1.15) {
+    if (target.userData.__woundCount >= 4) return;
+    target.userData.__woundCount = (target.userData.__woundCount ?? 0) + 1;
+    const wound = new THREE.Mesh(this.woundGeo, this.woundMat);
+    const angle = Math.random() * Math.PI * 2;
+    wound.position.set(Math.cos(angle) * 0.14, hitHeight + (Math.random() - 0.5) * 0.28, Math.sin(angle) * 0.11);
+    wound.scale.set(1.1, 1.35, 0.45);
+    wound.lookAt(wound.position.x * 2, wound.position.y, wound.position.z * 2);
+    target.add(wound);
+  }
+
+  /** Ocean/water splash particle spray when dumping a body overboard */
+  waterSplash(p: THREE.Vector3, intensity = 1) {
+    const count = Math.round(28 * intensity);
+    for (let i = 0; i < count; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const rSpd = 0.8 + Math.random() * 3.4 * intensity;
+      const v = new THREE.Vector3(
+        Math.cos(a) * rSpd,
+        2.5 + Math.random() * 4.5 * intensity,
+        Math.sin(a) * rSpd,
+      );
+      this.water.emit(
+        p,
+        v,
+        0.55 + Math.random() * 0.45,
+        0.16 + Math.random() * 0.16,
+        0.35,
+        new THREE.Color(0.86, 0.95, 1.0),
+        0.9,
+      );
+    }
   }
 
   muzzleFlash(camera: THREE.Camera, scale = 1.0) {
@@ -330,6 +546,98 @@ export class CombatFX {
     for (let i = 0; i < n2; i++) {
       const v = new THREE.Vector3((Math.random() - 0.5) * 0.6, Math.random() * 0.4, (Math.random() - 0.5) * 0.6).addScaledVector(n, 0.5 + Math.random() * 0.8);
       this.smoke.emit(p, v, 0.8 + Math.random() * 0.8, 0.1, 0.55, dust, 2.2);
+    }
+  }
+
+  glassBurst(p: THREE.Vector3) {
+    const col = new THREE.Color(0.84, 0.95, 1.0);
+    for (let i = 0; i < 16; i++) {
+      const v = new THREE.Vector3(
+        (Math.random() - 0.5) * 3.8,
+        1.1 + Math.random() * 2.4,
+        (Math.random() - 0.5) * 3.8,
+      );
+      this.sparks.emit(p, v, 0.35 + Math.random() * 0.3, 0.045, -0.015, col, 0.4);
+    }
+  }
+
+  hydrantSpray(p: THREE.Vector3) {
+    const sprayCol = new THREE.Color(0.86, 0.96, 1.0);
+    for (let i = 0; i < 3; i++) {
+      const origin = new THREE.Vector3(p.x, p.y + 0.72, p.z);
+      const vel = new THREE.Vector3(
+        (Math.random() - 0.5) * 1.35,
+        7.5 + Math.random() * 4.2,
+        (Math.random() - 0.5) * 1.35,
+      );
+      this.water.emit(origin, vel, 0.75 + Math.random() * 0.35, 0.28, 0.95, sprayCol, 3.8);
+    }
+  }
+
+  boatWake(p: THREE.Vector3, yaw: number, speed: number) {
+    const absSpd = Math.abs(speed);
+    if (absSpd < 2.2) return;
+    const fx = Math.sin(yaw);
+    const fz = Math.cos(yaw);
+    const rx = Math.cos(yaw);
+    const rz = -Math.sin(yaw);
+    this.tmpCol.setRGB(0.9, 0.97, 1.0);
+    for (let s = -1; s <= 1; s += 2) {
+      this.tmpPos.set(
+        p.x - fx * 2.4 + rx * s * 0.85,
+        Math.max(0.05, p.y + 0.05),
+        p.z - fz * 2.4 + rz * s * 0.85,
+      );
+      this.tmpVel.set(
+        rx * s * (0.9 + absSpd * 0.09) - fx * 0.8,
+        0.3 + Math.random() * (absSpd * 0.05),
+        rz * s * (0.9 + absSpd * 0.09) - fz * 0.8,
+      );
+      this.water.emit(this.tmpPos, this.tmpVel, 0.55 + Math.random() * 0.35, 0.45 + absSpd * 0.025, 0.65, this.tmpCol, 2.6);
+    }
+  }
+
+  explosion(p: THREE.Vector3, scale = 1) {
+    // Core fireball flash
+    for (let i = 0; i < 16; i++) {
+      const v = new THREE.Vector3(
+        (Math.random() - 0.5) * 7 * scale,
+        (1.5 + Math.random() * 5.5) * scale,
+        (Math.random() - 0.5) * 7 * scale,
+      );
+      const col = new THREE.Color().setHSL(0.05 + Math.random() * 0.08, 1.0, 0.55);
+      this.flashes.emit(p.clone().add(new THREE.Vector3(0, 0.5, 0)), v, 0.38 + Math.random() * 0.25, 1.4 * scale, 3.2 * scale, col, 2.5);
+    }
+    // Thick rising dark smoke plume
+    for (let i = 0; i < 22; i++) {
+      const v = new THREE.Vector3(
+        (Math.random() - 0.5) * 4.2 * scale,
+        (2.0 + Math.random() * 5.2) * scale,
+        (Math.random() - 0.5) * 4.2 * scale,
+      );
+      const g = 0.14 + Math.random() * 0.14;
+      this.smoke.emit(p.clone().add(new THREE.Vector3(0, 0.6, 0)), v, 1.6 + Math.random() * 1.4, 0.9 * scale, 1.8 * scale, new THREE.Color(g, g, g), 1.4);
+    }
+    // Hot flying debris sparks
+    for (let i = 0; i < 36; i++) {
+      const v = new THREE.Vector3(
+        (Math.random() - 0.5) * 14 * scale,
+        (3.5 + Math.random() * 10) * scale,
+        (Math.random() - 0.5) * 14 * scale,
+      );
+      this.sparks.emit(p.clone().add(new THREE.Vector3(0, 0.5, 0)), v, 0.55 + Math.random() * 0.45, 0.08 * scale, -0.02, new THREE.Color(1, 0.68, 0.2), 0.7);
+    }
+  }
+
+  vehicleSmoke(p: THREE.Vector3, burning: boolean) {
+    const shade = burning ? 0.16 : 0.52;
+    this.tmpVel.set((Math.random() - 0.5) * 0.6, 1.2 + Math.random() * 0.9, (Math.random() - 0.5) * 0.6);
+    this.tmpCol.setRGB(shade, shade, shade);
+    this.smoke.emit(p, this.tmpVel, 0.85 + Math.random() * 0.5, 0.35, 0.85, this.tmpCol, 1.2);
+    if (burning && Math.random() < 0.65) {
+      this.tmpVel.set((Math.random() - 0.5) * 0.8, 1.5 + Math.random() * 1.2, (Math.random() - 0.5) * 0.8);
+      this.tmpCol.setRGB(1, 0.45, 0.08);
+      this.flashes.emit(p, this.tmpVel, 0.24, 0.38, 0.4, this.tmpCol, 1.8);
     }
   }
 
@@ -388,9 +696,19 @@ export class CombatFX {
         }
       }
     }
+    for (const bp of this.bloodPools) {
+      if (!bp.active) continue;
+      bp.t += dt;
+      const k = Math.min(1, bp.t / 1.45);
+      const ease = 1 - Math.pow(1 - k, 2.5);
+      bp.mesh.scale.setScalar(0.18 + (bp.maxScale - 0.18) * ease);
+      if (k >= 1) bp.active = false;
+    }
     this.sparks.update(dt);
     this.smoke.update(dt);
     this.flashes.update(dt);
+    this.blood.update(dt);
+    this.water.update(dt);
   }
 }
 
@@ -403,6 +721,14 @@ export class Sfx {
   private verb!: ConvolverNode;
   private noise!: AudioBuffer;
   enabled = true;
+  volume = 0.55;
+
+  setVolume(v: number) {
+    this.volume = Math.max(0, Math.min(1, v));
+    if (this.master && this.ctx) {
+      this.master.gain.setValueAtTime(this.volume, this.ctx.currentTime);
+    }
+  }
 
   init() {
     if (this.ctx) {
@@ -413,7 +739,7 @@ export class Sfx {
       const ctx = new AudioContext();
       this.ctx = ctx;
       this.master = ctx.createGain();
-      this.master.gain.value = 0.55;
+      this.master.gain.value = this.volume;
       const comp = ctx.createDynamicsCompressor();
       this.master.connect(comp).connect(ctx.destination);
       // noise + reverb tail
@@ -479,17 +805,20 @@ export class Sfx {
 
   shot(pitch = 1.0, suppressed = false) {
     if (suppressed) {
-      // Crisp tactical silencer "thwip / phut" (no loud muzzle blast or long echo)
+      // Crisp tactical silencer "thwip / phut" + subtle mechanical bolt cycle
       this.burst({ dur: 0.065 / Math.sqrt(pitch), freq: 2400 * pitch, sweepTo: 550 * pitch, q: 1.1, type: "bandpass", gain: 0.42, reverb: 0.15 });
       this.burst({ dur: 0.03, freq: 4200 * pitch, q: 0.9, type: "highpass", gain: 0.22 });
+      this.burst({ dur: 0.022, freq: 2900, q: 2.2, gain: 0.16, delay: 0.035 });
       this.tone(135 * pitch, 48 * pitch, 0.075, 0.28, "sine");
       return;
     }
-    this.burst({ dur: 0.22 / Math.sqrt(pitch), freq: 5000 * pitch, sweepTo: 600 * pitch, q: 0.5, type: "lowpass", gain: 1.0, reverb: 0.9 });
-    this.burst({ dur: 0.05, freq: 3200 * pitch, q: 0.6, type: "highpass", gain: 0.7 });
+    this.burst({ dur: 0.22 / Math.sqrt(pitch), freq: 5000 * pitch, sweepTo: 600 * pitch, q: 0.5, type: "lowpass", gain: 1.0, reverb: 0.95 });
+    this.burst({ dur: 0.05, freq: 3200 * pitch, q: 0.6, type: "highpass", gain: 0.72 });
     this.tone(150 * pitch, 38 * pitch, 0.2, 0.9, "sine");
     this.tone(90 * pitch, 30 * pitch, 0.28, 0.6, "triangle");
-    this.burst({ dur: 0.9, freq: 700, sweepTo: 200, type: "lowpass", gain: 0.12, reverb: 1.0, delay: 0.02 });
+    this.burst({ dur: 0.9, freq: 700, sweepTo: 200, type: "lowpass", gain: 0.14, reverb: 1.0, delay: 0.02 });
+    // Distant urban/canyon slapback tail
+    this.burst({ dur: 0.55, freq: 880, sweepTo: 240, type: "lowpass", gain: 0.09, reverb: 0.85, delay: 0.14 });
   }
   switchWeapon() {
     this.burst({ dur: 0.04, freq: 1400, q: 1.4, gain: 0.25 });
@@ -514,9 +843,39 @@ export class Sfx {
   magDrop() {
     this.burst({ dur: 0.055, freq: 550, q: 1, gain: 0.2, delay: 0.25 });
   }
-  step(intensity: number) {
+  step(intensity: number, surface: "asphalt" | "wood" | "metal" | "dirt" | "water" = "asphalt") {
+    if (surface === "water") {
+      this.burst({ dur: 0.16, freq: 1450, sweepTo: 420, type: "lowpass", gain: 0.24 + intensity * 0.18 });
+      return;
+    }
+    if (surface === "wood") {
+      this.burst({ dur: 0.075, freq: 460 + intensity * 180, q: 1.4, type: "bandpass", gain: 0.16 + intensity * 0.22 });
+      this.tone(135, 65, 0.06, 0.14 + intensity * 0.1, "triangle");
+      return;
+    }
+    if (surface === "metal") {
+      this.burst({ dur: 0.06, freq: 1650 + intensity * 400, q: 2.2, type: "bandpass", gain: 0.14 + intensity * 0.18 });
+      this.tone(410, 290, 0.065, 0.08 + intensity * 0.06, "sine");
+      return;
+    }
+    if (surface === "dirt") {
+      this.burst({ dur: 0.1, freq: 620 + intensity * 300, q: 0.6, type: "lowpass", gain: 0.14 + intensity * 0.2 });
+      return;
+    }
     this.burst({ dur: 0.09, freq: 300 + intensity * 250, q: 0.7, type: "lowpass", gain: 0.12 + intensity * 0.22 });
     this.burst({ dur: 0.04, freq: 2200, q: 0.8, gain: 0.03 + intensity * 0.06 });
+  }
+  glassShatter() {
+    this.burst({ dur: 0.16, freq: 4800, sweepTo: 2200, q: 0.9, type: "highpass", gain: 0.55, reverb: 0.45 });
+    this.burst({ dur: 0.22, freq: 3600, q: 1.4, type: "bandpass", gain: 0.35, delay: 0.04 });
+    this.tone(2400, 1450, 0.08, 0.18, "triangle");
+  }
+  binocPing() {
+    this.tone(1320, 1760, 0.08, 0.16, "sine");
+  }
+  headshotPing() {
+    this.tone(1850, 2600, 0.09, 0.24, "triangle");
+    this.burst({ dur: 0.045, freq: 3400, q: 1.5, gain: 0.28 });
   }
   land(i: number) {
     this.burst({ dur: 0.18, freq: 260, type: "lowpass", gain: 0.5 * i });
@@ -543,5 +902,15 @@ export class Sfx {
   interactDone() {
     this.tone(580, 880, 0.12, 0.24, "sine");
     this.tone(880, 1320, 0.16, 0.22, "sine", 0.09);
+  }
+  trunkThud() {
+    this.burst({ dur: 0.14, freq: 240, type: "lowpass", gain: 0.65 });
+    this.tone(85, 38, 0.18, 0.55, "triangle");
+    this.burst({ dur: 0.05, freq: 1400, q: 1.6, gain: 0.25, delay: 0.08 });
+  }
+  splash() {
+    this.burst({ dur: 0.45, freq: 1800, sweepTo: 420, type: "lowpass", gain: 0.62 });
+    this.burst({ dur: 0.22, freq: 3400, type: "highpass", gain: 0.28, delay: 0.03 });
+    this.tone(130, 52, 0.22, 0.35, "sine");
   }
 }

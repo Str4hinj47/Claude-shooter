@@ -1,6 +1,14 @@
 import * as THREE from "three";
 import type { TrafficId } from "./catalog";
 
+function isQuaterniusNpc(id: TrafficId): boolean {
+  return id === "compact" || id === "hatch" || id === "crossover" || id === "taxi" || id === "police_cruiser";
+}
+
+function isKenneyNpc(id: TrafficId): boolean {
+  return id === "van" || id === "delivery" || id === "garbage_truck" || id === "ambulance" || id === "firetruck";
+}
+
 function rotates(id: TrafficId, mesh: THREE.Mesh): boolean {
   if (Array.isArray(mesh.material)) return false;
   const name = mesh.material.name;
@@ -11,6 +19,8 @@ function rotates(id: TrafficId, mesh: THREE.Mesh): boolean {
   if (id === "ferrari") return /^(tire__Tire\.00[02]|rim__Rims\.000|brake__Break_Discs\.000)$/.test(name);
   if (id === "r8") return name === "tire__r8" || name === "rim__r8" || /^metal_2(?:_(?:[1-5]|1[1-6]))?$/.test(mesh.name);
   if (id === "rangerover") return /^(tire__RangeRover|rim__RangeRover)$/i.test(name) || /wheel|tire|rim/i.test(mesh.name);
+  if (id === "sedan" || id === "offroad") return /^tire_/.test(mesh.name) || /^caliper_/.test(mesh.name);
+  if (isQuaterniusNpc(id)) return mesh.name === "Black" || mesh.name === "Grey";
   if (id === "semi") return /^(tire__TireRubber|tire__TireTreads|chrome__Chrome)$/.test(name);
   if (id === "kraz") return /^(tire__tire|chrome__wheel)$/.test(name);
   if (id === "challenger") {
@@ -31,6 +41,24 @@ export function rigWheels(root: THREE.Group, id: TrafficId): void {
   });
   const point = new THREE.Vector3();
   const truck = id === "semi" || id === "kraz";
+  const qNpc = isQuaterniusNpc(id);
+  if (isKenneyNpc(id)) {
+    const wheelMeshes = meshes.filter((m) => /^wheel-/.test(m.name));
+    for (let i = 0; i < wheelMeshes.length; i++) {
+      const wm = wheelMeshes[i];
+      const box = new THREE.Box3().setFromObject(wm);
+      const center = box.getCenter(new THREE.Vector3());
+      const radius = Math.max(0.24, (box.max.y - box.min.y) * 0.5);
+      const pivot = new THREE.Group();
+      pivot.name = `wheel_pivot_${i}`;
+      pivot.position.copy(center);
+      pivot.userData.wheelRadius = radius;
+      pivot.userData.isFront = center.z < 0;
+      root.add(pivot);
+      pivot.attach(wm);
+    }
+    return;
+  }
   let centers: THREE.Vector3[];
   let radii: number[];
 
@@ -47,7 +75,11 @@ export function rigWheels(root: THREE.Group, id: TrafficId): void {
       if (!pos) continue;
       for (let i = 0; i < pos.count; i++) {
         point.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
-        if (point.y > 0.85 || Math.abs(point.x) < 0.3 || Math.abs(point.z) < 0.4) continue;
+        if (qNpc) {
+          if (point.y > 0.62 || Math.abs(point.x) < 0.56 || Math.abs(point.z) < 0.72) continue;
+        } else {
+          if (point.y > 0.85 || Math.abs(point.x) < 0.3 || Math.abs(point.z) < 0.4) continue;
+        }
         bounds[(point.x > 0 ? 1 : 0) + (point.z > 0 ? 2 : 0)].expandByPoint(point);
       }
     }
@@ -104,6 +136,19 @@ export function rigWheels(root: THREE.Group, id: TrafficId): void {
             Math.hypot(y - c.y, z - c.z) < radii[n] * 1.035,
         );
       }
+      if (qNpc) {
+        const center = centers[wheel];
+        if (
+          !vertices.every(
+            (v) =>
+              Math.sign(v.x) === Math.sign(center.x) &&
+              Math.abs(v.x) > 0.56 &&
+              Math.hypot(v.y - center.y, v.z - center.z) < radii[wheel] * 1.18,
+          )
+        ) {
+          wheel = -1;
+        }
+      }
       if (mixedAudi) {
         const center = centers[wheel];
         if (
@@ -159,5 +204,23 @@ export function spinWheels(car: THREE.Group, distance: number, steerAngle = 0): 
       wheel.rotation.order = "YXZ";
       wheel.rotation.y = steerAngle;
     }
+  }
+}
+
+/** Adjusts each wheel pivot vertically in modelRoot space to stay planted during suspension heave/pitch/roll & droop in mid-air. */
+export function applyWheelSuspension(
+  car: THREE.Group,
+  offsets: readonly [number, number, number, number],
+): void {
+  const wheels = car.userData.wheels as THREE.Group[] | undefined;
+  if (!wheels) return;
+  for (const wheel of wheels) {
+    if (wheel.userData.restY === undefined) {
+      wheel.userData.restY = wheel.position.y;
+    }
+    const isFront = !!wheel.userData.isFront;
+    const isLeft = wheel.position.x < 0;
+    const cornerIdx = (isFront ? 0 : 2) + (isLeft ? 0 : 1);
+    wheel.position.y = (wheel.userData.restY as number) + offsets[cornerIdx];
   }
 }

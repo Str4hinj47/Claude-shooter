@@ -7,8 +7,36 @@ export type CarId =
   | "r8"
   | "challenger"
   | "rangerover";
+export type NpcCarId =
+  | "sedan"
+  | "offroad"
+  | "compact"
+  | "hatch"
+  | "crossover"
+  | "taxi"
+  | "police_cruiser"
+  | "van"
+  | "delivery"
+  | "garbage_truck"
+  | "ambulance"
+  | "firetruck";
 export type TruckId = "semi" | "kraz";
-export type TrafficId = CarId | TruckId;
+export type TrafficId = CarId | NpcCarId | TruckId;
+
+export const NPC_TRAFFIC_CARS: { id: NpcCarId; name: string }[] = [
+  { id: "compact", name: "Civic Compact" },
+  { id: "hatch", name: "City Hatchback" },
+  { id: "sedan", name: "Thunderbolt Sedan" },
+  { id: "crossover", name: "Family Crossover" },
+  { id: "offroad", name: "Bokaroo 4x4" },
+  { id: "taxi", name: "Westgate Taxi" },
+  { id: "police_cruiser", name: "Patrol Cruiser" },
+  { id: "van", name: "City Utility Van" },
+  { id: "delivery", name: "Westgate Box Truck" },
+  { id: "garbage_truck", name: "Sanitation Truck" },
+  { id: "ambulance", name: "EMS Ambulance" },
+  { id: "firetruck", name: "Fire Engine" },
+];
 
 export const TRUCKS: { id: TruckId; name: string }[] = [
   { id: "semi", name: "Tractor trailer" },

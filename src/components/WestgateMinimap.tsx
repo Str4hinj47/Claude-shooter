@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { computeWestgateGpsRoute, type MinimapData } from "../game/city/MinimapData";
 import { WESTGATE_CONTRACT_SPOTS } from "../game/city/WestgateActivities";
 import { WESTGATE_TELEPORTS } from "../game/city/WestgateWorld";
+import { resolveGpsTarget, type GpsWaypoint } from "../game/city/GpsWaypoint";
 
 export interface MinimapLiveSample {
   x: number;
@@ -9,9 +10,20 @@ export interface MinimapLiveSample {
   heading: number;
   driving: boolean;
   speedKmh: number;
-  vehicles: { x: number; z: number; isNpc: boolean; active: boolean }[];
-  traps?: { id: string; x: number; z: number; beaten: boolean }[];
+  vehicles: { x: number; z: number; isNpc: boolean; active: boolean; name?: string }[];
+  traps?: { id: string; x: number; z: number; beaten: boolean; bestKmh?: number }[];
   contracts?: { missionId: number; x: number; z: number; unlocked: boolean; completed: boolean }[];
+  police?: { x: number; z: number; isSwat: boolean; isChopper?: boolean }[];
+  garages?: { id: string; name: string; x: number; z: number }[];
+  stores?: { id: string; name: string; x: number; z: number }[];
+  races?: { id: string; name: string; x: number; z: number }[];
+  stunts?: { id: string; name: string; x: number; z: number; completed: boolean }[];
+  aircraft?: { id: string; name: string; kind: "helicopter" | "airplane"; x: number; z: number }[];
+  boats?: { id: string; name: string; x: number; z: number; isStarter?: boolean }[];
+  stashes?: { x: number; z: number; collected: boolean }[];
+  raceCheckpoint?: { x: number; z: number } | null;
+  randomEvent?: { x: number; z: number; kind: string; title: string } | null;
+  surveillanceTarget?: { x: number; z: number; name: string; isolated: boolean; stage: string } | null;
 }
 
 interface WestgateMinimapProps {
@@ -19,7 +31,9 @@ interface WestgateMinimapProps {
   getSample: () => MinimapLiveSample | null;
   paused?: boolean;
   gpsTargetId?: string | null;
+  customWaypoint?: GpsWaypoint | null;
   onChangeGpsTarget?: (id: string | null) => void;
+  onOpenFullMap?: () => void;
 }
 
 const TAU = Math.PI * 2;
@@ -81,7 +95,9 @@ export function WestgateMinimap({
   getSample,
   paused = false,
   gpsTargetId = null,
+  customWaypoint = null,
   onChangeGpsTarget,
+  onOpenFullMap,
 }: WestgateMinimapProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [zoomBase, setZoomBase] = useState(0.95);
@@ -94,15 +110,10 @@ export function WestgateMinimap({
     else setLocalTargetId(id);
   };
 
-  const targetSpot = useMemo(() => {
-    if (!activeTargetId) return null;
-    if (activeTargetId.startsWith("contract:")) {
-      const mid = Number(activeTargetId.slice("contract:".length));
-      const c = WESTGATE_CONTRACT_SPOTS.find((s) => s.missionId === mid);
-      return c ? { id: activeTargetId, x: c.x, z: c.z } : null;
-    }
-    return WESTGATE_TELEPORTS.find((t) => t.id === activeTargetId) ?? null;
-  }, [activeTargetId]);
+  const targetSpot = useMemo(
+    () => resolveGpsTarget(activeTargetId ?? null, customWaypoint),
+    [activeTargetId, customWaypoint],
+  );
 
   // Precompile static Path2D objects once for Westgate Bay's roads & geography
   const compiled = useMemo(() => {
@@ -409,6 +420,148 @@ export function WestgateMinimap({
         ctx.stroke();
       }
 
+      // Westgate Customs Mod Garages (purple squares)
+      if (sample.garages) {
+        const gs = 6.2 / zoom;
+        for (const g of sample.garages) {
+          ctx.fillStyle = "#a855f7";
+          ctx.fillRect(g.x - gs * 0.5, g.z - gs * 0.5, gs, gs);
+          ctx.lineWidth = 1.3 / zoom;
+          ctx.strokeStyle = "#0a0d08";
+          ctx.strokeRect(g.x - gs * 0.5, g.z - gs * 0.5, gs, gs);
+        }
+      }
+
+      // 24/7 Westgate Mart Stores (emerald dots)
+      if (sample.stores) {
+        for (const st of sample.stores) {
+          ctx.beginPath();
+          ctx.arc(st.x, st.z, 4.4 / zoom, 0, TAU);
+          ctx.fillStyle = "#22c55e";
+          ctx.fill();
+          ctx.lineWidth = 1.3 / zoom;
+          ctx.strokeStyle = "#0a0d08";
+          ctx.stroke();
+        }
+      }
+
+      // Street Races (gold flags)
+      if (sample.races) {
+        for (const r of sample.races) {
+          ctx.beginPath();
+          ctx.arc(r.x, r.z, 5.4 / zoom, 0, TAU);
+          ctx.fillStyle = "#f59e0b";
+          ctx.fill();
+          ctx.lineWidth = 1.4 / zoom;
+          ctx.strokeStyle = "#0a0d08";
+          ctx.stroke();
+        }
+      }
+
+      // Active Race Checkpoint
+      if (sample.raceCheckpoint) {
+        const pulse = 0.75 + 0.25 * Math.sin(now * 0.008);
+        ctx.beginPath();
+        ctx.arc(sample.raceCheckpoint.x, sample.raceCheckpoint.z, (11 * pulse) / zoom, 0, TAU);
+        ctx.fillStyle = "rgba(251,191,36,0.35)";
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(sample.raceCheckpoint.x, sample.raceCheckpoint.z, 5.5 / zoom, 0, TAU);
+        ctx.fillStyle = "#fbbf24";
+        ctx.fill();
+      }
+
+      // Active Random Street Event (pulsing cyan/gold radar)
+      if (sample.randomEvent) {
+        const pulse = 0.7 + 0.35 * Math.sin(now * 0.009);
+        ctx.beginPath();
+        ctx.arc(sample.randomEvent.x, sample.randomEvent.z, (10 * pulse) / zoom, 0, TAU);
+        ctx.strokeStyle = "#38bdf8";
+        ctx.lineWidth = 2 / zoom;
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(sample.randomEvent.x, sample.randomEvent.z, 4.5 / zoom, 0, TAU);
+        ctx.fillStyle = "#38bdf8";
+        ctx.fill();
+      }
+
+      // Hidden Stashes (small gold dots)
+      if (sample.stashes) {
+        for (const st of sample.stashes) {
+          if (st.collected) continue;
+          ctx.beginPath();
+          ctx.arc(st.x, st.z, 2.8 / zoom, 0, TAU);
+          ctx.fillStyle = "#fde047";
+          ctx.fill();
+        }
+      }
+
+      // Docked Boats (cyan diamonds, starter boat outlined)
+      if (sample.boats) {
+        for (const bt of sample.boats) {
+          const sz = (bt.isStarter ? 5.6 : 4.5) / zoom;
+          ctx.beginPath();
+          ctx.moveTo(bt.x, bt.z - sz);
+          ctx.lineTo(bt.x + sz, bt.z);
+          ctx.lineTo(bt.x, bt.z + sz);
+          ctx.lineTo(bt.x - sz, bt.z);
+          ctx.closePath();
+          ctx.fillStyle = bt.isStarter ? "#22d3ee" : "#0ea5e9";
+          ctx.fill();
+          if (bt.isStarter) {
+            ctx.lineWidth = 1.4 / zoom;
+            ctx.strokeStyle = "#ffffff";
+            ctx.stroke();
+          }
+        }
+      }
+
+      // Active Surveillance Target / Deep-Sea Disposal Zone
+      if (sample.surveillanceTarget) {
+        const st = sample.surveillanceTarget;
+        const pulse = 7.5 + Math.sin(now * 0.008) * 2.2;
+        ctx.beginPath();
+        ctx.arc(st.x, st.z, pulse / zoom, 0, TAU);
+        ctx.lineWidth = 1.8 / zoom;
+        ctx.strokeStyle = st.stage === "dispose" ? "#0ea5e9" : st.isolated ? "#22c55e" : "#f59e0b";
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(st.x, st.z, 3.8 / zoom, 0, TAU);
+        ctx.fillStyle = st.stage === "dispose" ? "#38bdf8" : st.isolated ? "#22c55e" : "#ef4444";
+        ctx.fill();
+      }
+
+      // Parked Helicopters & Airplanes (sky triangles)
+      if (sample.aircraft) {
+        for (const ac of sample.aircraft) {
+          const sz = 5.4 / zoom;
+          ctx.beginPath();
+          ctx.moveTo(ac.x, ac.z - sz);
+          ctx.lineTo(ac.x + sz, ac.z + sz * 0.8);
+          ctx.lineTo(ac.x - sz, ac.z + sz * 0.8);
+          ctx.closePath();
+          ctx.fillStyle = ac.kind === "helicopter" ? "#38bdf8" : "#f8fafc";
+          ctx.fill();
+          ctx.lineWidth = 1.3 / zoom;
+          ctx.strokeStyle = "#0a0d08";
+          ctx.stroke();
+        }
+      }
+
+      // Pursuing Police Cruisers & Helicopter (flashing red/blue sirens)
+      if (sample.police && sample.police.length > 0) {
+        const redFlash = Math.floor(now / 180) % 2 === 0;
+        for (const p of sample.police) {
+          ctx.beginPath();
+          ctx.arc(p.x, p.z, (p.isChopper ? 7.2 : p.isSwat ? 5.6 : 4.8) / zoom, 0, TAU);
+          ctx.fillStyle = redFlash ? "#ef4444" : "#3b82f6";
+          ctx.fill();
+          ctx.lineWidth = 1.5 / zoom;
+          ctx.strokeStyle = "#ffffff";
+          ctx.stroke();
+        }
+      }
+
       // Active GPS destination waypoint pin
       if (targetSpot) {
         const pulse = 0.7 + 0.3 * Math.sin(now * 0.006);
@@ -522,11 +675,31 @@ export function WestgateMinimap({
           data-augmented-ui="tl-clip br-clip border inlay"
           className="voss-panel-sharp flex cursor-pointer items-center gap-2 px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-[#f2efe9] transition hover:text-[#38bdf8]"
         >
-          <span className="h-1.5 w-1.5 bg-[#38bdf8] shadow-[0_0_8px_#38bdf8]" />
-          <span className="text-[#38bdf8]">GPS</span>
-          <span className="max-w-[125px] truncate">{curSpot.label}</span>
+          <span
+            className="h-1.5 w-1.5"
+            style={{
+              background: targetSpot?.isCustom ? "#ff3b30" : "#38bdf8",
+              boxShadow: targetSpot?.isCustom ? "0 0 8px #ff3b30" : "0 0 8px #38bdf8",
+            }}
+          />
+          <span className={targetSpot?.isCustom ? "text-[#ff3b30]" : "text-[#38bdf8]"}>
+            {targetSpot?.isCustom ? "PIN" : "GPS"}
+          </span>
+          <span className="max-w-[125px] truncate">
+            {targetSpot?.isCustom ? targetSpot.label : curSpot.label}
+          </span>
           {distLabel && <span className="text-[#8a909e] tabular-nums">{distLabel}</span>}
         </button>
+        {onOpenFullMap && (
+          <button
+            type="button"
+            onClick={onOpenFullMap}
+            title="Open Full Tactical Map [M]"
+            className="cursor-pointer border border-[#38bdf8]/45 bg-[#0a0c10]/90 px-2 py-1 font-mono text-[10px] font-bold uppercase tracking-wider text-[#38bdf8] transition hover:bg-[#38bdf8] hover:text-[#07080b]"
+          >
+            [M]
+          </button>
+        )}
         <button
           type="button"
           onClick={() => setZoomBase((z) => clamp(Number((z - 0.18).toFixed(2)), 0.45, 1.85))}

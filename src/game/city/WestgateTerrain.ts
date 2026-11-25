@@ -193,6 +193,15 @@ export function buildWestgateTerrainFn(roads: RoadNetwork): TerrainHeightFn {
   return (x: number, z: number): number => {
     let h = rawWestgateTerrainHeight(x, z);
 
+    // Grade Player Safehouse Estate terrace at (-322, 310) flush with Mirror Park Crescent (5.35m)
+    const shDx = x - -322;
+    const shDz = z - 310;
+    const shDist = Math.hypot(shDx, shDz);
+    if (shDist < 36) {
+      const w = 1 - smoothstep(19, 36, shDist);
+      h = lerp(h, 5.35, w);
+    }
+
     // Grade roundabout central aprons smoothly
     for (let i = 0; i < roundabouts.length; i++) {
       const rb = roundabouts[i];
@@ -223,7 +232,7 @@ export function buildWestgateTerrainFn(roads: RoadNetwork): TerrainHeightFn {
 }
 
 /**
- * Builds the 2.4km × 2.4km vertex-colored terrain mesh (192×192 = 12.5m grid, 1 draw call)
+ * Builds the 2.4km × 2.4km vertex-colored terrain mesh (`160×160` grid, 1 draw call)
  * shaded by elevation, slope, coastline sand, river concrete walls, and urban turf.
  */
 export function buildWestgateTerrainMesh(
@@ -267,35 +276,35 @@ export function buildWestgateTerrainMesh(
       const hz = heights[Math.min(segments, row + 1) * cols + col];
       const slope = Math.hypot(hx - y, hz - y) / step;
 
-    const cx = coastLineX(z);
-    const rx = riverCenterX(z);
-    const nearRiver = z < 520 && Math.abs(x - rx) < 42;
-    const nearCanals = x > -720 && x < -500 && z > 100 && z < 390;
+      const cx = coastLineX(z);
+      const rx = riverCenterX(z);
+      const nearRiver = z < 520 && Math.abs(x - rx) < 42;
+      const nearCanals = x > -720 && x < -500 && z > 100 && z < 390;
 
-    if (y < -0.6) {
-      tmp.copy(cSeabed).lerp(cSand, smoothstep(-5, -0.6, y) * 0.55);
-    } else if (x < cx + 52 && z < 980) {
-      tmp.copy(cSand);
-    } else if (nearRiver && y < 3.6 && z > -480) {
-      tmp.copy(cConcreteChannel);
-    } else if (nearCanals && y < 2.2) {
-      tmp.copy(cConcreteChannel);
-    } else if ((z > 680 && x < 420) || (x > 640 && z > -350 && z < 920)) {
-      tmp.copy(cPortPad);
-    } else {
-      const foothillT = smoothstep(-440, -780, z);
-      tmp.copy(cUrbanTurf).lerp(cFoothillGrass, foothillT);
-      if (slope > 0.36 || y > 38) {
-        const rockT = Math.max(smoothstep(0.35, 0.78, slope), smoothstep(38, 68, y) * 0.65);
-        tmp.lerp(cRock, rockT);
+      if (y < -0.6) {
+        tmp.copy(cSeabed).lerp(cSand, smoothstep(-5, -0.6, y) * 0.55);
+      } else if (x < cx + 52 && z < 980) {
+        tmp.copy(cSand);
+      } else if (nearRiver && y < 3.6 && z > -480) {
+        tmp.copy(cConcreteChannel);
+      } else if (nearCanals && y < 2.2) {
+        tmp.copy(cConcreteChannel);
+      } else if ((z > 680 && x < 420) || (x > 640 && z > -350 && z < 920)) {
+        tmp.copy(cPortPad);
+      } else {
+        const foothillT = smoothstep(-440, -780, z);
+        tmp.copy(cUrbanTurf).lerp(cFoothillGrass, foothillT);
+        if (slope > 0.36 || y > 38) {
+          const rockT = Math.max(smoothstep(0.35, 0.78, slope), smoothstep(38, 68, y) * 0.65);
+          tmp.lerp(cRock, rockT);
+        }
       }
-    }
 
-    // Subtle spatial grain so large lawns/hills never look flat
-    const grain = (fbm(x * 0.03, z * 0.03, 2) - 0.5) * 0.09;
-    colors[i * 3] = Math.max(0, Math.min(1, tmp.r + grain));
-    colors[i * 3 + 1] = Math.max(0, Math.min(1, tmp.g + grain));
-    colors[i * 3 + 2] = Math.max(0, Math.min(1, tmp.b + grain));
+      // Subtle spatial grain so large lawns/hills never look flat
+      const grain = (fbm(x * 0.03, z * 0.03, 2) - 0.5) * 0.09;
+      colors[i * 3] = Math.max(0, Math.min(1, tmp.r + grain));
+      colors[i * 3 + 1] = Math.max(0, Math.min(1, tmp.g + grain));
+      colors[i * 3 + 2] = Math.max(0, Math.min(1, tmp.b + grain));
     }
   }
 
@@ -304,13 +313,117 @@ export function buildWestgateTerrainMesh(
 
   const mat = new THREE.MeshStandardMaterial({
     vertexColors: true,
-    roughness: 0.93,
+    roughness: 0.92,
     metalness: 0.02,
   });
+
+  const weatherUniforms = {
+    uWet: { value: 0 },
+    uSnowCover: { value: 0 },
+  };
+
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uWet = weatherUniforms.uWet;
+    shader.uniforms.uSnowCover = weatherUniforms.uSnowCover;
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        "#include <common>",
+        `#include <common>
+        varying vec3 vTerrainWorldPos;
+        varying vec3 vTerrainWorldNorm;`,
+      )
+      .replace(
+        "#include <begin_vertex>",
+        `#include <begin_vertex>
+        vTerrainWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+        vTerrainWorldNorm = normalize(mat3(modelMatrix) * objectNormal);`,
+      );
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        "#include <common>",
+        `#include <common>
+        uniform float uWet;
+        uniform float uSnowCover;
+        varying vec3 vTerrainWorldPos;
+        varying vec3 vTerrainWorldNorm;
+        float wtHash(vec2 p) {
+          return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+        }
+        float wtNoise(vec2 p) {
+          vec2 i = floor(p);
+          vec2 f = fract(p);
+          vec2 u = f * f * (3.0 - 2.0 * f);
+          return mix(
+            mix(wtHash(i), wtHash(i + vec2(1.0, 0.0)), u.x),
+            mix(wtHash(i + vec2(0.0, 1.0)), wtHash(i + vec2(1.0, 1.0)), u.x),
+            u.y
+          );
+        }
+        float wtDetail(vec2 xz) {
+          float n1 = wtNoise(xz * 0.24);
+          float n2 = wtNoise(xz * 0.95);
+          float n3 = wtNoise(xz * 3.8);
+          return n1 * 0.50 + n2 * 0.32 + n3 * 0.18;
+        }`,
+      )
+      .replace(
+        "#include <color_fragment>",
+        `#include <color_fragment>
+        float td = wtDetail(vTerrainWorldPos.xz);
+        float tdFine = wtNoise(vTerrainWorldPos.xz * 7.5);
+        float dMod = mix(0.84, 1.15, td) * mix(0.95, 1.05, tdFine);
+        diffuseColor.rgb *= dMod;
+        float wetT = clamp(uWet, 0.0, 1.0);
+        if (wetT > 0.005) {
+          float puddleMask = smoothstep(0.45, 0.78, wtNoise(vTerrainWorldPos.xz * 0.07));
+          diffuseColor.rgb *= mix(1.0, 0.62, wetT * (0.45 + 0.55 * puddleMask));
+        }
+        float snowT = clamp(uSnowCover, 0.0, 1.0);
+        float aboveSurf = smoothstep(-0.2, 1.1, vTerrainWorldPos.y);
+        float gentleSlope = smoothstep(0.45, 0.88, vTerrainWorldNorm.y);
+        float snowMask = snowT * aboveSurf * gentleSlope * smoothstep(0.14, 0.78, snowT * 1.25 - td * 0.32);
+        if (snowMask > 0.005) {
+          vec3 snowAlbedo = vec3(0.88, 0.93, 0.98) * mix(0.93, 1.04, tdFine);
+          diffuseColor.rgb = mix(diffuseColor.rgb, snowAlbedo, clamp(snowMask, 0.0, 0.96));
+        }`,
+      )
+      .replace(
+        "#include <roughnessmap_fragment>",
+        `#include <roughnessmap_fragment>
+        roughnessFactor = clamp(roughnessFactor + (td - 0.5) * 0.14, 0.72, 0.98);
+        if (uWet > 0.005) {
+          float tPuddle = smoothstep(0.45, 0.78, wtNoise(vTerrainWorldPos.xz * 0.07));
+          roughnessFactor = mix(roughnessFactor, mix(0.42, 0.12, tPuddle), clamp(uWet, 0.0, 1.0));
+        }
+        if (uSnowCover > 0.005) {
+          roughnessFactor = mix(roughnessFactor, 0.84, clamp(uSnowCover * 0.85, 0.0, 1.0));
+        }`,
+      )
+      .replace(
+        "#include <normal_fragment_maps>",
+        `#include <normal_fragment_maps>
+        float eps = 0.12;
+        float hC = wtDetail(vTerrainWorldPos.xz);
+        float hX = wtDetail(vTerrainWorldPos.xz + vec2(eps, 0.0));
+        float hZ = wtDetail(vTerrainWorldPos.xz + vec2(0.0, eps));
+        vec3 detailGrad = vec3((hC - hX) * 0.35, 0.0, (hC - hZ) * 0.35);
+        normal = normalize(normal + (viewMatrix * vec4(detailGrad, 0.0)).xyz);`,
+      );
+  };
+  mat.customProgramCacheKey = () => "westgate-terrain-detail-v2";
 
   const mesh = new THREE.Mesh(geo, mat);
   mesh.name = "WestgateTerrain";
   mesh.receiveShadow = true;
   mesh.userData.kind = "dirt";
+  mesh.userData.weatherUniforms = weatherUniforms;
   return mesh;
+}
+
+export function setTerrainWeather(mesh: THREE.Mesh, wet: number, snowCover: number): void {
+  const u = mesh.userData.weatherUniforms as { uWet: { value: number }; uSnowCover: { value: number } } | undefined;
+  if (!u) return;
+  u.uWet.value = Math.max(0, Math.min(1, wet));
+  u.uSnowCover.value = Math.max(0, Math.min(1, snowCover));
 }

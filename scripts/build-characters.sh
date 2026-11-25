@@ -21,9 +21,6 @@ CHARACTERS=(
   "business|business-male-01.glb|anims-male.glb|business-male-01.png|Business"
   "sports|sports-male-01.glb|anims-male.glb|sports-male-01.png|Sports"
   "delivery|delivery-male-01.glb|anims-male.glb|delivery-male-01.png|Delivery"
-  "woman|female-adult-01.glb|anims-female.glb|female-adult-01.png|Woman"
-  "police-woman|police-female-01.glb|anims-female.glb|police-female-01.png|Policewoman"
-  "sportswoman|sports-female-01.glb|anims-female.glb|sports-female-01.png|Sportswoman"
 )
 
 for entry in "${CHARACTERS[@]}"; do

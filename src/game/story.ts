@@ -4,6 +4,7 @@
 /* ------------------------------------------------------------------ */
 import type { WeaponId } from "../character/rifle";
 import type { SoldierAppearance } from "./progression";
+import { SAFEHOUSE_SPAWN } from "./city/SafehouseResidence";
 
 export interface DialogueLine {
   speaker: string;
@@ -17,10 +18,14 @@ export interface EnemySpawn {
   z: number;
   /** spawn height (rooftop snipers, ship deck guards) */
   y?: number;
+  /** optional initial sentinel facing angle in degrees (+Z = 0, +X = 90) */
+  yawDeg?: number;
   /** patrol waypoints (walk between them when undisturbed) */
   patrol?: [number, number][];
   /** "guard" holds position, "patrol" walks, "advance" pushes the player */
   mode?: "guard" | "patrol" | "advance";
+  /** tactical enemy archetype: "sniper" (perched DMR + laser), "heavy" (armored breacher), or standard "guard" */
+  role?: "guard" | "sniper" | "heavy";
   /** boss flag (more HP, shown in HUD) */
   boss?: boolean;
   name?: string;
@@ -175,17 +180,17 @@ export const MISSIONS: MissionDef[] = [
     enemies: [
       { x: -8, z: -6, mode: "patrol", patrol: [[-8, -6], [7, -6], [7, 6], [-8, 6]] },
       { x: 9, z: 2, mode: "patrol", patrol: [[9, 2], [7, 14], [-6, 14]] },
-      { x: -8.5, z: 12, mode: "guard" },
+      { x: -8.5, z: 12, mode: "guard", yawDeg: 170 },
       { x: 6, z: -28, mode: "guard" },
       { x: -2, z: -26, mode: "guard" },
       { x: 10, z: -22, mode: "patrol", patrol: [[10, -22], [2, -22]] },
       { x: -8, z: -16, y: 0.12, mode: "guard" },
       { x: -16.2, z: 10, y: 0.12, mode: "guard" },
       { x: 16.5, z: 19, y: 0.12, mode: "advance" },
-      { x: 14, z: 29, y: 3.36, mode: "guard" },
+      { x: 14, z: 29, y: 3.36, mode: "guard", yawDeg: 210 },
       { x: -1.4, z: -10.2, y: 2.4, mode: "guard" },
     ],
-    spawn: [0, 44, 180],
+    spawn: [-6.2, 41.0, 198],
     extraction: [0, 44, 4],
     intro: [
       { speaker: "Broker", text: "Dawn in Highland Village. Senator Sterling's ledgers are split between the east and west storefronts." },
@@ -346,9 +351,9 @@ export const MISSIONS: MissionDef[] = [
       { x: -6.5, z: -18.2, y: 0.12, mode: "advance" },
       { x: 16, z: -22, mode: "guard" },
       { x: -16, z: -24, mode: "guard" },
-      { x: 13, z: -4, y: 30, mode: "guard" },
-      { x: 17, z: -4, y: 30, mode: "guard" },
-      { x: -10, z: -28, y: 24, mode: "guard" },
+      { x: 13, z: -4, y: 30, mode: "guard", role: "sniper" },
+      { x: 17, z: -4, y: 30, mode: "guard", role: "sniper" },
+      { x: -10, z: -28, y: 24, mode: "guard", role: "sniper" },
       { x: 0, z: 26, mode: "patrol", patrol: [[0, 26], [12, 26], [12, 6]] },
       { x: -6.5, z: 22, y: 0.12, mode: "guard" },
       { x: 6.5, z: 20, y: 0.12, mode: "advance" },
@@ -537,10 +542,10 @@ export const MISSIONS: MissionDef[] = [
       { x: 8, z: -24, mode: "guard" },
       { x: -20, z: 12, y: 0.12, mode: "guard" },
       { x: 20, z: 12, y: 0.12, mode: "advance" },
-      { x: -19, z: 10, y: 4.56, mode: "guard" },
-      { x: 19, z: 10, y: 4.56, mode: "guard" },
-      { x: -2.5, z: -31, y: 0.14, mode: "guard" },
-      { x: 2.5, z: -31, y: 0.14, mode: "guard" },
+      { x: -19, z: 10, y: 4.56, mode: "guard", role: "sniper" },
+      { x: 19, z: 10, y: 4.56, mode: "guard", role: "sniper" },
+      { x: -2.5, z: -31, y: 0.14, mode: "guard", role: "heavy" },
+      { x: 2.5, z: -31, y: 0.14, mode: "guard", role: "heavy" },
       { x: 0, z: -26, mode: "guard", boss: true, name: "Viktor Sorin" },
     ],
     spawn: [0, 44, 180],
@@ -624,32 +629,32 @@ export const MISSIONS: MissionDef[] = [
       { x: -12, z: 60, mode: "patrol", patrol: [[-12, 60], [-22, 60], [-22, 48]] },
       { x: 12, z: 60, mode: "patrol", patrol: [[12, 60], [22, 60], [22, 48]] },
       { x: 0, z: 50, mode: "guard" },
-      { x: -14, z: 54, y: 4.5, mode: "guard" },
-      { x: 14, z: 54, y: 4.5, mode: "guard" },
+      { x: -14, z: 54, y: 4.5, mode: "guard", role: "sniper" },
+      { x: 14, z: 54, y: 4.5, mode: "guard", role: "sniper" },
 
       // Zone 2: West Armory & East Comms Compounds (interiors, roofs & courtyard lanes)
-      { x: -34, z: 26, y: 0.12, mode: "guard" },
+      { x: -34, z: 26, y: 0.12, mode: "guard", role: "heavy" },
       { x: -34, z: 21, y: 0.12, mode: "advance" },
-      { x: -34, z: 24, y: 4.76, mode: "guard" },
-      { x: 34, z: 26, y: 0.12, mode: "guard" },
+      { x: -34, z: 24, y: 4.76, mode: "guard", role: "sniper" },
+      { x: 34, z: 26, y: 0.12, mode: "guard", role: "heavy" },
       { x: 34, z: 21, y: 0.12, mode: "advance" },
-      { x: 34, z: 24, y: 4.76, mode: "guard" },
+      { x: 34, z: 24, y: 4.76, mode: "guard", role: "sniper" },
       { x: -16, z: 32, mode: "patrol", patrol: [[-16, 32], [-16, 12], [-6, 12]] },
       { x: 16, z: 32, mode: "patrol", patrol: [[16, 32], [16, 12], [6, 12]] },
 
       // Zone 3: Central Skyway & Courtyard Relays
-      { x: -10, z: -4, y: 3.76, mode: "guard" },
-      { x: 10, z: -4, y: 3.76, mode: "guard" },
+      { x: -10, z: -4, y: 3.76, mode: "guard", role: "sniper" },
+      { x: 10, z: -4, y: 3.76, mode: "guard", role: "sniper" },
       { x: -18, z: -12, mode: "advance" },
       { x: 18, z: -12, mode: "advance" },
       { x: 0, z: -16, mode: "patrol", patrol: [[-8, -16], [8, -16], [8, -24], [-8, -24]] },
 
       // Zone 4: Inner Citadel, East Vault, West Barracks & North Helipad
-      { x: -24, z: -44, y: 0.12, mode: "guard" },
-      { x: -24, z: -46, y: 4.56, mode: "guard" },
-      { x: 24, z: -42, y: 0.12, mode: "guard" },
-      { x: -4, z: -46, y: 0.14, mode: "advance" },
-      { x: 4, z: -46, y: 0.14, mode: "advance" },
+      { x: -24, z: -44, y: 0.12, mode: "guard", role: "heavy" },
+      { x: -24, z: -46, y: 4.56, mode: "guard", role: "sniper" },
+      { x: 24, z: -42, y: 0.12, mode: "guard", role: "heavy" },
+      { x: -4, z: -46, y: 0.14, mode: "advance", role: "heavy" },
+      { x: 4, z: -46, y: 0.14, mode: "advance", role: "heavy" },
       { x: -12, z: -66, mode: "patrol", patrol: [[-12, -66], [12, -66]] },
       { x: 12, z: -74, mode: "guard" },
       { x: 0, z: -72, mode: "guard", boss: true, name: "General Drago Kovač" },
@@ -688,20 +693,20 @@ export const OPEN_WORLD_MISSION: MissionDef = {
   codename: "WESTGATE BAY",
   name: "Open World Free Roam",
   client: "Free Exploration",
-  location: "Westgate Bay (2.4 km × 2.4 km)",
+  location: "Westgate Bay · 420 Crescent Safehouse",
   timeOfDay: "Golden Afternoon",
   tint: [0xd8cdb4, 0x88ccff],
   tintName: "Voss",
   briefing: [
-    "Explore Westgate Bay across curved coastal highways, five architectural bridges, canyon switchbacks, river channels, and eight distinct districts.",
+    "Start at your Old Quarter Safehouse & Garage, step into your personal car, and explore Westgate Bay across curved coastal highways, five architectural bridges, canyon switchbacks, and eight districts.",
   ],
   debrief: ["Session ended."],
-  objectives: [{ id: "free", label: "Explore Westgate Bay — press [ESC] for Sector Fast-Travel", kind: "reach", at: [24, -82] }],
+  objectives: [{ id: "free", label: "Explore Westgate Bay — press [P / ↑] for SkyPhone · [M] for Map", kind: "reach", at: [SAFEHOUSE_SPAWN[0], SAFEHOUSE_SPAWN[1]] }],
   enemies: [],
-  spawn: [24, -82, 85],
-  extraction: [24, -82, 4],
+  spawn: SAFEHOUSE_SPAWN,
+  extraction: [SAFEHOUSE_SPAWN[0], SAFEHOUSE_SPAWN[1], 4],
   intro: [
-    { speaker: "Broker", text: "Westgate Bay is live. Press ESC anytime for Sector Fast-Travel.", dur: 3.0 },
+    { speaker: "Broker", text: "Welcome home to 420 Crescent. Your car's in the garage, and your SkyPhone is online [P / ↑].", dur: 3.6 },
   ],
   practice: true,
   enemyHp: 100,

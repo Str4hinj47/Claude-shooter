@@ -8,6 +8,7 @@
 /* ------------------------------------------------------------------ */
 import * as THREE from "three";
 import { Sky } from "three/examples/jsm/objects/Sky.js";
+import { createRealisticSky } from "./city/RealisticSky";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import { buildWorld, World } from "./world";
 import type { SurfaceKind } from "./world";
@@ -86,7 +87,7 @@ function toTex(c: HTMLCanvasElement, rep: number, srgb = true) {
   const t = new THREE.CanvasTexture(c);
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
   t.repeat.set(rep, rep);
-  t.anisotropy = 16;
+  t.anisotropy = 4;
   if (srgb) t.colorSpace = THREE.SRGBColorSpace;
   return t;
 }
@@ -327,68 +328,107 @@ interface FacadeOpts {
   sign?: string;
 }
 function facade(o: FacadeOpts) {
-  const px = 256;
+  const px = typeof document !== "undefined" ? 512 : 128;
+  const sc = px / 256;
   const cy = px / o.rows;
   const color = document.createElement("canvas");
   color.width = color.height = px;
   const glow = document.createElement("canvas");
   glow.width = glow.height = px;
+  const rough = document.createElement("canvas");
+  rough.width = rough.height = px;
+  const bump = document.createElement("canvas");
+  bump.width = bump.height = px;
   const gc = color.getContext("2d")!;
   const gg = glow.getContext("2d")!;
+  const rg = rough.getContext("2d")!;
+  const bg = bump.getContext("2d")!;
   gc.fillStyle = o.base;
   gc.fillRect(0, 0, px, px);
   gg.fillStyle = "#000";
   gg.fillRect(0, 0, px, px);
-  // grime + render streaks on the wall
-  for (let i = 0; i < 40; i++) {
-    gc.fillStyle = `rgba(0,0,0,${0.03 + o.rng() * 0.06})`;
-    const r = 10 + o.rng() * 40;
+  rg.fillStyle = "rgb(225,225,225)";
+  rg.fillRect(0, 0, px, px);
+  bg.fillStyle = "rgb(205,205,205)";
+  bg.fillRect(0, 0, px, px);
+  // subtle stucco/plaster texture + masonry weathering
+  for (let i = 0; i < 160; i++) {
+    gc.fillStyle = i % 2 === 0 ? `rgba(0,0,0,${0.025 + o.rng() * 0.045})` : `rgba(255,255,255,${0.015 + o.rng() * 0.03})`;
+    const r = (6 + o.rng() * 24) * sc;
     gc.beginPath();
     gc.arc(o.rng() * px, o.rng() * px, r, 0, Math.PI * 2);
     gc.fill();
   }
   const tileW = o.bayW * o.cols;
   for (let r = 0; r < o.rows; r++) {
+    // horizontal floor band shadow
+    gc.fillStyle = "rgba(0,0,0,0.08)";
+    gc.fillRect(0, r * cy, px, Math.max(2, cy * 0.08));
     for (let c = 0; c < o.cols; c++) {
       if (o.rng() < 0.12) continue; // some windows blanked (blinds / dark rooms)
-      const x = c * (px / o.cols) + px / o.cols * 0.18;
+      const x = c * (px / o.cols) + (px / o.cols) * 0.18;
       const y = r * cy + cy * 0.22;
       const w = (px / o.cols) * 0.64;
       const h = cy * 0.56;
-      gc.fillStyle = o.glass;
+      // outer sill & frame recess
+      gc.fillStyle = o.frame;
+      gc.fillRect(x - 2 * sc, y - 2 * sc, w + 4 * sc, h + 5 * sc);
+      bg.fillStyle = "rgb(236,236,236)";
+      bg.fillRect(x - 2 * sc, y - 2 * sc, w + 4 * sc, h + 5 * sc);
+
+      // reflective deep sky-tinted glass gradient
+      const grad = gc.createLinearGradient(x, y, x, y + h);
+      grad.addColorStop(0, o.glass);
+      grad.addColorStop(0.55, "#1d2b38");
+      grad.addColorStop(1, "#0d141c");
+      gc.fillStyle = grad;
       gc.fillRect(x, y, w, h);
-      gc.strokeStyle = o.frame;
-      gc.lineWidth = 2;
-      gc.strokeRect(x, y, w, h);
-      // horizontal dividing line for a second window row inside a floor
-      if (o.rows > 1 && r < o.rows - 1) {
-        gc.strokeStyle = o.frame;
-        gc.globalAlpha = 0.6;
-        gc.beginPath();
-        gc.moveTo(x, y + h + cy * 0.06);
-        gc.lineTo(x + w, y + h + cy * 0.06);
-        gc.stroke();
-        gc.globalAlpha = 1;
-      }
+      // subtle sky glint
+      gc.fillStyle = "rgba(210,234,255,0.22)";
+      gc.fillRect(x + 2 * sc, y + 2 * sc, w * 0.34, h - 4 * sc);
+      // mirror-gloss roughness for glass pane vs matte wall
+      rg.fillStyle = "rgb(20,20,20)";
+      rg.fillRect(x, y, w, h);
+      bg.fillStyle = "rgb(80,80,80)";
+      bg.fillRect(x, y, w, h);
+
+      // center mullion & transom bar
+      gc.fillStyle = o.frame;
+      gc.fillRect(x + w * 0.5 - 1.2 * sc, y, 2.4 * sc, h);
+      gc.fillRect(x, y + h * 0.45, w, 2 * sc);
+      rg.fillStyle = "rgb(140,140,140)";
+      rg.fillRect(x + w * 0.5 - 1.2 * sc, y, 2.4 * sc, h);
+      rg.fillRect(x, y + h * 0.45, w, 2 * sc);
+      bg.fillStyle = "rgb(190,190,190)";
+      bg.fillRect(x + w * 0.5 - 1.2 * sc, y, 2.4 * sc, h);
+      bg.fillRect(x, y + h * 0.45, w, 2 * sc);
+
       gg.fillStyle = o.glow;
-      gg.globalAlpha = 0.5 + o.rng() * 0.5;
+      gg.globalAlpha = 0.42 + o.rng() * 0.48;
       gg.fillRect(x, y, w, h);
       gg.globalAlpha = 1;
     }
   }
   if (o.sign) {
-    const sx = px / 2 - 90;
-    const sy = px / 2 - 14;
+    const sx = px / 2 - 90 * sc;
+    const sy = px / 2 - 14 * sc;
     gc.fillStyle = "rgba(245,245,245,0.92)";
-    gc.fillRect(sx, sy, 180, 28);
+    gc.fillRect(sx, sy, 180 * sc, 28 * sc);
     gc.fillStyle = "#111";
-    gc.font = "bold 17px sans-serif";
+    gc.font = `bold ${Math.round(17 * sc)}px sans-serif`;
     gc.textAlign = "center";
-    gc.fillText(o.sign, px / 2, sy + 20);
+    gc.fillText(o.sign, px / 2, sy + 20 * sc);
   }
+  const mapTex = new THREE.CanvasTexture(color);
+  const glowTex = new THREE.CanvasTexture(glow);
+  const roughTex = new THREE.CanvasTexture(rough);
+  const bumpTex = new THREE.CanvasTexture(bump);
+  for (const t of [mapTex, glowTex, roughTex, bumpTex]) t.anisotropy = 4;
   return {
-    map: new THREE.CanvasTexture(color),
-    glow: new THREE.CanvasTexture(glow),
+    map: mapTex,
+    glow: glowTex,
+    rough: roughTex,
+    bump: bumpTex,
     tileW,
     tileH: o.floorH * o.rows,
     rows: o.rows,
@@ -423,42 +463,28 @@ function setupAmbient(scene: THREE.Scene, renderer: THREE.WebGLRenderer, c: Ambi
     THREE.MathUtils.degToRad(c.sunAzim),
   );
   const skyScene = new THREE.Scene();
+  const isNight = Boolean(c.nightSky);
+  const sunsetMix = !isNight && c.sunElev < 20 ? THREE.MathUtils.clamp((22 - c.sunElev) / 16, 0, 1) : 0;
+  const skyState = {
+    zenith: c.nightSky ? c.nightSky.zenith : c.turbidity > 5.5 ? 0x456280 : 0x204d8c,
+    midSky: c.nightSky ? c.nightSky.horizon : c.turbidity > 5.5 ? 0x8295a8 : 0x5c96cc,
+    horizon: c.nightSky ? c.nightSky.horizon : c.fogColor,
+    fogColor: c.fogColor,
+    sunColor: c.nightSky ? (c.nightSky.moonColor ?? 0x9bbcff) : c.sunColor,
+    sunDir,
+    moonDir: sunDir,
+    nightMix: isNight ? 1.0 : 0.0,
+    sunsetMix,
+    cloudCover: isNight ? 0.34 : c.turbidity > 5.5 ? 0.62 : 0.45,
+    overcast: !isNight && c.turbidity > 5.5 ? 0.35 : 0.0,
+  };
+  const liveSky = createRealisticSky(skyState);
+
+  let nightSkyHandle: ReturnType<typeof createRealisticSky> | null = null;
+  let daySky: Sky | null = null;
   if (c.nightSky) {
-    const dome = new THREE.Mesh(
-      new THREE.SphereGeometry(5000, 32, 20),
-      new THREE.ShaderMaterial({
-        side: THREE.BackSide,
-        depthWrite: false,
-        uniforms: {
-          uZenith: { value: new THREE.Color(c.nightSky.zenith) },
-          uHorizon: { value: new THREE.Color(c.nightSky.horizon) },
-          uMoonDir: { value: sunDir.clone().normalize() },
-          uMoonCol: { value: new THREE.Color(c.nightSky.moonColor ?? 0x9bbcff) },
-        },
-        vertexShader: /* glsl */ `
-          varying vec3 vDir;
-          void main() {
-            vDir = normalize(position);
-            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-          }
-        `,
-        fragmentShader: /* glsl */ `
-          uniform vec3 uZenith;
-          uniform vec3 uHorizon;
-          uniform vec3 uMoonDir;
-          uniform vec3 uMoonCol;
-          varying vec3 vDir;
-          void main() {
-            float h = clamp(vDir.y, 0.0, 1.0);
-            vec3 col = mix(uHorizon, uZenith, pow(h, 0.52));
-            float m = max(0.0, dot(normalize(vDir), uMoonDir));
-            col += uMoonCol * (pow(m, 36.0) * 0.42 + pow(m, 640.0) * 2.2);
-            gl_FragColor = vec4(col, 1.0);
-          }
-        `,
-      }),
-    );
-    skyScene.add(dome);
+    nightSkyHandle = createRealisticSky(skyState);
+    skyScene.add(nightSkyHandle.mesh);
   } else {
     const sky = new Sky();
     sky.scale.setScalar(10000);
@@ -469,36 +495,24 @@ function setupAmbient(scene: THREE.Scene, renderer: THREE.WebGLRenderer, c: Ambi
     u["mieDirectionalG"].value = 0.82;
     u["sunPosition"].value.copy(sunDir);
     skyScene.add(sky);
+    daySky = sky;
   }
   const cubeRT = new THREE.WebGLCubeRenderTarget(256, { type: THREE.HalfFloatType });
   const cubeCam = new THREE.CubeCamera(1, 10000, cubeRT);
   cubeCam.update(renderer, skyScene);
   scene.background = cubeRT.texture;
   const pmrem = new THREE.PMREMGenerator(renderer);
-  scene.environment = pmrem.fromCubemap(cubeRT.texture).texture;
+  const envRT = pmrem.fromCubemap(cubeRT.texture);
+  scene.environment = envRT.texture;
   pmrem.dispose();
   scene.environmentIntensity = c.envIntensity;
   scene.fog = new THREE.FogExp2(c.fogColor, c.fogDensity);
 
-  let stars: THREE.Points | null = null;
-  if (c.stars) {
-    const starGeo = new THREE.BufferGeometry();
-    const n = 2600;
-    const pos = new Float32Array(n * 3);
-    for (let i = 0; i < n; i++) {
-      const v = new THREE.Vector3().setFromSphericalCoords(1, Math.random() * 0.9, Math.random() * Math.PI * 2);
-      v.multiplyScalar(2200 + Math.random() * 1500);
-      pos[i * 3] = v.x;
-      pos[i * 3 + 1] = Math.abs(v.y) * 0.8 + 40;
-      pos[i * 3 + 2] = v.z;
-    }
-    starGeo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
-    stars = new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0xdfe8ff, size: 2.4, sizeAttenuation: false, transparent: true, opacity: 0.9, fog: false }));
-  }
+  const stars: THREE.Points | null = null;
 
   const sun = new THREE.DirectionalLight(c.sunColor, c.sunIntensity);
   sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.mapSize.set(1536, 1536);
   const sc = sun.shadow.camera;
   sc.left = -22;
   sc.right = 22;
@@ -508,15 +522,33 @@ function setupAmbient(scene: THREE.Scene, renderer: THREE.WebGLRenderer, c: Ambi
   sc.far = c.shadowFar ?? 90;
   sun.shadow.bias = -0.0003;
   sun.shadow.normalBias = 0.03;
-  sun.shadow.radius = 2.5;
+  sun.shadow.radius = 2.2;
 
   const hemi = new THREE.HemisphereLight(c.hemiSky, c.hemiGround, c.hemiIntensity);
 
-  const update = (_dt: number, focus: THREE.Vector3) => {
-    sun.position.copy(focus).addScaledVector(sunDir, 45);
-    sun.target.position.copy(focus);
+  const texelWorld = (sc.right - sc.left) / 1536;
+  const snappedFocus = new THREE.Vector3();
+  const update = (dt: number, focus: THREE.Vector3) => {
+    liveSky.update(dt, focus);
+    snappedFocus.set(
+      Math.round(focus.x / texelWorld) * texelWorld,
+      Math.round(focus.y / texelWorld) * texelWorld,
+      Math.round(focus.z / texelWorld) * texelWorld,
+    );
+    sun.position.copy(snappedFocus).addScaledVector(sunDir, 45);
+    sun.target.position.copy(snappedFocus);
   };
-  return { sun, hemi, stars, sunDir, update };
+  const dispose = () => {
+    cubeRT.dispose();
+    envRT.dispose();
+    liveSky.dispose();
+    nightSkyHandle?.dispose();
+    if (daySky) {
+      daySky.geometry.dispose();
+      (daySky.material as THREE.Material).dispose();
+    }
+  };
+  return { sun, hemi, stars, skyMesh: liveSky.mesh, sunDir, update, dispose };
 }
 
 /* ====================== kit ====================== */
@@ -546,10 +578,24 @@ class Kit {
   private wallMatCache = new Map<string, THREE.MeshStandardMaterial>();
   private facadeId = new WeakMap<object, number>();
   private nextFacadeId = 1;
+  private clearZones: { x: number; z: number; r: number }[] = [];
 
   constructor(scene: THREE.Object3D, seed: number) {
     this.scene = scene;
     this.rng = mulberry32(seed);
+  }
+
+  /** Register a spawn/extraction clearance zone so trees, bushes, rocks & clutter never block it. */
+  clearZone(x: number, z: number, r = 9) {
+    this.clearZones.push({ x, z, r });
+  }
+
+  inClearZone(x: number, z: number, extraPad = 0): boolean {
+    for (const cz of this.clearZones) {
+      const rr = cz.r + extraPad;
+      if ((x - cz.x) * (x - cz.x) + (z - cz.z) * (z - cz.z) < rr * rr) return true;
+    }
+    return false;
   }
 
   /** invisible physics-only collider + AABB (no z-fighting with detailed visual shells) */
@@ -629,19 +675,22 @@ class Kit {
 
     const mapTex = f.map.clone();
     const glowTex = f.glow.clone();
+    const roughTex = f.rough.clone();
+    const bumpTex = f.bump.clone();
     mapTex.colorSpace = THREE.SRGBColorSpace;
     glowTex.colorSpace = THREE.SRGBColorSpace;
-    for (const tx of [mapTex, glowTex]) {
+    for (const tx of [mapTex, glowTex, roughTex, bumpTex]) {
       tx.wrapS = tx.wrapT = THREE.RepeatWrapping;
       tx.repeat.set(repX, repY);
       tx.needsUpdate = true;
     }
     const m = new THREE.MeshStandardMaterial({
       map: mapTex,
-      bumpMap: mapTex,
-      bumpScale: 0.05,
-      roughness: 0.84,
-      metalness: 0.04,
+      bumpMap: bumpTex,
+      bumpScale: 0.04,
+      roughnessMap: roughTex,
+      roughness: 1.0,
+      metalness: 0.12,
       emissive: 0xffffff,
       emissiveMap: glowTex,
       emissiveIntensity: emissive,
@@ -1410,9 +1459,20 @@ class Kit {
       }))
     );
     grp.add(picketInst);
+
+    // Segmented low fence colliders (1.28m tall so they block walking but can be jumped/vaulted over)
+    const segs = Math.max(2, Math.ceil(len / 2.2));
+    const segLen = len / segs;
+    for (let i = 0; i < segs; i++) {
+      const t = (i + 0.5) / segs;
+      const sx = x1 + (x2 - x1) * t;
+      const sz = z1 + (z2 - z1) * t;
+      this.colliderBox(segLen, 1.28, 0.26, sx, 0, sz, ang, "wood");
+    }
   }
 
   tree(x: number, z: number, s = 1) {
+    if (this.inClearZone(x, z, 2.5)) return;
     const seed = Math.abs(Math.round(x * 19 + z * 31)) + 1;
     const t = seed % 3 === 0 ? craftedTreeConifer(s * 1.1, seed) : craftedTreeRound(s, seed);
     t.position.set(x, 0, z);
@@ -2144,6 +2204,7 @@ class Kit {
 
   /** sculpted stone cluster */
   rock(x: number, z: number, s = 1) {
+    if (this.inClearZone(x, z, 1.0)) return;
     const rc = craftedRockCluster(s * 0.72, Math.abs(Math.round(x * 17 + z * 29)) + 1);
     rc.position.set(x, 0, z);
     this.scene.add(rc);
@@ -2151,6 +2212,7 @@ class Kit {
 
   /** pile of rubble chunks */
   rubble(x: number, z: number, n = 5) {
+    if (this.inClearZone(x, z, 1.0)) return;
     const mat = materialFor(0x6a6660, { roughness: 0.96, family: "stone", seed: 15 });
     for (let i = 0; i < n; i++) {
       const s = 0.14 + this.rng() * 0.24;
@@ -2213,6 +2275,7 @@ class Kit {
 
   /** crossed grass blades tuft */
   grassTuft(x: number, z: number, n = 3) {
+    if (this.inClearZone(x, z, 1.5)) return;
     const mat = new THREE.MeshStandardMaterial({ color: 0x3d5a2a, roughness: 0.95, side: THREE.DoubleSide });
     for (let i = 0; i < n; i++) {
       const blade = this.mesh(mat, new THREE.PlaneGeometry(0.12, 0.35), x + (this.rng() - 0.5) * 0.4, 0.17, z + (this.rng() - 0.5) * 0.4, this.rng() * 3);
@@ -2223,6 +2286,7 @@ class Kit {
 
   /** small wildflower patch */
   flowers(x: number, z: number, n = 5) {
+    if (this.inClearZone(x, z, 1.5)) return;
     const cols = [0xc8403a, 0xe8c83a, 0xf0f0f0, 0xd05a8a, 0x8a6ad8];
     for (let i = 0; i < n; i++) {
       const m = this.mesh(new THREE.MeshStandardMaterial({ color: cols[Math.floor(this.rng() * cols.length)], roughness: 0.8 }), new THREE.SphereGeometry(0.06, 8, 6), x + (this.rng() - 0.5) * 0.8, 0.1, z + (this.rng() - 0.5) * 0.8);
@@ -2232,6 +2296,7 @@ class Kit {
 
   /** small dirt mound */
   dirtMound(x: number, z: number, r = 1) {
+    if (this.inClearZone(x, z, 1.5)) return;
     const mat = new THREE.MeshStandardMaterial({ color: 0x6a5438, roughness: 1, flatShading: true });
     const m = this.mesh(mat, new THREE.SphereGeometry(r, 12, 10), x, r * 0.25, z);
     m.scale.y = 0.45;
@@ -2363,6 +2428,8 @@ function buildRange(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.
 /* ---------------- M1: Highland Village ---------------- */
 function buildVillage(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.WebGLRenderer): LevelResult {
   const K = new Kit(content, 1337);
+  K.clearZone(-6.2, 41.0, 4.5);
+  K.clearZone(0, 44, 4.5);
   const ambient = setupAmbient(main, renderer, {
     sunElev: 10,
     sunAzim: 62,
@@ -2379,21 +2446,19 @@ function buildVillage(content: THREE.Object3D, main: THREE.Scene, renderer: THRE
     exposure: 1.05,
     shadowFar: 100,
   });
-  content.add(ambient.sun, ambient.hemi);
+  content.add(ambient.sun, ambient.hemi, ambient.skyMesh);
   if (ambient.stars) content.add(ambient.stars);
 
-  // ground: grass valley floor + main dirt/cobble road + church square plaza
-  const gc = noiseCanvas(1024, "#566737", [["rgba(120,130,80,0.35)", 9000], ["rgba(90,100,55,0.3)", 7000], ["rgba(80,60,35,0.15)", 4000]], K.rng);
-  const gTex = toTex(gc, 90);
-  K.ground(400, new THREE.MeshStandardMaterial({ map: gTex, bumpMap: toTex(gc, 90, false), bumpScale: 1.4, roughness: 0.97, metalness: 0 }));
-  const rc = noiseCanvas(512, "#7a6848", [["rgba(0,0,0,0.2)", 8000], ["rgba(255,230,190,0.08)", 4000]], K.rng);
-  const road = K.mesh(new THREE.MeshStandardMaterial({ map: toTex(rc, 14), bumpMap: toTex(rc, 14, false), bumpScale: 1, roughness: 0.98 }), new THREE.PlaneGeometry(7.2, 108), 0, 0.02, 10);
+  // ground: textured valley turf + cobblestone village avenue + church square plaza
+  K.ground(400, materialFor(0x4c6836, { roughness: 0.94, family: "grass", seed: 101, repeat: 115 }));
+  const roadMat = materialFor(0x6e6558, { roughness: 0.88, family: "stone", seed: 102, repeat: 16 });
+  const road = K.mesh(roadMat, new THREE.PlaneGeometry(7.2, 108), 0, 0.02, 10);
   road.rotation.x = -Math.PI / 2;
   road.receiveShadow = true;
   content.add(road);
 
   // cobblestone church & well plaza
-  const cobbleMat = materialFor(0x888175, { roughness: 0.92, family: "stone", seed: 103 });
+  const cobbleMat = materialFor(0x888175, { roughness: 0.9, family: "stone", seed: 103, repeat: 7 });
   const plaza = K.mesh(cobbleMat, new THREE.PlaneGeometry(24, 18), -2, 0.028, -16);
   plaza.rotation.x = -Math.PI / 2;
   plaza.receiveShadow = true;
@@ -2527,6 +2592,10 @@ function buildVillage(content: THREE.Object3D, main: THREE.Scene, renderer: THRE
   K.solid(K.box(lowWall, 4.6, 1.05, 0.4, -2.5, 0, 26, 0.1), "concrete");
   K.solid(K.box(lowWall, 4.6, 1.05, 0.4, 2.5, 0, 26, -0.1), "concrete");
   K.solid(K.box(lowWall, 0.4, 1.05, 5.2, -11.5, 0, 2, 0.15), "concrete");
+  // south-west approach cover alcove protecting player insertion at (-6.2, 41.0)
+  K.solid(K.box(gateStone, 4.2, 1.48, 0.58, -6.4, 0, 38.6, 0.12), "concrete");
+  K.solid(K.box(gateStone, 0.55, 1.35, 3.0, -8.5, 0, 40.3, -0.08), "concrete");
+  K.crate(materialFor(0x8a6a43, { roughness: 0.82 }), -7.4, 39.6, 0.85, 0.25);
 
   // village lanterns & utility poles along the street
   for (const z of [-6, 8, 22, 34]) {
@@ -2557,7 +2626,7 @@ function buildVillage(content: THREE.Object3D, main: THREE.Scene, renderer: THRE
     const r = 46 + (i % 3) * 8;
     const px = Math.cos(a) * r;
     const pz = Math.sin(a) * r;
-    if (Math.abs(px) < 8 && pz > 35) continue;
+    if (Math.abs(px) < 14 && pz > 30) continue;
     K.tree(px, pz, 1.05 + (i % 4) * 0.15);
   }
 
@@ -2584,12 +2653,20 @@ function buildVillage(content: THREE.Object3D, main: THREE.Scene, renderer: THRE
   K.puddle(3, -8, 0.9, 0.7);
   K.puddle(-4, 34, 1.0, 0.7);
   for (let i = 0; i < 4; i++) K.cracks(-12 + K.rng() * 24, 8 + K.rng() * 50, 2.4 + K.rng() * 1.6);
-  for (let i = 0; i < 8; i++) K.rock(-22 + K.rng() * 44, -24 + K.rng() * 66, 0.7 + K.rng() * 0.8);
+  for (let i = 0; i < 8; i++) {
+    const rx = -22 + K.rng() * 44;
+    const rz = -24 + K.rng() * 58;
+    if (Math.abs(rx) > 5.5) K.rock(rx, rz, 0.7 + K.rng() * 0.8);
+  }
   K.rubble(-16, 12, 4);
   K.rubble(15, 25, 4);
   K.dirtMound(-10, -18, 1.1);
   K.dirtMound(18, 20, 0.9);
-  for (let i = 0; i < 16; i++) K.grassTuft(-20 + K.rng() * 40, -26 + K.rng() * 70, 3);
+  for (let i = 0; i < 16; i++) {
+    const gx = -20 + K.rng() * 40;
+    const gz = -26 + K.rng() * 60;
+    if (Math.abs(gx) > 5.5) K.grassTuft(gx, gz, 3);
+  }
   K.flowers(6, 24, 6);
   K.flowers(-6, 30, 5);
   K.flowers(4, -12, 5);
@@ -2630,6 +2707,7 @@ function buildVillage(content: THREE.Object3D, main: THREE.Scene, renderer: THRE
 /* ---------------- M2: Meridian Tower construction ---------------- */
 function buildConstruction(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.WebGLRenderer): LevelResult {
   const K = new Kit(content, 4242);
+  K.clearZone(0, 46, 10);
   const ambient = setupAmbient(main, renderer, {
     sunElev: 46,
     sunAzim: 210,
@@ -2646,7 +2724,7 @@ function buildConstruction(content: THREE.Object3D, main: THREE.Scene, renderer:
     exposure: 1.02,
     shadowFar: 95,
   });
-  content.add(ambient.sun, ambient.hemi);
+  content.add(ambient.sun, ambient.hemi, ambient.skyMesh);
   if (ambient.stars) content.add(ambient.stars);
 
   // site ground (concrete slab + mud patches)
@@ -2829,11 +2907,13 @@ function buildConstruction(content: THREE.Object3D, main: THREE.Scene, renderer:
     K.beacon(b, 4, K.rng() * 6);
   }
 
-  // safety barriers around the site
+  // safety barriers around the site (keep south gate behind spawn [0,46] open)
   const barrierMat = new THREE.MeshStandardMaterial({ color: 0xd8b01c, roughness: 0.7 });
   for (let x = -30; x <= 30; x += 5) {
-    const b = K.box(barrierMat, 1.8, 0.8, 0.2, x, 0, 48);
-    content.add(b);
+    if (Math.abs(x) >= 7) {
+      const b = K.box(barrierMat, 1.8, 0.8, 0.2, x, 0, 48);
+      content.add(b);
+    }
     const b2 = K.box(barrierMat, 1.8, 0.8, 0.2, x, 0, -42);
     content.add(b2);
   }
@@ -2874,6 +2954,7 @@ function buildConstruction(content: THREE.Object3D, main: THREE.Scene, renderer:
 /* ---------------- M3: Downtown District ---------------- */
 function buildDowntown(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.WebGLRenderer): LevelResult {
   const K = new Kit(content, 90210);
+  K.clearZone(0, 46, 9);
   const ambient = setupAmbient(main, renderer, {
     sunElev: 22,
     sunAzim: 255,
@@ -2892,7 +2973,7 @@ function buildDowntown(content: THREE.Object3D, main: THREE.Scene, renderer: THR
     shadowFar: 110,
     nightSky: { zenith: 0x040712, horizon: 0x15223a, moonColor: 0x8fb4ff },
   });
-  content.add(ambient.sun, ambient.hemi);
+  content.add(ambient.sun, ambient.hemi, ambient.skyMesh);
   if (ambient.stars) content.add(ambient.stars);
 
   // asphalt ground
@@ -3051,6 +3132,8 @@ function buildDowntown(content: THREE.Object3D, main: THREE.Scene, renderer: THR
 /* ---------------- M4: Westgate Port ---------------- */
 function buildPort(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.WebGLRenderer): LevelResult {
   const K = new Kit(content, 5150);
+  K.clearZone(0, -10, 8);
+  K.clearZone(0, 48, 8);
   const ambient = setupAmbient(main, renderer, {
     sunElev: 20,
     sunAzim: 235,
@@ -3069,7 +3152,7 @@ function buildPort(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.W
     shadowFar: 100,
     nightSky: { zenith: 0x03060f, horizon: 0x101c30, moonColor: 0x7da4ff },
   });
-  content.add(ambient.sun, ambient.hemi);
+  content.add(ambient.sun, ambient.hemi, ambient.skyMesh);
   if (ambient.stars) content.add(ambient.stars);
 
   // dock concrete deck (south half)
@@ -3247,6 +3330,8 @@ function stripeLabel(): THREE.Texture {
 /* ---------------- M5: Meridian HQ ---------------- */
 function buildHQ(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.WebGLRenderer): LevelResult {
   const K = new Kit(content, 700013);
+  K.clearZone(0, 44, 9);
+  K.clearZone(0, -43, 8);
   const ambient = setupAmbient(main, renderer, {
     sunElev: 24,
     sunAzim: 115,
@@ -3265,7 +3350,7 @@ function buildHQ(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.Web
     shadowFar: 105,
     nightSky: { zenith: 0x03050b, horizon: 0x111724, moonColor: 0x8aa2d8 },
   });
-  content.add(ambient.sun, ambient.hemi);
+  content.add(ambient.sun, ambient.hemi, ambient.skyMesh);
   if (ambient.stars) content.add(ambient.stars);
 
   // ground: compound asphalt + gravel
@@ -3460,6 +3545,8 @@ function buildHQ(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.Web
 /* ---------------- M6: Iron Citadel (260m Black-Site Fortress) ---------------- */
 function buildCitadel(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.WebGLRenderer): LevelResult {
   const K = new Kit(content, 900017);
+  K.clearZone(0, 84, 10);
+  K.clearZone(0, -84, 8);
   const ambient = setupAmbient(main, renderer, {
     sunElev: 25,
     sunAzim: 145,
@@ -3478,7 +3565,7 @@ function buildCitadel(content: THREE.Object3D, main: THREE.Scene, renderer: THRE
     shadowFar: 160,
     nightSky: { zenith: 0x03050d, horizon: 0x13192b, moonColor: 0x9eb8ff },
   });
-  content.add(ambient.sun, ambient.hemi);
+  content.add(ambient.sun, ambient.hemi, ambient.skyMesh);
   if (ambient.stars) content.add(ambient.stars);
 
   // Massive 380m alpine dark-stone & asphalt compound ground
@@ -3658,6 +3745,19 @@ export interface LevelResult extends World {
   openWorld?: OpenWorldEngine;
   vehicles?: WestgateVehicleManager;
   activities?: WestgateActivityManager;
+  apartments?: import("./city/Apartments").ApartmentSystem;
+  signals?: import("./city/TrafficSignals").TrafficSignalManager;
+  pedestrians?: import("./city/PedestrianSystem").PedestrianSystem;
+  livingWorld?: import("./city/LivingWorld").LivingWorldController;
+  wildlife?: import("./city/WildlifeSystem").WildlifeSystem;
+  wanted?: import("./city/WantedSystem").WantedSystem;
+  shops?: import("./city/CityShops").CityShopsManager;
+  randomEvents?: import("./city/RandomEvents").RandomEventsManager;
+  aircraft?: import("./vehicles/air/AirVehicleSystem").AirVehicleSystem;
+  boats?: import("./vehicles/water/BoatSystem").BoatSystem;
+  collectibles?: import("./city/CollectiblesSystem").CollectiblesSystem;
+  bodyCarry?: import("./city/BodyCarrySystem").BodyCarrySystem;
+  contracts?: import("./city/ContractSurveillance").ContractSurveillanceSystem;
   minimapData?: MinimapData;
   getDistrictAt?: (x: number, z: number) => DistrictInfo;
   weather?: WeatherState;
@@ -3733,6 +3833,7 @@ function finish(K: Kit, ambient: ReturnType<typeof setupAmbient>): LevelResult {
     spatial,
     spatialColliders,
     heightSystem,
+    disposeExtra: ambient.dispose,
   };
 }
 

@@ -967,19 +967,24 @@ export function craftedRockCluster(scale = 1.0, seed = 1, rockColor: THREE.Color
 }
 
 const treeLobeGeo = (() => {
-  const g = new THREE.IcosahedronGeometry(1, 1);
-  g.rotateX(0.6);
-  g.rotateZ(0.9);
+  const g = new THREE.IcosahedronGeometry(1, 2);
+  const p = g.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+    const n = 1 + 0.11 * Math.sin(x * 4.7 + y * 3.1) * Math.cos(z * 4.3);
+    p.setXYZ(i, x * n, y * n * 0.88, z * n);
+  }
+  g.computeVertexNormals();
   return g;
 })();
 
 export function craftedTreeRound(s = 1.0, seed = 1): THREE.Group {
   const group = new THREE.Group();
   const rng = seeded(seed);
-  const bark = materialFor("#6c523b", { roughness: 0.92, family: "wood", seed: 21 });
-  const collar = materialFor("#7e6246", { roughness: 0.84 });
-  const leaf = materialFor("#4b6c39", { roughness: 0.85, flatShading: true });
-  const rootMat = materialFor("#624a34", { roughness: 0.94 });
+  const bark = materialFor("#6c523b", { roughness: 0.9, family: "wood", seed: 21 });
+  const collar = materialFor("#7e6246", { roughness: 0.84, family: "wood", seed: 22 });
+  const leaf = materialFor("#446c35", { roughness: 0.86, family: "grass", seed: 23 });
+  const rootMat = materialFor("#624a34", { roughness: 0.92, family: "wood", seed: 24 });
 
   const height = 4.2 * s;
   const radius = 0.23 * s;
@@ -1085,8 +1090,8 @@ const skirtGeo = (() => {
 export function craftedTreeConifer(s = 1.0, seed = 1): THREE.Group {
   const group = new THREE.Group();
   const rng = seeded(seed);
-  const bark = materialFor("#654e3c", { roughness: 0.92, family: "wood", seed: 25 });
-  const needle = materialFor("#3f6746", { roughness: 0.86, flatShading: true });
+  const bark = materialFor("#654e3c", { roughness: 0.9, family: "wood", seed: 25 });
+  const needle = materialFor("#3b6442", { roughness: 0.86, family: "grass", seed: 26 });
   const h = 4.6 * s;
   const r = 0.17 * s;
 

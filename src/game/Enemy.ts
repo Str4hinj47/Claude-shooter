@@ -8,6 +8,7 @@ import * as THREE from "three";
 import { SoldierRig } from "../character/SoldierRig";
 import { CombatFX, Sfx } from "./fx";
 import { clamp } from "../character/math";
+import { characterUrl } from "./characters";
 import type { EnemySpawn, MissionDef } from "./story";
 import { BOSS_HP } from "./story";
 import { SpatialAABBGrid } from "./city/SpatialIndex";
@@ -26,6 +27,7 @@ export interface CombatHost {
   playerSprinting: () => boolean;
   playerDetectMult?: () => number;
   playerVisionRangeMult?: () => number;
+  difficultyScale?: () => { hp: number; damage: number; accuracy: number; vision: number };
   onPlayerHit: (dmg: number) => void;
   onKilled: (e: Fighter, stealth?: boolean) => void;
   onAlert: (e: Fighter) => void;
@@ -86,6 +88,20 @@ export function resolveCircleAABBs(
 }
 
 type AIState = "idle" | "patrol" | "alert" | "attack" | "dead";
+export type SoundKind = "footstep" | "land" | "reload" | "gunshot" | "impact" | "vehicle" | "shatter" | "callout";
+
+function wrapAngleDiff(from: number, to: number): number {
+  let d = (to - from) % (Math.PI * 2);
+  if (d > Math.PI) d -= Math.PI * 2;
+  if (d < -Math.PI) d += Math.PI * 2;
+  return d;
+}
+
+function stepYaw(current: number, target: number, maxStep: number): number {
+  const diff = wrapAngleDiff(current, target);
+  if (Math.abs(diff) <= maxStep) return target;
+  return current + Math.sign(diff) * maxStep;
+}
 
 export class Fighter {
   rig!: SoldierRig;
@@ -94,6 +110,7 @@ export class Fighter {
   hp = 100;
   readonly maxHp: number;
   readonly boss: boolean;
+  readonly role: "guard" | "sniper" | "heavy";
   name: string;
   protected readonly spawn: EnemySpawn;
   protected readonly mission: MissionDef;
@@ -101,6 +118,7 @@ export class Fighter {
   protected dead = false;
   alerted = false;
   suspicion = 0;
+  bodyDiscovered = false;
   patrolIdx = 0;
   readonly lastSeen = new THREE.Vector3();
   sightLost = 0;
@@ -111,12 +129,22 @@ export class Fighter {
   private raycaster = new THREE.Raycaster();
   protected tmp = new THREE.Vector3();
   protected tmp2 = new THREE.Vector3();
+  protected tmp3 = new THREE.Vector3();
+  protected tmp4 = new THREE.Vector3();
+  private losDir = new THREE.Vector3();
   private strafeSign = Math.random() < 0.5 ? 1 : -1;
   private strafeTimer = 1.4 + Math.random() * 1.4;
   private flankSign = Math.random() < 0.5 ? 1 : -1;
   private coverTimer = 0;
   private alertDelay = 0;
+  private searchTimer = 0;
+  private searchYaw = 0;
+  private bodyScanTimer = Math.random() * 0.4;
+  private hearingCooldown = 0;
   private wasSeeing = false;
+  get isSeeingPlayer() {
+    return this.wasSeeing;
+  }
   private baseYaw = Math.random() * Math.PI * 2;
   private yawSweep = Math.random() * Math.PI * 2;
   private prevPos = new THREE.Vector3();
@@ -125,11 +153,13 @@ export class Fighter {
   private flashlightMount: THREE.Object3D | null = null;
   private flashlightLens: THREE.Mesh | null = null;
   private flashlightBeam: THREE.Mesh | null = null;
+  private sniperLaser: THREE.Mesh | null = null;
 
   constructor(host: CombatHost, spawn: EnemySpawn, mission: MissionDef, hp: number, boss: boolean) {
     this.host = host;
     this.spawn = spawn;
     this.mission = mission;
+    this.role = spawn.role ?? "guard";
     this.maxHp = hp;
     this.hp = hp;
     this.boss = boss;
@@ -144,20 +174,59 @@ export class Fighter {
   }
 
   async build(scene: THREE.Object3D, tint: [number, number], heightScale = 1) {
-    this.rig = await SoldierRig.load(scene);
+    const canFetchChars = typeof window !== "undefined" && typeof fetch === "function";
+    let modelUrl: string | undefined;
+    if (canFetchChars) {
+      if (this instanceof Ally) {
+        modelUrl = characterUrl("military");
+      } else if (this.boss) {
+        modelUrl = characterUrl(this.mission.id >= 5 || this.mission.id === 3 ? "military" : "business");
+      } else {
+        const pool: Record<number, string[]> = {
+          1: ["security", "civilian"],
+          2: ["security", "business"],
+          3: ["construction", "security"],
+          4: ["business", "security"],
+          5: ["military", "police"],
+          6: ["military", "security"],
+        };
+        const list = pool[this.mission.id] ?? ["military", "security"];
+        const idx = Math.abs(Math.round(this.spawn.x + this.spawn.z)) % list.length;
+        modelUrl = characterUrl(list[idx]);
+      }
+    }
+    this.rig = await SoldierRig.load(scene, undefined, modelUrl);
     if (!(this instanceof Ally)) {
-      const wId = this.boss ? this.mission.bossWeapon : this.mission.enemyWeapon;
+      const wId = this.boss
+        ? this.mission.bossWeapon
+        : this.role === "sniper"
+          ? "dmr"
+          : this.role === "heavy"
+            ? (this.mission.id >= 6 ? "carbine" : "shotgun")
+            : this.mission.enemyWeapon;
       if (wId) this.rig.setWeaponModel(wId);
       const app = this.boss ? this.mission.bossAppearance : this.mission.enemyAppearance;
-      if (app) this.rig.setAppearance(app);
-      else this.rig.setTint(tint[0], tint[1]);
+      if (app) {
+        this.rig.setAppearance(app);
+        if (this.rig.isRocketbox) {
+          this.rig.setTint(this.role === "heavy" ? 0x3b4454 : tint[0], tint[1]);
+        }
+      } else {
+        this.rig.setTint(this.role === "heavy" ? 0x3b4454 : tint[0], tint[1]);
+      }
+      if (this.role === "sniper") {
+        this.attachSniperLaser();
+      }
     } else {
       this.rig.setTint(tint[0], tint[1]);
     }
     this.rig.setHeightScale(heightScale);
     this.rig.root.position.set(this.spawn.x, this.spawn.y ?? 0, this.spawn.z);
-    // Point idle guards toward the center/player approach initially, with natural sentinel sweep
-    this.baseYaw = Math.atan2(-this.spawn.x, -this.spawn.z) + (Math.random() - 0.5) * 0.8;
+    // Point idle guards toward explicit facing yaw or center/player approach initially
+    this.baseYaw =
+      this.spawn.yawDeg !== undefined
+        ? THREE.MathUtils.degToRad(this.spawn.yawDeg)
+        : Math.atan2(-this.spawn.x, -this.spawn.z) + (Math.random() - 0.5) * 0.8;
     this.rig.aimYaw = this.baseYaw;
     scene.add(this.rig.root);
     this.rig.root.add(this.hitbox);
@@ -211,6 +280,23 @@ export class Fighter {
     this.flashlightBeam = beam;
   }
 
+  private attachSniperLaser() {
+    const laserMat = new THREE.MeshBasicMaterial({
+      color: 0xff2a36,
+      transparent: true,
+      opacity: 0.48,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const laser = new THREE.Mesh(new THREE.CylinderGeometry(0.004, 0.004, 1, 6), laserMat);
+    laser.scale.set(1, 38, 1);
+    laser.rotation.x = Math.PI / 2;
+    laser.position.set(0, 0.082, 19.48);
+    laser.visible = false;
+    this.rig.rifle.group.add(laser);
+    this.sniperLaser = laser;
+  }
+
   getFlashlightWorld(originOut: THREE.Vector3, targetOut: THREE.Vector3): boolean {
     if (this.dead || !this.flashlightMount) return false;
     this.flashlightMount.getWorldPosition(originOut);
@@ -227,21 +313,26 @@ export class Fighter {
     return this.state === "idle" || this.state === "patrol";
   }
 
-  takeDamage(dmg: number, suppressed = false) {
+  takeDamage(dmg: number, suppressed = false, hitPoint?: THREE.Vector3) {
     if (this.dead) return;
     const unaware = this.isUnaware || (this.state === "alert" && this.suspicion < 0.85);
     const effectiveDmg = unaware ? dmg * 2.5 : dmg;
     this.hp -= effectiveDmg;
     this.rig.hit(0);
+    const bp = hitPoint ?? this.rig.root.position.clone().add(new THREE.Vector3(0, 1.18, 0));
+    this.host.fx.bloodBurst(bp, undefined, 1.0);
+    this.host.fx.attachWoundToCharacter(this.rig.fall, Math.max(0.55, Math.min(1.55, bp.y - this.rig.root.position.y)));
     if (this.hp <= 0) {
       this.dead = true;
       this.state = "dead";
       this.suspicion = 0;
       if (this.flashlightBeam) this.flashlightBeam.visible = false;
+      if (this.sniperLaser) this.sniperLaser.visible = false;
       if (this.flashlightLens) {
         (this.flashlightLens.material as THREE.MeshStandardMaterial).emissiveIntensity = 0;
       }
       this.rig.die(Math.random() < 0.5 ? "back" : "front");
+      this.host.fx.spawnBloodPool(this.rig.root.position.x, this.rig.root.position.y, this.rig.root.position.z, 0.92);
       this.hitbox.visible = false;
       this.hitbox.position.y = -50; // belt-and-braces off the raycast path
       // Silent kill if enemy was unaware & killed with a suppressed weapon or takedown
@@ -266,11 +357,91 @@ export class Fighter {
     if (this.dead) return;
     this.lastSeen.copy(pos);
     this.suspicion = Math.max(this.suspicion, boost);
+    this.searchTimer = 0;
     if (this.state === "idle" || this.state === "patrol") {
       this.state = "alert";
       this.alertDelay = delay;
       this.sightLost = 0;
+    } else if (this.state === "alert") {
+      this.alertDelay = Math.min(this.alertDelay, delay);
+      this.sightLost = 0;
     }
+    if (this.suspicion >= 1.0 && this.state !== "attack") {
+      this.state = "attack";
+      if (!this.alerted) {
+        this.alerted = true;
+        this.host.onAlert(this);
+      }
+      this.burstTimer = Math.max(this.burstTimer, 0.28 + (1 - this.mission.enemyAccuracy) * 0.28);
+    }
+  }
+
+  /**
+   * Acoustic perception with wall occlusion, distance falloff, and cumulative suspicion.
+   * Returns true if the enemy heard the sound.
+   */
+  hearSound(pos: THREE.Vector3, baseRadius: number, strength: number, kind: SoundKind): boolean {
+    if (this.dead || baseRadius <= 0.1) return false;
+    const ear = this.eyePos(this.tmp2);
+    const dx = pos.x - ear.x;
+    const dy = (pos.y + 0.8) - ear.y;
+    const dz = pos.z - ear.z;
+    const dist = Math.hypot(dx, dy, dz);
+    if (dist > baseRadius) return false;
+
+    // Occlusion check: walls & thick cover dampen both reach and loudness
+    const soundOrigin = this.tmp3.set(pos.x, pos.y + 0.8, pos.z);
+    const clearAir = dist < 1.2 || this.hasLineOfSight(ear, soundOrigin);
+    const effectiveRadius = clearAir ? baseRadius : baseRadius * 0.56;
+    if (dist > effectiveRadius) return false;
+
+    const atten = clamp(1 - (dist / effectiveRadius) * 0.55, 0.28, 1.0);
+    const occMult = clearAir ? 1.0 : 0.62;
+    const delta = strength * atten * occMult;
+
+    // Update suspicion cumulatively so repeated footsteps/reloads/shots escalate naturally
+    const cap = kind === "footstep" || kind === "reload" || kind === "land" ? 0.82 : 1.0;
+    const nextSusp = Math.min(cap, Math.max(this.suspicion + delta * 0.65, delta));
+
+    // Near-miss / loud impact reaction: duck/strafe into cover briefly
+    if ((kind === "impact" || kind === "shatter") && dist < 8.5) {
+      this.coverTimer = Math.max(this.coverTimer, 0.85 + Math.random() * 0.5);
+    }
+
+    // Immediate sharp turn when hearing a loud nearby sound
+    const reactionDelay =
+      kind === "gunshot" || kind === "impact" || kind === "shatter"
+        ? 0.05 + (dist / effectiveRadius) * 0.14
+        : 0.18 + (dist / effectiveRadius) * 0.28;
+
+    // Only update investigation target if not currently staring directly at the player
+    if (this.state !== "attack" || this.sightLost > 0.6 || kind === "gunshot" || kind === "impact") {
+      this.lastSeen.copy(pos);
+    }
+    this.suspicion = Math.min(1, nextSusp);
+    this.searchTimer = 0;
+
+    if (this.suspicion >= 1.0 && this.state !== "attack") {
+      this.state = "attack";
+      this.sightLost = 0.2;
+      if (!this.alerted) {
+        this.alerted = true;
+        this.host.onAlert(this);
+      }
+      this.burstTimer = Math.max(this.burstTimer, 0.3 + (1 - this.mission.enemyAccuracy) * 0.3);
+      if (this.hearingCooldown <= 0) {
+        this.hearingCooldown = 1.2;
+        this.broadcastAlert(pos, 14);
+      }
+    } else if (this.suspicion >= 0.26 && (this.state === "idle" || this.state === "patrol")) {
+      this.state = "alert";
+      this.alertDelay = reactionDelay;
+      this.sightLost = 0;
+    } else if (this.state === "alert") {
+      this.alertDelay = Math.min(this.alertDelay, reactionDelay);
+      this.sightLost = 0;
+    }
+    return true;
   }
 
   /** Radio/shout callout to nearby teammates */
@@ -280,7 +451,7 @@ export class Fighter {
       if ((e as Fighter) === this || e.isDead) continue;
       const d = Math.hypot(e.rig.root.position.x - my.x, e.rig.root.position.z - my.z);
       if (d <= radius) {
-        e.alertFrom(pos, 0.25 + (d / radius) * 0.45);
+        e.alertFrom(pos, 0.2 + (d / radius) * 0.4, 0.62);
       }
     }
   }
@@ -319,17 +490,38 @@ export class Fighter {
     return [nx, nz];
   }
 
-  /** does a clear line exist to the target (no world collider in between)? */
+  /** does a clear line exist to the target (no world collider or living unit body in between)? */
   hasLineOfSight(from: THREE.Vector3, to: THREE.Vector3): boolean {
-    const dir = this.tmp2.copy(to).sub(from);
+    const dir = this.losDir.copy(to).sub(from);
     const dist = dir.length();
     if (dist < 0.001) return true;
     dir.divideScalar(dist);
     this.raycaster.set(from, dir);
-    this.raycaster.far = dist + 0.5;
-    const list = this.host.rayQuery ? this.host.rayQuery(from, dir, dist + 0.5) : this.host.colliders;
+    this.raycaster.far = Math.max(0.05, dist - 0.05);
+    const list = this.host.rayQuery ? this.host.rayQuery(from, dir, dist) : this.host.colliders;
     const hits = this.raycaster.intersectObjects(list, false);
-    return hits.length === 0;
+    for (let i = 0; i < hits.length; i++) {
+      if (hits[i].object.visible) return false;
+    }
+    // Unit-to-unit occlusion: prevent guards from seeing or shooting straight through teammates
+    const units = this.host.enemies();
+    for (let i = 0; i < units.length; i++) {
+      const u = units[i] as Fighter;
+      if (u === this || u.isDead || !u.rig) continue;
+      const up = u.rig.root.position;
+      const dx = up.x - from.x;
+      const dy = up.y + 1.0 - from.y;
+      const dz = up.z - from.z;
+      const proj = dx * dir.x + dy * dir.y + dz * dir.z;
+      if (proj <= 0.45 || proj >= dist - 0.45) continue;
+      const cx = from.x + dir.x * proj - up.x;
+      const cz = from.z + dir.z * proj - up.z;
+      const cy = from.y + dir.y * proj - (up.y + 1.0);
+      if (cx * cx + cz * cz <= 0.34 * 0.34 && Math.abs(cy) <= 0.85) {
+        return false;
+      }
+    }
+    return true;
   }
 
   protected eyePos(out: THREE.Vector3) {
@@ -339,18 +531,115 @@ export class Fighter {
 
   protected onShoot(muzzle: THREE.Vector3) {
     this.host.sfx.shot();
-    // tracer to the aim point with accuracy-driven spread
-    const spread = 0.05 + (1 - this.mission.enemyAccuracy) * 0.4;
-    const target = this.aimPoint.clone();
-    target.x += (Math.random() - 0.5) * spread * 9;
-    target.y += (Math.random() - 0.5) * spread * 5;
-    target.z += (Math.random() - 0.5) * spread * 9;
-    this.host.fx.tracer(muzzle, target);
-    if (Math.random() < this.mission.enemyAccuracy) {
+    const diff = this.host.difficultyScale?.();
+    const accBase = this.mission.enemyAccuracy * (diff?.accuracy ?? 1) * (this.role === "sniper" ? 1.15 : 1);
+    const acc = Math.max(0.1, Math.min(0.95, accBase));
+    const spreadRad = (this.role === "sniper" ? 0.006 : 0.012) + (1 - acc) * 0.085;
+    const dir = this.tmp.copy(this.aimPoint).sub(muzzle);
+    const baseDist = Math.max(0.5, dir.length());
+    dir.divideScalar(baseDist);
+    dir.x += (Math.random() - 0.5) * spreadRad;
+    dir.y += (Math.random() - 0.5) * spreadRad * 0.7;
+    dir.z += (Math.random() - 0.5) * spreadRad;
+    dir.normalize();
+
+    const maxRange = 120;
+    this.raycaster.set(muzzle, dir);
+    this.raycaster.far = maxRange;
+    const list = this.host.rayQuery ? this.host.rayQuery(muzzle, dir, maxRange) : this.host.colliders;
+    const hits = this.raycaster.intersectObjects(list, false);
+    const coverHit = hits.find((h) => h.object.visible);
+    const coverDist = coverHit ? coverHit.distance : maxRange;
+
+    // Ballistic cylinder intersection against the player's actual body & stance height
+    let playerHitDist = Infinity;
+    if (this.host.playerAlive()) {
+      const pEye = this.host.playerPos(this.tmp2);
+      const toPlayer = this.tmp3.copy(pEye).sub(muzzle);
+      const proj = toPlayer.dot(dir);
+      if (proj > 0.3 && proj < coverDist) {
+        const closest = this.tmp4.copy(muzzle).addScaledVector(dir, proj);
+        const dx = closest.x - pEye.x;
+        const dz = closest.z - pEye.z;
+        const radialDist2 = dx * dx + dz * dz;
+        const bodyMinY = pEye.y - (this.host.playerCrouching() ? 1.15 : 1.52);
+        const bodyMaxY = pEye.y + 0.16;
+        if (radialDist2 <= 0.42 * 0.42 && closest.y >= bodyMinY && closest.y <= bodyMaxY) {
+          playerHitDist = proj;
+        }
+      }
+    }
+
+    if (playerHitDist < coverDist) {
+      const end = this.tmp4.copy(muzzle).addScaledVector(dir, playerHitDist);
+      this.host.fx.tracer(muzzle, end);
       const [dmin, dmax] = this.mission.enemyDamage;
-      this.host.onPlayerHit(dmin + Math.random() * (dmax - dmin));
+      const diffDmg = this.host.difficultyScale?.().damage ?? 1;
+      const roleDmg = this.role === "sniper" ? 1.28 : this.role === "heavy" ? 1.12 : 1;
+      this.host.onPlayerHit((dmin + Math.random() * (dmax - dmin)) * diffDmg * roleDmg);
+    } else if (coverHit) {
+      this.host.fx.tracer(muzzle, coverHit.point);
+      const n = coverHit.face
+        ? this.tmp4.copy(coverHit.face.normal).transformDirection(coverHit.object.matrixWorld)
+        : this.tmp4.set(0, 1, 0);
+      this.host.fx.impact(coverHit.point, n, (coverHit.object.userData.kind as "concrete" | "metal" | "dirt") ?? "concrete");
     } else {
-      this.host.fx.impact(target, new THREE.Vector3(0, 1, 0), "concrete");
+      const end = this.tmp4.copy(muzzle).addScaledVector(dir, Math.min(maxRange, baseDist + 14));
+      this.host.fx.tracer(muzzle, end);
+    }
+  }
+
+  /** Multi-point head/chest visibility test against world cover so low obstacles don't make crouched/standing players invisible. */
+  private checkPlayerVisibility(
+    eye: THREE.Vector3,
+    playerEye: THREE.Vector3,
+    crouch: boolean,
+    outAimTarget: THREE.Vector3,
+  ): number {
+    // host.playerPos() already returns world-space eye height (r.y + 1.62 standing, r.y + 1.20 crouching)
+    const headY = playerEye.y - 0.04;
+    const chestY = playerEye.y - (crouch ? 0.34 : 0.42);
+
+    const chestPt = this.tmp3.set(playerEye.x, chestY, playerEye.z);
+    const seeChest = this.hasLineOfSight(eye, chestPt);
+    const headPt = this.tmp4.set(playerEye.x, headY, playerEye.z);
+    const seeHead = this.hasLineOfSight(eye, headPt);
+
+    if (seeChest && seeHead) {
+      outAimTarget.set(playerEye.x, chestY + 0.08, playerEye.z);
+      return 1.0;
+    }
+    if (seeHead) {
+      outAimTarget.set(playerEye.x, headY - 0.06, playerEye.z);
+      return 0.65;
+    }
+    if (seeChest) {
+      outAimTarget.set(playerEye.x, chestY, playerEye.z);
+      return 0.68;
+    }
+    return 0;
+  }
+
+  /** Scan forward vision cone for downed squadmates; alerts guard + nearby squad if found. */
+  private scanForDownedBodies(eye: THREE.Vector3) {
+    const fwdX = Math.sin(this.rig.aimYaw);
+    const fwdZ = Math.cos(this.rig.aimYaw);
+    for (const e of this.host.enemies()) {
+      if ((e as Fighter) === this || !e.isDead || e.bodyDiscovered) continue;
+      const bp = e.rig.root.position;
+      const dx = bp.x - eye.x;
+      const dz = bp.z - eye.z;
+      const d = Math.hypot(dx, dz);
+      if (d > 19) continue;
+      const dot = d > 0.01 ? (dx / d) * fwdX + (dz / d) * fwdZ : 1;
+      if (dot < 0.3 && d > 3.2) continue;
+      const bodyPt = this.tmp3.set(bp.x, bp.y + 0.45, bp.z);
+      if (this.hasLineOfSight(eye, bodyPt)) {
+        e.bodyDiscovered = true;
+        this.alertFrom(bp, 0.14, 0.72);
+        this.broadcastAlert(bp, 14);
+        break;
+      }
     }
   }
 
@@ -368,32 +657,66 @@ export class Fighter {
     if (this.reloadDelay > 0) this.reloadDelay = Math.max(0, this.reloadDelay - dt);
     if (this.coverTimer > 0) this.coverTimer = Math.max(0, this.coverTimer - dt);
     if (this.alertDelay > 0) this.alertDelay = Math.max(0, this.alertDelay - dt);
+    if (this.hearingCooldown > 0) this.hearingCooldown = Math.max(0, this.hearingCooldown - dt);
 
-    // ---- stealth detection: directional vision cone + stance range + suspicion meter
+    // ---- enhanced stealth vision: foveal + peripheral cones, multi-point head/chest LOS, flashlight & perch range
     const crouch = host.playerCrouching();
     const sprint = host.playerSprinting();
     const rangeMult = host.playerVisionRangeMult?.() ?? 1;
     const detectMult = host.playerDetectMult?.() ?? 1;
-    const maxRange = (this.state === "attack" ? 36 : crouch ? 16.5 : sprint ? 32 : 25) * (this.state === "attack" ? 1 : rangeMult);
+
     const fwdX = Math.sin(rig.aimYaw);
     const fwdZ = Math.cos(rig.aimYaw);
     const dot = dist > 0.001 ? (dx / dist) * fwdX + (dz / dist) * fwdZ : 1;
-    const minDot = this.state === "attack" ? -0.25 : this.state === "alert" ? 0.2 : 0.52;
-    const tooClose = dist < (crouch ? 1.25 : 2.3);
-    const inCone = (dot >= minDot || tooClose) && dist < maxRange;
-    const sees = inCone && host.playerAlive() && this.hasLineOfSight(this.eyePos(this.tmp2), p);
+
+    // Night flashlight beam extends forward reach in narrow cone, while darkness trims unlit ambient sight
+    const inFlashBeam = !!this.flashlightMount && dot >= 0.86;
+    const nightMult = this.mission.night ? (inFlashBeam ? 1.32 : 0.82) : 1.0;
+    const perchMult = perched ? 1.28 : 1.0;
+    const roleMult = this.role === "sniper" ? 1.45 : this.role === "heavy" ? 0.92 : 1.0;
+    const diffVision = host.difficultyScale?.().vision ?? 1.0;
+
+    const baseFoveal = this.state === "attack" ? 46 : crouch ? 20 : sprint ? 40 : 31;
+    const fovealRange = baseFoveal * (this.state === "attack" ? 1 : rangeMult) * nightMult * perchMult * roleMult * diffVision;
+    const periphRange = fovealRange * 0.64;
+
+    const inFoveal = dot >= (this.state === "attack" ? -0.3 : this.state === "alert" ? 0.34 : 0.58) && dist < fovealRange;
+    const inPeriph = !inFoveal && dot >= (this.state === "alert" ? -0.05 : 0.14) && dist < periphRange;
+    const tooClose = dist < (crouch ? 1.35 : 2.65);
+
+    const verticalDelta = Math.abs(p.y - (my.y + 1.5));
+    const verticalOk = dist < 4 || verticalDelta / dist < (perched ? 2.4 : 1.35);
+
+    const eye = this.eyePos(this.tmp2);
+    let exposure = 0;
+    const visibleAim = this.tmp4.set(p.x, p.y - (crouch ? 0.34 : 0.4), p.z);
+    if ((inFoveal || inPeriph || tooClose) && verticalOk && host.playerAlive()) {
+      exposure = this.checkPlayerVisibility(eye, p, crouch, visibleAim);
+    }
+    const sees = exposure > 0;
+
+    // Staggered corpse discovery scan while unaware or investigating
+    if (!sees && this.state !== "attack") {
+      this.bodyScanTimer -= dt;
+      if (this.bodyScanTimer <= 0) {
+        this.bodyScanTimer = 0.42;
+        this.scanForDownedBodies(eye);
+      }
+    }
 
     if (sees) {
-      this.lastSeen.copy(p);
-      const stanceMult = crouch ? 0.65 : sprint ? 1.65 : 1.05;
-      const distMult = clamp(1.5 - dist / maxRange, 0.4, 1.5);
-      const angleMult = clamp(0.65 + Math.max(0, dot) * 0.6, 0.6, 1.25);
-      const rate = (this.state === "attack" ? 2.4 : 1.15 * detectMult) * stanceMult * distMult * angleMult;
+      this.lastSeen.copy(visibleAim);
+      this.searchTimer = 0;
+      const stanceMult = crouch ? 0.68 : sprint ? 1.75 : 1.12;
+      const distMult = clamp(1.55 - dist / fovealRange, 0.42, 1.55);
+      const coneMult = inFoveal || tooClose ? clamp(0.75 + Math.max(0, dot) * 0.55, 0.7, 1.3) : 0.48;
+      const closeBoost = tooClose ? 3.2 : 1.0;
+      const rate = (this.state === "attack" ? 2.6 : 1.3 * detectMult) * stanceMult * distMult * coneMult * exposure * closeBoost;
       this.suspicion = Math.min(1, this.suspicion + rate * dt);
 
-      if (this.suspicion >= 0.42 && (this.state === "idle" || this.state === "patrol")) {
+      if (this.suspicion >= 0.36 && (this.state === "idle" || this.state === "patrol")) {
         this.state = "alert";
-        this.alertDelay = 0.2;
+        this.alertDelay = 0.14;
       }
       if (this.suspicion >= 1.0 && this.state !== "attack") {
         this.state = "attack";
@@ -401,18 +724,20 @@ export class Fighter {
           this.alerted = true;
           host.onAlert(this);
         }
-        this.burstTimer = Math.max(this.burstTimer, 0.25 + (1 - this.mission.enemyAccuracy) * 0.3);
-        this.broadcastAlert(p, 16);
+        this.burstTimer = Math.max(this.burstTimer, 0.22 + (1 - this.mission.enemyAccuracy) * 0.28);
+        this.broadcastAlert(this.lastSeen, 20);
       }
       this.sightLost = 0;
     } else {
-      this.suspicion = Math.max(0, this.suspicion - (this.state === "attack" ? 0.13 : 0.26) * dt);
+      const decayRate = this.state === "attack" ? 0.11 : this.searchTimer > 0 ? 0.08 : 0.22;
+      this.suspicion = Math.max(0, this.suspicion - decayRate * dt);
       if (this.state === "attack") {
         this.sightLost += dt;
         // lose pursuit if player breaks line-of-sight and vanishes
-        if (this.sightLost > 6.5) {
+        if (this.sightLost > 7.2) {
           this.state = "alert";
-          this.suspicion = 0.55;
+          this.suspicion = 0.6;
+          this.searchTimer = 3.6;
         }
       }
     }
@@ -438,20 +763,39 @@ export class Fighter {
       } else {
         [mvx, mvz] = this.steerAroundWalls(my, wdx / wd, wdz / wd);
       }
-    } else if (this.state === "alert" && this.alertDelay <= 0 && !holdPerch) {
-      const ldx = this.lastSeen.x - my.x;
-      const ldz = this.lastSeen.z - my.z;
-      const ld = Math.hypot(ldx, ldz);
-      if (ld < 1.8) {
-        this.state = this.spawn.mode === "patrol" ? "patrol" : "idle";
+    } else if (this.state === "alert" && this.alertDelay <= 0) {
+      if (holdPerch) {
+        // Elevated guards sweep toward lastSeen without stepping off perch
+        if (this.searchTimer <= 0) {
+          this.searchTimer = 2.6;
+          this.searchYaw = Math.atan2(this.lastSeen.x - my.x, this.lastSeen.z - my.z);
+        }
+        this.searchTimer -= dt;
+        if (this.searchTimer <= 0 && this.suspicion < 0.2) {
+          this.state = "idle";
+        }
+      } else if (this.searchTimer > 0) {
+        // Reached investigation point: hold and scan left/right before standing down
+        this.searchTimer -= dt;
+        if (this.searchTimer <= 0) {
+          this.state = this.spawn.mode === "patrol" ? "patrol" : "idle";
+        }
       } else {
-        // advance/roam units flank slightly around corners instead of marching single-file
-        const flankAng = this.spawn.mode === "advance" ? this.flankSign * 0.45 : 0;
-        const ca = Math.cos(flankAng);
-        const sa = Math.sin(flankAng);
-        const fx = (ldx / ld) * ca - (ldz / ld) * sa;
-        const fz = (ldx / ld) * sa + (ldz / ld) * ca;
-        [mvx, mvz] = this.steerAroundWalls(my, fx, fz);
+        const ldx = this.lastSeen.x - my.x;
+        const ldz = this.lastSeen.z - my.z;
+        const ld = Math.hypot(ldx, ldz);
+        if (ld < 2.0) {
+          this.searchTimer = 3.4;
+          this.searchYaw = ld > 0.2 ? Math.atan2(ldx, ldz) : rig.aimYaw;
+        } else {
+          // advance/roam units flank slightly around corners instead of marching single-file
+          const flankAng = this.spawn.mode === "advance" ? this.flankSign * 0.45 : 0;
+          const ca = Math.cos(flankAng);
+          const sa = Math.sin(flankAng);
+          const fx = (ldx / ld) * ca - (ldz / ld) * sa;
+          const fz = (ldx / ld) * sa + (ldz / ld) * ca;
+          [mvx, mvz] = this.steerAroundWalls(my, fx, fz);
+        }
       }
     } else if (this.state === "attack") {
       const pref = opts.prefDist;
@@ -510,7 +854,8 @@ export class Fighter {
       }
 
       // burst fire (with controlled pacing & reload awareness)
-      if (opts.canFire && sees && dist < 42 && !rig.isReloading) {
+      const fireRange = this.role === "sniper" ? 64 : 42;
+      if (opts.canFire && sees && dist < fireRange && !rig.isReloading) {
         this.burstTimer -= dt;
         if (this.burstTimer <= 0 && !rig.dead) {
           rig.fire();
@@ -540,33 +885,52 @@ export class Fighter {
     }
     this.prevPos.copy(my);
 
-    // ---- aim at player (or patrol heading / sentinel sweep when unaware!)
-    const aimTarget = sees ? p : this.state === "alert" || this.state === "attack" ? this.lastSeen : null;
-    if (aimTarget && dist > 0.001) {
+    // ---- aim at player (or investigation / search sweep / sentinel sweep)
+    const aimTarget = sees ? visibleAim : this.state === "alert" || this.state === "attack" ? this.lastSeen : null;
+    if (aimTarget) {
       const adx = aimTarget.x - my.x;
       const adz = aimTarget.z - my.z;
       const ad = Math.hypot(adx, adz) || 1;
-      rig.aimYaw = Math.atan2(adx / ad, adz / ad);
-      const dy = aimTarget.y - (my.y + 1.5);
-      rig.aimPitch = Math.atan2(dy, ad);
-      rig.aimPoint.set(aimTarget.x, aimTarget.y, aimTarget.z);
-      this.aimPoint.set(aimTarget.x, aimTarget.y, aimTarget.z);
+      let targetYaw = Math.atan2(adx / ad, adz / ad);
+      if (!sees && this.state === "alert" && this.searchTimer > 0) {
+        this.yawSweep += dt * 1.9;
+        targetYaw = this.searchYaw + Math.sin(this.yawSweep) * 1.1;
+      }
+      const turnRate = this.state === "attack" ? 11.5 : 6.8;
+      rig.aimYaw = stepYaw(rig.aimYaw, targetYaw, turnRate * dt);
+      const targetY = Math.max(aimTarget.y, my.y + 0.65);
+      const dy = targetY - (my.y + 1.5);
+      rig.aimPitch = !sees && this.state === "alert" && this.searchTimer > 0 ? -0.05 : Math.atan2(dy, ad);
+      if (!sees && this.state === "alert" && this.searchTimer > 0) {
+        rig.aimPoint.set(my.x + Math.sin(rig.aimYaw) * 14, my.y + 1.25, my.z + Math.cos(rig.aimYaw) * 14);
+        this.aimPoint.copy(rig.aimPoint);
+      } else {
+        rig.aimPoint.set(aimTarget.x, targetY, aimTarget.z);
+        this.aimPoint.copy(rig.aimPoint);
+      }
     } else if (this.state === "patrol" && (mvx !== 0 || mvz !== 0)) {
       this.yawSweep += dt * 1.1;
-      rig.aimYaw = Math.atan2(mvx, mvz) + Math.sin(this.yawSweep) * 0.24;
+      const targetYaw = Math.atan2(mvx, mvz) + Math.sin(this.yawSweep) * 0.24;
+      rig.aimYaw = stepYaw(rig.aimYaw, targetYaw, 4.2 * dt);
       rig.aimPitch = -0.05;
       rig.aimPoint.set(my.x + Math.sin(rig.aimYaw) * 18, my.y + 1.25, my.z + Math.cos(rig.aimYaw) * 18);
     } else {
       this.yawSweep += dt * 0.65;
-      rig.aimYaw = this.baseYaw + Math.sin(this.yawSweep) * 0.65;
+      const targetYaw = this.baseYaw + Math.sin(this.yawSweep) * 0.65;
+      rig.aimYaw = stepYaw(rig.aimYaw, targetYaw, 3.2 * dt);
       rig.aimPitch = -0.05;
       rig.aimPoint.set(my.x + Math.sin(rig.aimYaw) * 18, my.y + 1.25, my.z + Math.cos(rig.aimYaw) * 18);
+    }
+
+    if (this.sniperLaser) {
+      this.sniperLaser.visible = !this.dead && (this.state === "alert" || this.state === "attack");
     }
 
     const mv = rig.input.move;
     mv.set(mvx, 0, mvz);
     if (mv.lengthSq() > 0.0004) mv.normalize();
-    rig.input.sprint = (this.state === "attack" || this.state === "alert") && !sees && dist > 14 && !holdPerch;
+    if (this.role === "heavy") mv.multiplyScalar(0.76);
+    rig.input.sprint = this.role !== "heavy" && (this.state === "attack" || this.state === "alert") && !sees && dist > 14 && !holdPerch;
     rig.input.crouch =
       this.coverTimer > 0 ||
       rig.isReloading ||
@@ -582,8 +946,10 @@ export class Fighter {
 export class Enemy extends Fighter {
   constructor(host: CombatHost, spawn: EnemySpawn, mission: MissionDef) {
     const boss = !!spawn.boss;
-    const hp = boss ? (spawn.name && BOSS_HP[spawn.name] ? BOSS_HP[spawn.name] : mission.enemyHp * 2) : mission.enemyHp;
-    super(host, spawn, mission, hp, boss);
+    const diffHp = host.difficultyScale?.().hp ?? 1;
+    const roleHp = spawn.role === "heavy" ? 1.65 : spawn.role === "sniper" ? 0.85 : 1;
+    const baseHp = boss ? (spawn.name && BOSS_HP[spawn.name] ? BOSS_HP[spawn.name] : mission.enemyHp * 2) : mission.enemyHp;
+    super(host, spawn, mission, Math.round(baseHp * roleHp * diffHp), boss);
   }
 
   update(dt: number) {
@@ -592,8 +958,8 @@ export class Enemy extends Fighter {
       return;
     }
     this.aiUpdate(dt, {
-      prefDist: this.boss ? 13 : 9,
-      burstSize: this.boss ? 4 : 3,
+      prefDist: this.boss ? 13 : this.role === "sniper" ? 22 : this.role === "heavy" ? 6.5 : 9,
+      burstSize: this.boss ? 4 : this.role === "sniper" ? 1 : this.role === "heavy" ? 5 : 3,
       canFire: true,
     });
   }
@@ -723,9 +1089,12 @@ export class RescueNPC {
   constructor(readonly x: number, readonly z: number, readonly y = 0) {}
 
   async build(scene: THREE.Object3D, tint: [number, number]) {
-    this.rig = await SoldierRig.load(scene);
-    this.rig.setTint(tint[0], tint[1]);
-    this.rig.equipment?.setVisible(false);
+    const modelUrl = typeof window !== "undefined" ? characterUrl("civilian") : undefined;
+    this.rig = await SoldierRig.load(scene, undefined, modelUrl);
+    if (!this.rig.isRocketbox) {
+      this.rig.setTint(tint[0], tint[1]);
+      this.rig.equipment?.setVisible(false);
+    }
     this.rig.setHeightScale(0.97);
     this.rig.root.position.set(this.x, this.y, this.z);
     scene.add(this.rig.root);

@@ -11,6 +11,7 @@ export interface CharacterDef {
 }
 
 export const CHARACTERS: CharacterDef[] = [
+  { id: "vanguard", name: "Vanguard Tactical", blurb: "Modular armored rig — full camo, finish, visor & gear." },
   { id: "military", name: "Military", blurb: "Full camo kit, helmet and vest." },
   { id: "civilian", name: "Civilian", blurb: "Jacket and jeans." },
   { id: "police", name: "Police", blurb: "Uniform and cap." },
@@ -20,9 +21,6 @@ export const CHARACTERS: CharacterDef[] = [
   { id: "business", name: "Business", blurb: "Suit and tie." },
   { id: "sports", name: "Sports", blurb: "Athletic kit." },
   { id: "delivery", name: "Delivery", blurb: "Courier uniform." },
-  { id: "woman", name: "Woman", blurb: "Casual outfit." },
-  { id: "police-woman", name: "Policewoman", blurb: "Uniform and cap." },
-  { id: "sportswoman", name: "Sportswoman", blurb: "Athletic kit." },
 ];
 
 export const DEFAULT_CHARACTER = "military";
@@ -35,7 +33,8 @@ export function characterUrl(id: string): string {
 }
 
 export function characterPreview(id: string): string {
-  return `${base}characters/previews/${id}.png`;
+  const previewId = id === "vanguard" ? "military" : id;
+  return `${base}characters/previews/${previewId}.png`;
 }
 
 export function loadCharacterId(): string {

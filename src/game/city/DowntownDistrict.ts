@@ -1,14 +1,20 @@
 import * as THREE from "three";
+import { materialFor } from "../kit/surface";
 import type { CityChunk } from "./ChunkStreamer";
 import type { RoadNetwork } from "./RoadNetwork";
 import type { WalkableSurface, WorldHeightSystem } from "./HeightSystem";
 import {
+  addFacadeRelief,
   addLodBox,
+  addPavedPlazaApron,
+  addRooftopDetails,
   addSolidBox,
+  addStorefrontBay,
   addVisualBox,
   CityChunkDispatcher,
   createFacadeMaterial,
   isFootprintClearOfRoads,
+  registerNightGlowMaterial,
   type FacadeStyle,
 } from "./CityBuildingKit";
 
@@ -64,27 +70,34 @@ function buildSkyscraper(chunk: CityChunk, spec: SkyscraperSpec, groundY: number
     emissiveIntensity: 0.35,
     roughness: 0.5,
   });
-  const beaconMat = new THREE.MeshStandardMaterial({
-    color: 0xff3b30,
-    emissive: 0xff2a1f,
-    emissiveIntensity: 2.5,
-    roughness: 0.25,
-  });
+  const beaconMat = registerNightGlowMaterial(
+    new THREE.MeshStandardMaterial({
+      color: 0xff3b30,
+      emissive: 0xff2a1f,
+      emissiveIntensity: 0.9,
+      roughness: 0.25,
+    }),
+    0.9,
+    3.6,
+  );
 
-  // Podium base
+  // Podium base + paved urban plaza apron
   const podMat = createFacadeMaterial("granite_dark", Math.round(w / 5), Math.max(1, Math.round(podiumH / 4)));
+  addPavedPlazaApron(chunk.nearGroup, x, groundY, z, w, d, ry);
   addSolidBox(chunk, x, groundY, z, w, podiumH, d, podMat, ry, "concrete");
 
-  // Main tower shaft
+  // Main tower shaft + exterior 3D curtainwall pilasters & spandrel cornice ledges
   const shaftW = w * 0.84;
   const shaftD = d * 0.84;
   const shaftH = Math.max(12, h - podiumH - (spec.crown === "stepped" ? 16 : 0));
   const shaftMat = createFacadeMaterial(style, Math.round(shaftW / 4.5), Math.max(2, Math.round(shaftH / 4.5)));
   addSolidBox(chunk, x, groundY + podiumH, z, shaftW, shaftH, shaftD, shaftMat, ry, "concrete");
+  addFacadeRelief(chunk.nearGroup, x, groundY + podiumH, z, shaftW, shaftH, shaftD, ry, { pilasterMat: darkMetal });
 
-  // Ground-floor recessed dark glass lobby band & canopy
+  // Ground-floor recessed dark glass lobby band & canopy + architectural mullions & street furniture
   addVisualBox(chunk.nearGroup, x, groundY + 0.1, z, w + 0.4, 3.6, d + 0.4, lobbyMat, ry, false, true);
   addVisualBox(chunk.nearGroup, x, groundY + 3.8, z, w + 1.8, 0.45, d + 1.8, darkMetal, ry, true, true);
+  addStorefrontBay(chunk.nearGroup, x, groundY, z, w, d, ry, darkMetal);
 
   let topY = groundY + podiumH + shaftH;
 
@@ -93,15 +106,48 @@ function buildSkyscraper(chunk: CityChunk, spec: SkyscraperSpec, groundY: number
     const tierMat = createFacadeMaterial(style, Math.round((shaftW * 0.68) / 4.5), 3);
     addSolidBox(chunk, x, topY, z, shaftW * 0.68, tierH, shaftD * 0.68, tierMat, ry, "concrete");
     topY += tierH;
+    addVisualBox(chunk.nearGroup, x, topY - 0.9, z, shaftW * 0.71, 0.45, shaftD * 0.71, helipadYellow, ry);
   }
 
-  // Parapet trim + rooftop mechanical penthouse
-  addVisualBox(chunk.nearGroup, x, topY, z, shaftW * 0.7 + 0.6, 1.1, shaftD * 0.7 + 0.6, darkMetal, ry);
+  // Parapet trim + illuminated crown accent band + rooftop mechanical penthouse
+  const crownGlow = registerNightGlowMaterial(
+    new THREE.MeshStandardMaterial({
+      color: spec.style === "glass_gold" ? 0xfde68a : 0x7dd3fc,
+      emissive: spec.style === "glass_gold" ? 0xd97706 : 0x0284c7,
+      emissiveIntensity: 0.3,
+      roughness: 0.25,
+    }),
+    0.3,
+    2.8,
+  );
+  const crownW = shaftW * (spec.crown === "stepped" ? 0.68 : 1);
+  const crownD = shaftD * (spec.crown === "stepped" ? 0.68 : 1);
+  addVisualBox(chunk.nearGroup, x, topY, z, crownW + 0.6, 1.1, crownD + 0.6, darkMetal, ry);
+  addVisualBox(chunk.nearGroup, x, topY - 0.15, z, crownW + 0.72, 0.22, crownD + 0.72, crownGlow, ry, false, false);
   addVisualBox(chunk.nearGroup, x, topY, z, shaftW * 0.34, 3.2, shaftD * 0.34, padMat, ry);
+  if (spec.crown !== "helipad") {
+    addRooftopDetails(chunk.nearGroup, x, topY, z, crownW, crownD, ry, { tall: false });
+  }
 
   if (spec.crown === "spire") {
+    const cyanFinMat = registerNightGlowMaterial(
+      new THREE.MeshStandardMaterial({
+        color: 0x38bdf8,
+        emissive: 0x0284c7,
+        emissiveIntensity: 0.35,
+        roughness: 0.25,
+      }),
+      0.35,
+      3.0,
+    );
     const spireBase = addVisualBox(chunk.nearGroup, x, topY + 3.2, z, 3.2, 10, 3.2, darkMetal, ry);
     void spireBase;
+    // Illuminated vertical corner fins framing the spire crown
+    const fw = shaftW * 0.34;
+    const fd = shaftD * 0.34;
+    for (const [fx, fz] of [[-fw, -fd], [fw, -fd], [-fw, fd], [fw, fd]]) {
+      addVisualBox(chunk.nearGroup, x + fx, topY + 0.5, z + fz, 0.55, 8.5, 0.55, cyanFinMat, ry);
+    }
     const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.55, 22, 8), darkMetal);
     mast.position.set(x, topY + 13.2 + 11, z);
     mast.castShadow = true;
@@ -121,10 +167,23 @@ function buildSkyscraper(chunk: CityChunk, spec: SkyscraperSpec, groundY: number
     ring.position.set(x, topY + 0.4, z);
     chunk.nearGroup.add(ring);
 
-    // H marking
+    // H marking + 4 corner amber perimeter beacons
     addVisualBox(chunk.nearGroup, x - 1.6, topY + 0.38, z, 0.65, 0.05, 4.4, helipadYellow, ry, false, false);
     addVisualBox(chunk.nearGroup, x + 1.6, topY + 0.38, z, 0.65, 0.05, 4.4, helipadYellow, ry, false, false);
     addVisualBox(chunk.nearGroup, x, topY + 0.38, z, 3.2, 0.05, 0.65, helipadYellow, ry, false, false);
+    for (const a of [0, Math.PI * 0.5, Math.PI, Math.PI * 1.5]) {
+      addVisualBox(
+        chunk.nearGroup,
+        x + Math.cos(a) * 6.8,
+        topY + 0.45,
+        z + Math.sin(a) * 6.8,
+        0.35,
+        0.28,
+        0.35,
+        helipadYellow,
+        0,
+      );
+    }
   }
 
   // Distant LOD skyline silhouette
@@ -135,9 +194,9 @@ function buildSkyscraper(chunk: CityChunk, spec: SkyscraperSpec, groundY: number
 function buildLegionSquareAndMetro(chunk: CityChunk, groundY: number): void {
   const x = 12;
   const z = -172;
-  const graniteMat = new THREE.MeshStandardMaterial({ color: 0xb9b4aa, roughness: 0.85, metalness: 0.05 });
-  const darkStoneMat = new THREE.MeshStandardMaterial({ color: 0x565a61, roughness: 0.8, metalness: 0.1 });
-  const turfMat = new THREE.MeshStandardMaterial({ color: 0x436d3a, roughness: 0.94, metalness: 0.0 });
+  const graniteMat = materialFor(0xb9b4aa, { roughness: 0.84, metalness: 0.05, family: "stone", seed: 301, repeat: 14 });
+  const darkStoneMat = materialFor(0x565a61, { roughness: 0.8, metalness: 0.1, family: "stone", seed: 302, repeat: 4 });
+  const turfMat = materialFor(0x436d3a, { roughness: 0.94, family: "grass", seed: 303, repeat: 4 });
   const waterMat = new THREE.MeshStandardMaterial({
     color: 0x2a8aa6,
     emissive: 0x104456,
@@ -150,13 +209,31 @@ function buildLegionSquareAndMetro(chunk: CityChunk, groundY: number): void {
   // Tiered plaza deck (walkable)
   addSolidBox(chunk, x, groundY - 0.1, z, 52, 0.3, 52, graniteMat, 0, "concrete", false, true);
 
-  // Corner landscaped planter beds
+  // Corner landscaped planter beds + seating benches, perimeter bollards & pergola trellises
+  const woodBench = materialFor(0x7c5234, { roughness: 0.78, family: "wood", seed: 304 });
+  const bollardMetal = materialFor(0x272e36, { roughness: 0.42, metalness: 0.78, family: "metal", seed: 305 });
+  const warmCap = registerNightGlowMaterial(
+    new THREE.MeshStandardMaterial({ color: 0xfff3d4, emissive: 0xffc866, emissiveIntensity: 0.25 }),
+    0.25,
+    3.2,
+  );
   for (const [ox, oz] of [[-18, -18], [18, -18], [-18, 18], [18, 18]]) {
     addSolidBox(chunk, x + ox, groundY + 0.2, z + oz, 10, 0.5, 10, darkStoneMat, 0, "concrete");
     addVisualBox(chunk.nearGroup, x + ox, groundY + 0.65, z + oz, 8.8, 0.12, 8.8, turfMat, 0, false, true);
+    // Corner plaza benches facing fountain + overhead pergola beam + glowing lamp column
+    addVisualBox(chunk.nearGroup, x + ox * 0.62, groundY + 0.55, z + oz * 0.62, 2.2, 0.12, 0.55, woodBench, Math.atan2(-ox, -oz));
+    addVisualBox(chunk.nearGroup, x + ox * 1.12, groundY + 0.2, z + oz * 1.12, 0.28, 0.9, 0.28, bollardMetal, 0);
+    addVisualBox(chunk.nearGroup, x + ox * 1.12, groundY + 1.12, z + oz * 1.12, 0.24, 0.14, 0.24, warmCap, 0);
+    addVisualBox(chunk.nearGroup, x + ox * 0.52, groundY + 0.2, z + oz * 0.52, 0.18, 3.8, 0.18, bollardMetal, 0);
+    addVisualBox(chunk.nearGroup, x + ox * 0.52, groundY + 4.0, z + oz * 0.52, 0.48, 0.48, 0.48, warmCap, 0);
+    // Timber pergola posts & crossbeams over corner beds
+    for (const px of [-3.6, 3.6]) {
+      addVisualBox(chunk.nearGroup, x + ox + px, groundY + 2.2, z + oz, 0.2, 3.4, 0.2, woodBench, 0);
+    }
+    addVisualBox(chunk.nearGroup, x + ox, groundY + 3.9, z + oz, 8.0, 0.18, 1.4, woodBench, 0);
   }
 
-  // Central reflecting pool & bronze civic monument
+  // Central reflecting pool, animated-look fountain spray plumes & bronze civic monument
   const rim = new THREE.Mesh(new THREE.CylinderGeometry(9.6, 10.2, 0.55, 28), darkStoneMat);
   rim.position.set(x, groundY + 0.45, z);
   rim.receiveShadow = true;
@@ -165,6 +242,23 @@ function buildLegionSquareAndMetro(chunk: CityChunk, groundY: number): void {
   const basin = new THREE.Mesh(new THREE.CylinderGeometry(8.6, 8.6, 0.45, 28), waterMat);
   basin.position.set(x, groundY + 0.54, z);
   chunk.nearGroup.add(basin);
+
+  const sprayMat = new THREE.MeshStandardMaterial({
+    color: 0xe0f7ff,
+    emissive: 0x38bdf8,
+    emissiveIntensity: 0.45,
+    transparent: true,
+    opacity: 0.72,
+    roughness: 0.15,
+  });
+  for (let j = 0; j < 8; j++) {
+    const a = (j / 8) * Math.PI * 2;
+    const plume = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.26, 2.4, 8), sprayMat);
+    plume.position.set(x + Math.cos(a) * 5.2, groundY + 1.8, z + Math.sin(a) * 5.2);
+    plume.rotation.z = Math.cos(a) * 0.24;
+    plume.rotation.x = -Math.sin(a) * 0.24;
+    chunk.nearGroup.add(plume);
+  }
 
   addSolidBox(chunk, x, groundY + 0.2, z, 3.2, 2.2, 3.2, darkStoneMat, 0, "concrete");
   const sculpture = new THREE.Mesh(new THREE.OctahedronGeometry(2.1, 0), bronzeMat);
@@ -202,7 +296,16 @@ function buildLegionSquareAndMetro(chunk: CityChunk, groundY: number): void {
   arch.position.set(mx, groundY + 3.5, mz);
   chunk.nearGroup.add(arch);
 
-  // Glowing Metro sign totem
+  // Glowing Metro sign totem + steel arch ribs across glass canopy + subway stair portal & handrails
+  for (let rz = -5.2; rz <= 5.2; rz += 2.6) {
+    const rib = new THREE.Mesh(new THREE.TorusGeometry(4.55, 0.1, 6, 14, Math.PI), steelMat);
+    rib.rotation.y = Math.PI * 0.5;
+    rib.position.set(mx, groundY + 3.5, mz + rz);
+    chunk.nearGroup.add(rib);
+  }
+  addVisualBox(chunk.nearGroup, mx, groundY + 0.12, mz, 6.2, 0.2, 9.6, steelMat, 0);
+  addVisualBox(chunk.nearGroup, mx, groundY + 3.1, mz - 5.1, 7.6, 0.7, 0.3, metroBlueMat, 0);
+  addVisualBox(chunk.nearGroup, mx, groundY + 0.55, mz + 0.5, 0.12, 0.95, 8.8, steelMat, 0);
   addSolidBox(chunk, mx + 5.6, groundY, mz + 5.2, 0.7, 5.2, 0.7, steelMat, 0, "metal");
   addVisualBox(chunk.nearGroup, mx + 5.6, groundY + 4.4, mz + 5.2, 1.4, 1.4, 0.85, metroBlueMat, 0);
 }
@@ -216,9 +319,17 @@ function buildCityHall(chunk: CityChunk, groundY: number): void {
   const copperDomeMat = new THREE.MeshStandardMaterial({ color: 0x4d8a78, roughness: 0.52, metalness: 0.45 });
   const goldMat = new THREE.MeshStandardMaterial({ color: 0xd6ac49, roughness: 0.3, metalness: 0.85 });
 
-  // Walkable tiered front granite stairs facing West (-X toward art_downtown_n)
+  // Walkable tiered front granite stairs facing West (-X toward art_downtown_n) + flanking bronze civic flagpoles
+  const flagBlue = new THREE.MeshStandardMaterial({ color: 0x1d4ed8, roughness: 0.7 });
+  const warmGlow = new THREE.MeshStandardMaterial({ color: 0xfff3d4, emissive: 0xffc866, emissiveIntensity: 1.5 });
   for (let s = 0; s < 5; s++) {
     addSolidBox(chunk, x - 20.5 + s * 1.1, groundY, z, 2.2, (s + 1) * 0.34, 22, trimMat, 0, "concrete");
+  }
+  for (const sz of [z - 12.2, z + 12.2]) {
+    addSolidBox(chunk, x - 21.8, groundY, sz, 2.2, 2.4, 2.2, trimMat, 0, "concrete");
+    addVisualBox(chunk.nearGroup, x - 21.8, groundY + 2.4, sz, 1.3, 2.2, 1.3, goldMat, 0);
+    addVisualBox(chunk.nearGroup, x - 21.8, groundY + 7.2, sz, 0.14, 9.5, 0.14, goldMat, 0);
+    addVisualBox(chunk.nearGroup, x - 21.8, groundY + 10.6, sz + 1.1, 0.08, 1.35, 2.2, flagBlue, 0);
   }
 
   // Main courthouse body & portico deck
@@ -226,31 +337,69 @@ function buildCityHall(chunk: CityChunk, groundY: number): void {
   addSolidBox(chunk, x, groundY, z - 20, 26, 14, 12, stoneMat, 0, "concrete");
   addSolidBox(chunk, x, groundY, z + 20, 26, 14, 12, stoneMat, 0, "concrete");
 
-  // 6 Front Colonnade Pillars
+  // 6 Front Colonnade Pillars with classical plinth bases, uplights & capitals + triangular portico pediment
   for (let i = -2.5; i <= 2.5; i += 1) {
-    const col = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 0.72, 13.5, 12), trimMat);
-    col.position.set(x - 19.6, groundY + 1.7 + 6.75, z + i * 3.6);
+    const pz = z + i * 3.6;
+    const col = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 0.72, 13.5, 14), trimMat);
+    col.position.set(x - 19.6, groundY + 1.7 + 6.75, pz);
     col.castShadow = true;
     col.receiveShadow = true;
     chunk.nearGroup.add(col);
     chunk.colliders.push(col);
+    addVisualBox(chunk.nearGroup, x - 19.6, groundY + 1.7, pz, 1.65, 0.5, 1.65, trimMat, 0);
+    addVisualBox(chunk.nearGroup, x - 20.5, groundY + 2.05, pz, 0.25, 0.14, 0.45, warmGlow, 0);
+    addVisualBox(chunk.nearGroup, x - 19.6, groundY + 14.75, pz, 1.65, 0.55, 1.65, trimMat, 0);
   }
   addSolidBox(chunk, x - 19.4, groundY + 15.2, z, 4.2, 2.2, 22, trimMat, 0, "concrete");
+  const pedShape = new THREE.Shape();
+  pedShape.moveTo(-11.2, 0);
+  pedShape.lineTo(11.2, 0);
+  pedShape.lineTo(0, 3.6);
+  pedShape.closePath();
+  const pedGeo = new THREE.ExtrudeGeometry(pedShape, { depth: 4.4, bevelEnabled: false });
+  pedGeo.rotateY(Math.PI * 0.5);
+  const pediment = new THREE.Mesh(pedGeo, trimMat);
+  pediment.position.set(x - 21.6, groundY + 17.4, z);
+  pediment.castShadow = true;
+  chunk.nearGroup.add(pediment);
 
-  // Central drum & copper dome
-  const drum = new THREE.Mesh(new THREE.CylinderGeometry(9.5, 10.2, 8.5, 20), trimMat);
+  // Central drum with pilasters & copper-ribbed dome + lantern cupola + flagpole
+  const drum = new THREE.Mesh(new THREE.CylinderGeometry(9.5, 10.2, 8.5, 24), trimMat);
   drum.position.set(x, groundY + 17 + 4.25, z);
   drum.castShadow = true;
   chunk.nearGroup.add(drum);
+  for (let p = 0; p < 12; p++) {
+    const a = (p / 12) * Math.PI * 2;
+    addVisualBox(
+      chunk.nearGroup,
+      x + Math.cos(a) * 9.85,
+      groundY + 17.2,
+      z + Math.sin(a) * 9.85,
+      0.7,
+      8.2,
+      0.7,
+      trimMat,
+      -a,
+    );
+  }
 
-  const dome = new THREE.Mesh(new THREE.SphereGeometry(9.4, 20, 12, 0, Math.PI * 2, 0, Math.PI * 0.5), copperDomeMat);
+  const dome = new THREE.Mesh(new THREE.SphereGeometry(9.4, 24, 14, 0, Math.PI * 2, 0, Math.PI * 0.5), copperDomeMat);
   dome.position.set(x, groundY + 25.5, z);
   dome.castShadow = true;
   chunk.nearGroup.add(dome);
+  for (let r = 0; r < 6; r++) {
+    const rib = new THREE.Mesh(new THREE.TorusGeometry(9.45, 0.14, 6, 18, Math.PI), goldMat);
+    rib.rotation.y = (r / 6) * Math.PI;
+    rib.position.set(x, groundY + 25.5, z);
+    chunk.nearGroup.add(rib);
+  }
 
-  const lantern = new THREE.Mesh(new THREE.CylinderGeometry(1.1, 1.4, 4.2, 10), goldMat);
+  const lantern = new THREE.Mesh(new THREE.CylinderGeometry(1.1, 1.4, 4.2, 12), goldMat);
   lantern.position.set(x, groundY + 35.8, z);
   chunk.nearGroup.add(lantern);
+  const spireTip = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.14, 5.5, 8), goldMat);
+  spireTip.position.set(x, groundY + 40.5, z);
+  chunk.nearGroup.add(spireTip);
 
   addLodBox(chunk, x, groundY, z, 38, 22, 54, 0xc7c0b0);
   addLodBox(chunk, x, groundY + 22, z, 18, 16, 18, 0x578c7c);
@@ -264,14 +413,17 @@ function buildUnionDepository(chunk: CityChunk, groundY: number): void {
   const pierMat = new THREE.MeshStandardMaterial({ color: 0x5c6066, roughness: 0.78, metalness: 0.12 });
   const bronzeMat = new THREE.MeshStandardMaterial({ color: 0x9c7b43, roughness: 0.35, metalness: 0.85 });
 
-  // Heavy vault core
+  // Heavy vault core + paved granite plaza apron
+  addPavedPlazaApron(chunk.nearGroup, x, groundY, z, 38, 34, 0);
   addSolidBox(chunk, x, groundY, z, 36, 46, 32, graniteMat, 0, "concrete");
 
-  // Deeply recessed colonnade piers along West & South facades
+  // Deeply recessed colonnade piers along West & East facades + bronze vault cornice
   for (let i = -3; i <= 3; i++) {
     addSolidBox(chunk, x - 18.6, groundY, z + i * 4.4, 1.6, 44, 1.4, pierMat, 0, "concrete");
+    addSolidBox(chunk, x + 18.6, groundY, z + i * 4.4, 1.6, 44, 1.4, pierMat, 0, "concrete");
   }
   addVisualBox(chunk.nearGroup, x, groundY + 45.2, z, 38.4, 2.2, 34.4, bronzeMat, 0);
+  addRooftopDetails(chunk.nearGroup, x, groundY + 47.4, z, 34, 30, 0, { tall: true, seed: 31 });
 
   // Armored truck loading bay canopy + security bollards along West plaza
   addSolidBox(chunk, x - 21, groundY + 5.5, z + 6, 4.5, 0.8, 10, pierMat, 0, "concrete");
@@ -302,16 +454,30 @@ function buildPoliceHQ(chunk: CityChunk, groundY: number): void {
   addVisualBox(chunk.nearGroup, px + 4, groundY + 16, pz, 8, 2.5, 6, pdTrim, 0);
   addLodBox(chunk, px, groundY, pz, 32, 17, 22, 0x738294);
 
-  // Impound Lot adjacent at (146, 66)
+  // Impound Lot adjacent at (146, 66) + rooftop Police Helipad & Radio Mast + Gatehouse Barrier Arm
   const ix = 146;
   const iz = 66;
   const asphalt = new THREE.MeshStandardMaterial({ color: 0x32363c, roughness: 0.9 });
+  const yellowMat = new THREE.MeshStandardMaterial({ color: 0xfacc15, roughness: 0.55 });
+  // Rooftop Helipad circle & H bars + radio mast
+  const padRing = new THREE.Mesh(new THREE.RingGeometry(4.2, 4.7, 24), yellowMat);
+  padRing.rotation.x = -Math.PI * 0.5;
+  padRing.position.set(px - 6, groundY + 16.06, pz);
+  chunk.nearGroup.add(padRing);
+  addVisualBox(chunk.nearGroup, px - 6 - 1.3, groundY + 16.06, pz, 0.55, 0.04, 3.2, yellowMat, 0);
+  addVisualBox(chunk.nearGroup, px - 6 + 1.3, groundY + 16.06, pz, 0.55, 0.04, 3.2, yellowMat, 0);
+  addVisualBox(chunk.nearGroup, px - 6, groundY + 16.06, pz, 2.6, 0.04, 0.55, yellowMat, 0);
+  addVisualBox(chunk.nearGroup, px + 4, groundY + 18.5, pz, 0.22, 7.5, 0.22, pdTrim, 0);
+  addVisualBox(chunk.nearGroup, px + 4, groundY + 25.8, pz, 0.45, 0.45, 0.45, pdBlue, 0);
+
   addSolidBox(chunk, ix, groundY - 0.1, iz, 30, 0.2, 20, asphalt, 0, "concrete", false, true);
   addSolidBox(chunk, ix, groundY, iz + 10, 30, 2.4, 0.4, fenceMat, 0, "metal");
   addSolidBox(chunk, ix + 15, groundY, iz, 0.4, 2.4, 20, fenceMat, 0, "metal");
   addSolidBox(chunk, ix - 15, groundY, iz + 5.5, 0.4, 2.4, 9, fenceMat, 0, "metal");
   addSolidBox(chunk, ix - 15, groundY, iz - 6.5, 0.4, 2.4, 7, fenceMat, 0, "metal");
   addSolidBox(chunk, ix - 13.5, groundY, iz - 2, 2.6, 2.8, 2.6, pdTrim, 0, "metal");
+  addVisualBox(chunk.nearGroup, ix - 14.9, groundY + 1.5, iz - 2, 0.15, 0.9, 1.8, pdBlue, 0);
+  addVisualBox(chunk.nearGroup, ix - 15.2, groundY + 1.15, iz + 0.2, 0.12, 0.14, 3.6, yellowMat, 0);
 }
 
 /** Downtown Fire Station #1 */
@@ -321,13 +487,25 @@ function buildFireStation(chunk: CityChunk, groundY: number): void {
   const brickMat = createFacadeMaterial("brick_red", 4, 2);
   const doorRedMat = new THREE.MeshStandardMaterial({ color: 0xb91c1c, roughness: 0.45, metalness: 0.35 });
   const roofMat = new THREE.MeshStandardMaterial({ color: 0x45494f, roughness: 0.85 });
+  const goldTrim = new THREE.MeshStandardMaterial({ color: 0xf59e0b, roughness: 0.35, metalness: 0.7 });
 
+  addPavedPlazaApron(chunk.nearGroup, fx - 4, groundY, fz, 30, 24, 0);
   addSolidBox(chunk, fx, groundY, fz, 24, 11, 20, brickMat, 0, "concrete");
   addVisualBox(chunk.nearGroup, fx, groundY + 11, fz, 24.6, 0.6, 20.6, roofMat, 0);
+  addVisualBox(chunk.nearGroup, fx - 12.1, groundY + 6.2, fz, 0.35, 0.55, 19.2, goldTrim, 0);
+  const lampMat = new THREE.MeshStandardMaterial({ color: 0xfff3d4, emissive: 0xffc866, emissiveIntensity: 1.8 });
   for (let b = -1; b <= 1; b++) {
     addVisualBox(chunk.nearGroup, fx - 12.05, groundY + 0.1, fz + b * 5.8, 0.3, 5.2, 4.4, doorRedMat, 0);
+    addVisualBox(chunk.nearGroup, fx - 12.18, groundY + 3.4, fz + b * 5.8, 0.12, 0.85, 3.4, roofMat, 0);
+    addVisualBox(chunk.nearGroup, fx - 12.2, groundY + 5.6, fz + b * 5.8, 0.25, 0.22, 1.2, lampMat, 0);
   }
+  // Hose-drying brick tower with louvered vents & pyramid cap
   addSolidBox(chunk, fx + 8, groundY + 11, fz - 6, 5.2, 10.5, 5.2, brickMat, 0, "concrete");
+  addVisualBox(chunk.nearGroup, fx + 8, groundY + 18.8, fz - 6, 5.4, 1.4, 5.4, roofMat, 0);
+  const cap = new THREE.Mesh(new THREE.ConeGeometry(3.9, 2.6, 4), doorRedMat);
+  cap.rotation.y = Math.PI * 0.25;
+  cap.position.set(fx + 8, groundY + 22.8, fz - 6);
+  chunk.nearGroup.add(cap);
   addLodBox(chunk, fx, groundY, fz, 24, 13, 20, 0x8a3d33);
 }
 
@@ -417,9 +595,15 @@ function buildParkingDeck(chunk: CityChunk, groundY: number, heightSystem: World
   addRamp("dt_park_ramp1", x - 11.5, z + 18, z - 2, groundY, groundY + h1);
   addRamp("dt_park_ramp2", x - 3.5, z - 2, z + 14, groundY + h1, groundY + h2);
 
-  // Rooftop yellow parking stall stripes
+  // Rooftop yellow parking stall stripes + solar carport canopy + glazed elevator headhouse
   for (let i = -3; i <= 3; i++) {
     addVisualBox(chunk.nearGroup, x + 9.5, groundY + h2 + 0.06, z + i * 4.5, 4.6, 0.04, 0.16, stripeMat, 0, false, false);
+  }
+  const solarMat = new THREE.MeshStandardMaterial({ color: 0x1e3a5f, roughness: 0.18, metalness: 0.72 });
+  for (const sz of [z - 6, z + 6]) {
+    addVisualBox(chunk.nearGroup, x + 10.2, groundY + h2 + 0.1, sz - 3.6, 0.25, 2.8, 0.25, trimMat, 0);
+    addVisualBox(chunk.nearGroup, x + 10.2, groundY + h2 + 0.1, sz + 3.6, 0.25, 2.8, 0.25, trimMat, 0);
+    addVisualBox(chunk.nearGroup, x + 10.2, groundY + h2 + 2.95, sz, 7.6, 0.14, 9.2, solarMat, 0);
   }
 
   addLodBox(chunk, x, groundY, z, w, h2 + 1.5, d, 0x797e85);
@@ -431,24 +615,39 @@ function buildRiverfrontAlleyBlock(chunk: CityChunk, groundY: number): void {
   const matB = createFacadeMaterial("concrete_mod", 4, 4);
   const dumpsterMat = new THREE.MeshStandardMaterial({ color: 0x265c3a, roughness: 0.72, metalness: 0.35 });
   const hvacMat = new THREE.MeshStandardMaterial({ color: 0x7b828a, roughness: 0.55, metalness: 0.6 });
-  const neonMat = new THREE.MeshStandardMaterial({
-    color: 0xff4d88,
-    emissive: 0xff2e74,
-    emissiveIntensity: 1.9,
-    roughness: 0.3,
-  });
+  const neonMat = registerNightGlowMaterial(
+    new THREE.MeshStandardMaterial({
+      color: 0xff4d88,
+      emissive: 0xff2e74,
+      emissiveIntensity: 0.35,
+      roughness: 0.3,
+    }),
+    0.35,
+    3.2,
+  );
 
-  // Two buildings flanking a 10m walkable alley at x = 362
+  // Two buildings flanking a 10m walkable paved alley at x = 362
+  const alleyFloor = new THREE.MeshStandardMaterial({ color: 0x3b4046, roughness: 0.9 });
+  addPavedPlazaApron(chunk.nearGroup, 363, groundY, 44, 64, 34, 0);
+  addVisualBox(chunk.nearGroup, 363, groundY + 0.06, 44, 18, 0.14, 34, alleyFloor, 0, false, true);
   addSolidBox(chunk, 342, groundY, 44, 22, 42, 32, matA, 0, "concrete");
   addSolidBox(chunk, 384, groundY, 44, 22, 34, 32, matB, 0, "concrete");
+  addRooftopDetails(chunk.nearGroup, 342, groundY + 42, 44, 22, 32, 0, { waterTower: true });
+  addRooftopDetails(chunk.nearGroup, 384, groundY + 34, 44, 22, 32, 0, { waterTower: false });
   addLodBox(chunk, 342, groundY, 44, 22, 42, 32, 0x7e4237);
   addLodBox(chunk, 384, groundY, 44, 22, 34, 32, 0x858a91);
 
-  // Alley props: dumpsters, AC units, glowing neon sign
+  // Alley props: dumpsters, AC units, wall-mounted steel fire escape landings & stairs, glowing neon sign
   addSolidBox(chunk, 355.5, groundY, 34, 2.2, 1.4, 3.2, dumpsterMat, 0, "metal");
   addSolidBox(chunk, 369.5, groundY, 52, 2.2, 1.4, 3.2, dumpsterMat, 0, "metal");
   addSolidBox(chunk, 354.5, groundY + 3.2, 46, 1.1, 1.0, 1.4, hvacMat, 0, "metal");
   addVisualBox(chunk.nearGroup, 353.3, groundY + 4.4, 31, 0.3, 1.2, 4.2, neonMat, 0);
+  for (let fl = 1; fl <= 4; fl++) {
+    const fy = groundY + fl * 7.2;
+    addVisualBox(chunk.nearGroup, 354.2, fy, 42, 2.2, 0.18, 5.4, hvacMat, 0);
+    addVisualBox(chunk.nearGroup, 355.25, fy + 0.55, 42, 0.08, 0.9, 5.4, hvacMat, 0);
+    addVisualBox(chunk.nearGroup, 354.2, fy - 3.6, 42, 0.14, 7.6, 0.65, hvacMat, 0, false, false);
+  }
 }
 
 /**

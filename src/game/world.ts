@@ -55,7 +55,7 @@ function tex(c: HTMLCanvasElement, rep: number, srgb = true) {
   const t = new THREE.CanvasTexture(c);
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
   t.repeat.set(rep, rep);
-  t.anisotropy = 16;
+  t.anisotropy = 4;
   if (srgb) t.colorSpace = THREE.SRGBColorSpace;
   return t;
 }
@@ -488,10 +488,11 @@ export function buildWorld(content: THREE.Object3D, main: THREE.Scene, renderer:
   decal(puddleCanvas(256), 1.9, 1.5, 5, 0.013, 38, -0.3);
   const crackC = crackCanvas(256);
   for (let i = 0; i < 4; i++) decal(crackC, 3, 3, -8 + Math.random() * 16, 0.012, -4 + Math.random() * 50, Math.random() * Math.PI);
-  // rocks at the field edges (crafted polyhedral clusters)
-  for (let i = 0; i < 5; i++) {
+  // rocks at the outer field edges only (never behind or near player spawn [0,0,0])
+  for (let i = 0; i < 6; i++) {
     const cluster = craftedRockCluster(0.7 + Math.random() * 0.5, 100 + i * 17);
-    cluster.position.set(-15 + Math.random() * 30, 0, -6 + Math.random() * 52);
+    const side = i % 2 === 0 ? -1 : 1;
+    cluster.position.set(side * (13 + Math.random() * 10), 0, 8 + Math.random() * 40);
     content.add(cluster);
   }
   // wire strand strung between the flag posts

@@ -25,6 +25,120 @@ export interface MissionRecord {
 
 export type ArmorFinish = "matte" | "tactical" | "titanium";
 export type WeaponFinish = "obsidian" | "coyote" | "arctic" | "crimson" | "gold";
+export type WeaponPartFinish = WeaponFinish | "olive" | "cobalt" | "titanium";
+export type WeaponOpticId = "holo" | "reddot" | "acog" | "sniper";
+export type WeaponMuzzleId = "suppressor" | "osprey" | "wrapped" | "comp";
+export type WeaponUnderbarrelId = "none" | "vfg" | "angled" | "laser";
+export type WeaponMagId = "standard" | "extended" | "drum";
+export type WeaponSlotId = "pistol" | "carbine" | "smg" | "shotgun" | "dmr";
+
+export interface WeaponCustomConfig {
+  optic: WeaponOpticId;
+  muzzle: WeaponMuzzleId;
+  underbarrel: WeaponUnderbarrelId;
+  magazine: WeaponMagId;
+  bodyFinish: WeaponPartFinish;
+  accentFinish: WeaponPartFinish;
+  hardwareFinish: WeaponPartFinish;
+  reticleColor: string;
+}
+
+export const DEFAULT_WEAPON_CONFIGS: Record<WeaponSlotId, WeaponCustomConfig> = {
+  pistol: {
+    optic: "reddot",
+    muzzle: "suppressor",
+    underbarrel: "laser",
+    magazine: "standard",
+    bodyFinish: "obsidian",
+    accentFinish: "titanium",
+    hardwareFinish: "titanium",
+    reticleColor: "#22d3ee",
+  },
+  carbine: {
+    optic: "holo",
+    muzzle: "suppressor",
+    underbarrel: "vfg",
+    magazine: "standard",
+    bodyFinish: "obsidian",
+    accentFinish: "coyote",
+    hardwareFinish: "titanium",
+    reticleColor: "#22d3ee",
+  },
+  smg: {
+    optic: "reddot",
+    muzzle: "wrapped",
+    underbarrel: "vfg",
+    magazine: "extended",
+    bodyFinish: "obsidian",
+    accentFinish: "obsidian",
+    hardwareFinish: "titanium",
+    reticleColor: "#38bdf8",
+  },
+  shotgun: {
+    optic: "reddot",
+    muzzle: "osprey",
+    underbarrel: "angled",
+    magazine: "standard",
+    bodyFinish: "titanium",
+    accentFinish: "coyote",
+    hardwareFinish: "obsidian",
+    reticleColor: "#ff3b30",
+  },
+  dmr: {
+    optic: "sniper",
+    muzzle: "suppressor",
+    underbarrel: "laser",
+    magazine: "standard",
+    bodyFinish: "coyote",
+    accentFinish: "coyote",
+    hardwareFinish: "obsidian",
+    reticleColor: "#2dd4bf",
+  },
+};
+
+export interface WeaponModEffects {
+  magMult: number;
+  recoilMult: number;
+  spreadMult: number;
+  adsFovBonus: number;
+  suppressed: boolean;
+}
+
+export function getWeaponCustomConfig(save: SaveData, id: WeaponSlotId): WeaponCustomConfig {
+  const base = DEFAULT_WEAPON_CONFIGS[id];
+  const saved = save.weaponConfigs?.[id];
+  if (!saved) return { ...base };
+  return {
+    optic: saved.optic ?? base.optic,
+    muzzle: saved.muzzle ?? base.muzzle,
+    underbarrel: saved.underbarrel ?? base.underbarrel,
+    magazine: saved.magazine ?? base.magazine,
+    bodyFinish: saved.bodyFinish ?? base.bodyFinish,
+    accentFinish: saved.accentFinish ?? base.accentFinish,
+    hardwareFinish: saved.hardwareFinish ?? base.hardwareFinish,
+    reticleColor: typeof saved.reticleColor === "string" ? saved.reticleColor : base.reticleColor,
+  };
+}
+
+export function getWeaponModEffects(cfg: WeaponCustomConfig): WeaponModEffects {
+  const magMult = cfg.magazine === "drum" ? 1.45 : cfg.magazine === "extended" ? 1.2 : 1.0;
+  let recoilMult = 1.0;
+  let spreadMult = 1.0;
+  let suppressed = true;
+  if (cfg.muzzle === "comp") {
+    recoilMult *= 0.84;
+    suppressed = false;
+  } else if (cfg.muzzle === "wrapped") {
+    recoilMult *= 0.94;
+  }
+  if (cfg.underbarrel === "vfg") recoilMult *= 0.9;
+  else if (cfg.underbarrel === "angled") spreadMult *= 0.92;
+  else if (cfg.underbarrel === "laser") spreadMult *= 0.84;
+
+  const adsFovBonus = cfg.optic === "sniper" ? -10 : cfg.optic === "acog" ? -5 : 0;
+  return { magMult, recoilMult, spreadMult, adsFovBonus, suppressed };
+}
+
 export type NvgMode = "flipped" | "deployed" | "none";
 
 export interface SoldierAppearance {
@@ -55,16 +169,212 @@ export const DEFAULT_APPEARANCE: SoldierAppearance = {
   headset: true,
 };
 
+export type CarPaintFinish = "metallic" | "gloss" | "matte" | "chrome";
+export type CarTrimFinish = "black" | "chrome" | "carbon" | "bronze";
+
+export interface CarCustomConfig {
+  paintHex?: string;
+  paintFinish: CarPaintFinish;
+  rimColor: string;
+  windowTint: number; // 0 = factory clear, 1 = dark limo
+  trimFinish: CarTrimFinish;
+  engineLevel: number; // 0..3
+  handlingLevel: number; // 0..3
+  brakeLevel: number; // 0..3
+}
+
+export const DEFAULT_CAR_CUSTOM: CarCustomConfig = {
+  paintFinish: "metallic",
+  rimColor: "#c8cdd6",
+  windowTint: 0.35,
+  trimFinish: "black",
+  engineLevel: 0,
+  handlingLevel: 0,
+  brakeLevel: 0,
+};
+
+export type ApartmentId = "apt_oldquarter" | "apt_midtown" | "apt_westcoast" | "apt_downtown";
+
+export interface ApartmentDef {
+  id: ApartmentId;
+  name: string;
+  district: string;
+  address: string;
+  style: string;
+  description: string;
+  price: number;
+  sqft: number;
+  /** World-space exterior building entrance door where the player sees [F] Enter / Buy. */
+  doorPos: { x: number; y: number; z: number };
+  /** Facing angle (radians, matching Three.js box/door yaw) of the exterior entrance facade. */
+  doorYaw: number;
+  /** World-space spot right outside the door where the player spawns when exiting. */
+  exitStreetPos: { x: number; y: number; z: number };
+  /** Isolated high-altitude interior center directly over the building (y = 260m). */
+  interiorOrigin: { x: number; y: number; z: number };
+  /** Street-level Building Multi-Car Garage shutter door position. */
+  garageDoorPos: { x: number; y: number; z: number };
+  garageDoorYaw: number;
+  /** Street-level drive-out exit spot in front of the Building Garage shutter. */
+  garageExitPos: { x: number; y: number; z: number };
+  /** Multi-Car (8-bay) Building Garage interior center directly beneath the apartment (y = 240m). */
+  garageOrigin: { x: number; y: number; z: number };
+  /** Accent hex color for Realty / Minimap pins. */
+  accentHex: string;
+}
+
+export const APARTMENTS: ApartmentDef[] = [
+  {
+    id: "apt_oldquarter",
+    name: "Crescent Brick Flat",
+    district: "Old Quarter & Suburbs",
+    address: "114 Crescent Row",
+    style: "Industrial Warm Brick Loft",
+    description:
+      "Exposed red brick walls, herringbone walnut floors, brass pendant lighting, custom gunsmith bench, walk-in wardrobe, and panoramic terrace windows overlooking Old Quarter.",
+    price: 120,
+    sqft: 1450,
+    doorPos: { x: -157, y: 4.5, z: 187.4 },
+    doorYaw: 0,
+    exitStreetPos: { x: -157, y: 4.5, z: 189.8 },
+    interiorOrigin: { x: -170, y: 260, z: 180 },
+    garageDoorPos: { x: -183, y: 4.5, z: 187.4 },
+    garageDoorYaw: 0,
+    garageExitPos: { x: -183, y: 4.5, z: 192.0 },
+    garageOrigin: { x: -170, y: 240, z: 180 },
+    accentHex: "#f59e0b",
+  },
+  {
+    id: "apt_midtown",
+    name: "Midtown Horizon Loft",
+    district: "Midtown & Del Sol",
+    address: "88 Del Sol Avenue (Regal Tower)",
+    style: "Art-Deco Slate & Brass Residence",
+    description:
+      "High-rise Art-Deco suite above Regal Cinema with fluted marble island, sunken lounge, fireplace hearth, tactical armory bench, and skyline view down Del Sol Avenue.",
+    price: 320,
+    sqft: 2150,
+    doorPos: { x: -342, y: 4.5, z: -91.4 },
+    doorYaw: Math.PI,
+    exitStreetPos: { x: -342, y: 4.5, z: -93.8 },
+    interiorOrigin: { x: -342, y: 260, z: -78 },
+    garageDoorPos: { x: -331, y: 4.5, z: -91.4 },
+    garageDoorYaw: Math.PI,
+    garageExitPos: { x: -331, y: 4.5, z: -96.0 },
+    garageOrigin: { x: -342, y: 240, z: -78 },
+    accentHex: "#38bdf8",
+  },
+  {
+    id: "apt_westcoast",
+    name: "Del Sol Oceanfront Condo",
+    district: "West Coast & Oceanfront",
+    address: "1 Boardwalk Pier Tower",
+    style: "Coastal Modern Glass Villa",
+    description:
+      "Sunlit coastal residence inside the Del Sol Beachfront Resort with bleached oak decking, travertine stone kitchen, ocean-view king suite, walk-in closet, and gunsmith bay.",
+    price: 550,
+    sqft: 2700,
+    doorPos: { x: -628.4, y: 4.5, z: -19 },
+    doorYaw: -Math.PI / 2,
+    exitStreetPos: { x: -630.8, y: 4.5, z: -19 },
+    interiorOrigin: { x: -620, y: 260, z: -25 },
+    garageDoorPos: { x: -628.4, y: 4.5, z: -9 },
+    garageDoorYaw: -Math.PI / 2,
+    garageExitPos: { x: -633.0, y: 4.5, z: -9 },
+    garageOrigin: { x: -620, y: 240, z: -25 },
+    accentHex: "#22d3ee",
+  },
+  {
+    id: "apt_downtown",
+    name: "Sovereign Sky Penthouse",
+    district: "Downtown Financial Core",
+    address: "1 Sovereign Spire Plaza",
+    style: "Ultra-Luxury Obsidian & Marble Sky Suite",
+    description:
+      "Flagship penthouse atop Sovereign Spire featuring black vein marble waterfall counters, panoramic 270-degree Downtown glass walls, illuminated armory vault, and private master suite.",
+    price: 950,
+    sqft: 3600,
+    doorPos: { x: -18, y: 4.5, z: -222.6 },
+    doorYaw: 0,
+    exitStreetPos: { x: -18, y: 4.5, z: -220.2 },
+    interiorOrigin: { x: -18, y: 260, z: -238 },
+    garageDoorPos: { x: -7, y: 4.5, z: -222.6 },
+    garageDoorYaw: 0,
+    garageExitPos: { x: -7, y: 4.5, z: -218.0 },
+    garageOrigin: { x: -18, y: 240, z: -238 },
+    accentHex: "#a855f7",
+  },
+];
+
+export const CAR_TUNING_COSTS: Record<"engine" | "handling" | "brake", number[]> = {
+  engine: [75, 145, 240],
+  handling: [65, 125, 210],
+  brake: [55, 105, 180],
+};
+
+export type BoatId = "skiff" | "sunseeker" | "cruiser";
+
+export type DifficultyMode = "operative" | "veteran" | "shadow";
+
+export const DIFFICULTY_PROFILES: Record<
+  DifficultyMode,
+  { label: string; subtitle: string; hp: number; damage: number; accuracy: number; vision: number; rewardMult: number }
+> = {
+  operative: {
+    label: "OPERATIVE",
+    subtitle: "Standard contract threat · 1.0× payout",
+    hp: 1.0,
+    damage: 1.0,
+    accuracy: 1.0,
+    vision: 1.0,
+    rewardMult: 1.0,
+  },
+  veteran: {
+    label: "VETERAN",
+    subtitle: "Hardened patrols · +25% payout",
+    hp: 1.2,
+    damage: 1.25,
+    accuracy: 1.12,
+    vision: 1.1,
+    rewardMult: 1.25,
+  },
+  shadow: {
+    label: "SHADOW",
+    subtitle: "Lethal alerts & optics · +60% payout",
+    hp: 1.38,
+    damage: 1.55,
+    accuracy: 1.25,
+    vision: 1.22,
+    rewardMult: 1.6,
+  },
+};
+
+export interface SurveillanceRecord {
+  completed: boolean;
+  unseen: boolean;
+  deepSea: boolean;
+  bestTimeSec?: number;
+}
+
 export interface SaveData {
   unlocked: number;
   currencies: Currencies;
   upgrades: Record<string, number>;
   records: Record<number, MissionRecord>;
+  surveillanceRecords?: Record<string, SurveillanceRecord>;
   selectedWeapon: number;
+  difficulty?: DifficultyMode;
   appearance: SoldierAppearance;
+  weaponConfigs?: Partial<Record<WeaponSlotId, WeaponCustomConfig>>;
   ownedCars: CarId[];
   selectedCar: CarId;
   carPaints: Partial<Record<CarId, string>>;
+  carCustoms?: Partial<Record<CarId, CarCustomConfig>>;
+  ownedBoats?: BoatId[];
+  selectedBoat?: BoatId;
+  ownedApartments?: ApartmentId[];
+  discoveredDistricts?: string[];
+  speedTrapBests?: Record<string, number>;
 }
 
 export const SAVE_KEY = "vanguard_blackout_save_v1";
@@ -240,11 +550,85 @@ const DEFAULT_SAVE = (): SaveData => ({
   upgrades: {},
   records: {},
   selectedWeapon: 0,
+  difficulty: "operative",
   appearance: { ...DEFAULT_APPEARANCE },
+  weaponConfigs: {
+    pistol: { ...DEFAULT_WEAPON_CONFIGS.pistol },
+    carbine: { ...DEFAULT_WEAPON_CONFIGS.carbine },
+    smg: { ...DEFAULT_WEAPON_CONFIGS.smg },
+    shotgun: { ...DEFAULT_WEAPON_CONFIGS.shotgun },
+    dmr: { ...DEFAULT_WEAPON_CONFIGS.dmr },
+  },
   ownedCars: ["golf"],
   selectedCar: "golf",
   carPaints: {},
+  carCustoms: {},
+  ownedBoats: ["skiff"],
+  selectedBoat: "skiff",
+  surveillanceRecords: {},
+  ownedApartments: [],
+  discoveredDistricts: [],
+  speedTrapBests: {},
 });
+
+function isApartmentId(id: string): id is ApartmentId {
+  return APARTMENTS.some((a) => a.id === id);
+}
+
+function sanitizeCarCustoms(
+  raw: unknown,
+  legacyPaints: Partial<Record<CarId, string>>,
+): Partial<Record<CarId, CarCustomConfig>> {
+  const out: Partial<Record<CarId, CarCustomConfig>> = {};
+  const src = raw && typeof raw === "object" ? (raw as Record<string, Partial<CarCustomConfig>>) : {};
+  for (const spec of CARS) {
+    const p = src[spec.id];
+    const paint =
+      p && typeof p.paintHex === "string" && /^#[0-9a-fA-F]{6}$/.test(p.paintHex)
+        ? p.paintHex
+        : legacyPaints[spec.id];
+    if (!p && !paint) continue;
+    out[spec.id] = {
+      paintHex: paint,
+      paintFinish:
+        p?.paintFinish === "gloss" || p?.paintFinish === "matte" || p?.paintFinish === "chrome"
+          ? p.paintFinish
+          : "metallic",
+      rimColor: typeof p?.rimColor === "string" && /^#[0-9a-fA-F]{6}$/.test(p.rimColor) ? p.rimColor : DEFAULT_CAR_CUSTOM.rimColor,
+      windowTint: Math.max(0, Math.min(1, Number(p?.windowTint ?? DEFAULT_CAR_CUSTOM.windowTint))),
+      trimFinish:
+        p?.trimFinish === "chrome" || p?.trimFinish === "carbon" || p?.trimFinish === "bronze"
+          ? p.trimFinish
+          : "black",
+      engineLevel: Math.max(0, Math.min(3, Math.floor(Number(p?.engineLevel ?? 0)))),
+      handlingLevel: Math.max(0, Math.min(3, Math.floor(Number(p?.handlingLevel ?? 0)))),
+      brakeLevel: Math.max(0, Math.min(3, Math.floor(Number(p?.brakeLevel ?? 0)))),
+    };
+  }
+  return out;
+}
+
+function sanitizeWeaponConfigs(raw: unknown): Partial<Record<WeaponSlotId, WeaponCustomConfig>> {
+  const out: Partial<Record<WeaponSlotId, WeaponCustomConfig>> = {};
+  const src = raw && typeof raw === "object" ? (raw as Record<string, Partial<WeaponCustomConfig>>) : {};
+  (["pistol", "carbine", "smg", "shotgun", "dmr"] as WeaponSlotId[]).forEach((id) => {
+    const base = DEFAULT_WEAPON_CONFIGS[id];
+    const p = src[id];
+    out[id] = p && typeof p === "object"
+      ? {
+          optic: p.optic ?? base.optic,
+          muzzle: p.muzzle ?? base.muzzle,
+          underbarrel: p.underbarrel ?? base.underbarrel,
+          magazine: p.magazine ?? base.magazine,
+          bodyFinish: p.bodyFinish ?? base.bodyFinish,
+          accentFinish: p.accentFinish ?? base.accentFinish,
+          hardwareFinish: p.hardwareFinish ?? base.hardwareFinish,
+          reticleColor: typeof p.reticleColor === "string" ? p.reticleColor : base.reticleColor,
+        }
+      : { ...base };
+  });
+  return out;
+}
 
 export function loadSave(): SaveData {
   try {
@@ -265,6 +649,33 @@ export function loadSave(): SaveData {
         }
       }
     }
+    const rawApts = Array.isArray(p.ownedApartments)
+      ? p.ownedApartments.filter((id): id is ApartmentId => typeof id === "string" && isApartmentId(id))
+      : [];
+    const ownedApartments = Array.from(new Set(rawApts));
+    const rawBoats = Array.isArray(p.ownedBoats)
+      ? p.ownedBoats.filter((b): b is BoatId => b === "skiff" || b === "sunseeker" || b === "cruiser")
+      : [];
+    const ownedBoats: BoatId[] = ["skiff", ...rawBoats.filter((b) => b !== "skiff")];
+    const selectedBoat: BoatId =
+      p.selectedBoat === "sunseeker" || p.selectedBoat === "cruiser"
+        ? ownedBoats.includes(p.selectedBoat)
+          ? p.selectedBoat
+          : "skiff"
+        : "skiff";
+    const surveillanceRecords: Record<string, SurveillanceRecord> =
+      p.surveillanceRecords && typeof p.surveillanceRecords === "object"
+        ? { ...p.surveillanceRecords }
+        : {};
+    const discoveredDistricts = Array.isArray(p.discoveredDistricts)
+      ? Array.from(new Set(p.discoveredDistricts.filter((d): d is string => typeof d === "string")))
+      : [];
+    const speedTrapBests: Record<string, number> = {};
+    if (p.speedTrapBests && typeof p.speedTrapBests === "object") {
+      for (const [k, v] of Object.entries(p.speedTrapBests)) {
+        if (typeof v === "number" && Number.isFinite(v) && v > 0) speedTrapBests[k] = v;
+      }
+    }
     return {
       unlocked: Math.max(1, Number(p.unlocked ?? 1)),
       currencies: {
@@ -274,14 +685,26 @@ export function loadSave(): SaveData {
       },
       upgrades: p.upgrades && typeof p.upgrades === "object" ? { ...p.upgrades } : {},
       records: p.records && typeof p.records === "object" ? { ...p.records } : {},
+      surveillanceRecords,
       selectedWeapon: Number(p.selectedWeapon ?? 0),
+      difficulty:
+        p.difficulty === "veteran" || p.difficulty === "shadow" || p.difficulty === "operative"
+          ? p.difficulty
+          : "operative",
       appearance: {
         ...DEFAULT_APPEARANCE,
         ...(p.appearance && typeof p.appearance === "object" ? p.appearance : {}),
       },
+      weaponConfigs: sanitizeWeaponConfigs(p.weaponConfigs),
       ownedCars,
       selectedCar,
       carPaints,
+      carCustoms: sanitizeCarCustoms(p.carCustoms, carPaints),
+      ownedBoats,
+      selectedBoat,
+      ownedApartments,
+      discoveredDistricts,
+      speedTrapBests,
     };
   } catch {
     return DEFAULT_SAVE();
@@ -345,8 +768,72 @@ export function selectOwnedCar(carId: CarId, paintHex?: string | null): SaveData
   const save = loadSave();
   if (!save.ownedCars.includes(carId)) return null;
   save.selectedCar = carId;
-  if (paintHex === null) delete save.carPaints[carId];
-  else if (typeof paintHex === "string" && /^#[0-9a-fA-F]{6}$/.test(paintHex)) save.carPaints[carId] = paintHex;
+  if (!save.carCustoms) save.carCustoms = {};
+  const prev = getCarCustomConfig(save, carId);
+  if (paintHex === null) {
+    delete save.carPaints[carId];
+    save.carCustoms[carId] = { ...prev, paintHex: undefined };
+  } else if (typeof paintHex === "string" && /^#[0-9a-fA-F]{6}$/.test(paintHex)) {
+    save.carPaints[carId] = paintHex;
+    save.carCustoms[carId] = { ...prev, paintHex };
+  }
+  writeSave(save);
+  return save;
+}
+
+export function getCarCustomConfig(save: SaveData, carId: CarId): CarCustomConfig {
+  const existing = save.carCustoms?.[carId];
+  const legacyPaint = save.carPaints?.[carId];
+  return {
+    ...DEFAULT_CAR_CUSTOM,
+    ...(existing ?? {}),
+    paintHex: existing?.paintHex ?? legacyPaint,
+  };
+}
+
+export function updateCarCustomConfig(
+  carId: CarId,
+  patch: Partial<Omit<CarCustomConfig, "engineLevel" | "handlingLevel" | "brakeLevel">>,
+): SaveData | null {
+  const save = loadSave();
+  if (!save.ownedCars.includes(carId)) return null;
+  if (!save.carCustoms) save.carCustoms = {};
+  const next = { ...getCarCustomConfig(save, carId), ...patch };
+  if (patch.paintHex === undefined && "paintHex" in patch) {
+    delete save.carPaints[carId];
+  } else if (next.paintHex && /^#[0-9a-fA-F]{6}$/.test(next.paintHex)) {
+    save.carPaints[carId] = next.paintHex;
+  }
+  save.carCustoms[carId] = next;
+  writeSave(save);
+  return save;
+}
+
+export function upgradeCarTuning(carId: CarId, stat: "engine" | "handling" | "brake"): SaveData | null {
+  const save = loadSave();
+  if (!save.ownedCars.includes(carId)) return null;
+  const cur = getCarCustomConfig(save, carId);
+  const key = stat === "engine" ? "engineLevel" : stat === "handling" ? "handlingLevel" : "brakeLevel";
+  const lvl = cur[key];
+  if (lvl >= 3) return null;
+  const cost = CAR_TUNING_COSTS[stat][lvl];
+  if (save.currencies.credits < cost) return null;
+  save.currencies.credits -= cost;
+  if (!save.carCustoms) save.carCustoms = {};
+  save.carCustoms[carId] = { ...cur, [key]: lvl + 1 };
+  writeSave(save);
+  return save;
+}
+
+export function purchaseApartment(id: ApartmentId): SaveData | null {
+  const def = APARTMENTS.find((a) => a.id === id);
+  if (!def) return null;
+  const save = loadSave();
+  const owned = save.ownedApartments ?? [];
+  if (owned.includes(id)) return null;
+  if (save.currencies.credits < def.price) return null;
+  save.currencies.credits -= def.price;
+  save.ownedApartments = [...owned, id];
   writeSave(save);
   return save;
 }
@@ -359,6 +846,24 @@ export function awardDrivingCredits(credits: number): SaveData {
     writeSave(save);
   }
   return save;
+}
+
+export function recordDiscoveredDistrict(districtId: string): boolean {
+  const save = loadSave();
+  const list = save.discoveredDistricts ?? [];
+  if (list.includes(districtId)) return false;
+  save.discoveredDistricts = [...list, districtId];
+  writeSave(save);
+  return true;
+}
+
+export function recordSpeedTrapBest(trapId: string, kmh: number): void {
+  const save = loadSave();
+  const map = save.speedTrapBests ?? {};
+  if (kmh > (map[trapId] ?? 0)) {
+    save.speedTrapBests = { ...map, [trapId]: kmh };
+    writeSave(save);
+  }
 }
 
 export function getPlayerStats(save = loadSave()): PlayerStats {
@@ -396,14 +901,27 @@ export interface MissionReward {
   intel: number;
   salvage: number;
   ghostBonus: boolean;
+  rank?: "S" | "A" | "B" | "C";
+  accuracyPct?: number;
+  headshots?: number;
+  durationSec?: number;
+  difficulty?: DifficultyMode;
 }
 
-export function previewMissionBaseReward(missionId: number): Currencies {
-  if (missionId === 0) return { credits: 40, intel: 8, salvage: 8 };
+export function setDifficultyMode(mode: DifficultyMode): SaveData {
+  const save = loadSave();
+  save.difficulty = mode;
+  writeSave(save);
+  return save;
+}
+
+export function previewMissionBaseReward(missionId: number, difficulty: DifficultyMode = "operative"): Currencies {
+  const mult = DIFFICULTY_PROFILES[difficulty]?.rewardMult ?? 1;
+  if (missionId === 0) return { credits: Math.round(40 * mult), intel: 8, salvage: 8 };
   return {
-    credits: 120 + missionId * 55,
-    intel: 15 + missionId * 8,
-    salvage: 18 + missionId * 9,
+    credits: Math.round((120 + missionId * 55) * mult),
+    intel: Math.round((15 + missionId * 8) * mult),
+    salvage: Math.round((18 + missionId * 9) * mult),
   };
 }
 
@@ -413,8 +931,17 @@ export function awardMissionReward(
   stealthKills: number,
   alerts: number,
   success: boolean,
+  stats?: { shotsFired?: number; shotsHit?: number; headshots?: number; durationSec?: number },
 ): { save: SaveData; reward: MissionReward } {
   const save = loadSave();
+  const difficulty: DifficultyMode = save.difficulty ?? "operative";
+  const mult = DIFFICULTY_PROFILES[difficulty]?.rewardMult ?? 1;
+  const fired = stats?.shotsFired ?? 0;
+  const hit = stats?.shotsHit ?? 0;
+  const accuracyPct = fired > 0 ? Math.min(100, Math.round((hit / fired) * 100)) : 100;
+  const headshots = stats?.headshots ?? 0;
+  const durationSec = Math.max(0, Math.round(stats?.durationSec ?? 0));
+
   if (!success) {
     // Partial salvage/intel on abort or KIA so runs still progress slightly
     const reward: MissionReward = {
@@ -422,6 +949,10 @@ export function awardMissionReward(
       intel: stealthKills * 3,
       salvage: kills * 3,
       ghostBonus: false,
+      accuracyPct,
+      headshots,
+      durationSec,
+      difficulty,
     };
     save.currencies.credits += reward.credits;
     save.currencies.intel += reward.intel;
@@ -430,13 +961,28 @@ export function awardMissionReward(
     return { save, reward };
   }
 
-  const base = previewMissionBaseReward(missionId);
+  const base = previewMissionBaseReward(missionId, difficulty);
   const ghostBonus = missionId > 0 && alerts === 0;
+  let score = 0;
+  if (alerts === 0) score += 45;
+  else if (alerts === 1) score += 22;
+  if (accuracyPct >= 55) score += 20;
+  else if (accuracyPct >= 35) score += 10;
+  if (stealthKills >= 2 || headshots >= 2) score += 15;
+  if (durationSec > 0 && durationSec <= 300) score += 20;
+  else if (durationSec <= 480) score += 10;
+  const rank: "S" | "A" | "B" | "C" = score >= 80 ? "S" : score >= 55 ? "A" : score >= 30 ? "B" : "C";
+
   const reward: MissionReward = {
-    credits: base.credits + kills * 10 + stealthKills * 14 + (ghostBonus ? 120 : 0),
+    credits: base.credits + Math.round((kills * 10 + stealthKills * 14 + (ghostBonus ? 120 : 0)) * mult),
     intel: base.intel + stealthKills * 5 + (ghostBonus ? 35 : 0),
     salvage: base.salvage + kills * 4 + (ghostBonus ? 20 : 0),
     ghostBonus,
+    rank,
+    accuracyPct,
+    headshots,
+    durationSec,
+    difficulty,
   };
 
   save.currencies.credits += reward.credits;
@@ -455,4 +1001,29 @@ export function awardMissionReward(
   }
   writeSave(save);
   return { save, reward };
+}
+
+export function recordSurveillanceContract(
+  contractId: string,
+  rewardCredits: number,
+  unseen: boolean,
+  deepSea: boolean,
+  elapsedSec: number,
+): SaveData {
+  const save = loadSave();
+  save.currencies.credits += Math.max(0, Math.floor(rewardCredits));
+  save.currencies.intel += unseen ? 40 : 20;
+  if (!save.surveillanceRecords) save.surveillanceRecords = {};
+  const prev = save.surveillanceRecords[contractId];
+  save.surveillanceRecords[contractId] = {
+    completed: true,
+    unseen: Boolean(prev?.unseen || unseen),
+    deepSea: Boolean(prev?.deepSea || deepSea),
+    bestTimeSec:
+      prev?.bestTimeSec != null
+        ? Math.min(prev.bestTimeSec, Math.round(elapsedSec))
+        : Math.round(elapsedSec),
+  };
+  writeSave(save);
+  return save;
 }

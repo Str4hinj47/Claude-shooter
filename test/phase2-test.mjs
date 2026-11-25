@@ -46,6 +46,7 @@ const scene = new THREE.Scene();
 const fakeRenderer = { toneMappingExposure: 1 };
 const level = buildWestgateWorld(group, scene, fakeRenderer);
 const engine = level.openWorld;
+engine.chunks.prewarm(112, -162);
 
 // 1. All Downtown landmarks built & clear of roads/viaducts
 for (const lm of DOWNTOWN_LANDMARKS) {

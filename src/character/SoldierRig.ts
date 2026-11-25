@@ -2,10 +2,181 @@ import * as THREE from "three";
 import { GLTFLoader, type GLTF } from "three/examples/jsm/loaders/GLTFLoader.js";
 import * as SkeletonUtils from "three/examples/jsm/utils/SkeletonUtils.js";
 import soldierUrl from "../assets/soldier.glb?url";
-import { buildRifle, buildWeapon, RIFLE, tintWeapon, WEAPONS, type Rifle, type WeaponId, type WeaponSpec } from "./rifle";
-import { buildEquipment, type SoldierEquipment } from "./equipment";
-import type { SoldierAppearance } from "../game/progression";
+import { applyWeaponCustomization, buildRifle, buildWeapon, RIFLE, tintWeapon, WEAPONS, type Rifle, type WeaponId, type WeaponSpec } from "./rifle";
+import { buildEquipment, type EquipmentAlignMap, type SoldierEquipment } from "./equipment";
+import { DEFAULT_WEAPON_CONFIGS, type SoldierAppearance, type WeaponCustomConfig } from "../game/progression";
 import { Spring, clamp, damp, dampAngle, easeInOut, lerp, smoothstep, wrapAngle } from "./math";
+
+interface CharDetailMaps {
+  fabricRoughness: THREE.DataTexture;
+  skinRoughness: THREE.DataTexture;
+  metalRoughness: THREE.DataTexture;
+}
+
+let cachedDetailMaps: CharDetailMaps | null = null;
+function getCharDetailMaps(): CharDetailMaps {
+  if (cachedDetailMaps) return cachedDetailMaps;
+
+  const makeNoiseTex = (size: number, repeat: number, fn: (x: number, y: number) => number) => {
+    const data = new Uint8Array(size * size * 4);
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const v = Math.max(0, Math.min(255, Math.round(fn(x, y) * 255)));
+        const idx = (y * size + x) * 4;
+        data[idx] = v;
+        data[idx + 1] = v;
+        data[idx + 2] = v;
+        data[idx + 3] = 255;
+      }
+    }
+    const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(repeat, repeat);
+    tex.needsUpdate = true;
+    return tex;
+  };
+
+  // Woven ripstop/twill fabric micro-weave for uniforms, jackets, pants & Cordura nylon
+  const fabricRoughness = makeNoiseTex(128, 16, (x, y) => {
+    const warp = ((x + y) & 3) === 0 ? 0.08 : 0;
+    const weft = ((x - y) & 3) === 0 ? 0.06 : 0;
+    const rib = ((x & 7) === 0 || (y & 7) === 0) ? 0.07 : 0;
+    const hash = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453;
+    const grain = (hash - Math.floor(hash) - 0.5) * 0.08;
+    return 0.82 + warp - weft + rib + grain;
+  });
+
+  // Fine organic pore variation for realistic human skin specular break-up
+  const skinRoughness = makeNoiseTex(128, 12, (x, y) => {
+    const h1 = Math.sin(x * 23.17 + y * 41.73) * 19283.41;
+    const h2 = Math.sin(x * 7.31 - y * 13.89) * 8192.13;
+    const n1 = h1 - Math.floor(h1);
+    const n2 = h2 - Math.floor(h2);
+    return 0.48 + (n1 - 0.5) * 0.14 + (n2 - 0.5) * 0.08;
+  });
+
+  // Fine brushed directional grain for gunmetal blades, pistols, tools & buckles
+  const metalRoughness = makeNoiseTex(128, 8, (x, y) => {
+    const streak = Math.sin(y * 1.45) * 0.08;
+    const h = Math.sin(x * 3.1 + y * 57.3) * 14211.7;
+    return 0.24 + streak + (h - Math.floor(h) - 0.5) * 0.08;
+  });
+
+  cachedDetailMaps = { fabricRoughness, skinRoughness, metalRoughness };
+  return cachedDetailMaps;
+}
+
+export function upgradeCharacterMaterial(orig: THREE.Material): THREE.MeshPhysicalMaterial {
+  const s = orig as THREE.MeshStandardMaterial;
+  const maps = getCharDetailMaps();
+  const name = s.name || "";
+
+  const p = new THREE.MeshPhysicalMaterial({
+    name,
+    color: s.color ? s.color.clone() : new THREE.Color(0xffffff),
+    map: s.map ?? null,
+    normalMap: s.normalMap ?? null,
+    aoMap: s.aoMap ?? null,
+    emissive: s.emissive ? s.emissive.clone() : new THREE.Color(0x000000),
+    emissiveMap: s.emissiveMap ?? null,
+    emissiveIntensity: s.emissiveIntensity ?? 1,
+    alphaMap: s.alphaMap ?? null,
+    alphaTest: s.alphaTest ?? 0,
+    side: s.side,
+  });
+
+  if (p.map) {
+    p.map.anisotropy = 4;
+    p.map.colorSpace = THREE.SRGBColorSpace;
+  }
+
+  if (/visor/i.test(name)) {
+    p.metalness = 0.92;
+    p.roughness = 0.06;
+    p.clearcoat = 1.0;
+    p.clearcoatRoughness = 0.04;
+    p.iridescence = 0.45;
+    p.iridescenceIOR = 1.35;
+    p.envMapIntensity = 1.85;
+  } else if (/opacity|hair/i.test(name)) {
+    p.metalness = 0.0;
+    p.roughness = 0.60;
+    p.sheen = 0.52;
+    p.sheenRoughness = 0.42;
+    p.sheenColor = new THREE.Color(0xd8dee9);
+    p.alphaTest = Math.max(p.alphaTest || 0, 0.44);
+    p.transparent = false;
+    p.side = THREE.DoubleSide;
+    p.envMapIntensity = 0.85;
+  } else if (/head|skin|face/i.test(name)) {
+    p.metalness = 0.0;
+    p.roughness = 0.52;
+    p.roughnessMap = maps.skinRoughness;
+    p.sheen = 0.44;
+    p.sheenRoughness = 0.54;
+    p.sheenColor = new THREE.Color(0xffb899);
+    p.clearcoat = 0.06;
+    p.clearcoatRoughness = 0.52;
+    p.ior = 1.42;
+    p.specularIntensity = 0.45;
+    p.envMapIntensity = 0.88;
+    if (p.normalMap) p.normalScale.set(0.95, 0.95);
+    else {
+      p.bumpMap = maps.skinRoughness;
+      p.bumpScale = 0.002;
+    }
+  } else if (/knife|pistol|gun|tools/i.test(name)) {
+    p.metalness = 0.86;
+    p.roughness = 0.26;
+    p.roughnessMap = maps.metalRoughness;
+    p.clearcoat = 0.14;
+    p.clearcoatRoughness = 0.22;
+    p.envMapIntensity = 1.4;
+    if (p.normalMap) p.normalScale.set(1.35, 1.35);
+  } else if (/helmet/i.test(name)) {
+    p.metalness = 0.16;
+    p.roughness = 0.40;
+    p.clearcoat = 0.34;
+    p.clearcoatRoughness = 0.30;
+    p.envMapIntensity = 1.1;
+    if (p.normalMap) p.normalScale.set(1.35, 1.35);
+  } else if (/equipment/i.test(name)) {
+    p.metalness = 0.06;
+    p.roughness = 0.76;
+    p.roughnessMap = maps.fabricRoughness;
+    p.sheen = 0.34;
+    p.sheenRoughness = 0.74;
+    p.sheenColor = new THREE.Color(0xcfd6df);
+    p.envMapIntensity = 0.86;
+    if (p.normalMap) p.normalScale.set(1.5, 1.5);
+  } else if (/vanguard/i.test(name)) {
+    p.metalness = 0.22;
+    p.roughness = 0.48;
+    p.roughnessMap = maps.fabricRoughness;
+    p.sheen = 0.28;
+    p.sheenRoughness = 0.65;
+    p.clearcoat = 0.16;
+    p.clearcoatRoughness = 0.42;
+    p.envMapIntensity = 1.05;
+    if (p.normalMap) p.normalScale.set(1.55, 1.55);
+  } else {
+    // Clothing / uniforms (_body)
+    p.metalness = 0.01;
+    p.roughness = 0.88;
+    p.roughnessMap = maps.fabricRoughness;
+    p.sheen = 0.65;
+    p.sheenRoughness = 0.82;
+    p.sheenColor = new THREE.Color(0xdce4ef);
+    p.specularIntensity = 0.24;
+    p.envMapIntensity = 0.74;
+    if (p.normalMap) p.normalScale.set(1.45, 1.45);
+    else {
+      p.bumpMap = maps.fabricRoughness;
+      p.bumpScale = 0.004;
+    }
+  }
+  return p;
+}
 
 interface CalibrationData {
   walkN: number;
@@ -18,7 +189,7 @@ interface CalibrationData {
 
 const cachedGltfMap = new Map<string, Promise<GLTF>>();
 const calibratedCache = new Map<string, CalibrationData>();
-function loadCachedSoldierGltf(url: string, onProgress?: (p: number) => void): Promise<GLTF> {
+export function loadCachedSoldierGltf(url: string, onProgress?: (p: number) => void): Promise<GLTF> {
   let promise = cachedGltfMap.get(url);
   if (!promise) {
     promise = new GLTFLoader().loadAsync(url, (e) => {
@@ -135,24 +306,31 @@ interface DroppedProp {
 export class SoldierRig {
   /** world position + yaw */
   readonly root = new THREE.Group();
-  private fall = new THREE.Group();
+  readonly fall = new THREE.Group();
   private model!: THREE.Group;
   private mixer!: THREE.AnimationMixer;
   private actions!: { idle: THREE.AnimationAction; walk: THREE.AnimationAction; run: THREE.AnimationAction };
   private bones: Record<string, THREE.Object3D> = {};
   private handBind = {} as Record<Side, HandBind>;
+  private equipAlign: EquipmentAlignMap = {};
   /** bind-pose hips local position (restored each frame when clips don't animate it) */
   private bindHipsLocal = new THREE.Vector3();
   /** true when a locomotion clip has a Hips position track (Mixamo mocap does, Rocketbox doesn't) */
   private hipsPosAnimated = true;
   /** true when loaded from a custom Rocketbox character GLB (baked clothing/gear, no procedural vest) */
   readonly isRocketbox: boolean;
+  private modelTag = "";
   rifle: Rifle;
   private weapons = new Map<WeaponId, Rifle>();
+  private weaponConfigs: Partial<Record<WeaponId, WeaponCustomConfig>> = {};
+  holstered = false;
+  carryingBody = false;
+  carrySpeedMult = 0.62;
   weaponMagSize = MAG_SIZE;
   fireInterval = FIRE_INTERVAL;
   recoilMult = 1.0;
   crouchSpeedMult = 1.0;
+  private reloadDuration = RELOAD_TIME;
   /** tactical loadout parented to the rig (adds detail on top of the .glb) */
   equipment: SoldierEquipment | null = null;
   events: RigEvents = {};
@@ -192,6 +370,15 @@ export class SoldierRig {
   private aimBlend = 0;
   private sprintBlend = 0;
   private airBlend = 0;
+  private locoBlend = 0;
+  private runBlend = 0;
+  private turnBlend = 0;
+  private legOffsetS = 0;
+  private moveSignSmooth = 1;
+  private prevBodyYaw = 0;
+  private turnLeanS = 0;
+  private legDepthS = 0;
+  private legLiftS = 0;
   private leanS = 0;
   private aimTimer = 0;
   private ikW = 1;
@@ -248,19 +435,42 @@ export class SoldierRig {
     scene.add(this.root);
   }
 
-  /** Remove character root and all weapon meshes from the scene (used when switching operators). */
+  /** Remove character root and all weapon/equipment meshes and dispose GPU resources cleanly. */
   dispose() {
+    const disposeTree = (obj: THREE.Object3D) => {
+      obj.traverse((child) => {
+        const mesh = child as THREE.Mesh;
+        if (mesh.geometry) mesh.geometry.dispose();
+        const mats = Array.isArray(mesh.material) ? mesh.material : mesh.material ? [mesh.material] : [];
+        for (const mat of mats) {
+          const m = mat as THREE.MeshStandardMaterial;
+          m.map?.dispose();
+          m.emissiveMap?.dispose();
+          m.roughnessMap?.dispose();
+          m.bumpMap?.dispose();
+          m.normalMap?.dispose();
+          m.dispose();
+        }
+      });
+    };
     this.scene.remove(this.root);
+    disposeTree(this.root);
     for (const w of this.weapons.values()) {
       this.scene.remove(w.group);
+      disposeTree(w.group);
     }
+    this.weapons.clear();
     for (const p of this.props) {
       this.scene.remove(p.obj);
+      disposeTree(p.obj);
     }
+    this.props.length = 0;
     if (this.weaponProp) {
       this.scene.remove(this.weaponProp.obj);
+      disposeTree(this.weaponProp.obj);
       this.weaponProp = null;
     }
+    this.equipment = null;
   }
 
   /** Swap to a single weapon model (used by mission-specific enemy factions). */
@@ -280,7 +490,30 @@ export class SoldierRig {
   /** Show/hide both character body and active weapon model together (e.g. while driving a vehicle). */
   setVisible(visible: boolean) {
     this.root.visible = visible;
-    this.rifle.group.visible = visible;
+    this.rifle.group.visible = visible && !this.holstered;
+  }
+
+  /** Holster or draw the active weapon cleanly. */
+  setHolstered(holstered: boolean) {
+    this.holstered = holstered;
+    if (holstered) {
+      this.reloadT = -1;
+      this.rifle.mag.position.copy(this.rifle.magRest);
+      this.rifle.mag.visible = true;
+      this.rifle.group.visible = false;
+    } else {
+      this.rifle.group.visible = this.root.visible && !this.dead;
+      this.aimTimer = Math.max(this.aimTimer, 1.5);
+    }
+  }
+
+  /** Apply per-weapon modular customization across all built weapon meshes. */
+  setWeaponConfigs(configs?: Partial<Record<WeaponId, WeaponCustomConfig>>) {
+    if (configs) this.weaponConfigs = { ...configs };
+    for (const [id, w] of this.weapons.entries()) {
+      const cfg = this.weaponConfigs[id] ?? DEFAULT_WEAPON_CONFIGS[id];
+      applyWeaponCustomization(w, cfg);
+    }
   }
 
   /** Pre-build all 4 player weapon models for instant 0ms switching. */
@@ -290,6 +523,7 @@ export class SoldierRig {
       const model = buildWeapon(w.id);
       model.group.scale.setScalar(WS);
       model.group.visible = false;
+      applyWeaponCustomization(model, this.weaponConfigs[w.id] ?? DEFAULT_WEAPON_CONFIGS[w.id]);
       this.scene.add(model.group);
       this.weapons.set(w.id, model);
     }
@@ -305,11 +539,12 @@ export class SoldierRig {
     const next = this.weapons.get(spec.id);
     if (!next) return;
     this.reloadT = -1;
-    this.rifle.mag.position.copy(RIFLE.magRest);
+    this.rifle.mag.position.copy(this.rifle.magRest);
     this.rifle.mag.visible = true;
     this.rifle.group.visible = false;
     this.rifle = next;
-    this.rifle.group.visible = true;
+    applyWeaponCustomization(this.rifle, this.weaponConfigs[spec.id] ?? DEFAULT_WEAPON_CONFIGS[spec.id]);
+    this.rifle.group.visible = this.root.visible && !this.holstered;
     this.rifle.mag.visible = true;
     if (flashObj) this.rifle.muzzle.add(flashObj);
     this.weaponMagSize = opts?.magSize ?? spec.magSize;
@@ -317,6 +552,7 @@ export class SoldierRig {
     this.recoilMult = spec.recoil * (opts?.recoilMult ?? 1);
     this.mag = magVal;
     this.reserve = reserveVal;
+    this.reloadDuration = spec.reloadTime;
     this.fireCd = 0.16;
     this.aimTimer = Math.max(this.aimTimer, 2.2);
     this.sRecoilRot.kick(0.9);
@@ -330,10 +566,21 @@ export class SoldierRig {
     onProgress?: (p: number) => void,
     modelUrl?: string,
   ): Promise<SoldierRig> {
-    const isRocketbox = !!modelUrl;
-    const url = modelUrl ?? soldierUrl;
+    let url = modelUrl ?? soldierUrl;
+    if (url === "vanguard" || /\/vanguard\.glb$/i.test(url)) {
+      url = soldierUrl;
+    }
+    let isRocketbox = !!url && url !== soldierUrl;
+    let gltf: GLTF;
+    try {
+      gltf = await loadCachedSoldierGltf(url, onProgress);
+    } catch {
+      url = soldierUrl;
+      isRocketbox = false;
+      gltf = await loadCachedSoldierGltf(url, onProgress);
+    }
     const rig = new SoldierRig(scene, isRocketbox);
-    const gltf = await loadCachedSoldierGltf(url, onProgress);
+    rig.modelTag = url;
     const clonedScene = SkeletonUtils.clone(gltf.scene) as THREE.Group;
     rig.setup({ scene: clonedScene, animations: gltf.animations }, url);
     return rig;
@@ -352,24 +599,9 @@ export class SoldierRig {
         m.castShadow = true;
         m.receiveShadow = true;
         m.frustumCulled = false;
+        m.userData.sharedGltfAsset = true;
         const origMats = Array.isArray(m.material) ? m.material : [m.material];
-        const clonedMats = origMats.map((mat) => {
-          const s = (mat as THREE.MeshStandardMaterial).clone();
-          if (s.map) {
-            s.map.anisotropy = 16;
-            s.map.colorSpace = THREE.SRGBColorSpace;
-          }
-          if (/visor/i.test(s.name)) {
-            s.metalness = 0.95;
-            s.roughness = 0.08;
-            s.envMapIntensity = 1.6;
-          } else {
-            s.metalness = 0.14;
-            s.roughness = 0.58;
-            s.envMapIntensity = 0.95;
-          }
-          return s;
-        });
+        const clonedMats = origMats.map((mat) => upgradeCharacterMaterial(mat));
         m.material = Array.isArray(m.material) ? clonedMats : clonedMats[0];
       }
       if (/^mixamorig/.test(o.name)) {
@@ -470,13 +702,47 @@ export class SoldierRig {
       });
       this.handBind[side] = { f0, p0, bindQ, fingers };
     });
+
+    // Compute per-bone orientation/scale mounts so tactical gear attaches cleanly
+    // onto both Mixamo native and Rocketbox (Bip01) skeletons.
+    const legFlipQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI, 0, 0));
+    const computeAlign = (bone: THREE.Object3D | undefined, targetWorldQ?: THREE.Quaternion) => {
+      if (!bone) return undefined;
+      const bq = bone.getWorldQuaternion(new THREE.Quaternion());
+      const ws = bone.getWorldScale(new THREE.Vector3());
+      const quat = bq.invert();
+      if (targetWorldQ) quat.multiply(targetWorldQ);
+      return { quat, scale: ws.x > 1e-4 ? 1 / ws.x : 100 };
+    };
+    this.equipAlign = {
+      torso: computeAlign(this.bones["Spine2"] ?? this.bones["Spine"] ?? this.bones["Hips"]),
+      head: computeAlign(this.bones["Head"]),
+      rLeg: computeAlign(this.bones["RightUpLeg"], legFlipQ),
+      lLeg: computeAlign(this.bones["LeftUpLeg"], legFlipQ),
+    };
   }
 
-  /** Attach the procedural tactical loadout directly to the Mixamo bones. */
+  /** Attach the procedural tactical loadout directly to the skeleton bones. */
   private buildEquipment() {
-    if (this.isRocketbox || !this.model || this.equipment) return;
+    if (!this.model || this.equipment) return;
+    if (this.isRocketbox) {
+      const isMil = /military/i.test(this.modelTag);
+      const isTac = isMil || /police|security/i.test(this.modelTag);
+      if (!isTac) return;
+      const eq = buildEquipment();
+      eq.attach(this.bones, this.equipAlign);
+      eq.configure({
+        nvg: isMil ? "flipped" : "none",
+        backpack: isMil,
+        chestRig: false, // Rocketbox military/police already have baked torso rigs
+        holster: true,
+        headset: true,
+      });
+      this.equipment = eq;
+      return;
+    }
     const eq = buildEquipment();
-    eq.attach(this.bones);
+    eq.attach(this.bones, this.equipAlign);
     this.equipment = eq;
   }
 
@@ -560,13 +826,13 @@ export class SoldierRig {
   jump() {
     if (this.dead || !this.grounded || this.reloadT >= 0) return;
     this.grounded = false;
-    this.vy = 4.6;
+    this.vy = this.carryingBody ? 3.8 : 5.95;
     this.sLand.reset();
   }
 
   /** Returns true when a round left the barrel. */
   fire(): boolean {
-    if (this.dead || this.reloadT >= 0) return false;
+    if (this.dead || this.holstered || this.carryingBody || this.reloadT >= 0) return false;
     if (this.fireCd > 0) return false;
     if (this.sprintBlend > 0.4 || this.aimBlend < 0.55) {
       this.aimTimer = 3;
@@ -599,10 +865,10 @@ export class SoldierRig {
   }
 
   reload() {
-    if (this.dead || this.reloadT >= 0 || this.mag >= this.weaponMagSize || this.reserve <= 0) return false;
+    if (this.dead || this.holstered || this.carryingBody || this.reloadT >= 0 || this.mag >= this.weaponMagSize || this.reserve <= 0) return false;
     this.reloadT = 0;
     this.reloadFlags = { out: false, drop: false, in: false, bolt: false, ammo: false };
-    this.aimTimer = Math.max(this.aimTimer, RELOAD_TIME + 1);
+    this.aimTimer = Math.max(this.aimTimer, this.reloadDuration + 1);
     this.events.onReloadEvent?.("start");
     return true;
   }
@@ -667,20 +933,32 @@ export class SoldierRig {
     this.dead = false;
     this.deathT = 0;
     this.fallAng = 0;
+    this.fallVel = 0;
+    this.fallBounced = false;
     this.fall.rotation.set(0, 0, 0);
     this.fall.position.set(0, 0, 0);
+    this.root.visible = true;
+    this.fall.visible = true;
+    if (this.model) this.model.visible = true;
+    if (this.bones.Hips) this.bones.Hips.position.copy(this.bindHipsLocal);
     if (pos) this.root.position.copy(pos);
-    this.root.position.y = 0;
+    else this.root.position.y = 0;
     this.vel.set(0, 0, 0);
     this.vy = 0;
     this.grounded = true;
-    this.groundY = 0;
+    this.groundY = pos ? pos.y : 0;
+    this.hitT = 0;
     this.mag = MAG_SIZE;
     this.reserve = 120;
     this.weaponAttached = true;
     this.weaponProp = null;
+    this.holstered = false;
+    this.carryingBody = false;
+    this.rifle.group.position.set(0, 0, 0);
+    this.rifle.group.rotation.set(0, 0, 0);
     this.rifle.group.scale.setScalar(WS);
-    this.rifle.mag.position.copy(RIFLE.magRest);
+    this.rifle.group.visible = this.root.visible;
+    this.rifle.mag.position.copy(this.rifle.magRest);
     this.rifle.mag.rotation.set(0, 0, 0);
     this.rifle.mag.visible = true;
     this.rifle.group.add(this.rifle.mag);
@@ -689,6 +967,22 @@ export class SoldierRig {
     this.ikW = 0;
     this.aimTimer = 0;
     this.crouchAmt = 0;
+    this.locoBlend = 0;
+    this.runBlend = 0;
+    this.turnBlend = 0;
+    this.legOffsetS = 0;
+    this.moveSignSmooth = 1;
+    this.turnLeanS = 0;
+    this.legDepthS = 0;
+    this.legLiftS = 0;
+    this.prevBodyYaw = this.bodyYaw;
+    if (this.actions) {
+      this.actions.idle.setEffectiveWeight(1);
+      this.actions.walk.setEffectiveWeight(0);
+      this.actions.run.setEffectiveWeight(0);
+      this.mixer.update(0);
+    }
+    this.model?.updateMatrixWorld(true);
   }
 
   /* ---------------------------------------------------------------- */
@@ -721,26 +1015,38 @@ export class SoldierRig {
       dir.copy(inp.move).setY(0).normalize();
       const psi = Math.atan2(dir.x, dir.z);
       rel = wrapAngle(psi - this.aimYaw);
-      const sprintOK = inp.sprint && !inp.crouch && !inp.ads && Math.abs(rel) < 1.1 && this.reloadT < 0;
+      const sprintOK = inp.sprint && !inp.crouch && !inp.ads && !this.carryingBody && Math.abs(rel) < 1.1 && this.reloadT < 0;
       this.sprinting = sprintOK;
-      target = sprintOK ? this.runN : inp.crouch ? this.walkN * 0.6 * this.crouchSpeedMult : inp.ads ? this.walkN * 0.55 : this.walkN;
+      const baseSpd = sprintOK
+        ? this.runN
+        : inp.crouch
+          ? this.walkN * 0.6 * this.crouchSpeedMult
+          : inp.ads
+            ? this.walkN * 0.55
+            : this.walkN;
+      target = this.carryingBody ? baseSpd * this.carrySpeedMult : baseSpd;
     } else {
       this.sprinting = false;
     }
-    // facing + direction of the legs relative to aim
+    // facing + direction of the legs relative to aim (with hysteresis to prevent 1-frame stride flips)
     let legOffset = 0;
     if (wantMove) {
-      if (Math.abs(rel) <= 1.95) {
+      if (this.moveSign > 0) {
+        if (Math.abs(rel) > 2.15) this.moveSign = -1;
+      } else if (Math.abs(rel) < 1.8) {
         this.moveSign = 1;
+      }
+      if (this.moveSign > 0) {
         legOffset = clamp(rel, -1.35, 1.35);
       } else {
-        this.moveSign = -1;
         legOffset = clamp(wrapAngle(rel - Math.PI), -1.35, 1.35);
       }
     }
+    this.legOffsetS = damp(this.legOffsetS, legOffset, 10, dt);
+    this.moveSignSmooth = damp(this.moveSignSmooth, this.moveSign, 13, dt);
 
     const desired = dir.multiplyScalar(target);
-    const rate = this.grounded ? (wantMove ? 8 : 11) : 0.8;
+    const rate = this.grounded ? (wantMove ? 8 : 11) : 2.6;
     this.vel.x = damp(this.vel.x, desired.x, rate, dt);
     this.vel.z = damp(this.vel.z, desired.z, rate, dt);
     if (this.dead) {
@@ -788,11 +1094,12 @@ export class SoldierRig {
       }
     }
 
-    // body yaw
+    // body yaw + smooth turn banking
+    this.prevBodyYaw = this.bodyYaw;
     if (!this.dead) {
       const diff = wrapAngle(this.aimYaw - this.bodyYaw);
       if (wantMove) {
-        this.bodyYaw = dampAngle(this.bodyYaw, this.aimYaw + legOffset, 11, dt);
+        this.bodyYaw = dampAngle(this.bodyYaw, this.aimYaw + this.legOffsetS, 11, dt);
         this.turning = false;
       } else {
         const aiming = this.aimBlend > 0.5;
@@ -804,6 +1111,10 @@ export class SoldierRig {
         }
       }
     }
+    this.turnBlend = damp(this.turnBlend, this.turning ? 1 : 0, 9, dt);
+    const angVel = wrapAngle(this.bodyYaw - this.prevBodyYaw) / Math.max(dt, 1e-4);
+    const targetBank = clamp(-angVel * 0.032, -0.09, 0.09) * smoothstep(0.4, 2.2, this.speed);
+    this.turnLeanS = damp(this.turnLeanS, this.dead ? 0 : targetBank, 9, dt);
     this.root.rotation.y = this.bodyYaw;
   }
 
@@ -811,17 +1122,27 @@ export class SoldierRig {
     const a = this.actions;
     this.airBlend = damp(this.airBlend, this.grounded ? 0 : 1, this.grounded ? 14 : 18, dt);
     const spd = this.speed;
-    const animSpd = this.dead ? 0 : Math.max(spd, this.turning ? 0.95 : 0);
-    const locoW = smoothstep(0.04, 0.7, animSpd);
-    const runW = clamp((animSpd - this.walkN) / (this.runN - this.walkN), 0, 1);
+    const animSpd = this.dead ? 0 : Math.max(spd, this.turnBlend * 0.95);
+    const targetLoco = smoothstep(0.03, 0.72, animSpd);
+    this.locoBlend = damp(this.locoBlend, targetLoco, targetLoco > this.locoBlend ? 11.5 : 8.5, dt);
+    const runW = clamp((animSpd - this.walkN * 0.92) / Math.max(0.2, this.runN - this.walkN * 0.92), 0, 1);
     const runE = easeInOut(runW);
+    this.runBlend = damp(this.runBlend, runE, 8.5, dt);
 
-    const stride = lerp(this.walkStride, this.runStride, runE);
-    if (this.grounded && !this.dead) {
+    const stride = lerp(this.walkStride, this.runStride, this.runBlend);
+    if (!this.dead) {
+      const airRate = lerp(1.0, 0.2, this.airBlend);
       const prevCum = this.cum;
-      this.cum += this.moveSign * (animSpd / Math.max(stride, 0.1)) * dt;
+      if (this.locoBlend > 0.02) {
+        this.cum += this.moveSignSmooth * (animSpd / Math.max(stride, 0.1)) * airRate * dt;
+      }
+      // Gently settle stride phase toward neutral plant when stopping
+      if (targetLoco < 0.05 && this.locoBlend > 0.01 && this.grounded) {
+        const nearestPlant = Math.round(this.cum * 2) * 0.5;
+        this.cum = damp(this.cum, nearestPlant, 7, dt);
+      }
       this.phase = ((this.cum % 1) + 1) % 1;
-      if (locoW > 0.3) {
+      if (this.grounded && this.locoBlend > 0.3) {
         const inten = clamp(animSpd / this.runN + 0.25, 0.25, 1);
         const s1 = this.walkOff;
         const s2 = this.walkOff + 0.5;
@@ -831,17 +1152,19 @@ export class SoldierRig {
     }
     this.idleT += dt;
 
-    const dur = (x: THREE.AnimationAction) => x.getClip().duration;
+    const dur = (x: THREE.AnimationAction) => Math.max(0.01, x.getClip().duration);
     a.idle.time = this.idleT % dur(a.idle);
-    a.walk.time = (((this.phase) % 1 + 1) % 1) * dur(a.walk);
+    a.walk.time = (((this.phase % 1) + 1) % 1) * dur(a.walk);
     a.run.time = ((((this.phase - this.walkOff + this.runOff) % 1) + 1) % 1) * dur(a.run);
 
-    const airFreeze = this.airBlend;
-    // when airborne ease toward a neutral jog pose so legs read as "mid-stride" then tuck via IK
-    const iw = (1 - locoW) * (1 - airFreeze * 0.0);
-    a.idle.setEffectiveWeight(iw);
-    a.walk.setEffectiveWeight(locoW * (1 - runE));
-    a.run.setEffectiveWeight(locoW * runE);
+    // Normalized Idle / Walk / Run weights so skeleton energy stays 1.0 during every transition
+    const rawIdle = (1 - this.locoBlend) * lerp(1, 0.65, this.airBlend);
+    const rawWalk = this.locoBlend * (1 - this.runBlend) + this.airBlend * 0.15 * (1 - this.locoBlend);
+    const rawRun = this.locoBlend * this.runBlend + this.airBlend * 0.2 * (1 - this.locoBlend);
+    const wSum = Math.max(1e-4, rawIdle + rawWalk + rawRun);
+    a.idle.setEffectiveWeight(rawIdle / wSum);
+    a.walk.setEffectiveWeight(rawWalk / wSum);
+    a.run.setEffectiveWeight(rawRun / wSum);
     this.mixer.update(0);
   }
 
@@ -910,14 +1233,18 @@ export class SoldierRig {
       }
     }
 
+    // Always restore bind Hips offset on Rocketbox rigs before leg IK so hips never pop or sink
+    if (!this.hipsPosAnimated && B.Hips) B.Hips.position.copy(this.bindHipsLocal);
     this.model.updateMatrixWorld(true);
 
-    // ----- LEGS : crouch / landing / airborne via two-bone IK
-    const depth = this.crouchAmt * 0.38 + sLand + deathBuckle * 0.5;
-    const lift = this.airBlend * 0.3;
-    if (depth > 0.002 || lift > 0.002) this.applyLegs(depth, lift, dead);
+    // ----- LEGS : smooth crouch / landing / airborne via two-bone IK
+    const rawDepth = Math.max(0, this.crouchAmt * 0.38 + sLand + deathBuckle * 0.5);
+    const rawLift = this.airBlend * 0.3;
+    this.legDepthS = damp(this.legDepthS, rawDepth, 18, dt);
+    this.legLiftS = damp(this.legLiftS, rawLift, 16, dt);
+    if (this.legDepthS > 0.0005 || this.legLiftS > 0.0005) this.applyLegs(this.legDepthS, this.legLiftS, dead);
 
-    // ----- TORSO : aim twist/pitch/lean + reactions
+    // ----- TORSO : aim twist/pitch/lean + turn banking + reactions
     this.model.updateMatrixWorld(true);
     const bodyYawNow = this.root.rotation.y;
     const hipPos = B.Hips.getWorldPosition(this.tmpV);
@@ -926,14 +1253,15 @@ export class SoldierRig {
     const twist = clamp(wrapAngle(this.aimYaw - bodyYawNow), -1.7, 1.7);
     const blade = -0.28 * this.aimBlend * (1 - this.sprintBlend);
     const sprintTwist = this.sprintBlend * 0.1;
-    const yawTot = dead ? 0 : twist + blade + sprintTwist + hT * 0.5;
+    const idleSwayYaw = Math.sin(this.time * 0.85) * 0.024 * (1 - this.locoBlend) * (1 - this.aimBlend);
+    const yawTot = dead ? 0 : twist + blade + sprintTwist + idleSwayYaw + hT * 0.5;
     const pitchK = lerp(0.55, 1, this.aimBlend);
     const crouchLean = this.crouchAmt * 0.22 + sLand * 0.5;
     const breath = Math.sin(this.time * 1.7) * 0.012 * (1 + this.aimBlend);
     const pitchTot = dead
       ? 0
       : -this.aimPitch * pitchK + crouchLean + hP * 0.5 + breath + rRot * 0.05 + tKick * 0.04 + this.sprintBlend * 0.08;
-    const rollTot = dead ? 0 : -this.leanS * 0.3 + hR * 0.4;
+    const rollTot = dead ? 0 : -this.leanS * 0.3 + this.turnLeanS + hR * 0.4;
 
     const yawFrame = bodyYawNow + yawTot;
     const rightAxis = new THREE.Vector3(Math.cos(yawFrame), 0, -Math.sin(yawFrame));
@@ -944,6 +1272,10 @@ export class SoldierRig {
     const qTot = qRoll.multiply(qPitch).multiply(qYaw);
     if (!dead) {
       this.rotateChain(["Spine", "Spine1", "Spine2"], qTot, [0.3, 0.32, 0.32]);
+      // Subtle clavicle breathing lift so idle operators feel alive
+      const clavLift = Math.sin(this.time * 1.7) * 0.015;
+      if (B.LeftShoulder) this.rotateWorld(B.LeftShoulder, new THREE.Quaternion().setFromAxisAngle(fwdAxis, clavLift));
+      if (B.RightShoulder) this.rotateWorld(B.RightShoulder, new THREE.Quaternion().setFromAxisAngle(fwdAxis, -clavLift));
       // head: look at the aim point, a little less than the chest
       const headQ = new THREE.Quaternion().setFromAxisAngle(rightAxis, -this.aimPitch * 0.4 + headS * 0.1 + hP * 0.3).multiply(new THREE.Quaternion().setFromAxisAngle(AXIS_Y, yawTot * 0.18));
       this.rotateChain(["Neck", "Head"], headQ, [0.45, 0.55]);
@@ -959,9 +1291,11 @@ export class SoldierRig {
     this.model.updateMatrixWorld(true);
 
     // ----- WEAPON + ARMS
-    if (this.weaponAttached) {
+    if (this.carryingBody && !this.dead) {
+      this.updateCarryArms();
+    } else if (this.weaponAttached && !this.holstered) {
       this.updateWeaponAndArms(dt, { rRot, rPos, rYaw, armL, armR });
-    } else {
+    } else if (!this.weaponAttached) {
       this.updateDeadArms(armL, armR);
     }
 
@@ -1087,10 +1421,11 @@ export class SoldierRig {
     const wq = aimQ.clone().multiply(poseQ);
 
     // position relative to the right shoulder, expressed in aim frame
-    const pAim = V(0.075, -0.095, 0.36);
-    const pLow = V(0.1, -0.2, 0.3);
-    const pSprint = V(0.16, -0.27, 0.22);
-    const pReload = V(0.1, -0.17, 0.33);
+    const isPistol = this.rifle.weaponId === "pistol";
+    const pAim = isPistol ? V(0.052, -0.052, 0.45) : V(0.075, -0.095, 0.36);
+    const pLow = isPistol ? V(0.085, -0.2, 0.32) : V(0.1, -0.2, 0.3);
+    const pSprint = isPistol ? V(0.13, -0.25, 0.23) : V(0.16, -0.27, 0.22);
+    const pReload = isPistol ? V(0.07, -0.14, 0.36) : V(0.1, -0.17, 0.33);
     const off = pAim.clone().lerp(pLow, lowReady).lerp(pSprint, sp).lerp(pReload, rb);
     off.z -= s.rPos * 0.035;
     off.y += s.rPos * 0.008;
@@ -1225,6 +1560,25 @@ export class SoldierRig {
     });
   }
 
+  private updateCarryArms() {
+    const B = this.bones;
+    const yaw = this.root.rotation.y;
+    const fwd = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
+    const right = new THREE.Vector3(-Math.cos(yaw), 0, Math.sin(yaw));
+    const rSh = B.RightArm.getWorldPosition(new THREE.Vector3());
+    const lSh = B.LeftArm.getWorldPosition(new THREE.Vector3());
+    // Right arm reaches up and slightly forward/out to cradle the body over the right shoulder
+    const rTarget = rSh.clone().addScaledVector(fwd, 0.16).addScaledVector(right, 0.08).add(new THREE.Vector3(0, 0.22, 0));
+    // Left arm crosses up toward the right shoulder/chest to brace the carried torso
+    const lTarget = lSh.clone().addScaledVector(fwd, 0.22).addScaledVector(right, 0.24).add(new THREE.Vector3(0, 0.12, 0));
+    const poleR = fwd.clone().multiplyScalar(-0.4).addScaledVector(right, 0.6).add(new THREE.Vector3(0, -0.6, 0));
+    const poleL = fwd.clone().multiplyScalar(0.3).addScaledVector(right, -0.6).add(new THREE.Vector3(0, -0.7, 0));
+    this.twoBoneIK(B.RightArm, B.RightForeArm, B.RightHand, rTarget, poleR, 0.96);
+    this.twoBoneIK(B.LeftArm, B.LeftForeArm, B.LeftHand, lTarget, poleL, 0.96);
+    this.curlHand("Right", { Thumb: 0.7, Index: 0.85, Middle: 0.9, Ring: 0.9, Pinky: 0.9 });
+    this.curlHand("Left", { Thumb: 0.7, Index: 0.85, Middle: 0.9, Ring: 0.9, Pinky: 0.9 });
+  }
+
   private updateDeadArms(armL: number, armR: number) {
     const B = this.bones;
     const t = smoothstep(0.05, 0.7, this.deathT);
@@ -1274,7 +1628,7 @@ export class SoldierRig {
     const t = this.reloadT;
     const fl = this.reloadFlags;
     const R = this.rifle;
-    const magOffLocal = RIFLE.magRest.clone().sub(V(0.034, -0.085, 0.115)); // palm -> mag centre
+    const magOffLocal = R.magRest.clone().sub(V(0.034, -0.085, 0.115)); // palm -> mag centre
     const attachToHand = () => {
       if (R.mag.parent !== R.group) R.group.add(R.mag);
       // place in weapon-local space from the palm world pos
@@ -1313,12 +1667,12 @@ export class SoldierRig {
     }
     if (t >= 1.93 && t < 2.0 && !fl.in) {
       fl.in = true;
-      R.mag.position.copy(RIFLE.magRest);
+      R.mag.position.copy(R.magRest);
       R.mag.rotation.set(0, 0, 0);
       this.events.onReloadEvent?.("magin");
     }
     if (t >= 1.93 && fl.in) {
-      R.mag.position.copy(RIFLE.magRest);
+      R.mag.position.copy(R.magRest);
       R.mag.rotation.set(0, 0, 0);
       R.mag.visible = true;
     }
@@ -1399,7 +1753,7 @@ export class SoldierRig {
   }
 
   /* ---- faction tint + scale (enemies reuse this rig) ------------------ */
-  /** Re-tint the body armour + visor so one model reads as many factions. */
+  /** Re-tint uniform/armor + visor while keeping human skin and hair natural. */
   setTint(bodyHex: number, visorHex?: number) {
     if (!this.model) return;
     const body = new THREE.Color(bodyHex);
@@ -1412,11 +1766,17 @@ export class SoldierRig {
       mats.forEach((mat) => {
         const s = mat as THREE.MeshStandardMaterial;
         if (!s || !("color" in s)) return;
-        if (/visor/i.test(s.name)) {
+        const nm = s.name || "";
+        // Never paint skin or hair green/blue/red
+        if (/head|skin|face|opacity|hair|knife|pistol|tools/i.test(nm)) return;
+        if (/visor/i.test(nm)) {
           if (visorHex !== undefined) {
             s.color.setHex(visorHex);
             s.emissive = new THREE.Color(visorHex).multiplyScalar(0.35);
           }
+        } else if (this.isRocketbox) {
+          // Subtle fabric/gear tint so Rocketbox textures keep natural depth & camo pattern
+          s.color.setHex(0xffffff).lerp(body, 0.42);
         } else {
           // multiply the authored colour so texture detail survives the tint
           s.color.copy(body);
@@ -1425,16 +1785,42 @@ export class SoldierRig {
     });
   }
 
-  /** Apply full player customization (armor color/finish, tactical gear color/modules, visor glow, weapon skin). */
+  /** Apply full player customization (armor color/finish, tactical gear color/modules, visor glow, weapon mods). */
   setAppearance(app: SoldierAppearance) {
     if (!this.model) return;
-    for (const w of this.weapons.values()) {
-      tintWeapon(w, app.weaponFinish);
+    for (const [id, w] of this.weapons.entries()) {
+      const cfg = this.weaponConfigs[id];
+      if (cfg) applyWeaponCustomization(w, cfg);
+      else tintWeapon(w, app.weaponFinish);
     }
-    if (this.isRocketbox) return;
-    const armor = new THREE.Color(app.armorColor);
     const gear = new THREE.Color(app.gearColor);
     const visor = new THREE.Color(app.visorColor);
+    const armor = new THREE.Color(app.armorColor);
+    if (this.isRocketbox) {
+      this.model.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (!m.isMesh) return;
+        const mats = Array.isArray(m.material) ? m.material : [m.material];
+        mats.forEach((mat) => {
+          const s = mat as THREE.MeshStandardMaterial;
+          if (!s || !("color" in s)) return;
+          const nm = s.name || "";
+          if (/head|skin|face|opacity|hair|knife|pistol|tools|visor/i.test(nm)) return;
+          s.color.setHex(0xffffff).lerp(armor, 0.36);
+        });
+      });
+      if (this.equipment) {
+        this.equipment.tint(gear.getHex(), visor.getHex(), app.visorGlow);
+        this.equipment.configure({
+          nvg: app.nvg,
+          backpack: /military/i.test(this.modelTag) ? app.backpack : false,
+          chestRig: false,
+          holster: app.holster,
+          headset: app.headset,
+        });
+      }
+      return;
+    }
     const finish =
       app.armorFinish === "matte"
         ? { r: 0.78, m: 0.08 }
@@ -1486,7 +1872,7 @@ export class SoldierRig {
   /** advance reload clock with real dt (called from update via wrapper) */
   tickReload(dt: number) {
     if (this.reloadT >= 0) {
-      this.reloadT += dt;
+      this.reloadT += dt * (RELOAD_TIME / Math.max(0.4, this.reloadDuration));
       if (this.reloadT >= RELOAD_TIME) {
         this.reloadT = -1;
         this.rifle.mag.position.copy(RIFLE.magRest);
