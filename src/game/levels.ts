@@ -2598,11 +2598,10 @@ function buildVillage(content: THREE.Object3D, main: THREE.Scene, renderer: THRE
     K.streetlight(4.2, z, -Math.PI / 2);
   }
 
-  // central props + weathered parked village truck for cover
+  // central props
   K.well(4.5, -14);
   K.stall(5.5, 8, 0.3);
   K.stall(-5.5, 12, -0.2);
-  K.truck(5.8, 22.5, -0.22, 0x4b5c42);
   K.haystack(19, -4);
   K.haystack(-19, 2);
   K.haystack(-19, 26);
@@ -3262,8 +3261,8 @@ function buildPort(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.W
   K.barrel(new THREE.MeshStandardMaterial({ color: 0x9b2c22, roughness: 0.5, metalness: 0.7 }), 4, 20);
   K.sandbag(8, 30, 0, 5);
   K.sandbag(-8, 30, 0, 5);
-  K.truck(12, 34, 0.3, 0x3a5a3a);
-  K.truck(-14, 38, -0.25, 0x4a4a4a);
+  K.container(12, 0, 34, 0.3, 0x3a5a3a);
+  K.container(-14, 0, 38, -0.25, 0x4a5a6a);
 
   // dock & pier streetlights
   for (let z = 6; z <= 42; z += 12) {
@@ -3441,11 +3440,13 @@ function buildHQ(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.Web
   for (const [fx, fz] of [[-14, -25], [14, -25]] as const) {
     K.solid(K.mesh(new THREE.MeshStandardMaterial({ color: 0x8a8a2a, roughness: 0.6, metalness: 0.4 }), new THREE.CylinderGeometry(1.2, 1.2, 3, 12), fx, 1.5, fz), "metal");
   }
-  // APCs (Brick's ride) + trucks
-  K.truck(-18, -12, 0.5, 0x3a5a3a);
-  K.truck(18, -12, -0.5, 0x3a5a3a);
+  // perimeter cover barricades
+  K.sandbag(-18, -12, 0.5, 5);
+  K.sandbag(18, -12, -0.5, 5);
   // crates + barrels
   const woodMat = new THREE.MeshStandardMaterial({ color: 0x8a6a43, roughness: 0.82 });
+  K.crate(woodMat, -18, -10.5, 1.15, 0.4);
+  K.crate(woodMat, 18, -10.5, 1.15, -0.4);
   K.crate(woodMat, -4, -23, 1.2, 0.2);
   K.crate(woodMat, 4, -23, 1.1, -0.2);
   K.crate(woodMat, 0, -24.5, 1.0, 0.4);
@@ -3593,8 +3594,8 @@ function buildCitadel(content: THREE.Object3D, main: THREE.Scene, renderer: THRE
     K.stairs({ x: tx + (tx < 0 ? -3.2 : 3.2), z: 60.5, alongZ: true, dir: -1, steps: 15, rise: 0.3, run: 0.52, width: 1.4, mat: stairMat });
   }
   K.sandbag(0, 62, 0, 6);
-  K.truck(-22, 66, 0.25, 0x3b4248);
-  K.truck(22, 66, -0.25, 0x3b4248);
+  K.container(-22, 0, 66, 0.25, 0x3b4248);
+  K.container(22, 0, 66, -0.25, 0x3b4248);
 
   // ---- Zone 2: West Armory Bunker (-34, 24) & East Comms Bunker (+34, 24) ----
   K.enterable({ x: -34, z: 24, w: 14, d: 10, h: 4.4, facade: citadelF, roof: "flat", roofMat: bunkerRoof, doors: ["N", "S", "E"], windows: ["W"], partition: "z", walkableRoof: true, parapet: true, emissive: 0.65 });
@@ -3602,12 +3603,12 @@ function buildCitadel(content: THREE.Object3D, main: THREE.Scene, renderer: THRE
   K.stairs({ x: -42.5, z: 29.5, alongZ: true, dir: -1, steps: 15, rise: 0.3, run: 0.55, width: 1.5, mat: stairMat });
   K.stairs({ x: 42.5, z: 29.5, alongZ: true, dir: -1, steps: 15, rise: 0.3, run: 0.55, width: 1.5, mat: stairMat });
 
-  // Courtyard shipping containers & armored transport cover
+  // Courtyard shipping containers & tactical cover
   K.containerRow(-14, 38, 2);
   K.containerRow(14, 38, 2);
   K.containerRow(-22, 8, 2);
   K.containerRow(22, 8, 2);
-  K.truck(0, 26, Math.PI / 2, 0x323b45);
+  K.container(0, 0, 26, Math.PI / 2, 0x323b45);
   K.sandbag(-8, 20, 0, 6);
   K.sandbag(8, 20, 0, 6);
 

@@ -493,7 +493,7 @@ export function craftedCrate(size = 1.0, seed = 1): THREE.Group {
 
   // side planks (instanced)
   const plankH = (size - (count + 1) * gap) / count;
-  const sideGeo = bevelledBox(size - 2 * post + 0.015 * size, plankH, plankT, 0.009 * size);
+  const sideGeo = bevelledBox(size - 2 * post + 0.015 * size, plankH, plankT, 0.009 * size).clone();
   sideGeo.translate(0, 0, size / 2 - plankT / 2 + 0.004 * size);
   const sidePlacements: InstancePlacement[] = [];
   for (let face = 0; face < 4; face++) {
@@ -526,7 +526,7 @@ export function craftedCrate(size = 1.0, seed = 1): THREE.Group {
   // diagonal brace on two opposite faces
   const span = size - 2 * post;
   const diagLen = Math.hypot(span, size * 0.86);
-  const diagGeo = bevelledBox(diagLen, 0.058 * size, 0.028 * size, 0.008 * size);
+  const diagGeo = bevelledBox(diagLen, 0.058 * size, 0.028 * size, 0.008 * size).clone();
   diagGeo.rotateZ(Math.atan2(size * 0.86, span));
   diagGeo.translate(0, size / 2, size / 2 + plankT * 0.55);
   const braceMat = materialFor(braceCol, { roughness: 0.76, family: "wood", seed: seed + 7 });
