@@ -87,6 +87,7 @@ export function upgradeCharacterMaterial(orig: THREE.Material): THREE.MeshPhysic
     alphaMap: s.alphaMap ?? null,
     alphaTest: s.alphaTest ?? 0,
     side: s.side,
+    vertexColors: !!s.vertexColors,
   });
 
   if (p.map) {
@@ -179,6 +180,164 @@ export function upgradeCharacterMaterial(orig: THREE.Material): THREE.MeshPhysic
     }
   }
   return p;
+}
+
+const tunedHandSkinGeos = new WeakSet<THREE.BufferGeometry>();
+
+/**
+ * Rocketbox character `_body` textures bake bare hand skin ~15–50% brighter
+ * than the `_head` face texture (and render under matte fabric shading).
+ * Sample the character's own head skin vs bare hand-bone skin pixels once per
+ * shared geometry and apply a smooth per-vertex linear multiplier on bare
+ * hand skin vertices only — leaving cuffs, watches, and gloves untouched.
+ */
+function matchRocketboxHandSkinTone(model: THREE.Group) {
+  if (typeof document === "undefined") return;
+
+  const sampleTexPixels = (tex: THREE.Texture | null | undefined) => {
+    const img = tex?.image as (CanvasImageSource & { width?: number; height?: number; naturalWidth?: number; naturalHeight?: number }) | undefined;
+    if (!tex || !img) return null;
+    const w = img.naturalWidth || img.width || 0;
+    const h = img.naturalHeight || img.height || 0;
+    if (!w || !h) return null;
+    const cw = Math.min(256, w);
+    const ch = Math.min(256, h);
+    const canvas = document.createElement("canvas");
+    canvas.width = cw;
+    canvas.height = ch;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    try {
+      ctx.drawImage(img, 0, 0, cw, ch);
+      const data = ctx.getImageData(0, 0, cw, ch).data;
+      return { w: cw, h: ch, flipY: tex.flipY, data };
+    } catch {
+      return null;
+    }
+  };
+
+  type SampledTex = NonNullable<ReturnType<typeof sampleTexPixels>>;
+  const texCache = new Map<THREE.Texture, SampledTex | null>();
+  const getPixels = (tex: THREE.Texture | null | undefined) => {
+    if (!tex) return null;
+    if (!texCache.has(tex)) texCache.set(tex, sampleTexPixels(tex));
+    return texCache.get(tex) ?? null;
+  };
+
+  const sampleUv = (pix: SampledTex, u: number, v: number) => {
+    const uu = ((u % 1) + 1) % 1;
+    const vv = ((v % 1) + 1) % 1;
+    const px = Math.min(pix.w - 1, Math.max(0, Math.floor(uu * pix.w)));
+    const py = Math.min(pix.h - 1, Math.max(0, Math.floor((pix.flipY ? 1 - vv : vv) * pix.h)));
+    const idx = (py * pix.w + px) * 4;
+    return [pix.data[idx], pix.data[idx + 1], pix.data[idx + 2]] as const;
+  };
+
+  const meshes: THREE.SkinnedMesh[] = [];
+  model.traverse((o) => {
+    const sm = o as THREE.SkinnedMesh;
+    if (sm.isSkinnedMesh && sm.skeleton) meshes.push(sm);
+  });
+
+  // 1. Measure average face skin sRGB from head meshes
+  let headR = 0, headG = 0, headB = 0, headN = 0;
+  for (const sm of meshes) {
+    const mat = (Array.isArray(sm.material) ? sm.material[0] : sm.material) as THREE.MeshStandardMaterial | undefined;
+    if (!mat || !/head|face|skin/i.test(mat.name)) continue;
+    const pix = getPixels(mat.map);
+    const uv = sm.geometry.getAttribute("uv");
+    const j0 = sm.geometry.getAttribute("skinIndex");
+    const w0 = sm.geometry.getAttribute("skinWeight");
+    if (!pix || !uv || !j0 || !w0) continue;
+    const headBones = new Set<number>();
+    sm.skeleton.bones.forEach((b, i) => {
+      if (/head/i.test(b.name)) headBones.add(i);
+    });
+    for (let k = 0; k < uv.count; k++) {
+      let hw = 0;
+      for (let c = 0; c < 4; c++) {
+        if (headBones.has(j0.getComponent(k, c))) hw += w0.getComponent(k, c);
+      }
+      if (hw < 0.5) continue;
+      const [r, g, b] = sampleUv(pix, uv.getX(k), uv.getY(k));
+      if (r > 80 && r > g + 10 && g > b + 3) {
+        headR += r; headG += g; headB += b; headN++;
+      }
+    }
+  }
+  if (headN === 0) return;
+  headR /= headN; headG /= headN; headB /= headN;
+
+  // 2. Match bare-skin hand vertices on `_body` meshes to the face skin tone
+  for (const sm of meshes) {
+    const mat = (Array.isArray(sm.material) ? sm.material[0] : sm.material) as THREE.MeshStandardMaterial | undefined;
+    if (!mat || /head|face|skin|opacity|hair|helmet|equipment|knife|pistol|tools|visor/i.test(mat.name)) continue;
+    if (tunedHandSkinGeos.has(sm.geometry)) {
+      mat.vertexColors = true;
+      mat.needsUpdate = true;
+      continue;
+    }
+    const pix = getPixels(mat.map);
+    const uv = sm.geometry.getAttribute("uv");
+    const j0 = sm.geometry.getAttribute("skinIndex");
+    const w0 = sm.geometry.getAttribute("skinWeight");
+    if (!pix || !uv || !j0 || !w0) continue;
+
+    const handBones = new Set<number>();
+    sm.skeleton.bones.forEach((b, i) => {
+      if (/hand/i.test(b.name)) handBones.add(i);
+    });
+    if (handBones.size === 0) continue;
+
+    let handR = 0, handG = 0, handB = 0, handN = 0;
+    const handWeights = new Float32Array(uv.count);
+    const isBareSkin = new Uint8Array(uv.count);
+    for (let k = 0; k < uv.count; k++) {
+      let hw = 0;
+      for (let c = 0; c < 4; c++) {
+        if (handBones.has(j0.getComponent(k, c))) hw += w0.getComponent(k, c);
+      }
+      handWeights[k] = hw;
+      if (hw < 0.5) continue;
+      const [r, g, b] = sampleUv(pix, uv.getX(k), uv.getY(k));
+      if (r > 125 && r > g + 12 && g > b + 4) {
+        isBareSkin[k] = 1;
+        if (hw >= 0.75) {
+          handR += r; handG += g; handB += b; handN++;
+        }
+      }
+    }
+    if (handN < 20) continue;
+    handR /= handN; handG /= handN; handB /= handN;
+
+    // Linear-space multiplier matching face skin + subtle compensation for
+    // matte fabric body shading vs warm specular head skin shading.
+    const mulR = clamp(Math.pow(headR / handR, 2.2) * 0.84, 0.40, 0.86);
+    const mulG = clamp(Math.pow(headG / handG, 2.2) * 0.82, 0.36, 0.82);
+    const mulB = clamp(Math.pow(headB / handB, 2.2) * 0.80, 0.34, 0.80);
+
+    const existing = sm.geometry.getAttribute("color");
+    const colors = new Float32Array(uv.count * 3);
+    for (let k = 0; k < uv.count; k++) {
+      const br = existing ? existing.getX(k) : 1;
+      const bg = existing ? existing.getY(k) : 1;
+      const bb = existing ? existing.getZ(k) : 1;
+      if (isBareSkin[k]) {
+        const t = clamp((handWeights[k] - 0.5) / 0.35, 0, 1);
+        colors[k * 3] = br * lerp(1, mulR, t);
+        colors[k * 3 + 1] = bg * lerp(1, mulG, t);
+        colors[k * 3 + 2] = bb * lerp(1, mulB, t);
+      } else {
+        colors[k * 3] = br;
+        colors[k * 3 + 1] = bg;
+        colors[k * 3 + 2] = bb;
+      }
+    }
+    sm.geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+    tunedHandSkinGeos.add(sm.geometry);
+    mat.vertexColors = true;
+    mat.needsUpdate = true;
+  }
 }
 
 interface CalibrationData {
@@ -630,6 +789,8 @@ export class SoldierRig {
       }
     });
 
+    if (this.isRocketbox) matchRocketboxHandSkinTone(model);
+
     // normalise height to ~1.82m
     model.updateMatrixWorld(true);
     const box = new THREE.Box3().setFromObject(model);
@@ -691,9 +852,21 @@ export class SoldierRig {
       const mid = this.bones[`${side}HandMiddle1`] ?? this.bones[`${side}HandMiddle`];
       const hp = hand.getWorldPosition(new THREE.Vector3());
       const mp = mid.getWorldPosition(new THREE.Vector3());
-      const f0 = mp.sub(hp).normalize();
-      const p0 = new THREE.Vector3(0, -1, 0);
-      p0.sub(f0.clone().multiplyScalar(p0.dot(f0))).normalize();
+      const f0World = mp.sub(hp).normalize();
+      const idxBone = this.bones[`${side}HandIndex1`] ?? this.bones[`${side}HandIndex`];
+      const pnkBone = this.bones[`${side}HandPinky1`] ?? this.bones[`${side}HandPinky`];
+      const p0World = new THREE.Vector3(0, -1, 0);
+      if (idxBone && pnkBone) {
+        const across = idxBone
+          .getWorldPosition(new THREE.Vector3())
+          .sub(pnkBone.getWorldPosition(new THREE.Vector3()));
+        p0World.crossVectors(f0World, across);
+        if (side === "Right") p0World.negate();
+        if (p0World.lengthSq() < 1e-6) p0World.set(0, -1, 0);
+      }
+      p0World.sub(f0World.clone().multiplyScalar(p0World.dot(f0World))).normalize();
+      const f0 = f0World.clone().applyQuaternion(modelQInv);
+      const p0 = p0World.clone().applyQuaternion(modelQInv);
       const bindQ = modelQInv.clone().multiply(hand.getWorldQuaternion(new THREE.Quaternion()));
       const fingers: HandBind["fingers"] = {};
       FINGERS.forEach((fn) => {
@@ -716,8 +889,8 @@ export class SoldierRig {
               ? bp.clone().sub(prev.getWorldPosition(new THREE.Vector3())).normalize()
               : new THREE.Vector3(0, 0, 1);
           }
-          const axis = new THREE.Vector3().crossVectors(dir, p0).normalize(); // curls toward palm
-          const bq = modelQInv.clone().multiply(b.getWorldQuaternion(new THREE.Quaternion()));
+          const axis = new THREE.Vector3().crossVectors(dir, p0World).normalize(); // curls toward palm
+          const bq = b.getWorldQuaternion(new THREE.Quaternion());
           return { bone: b, bindLocal: b.quaternion.clone(), axis: axis.applyQuaternion(bq.invert()) };
         });
       });
