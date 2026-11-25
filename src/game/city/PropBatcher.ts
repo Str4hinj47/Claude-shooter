@@ -256,25 +256,13 @@ export class PropBatcher {
 
       for (let pIdx = 0; pIdx < parts.length; pIdx++) {
         const part = parts[pIdx];
-        const mat = whiteBasedMaterial(part.material);
-        const im = new THREE.InstancedMesh(part.geometry, mat, count);
+        const im = new THREE.InstancedMesh(part.geometry, part.material, count);
         im.castShadow = part.castShadow ?? ref.castShadow;
         im.userData.baseCastShadow = ref.userData.baseCastShadow ?? true;
         im.receiveShadow = part.receiveShadow ?? ref.receiveShadow;
         im.name = `${bKey}_p${pIdx}`;
         im.instanceMatrix.array.set(ref.instanceMatrix.array);
         im.instanceMatrix.needsUpdate = true;
-        if (ref.instanceColor && im.instanceColor) {
-          im.instanceColor.array.set(ref.instanceColor.array);
-          im.instanceColor.needsUpdate = true;
-        } else if (ref.instanceColor) {
-          const c = new THREE.Color();
-          for (let i = 0; i < count; i++) {
-            ref.getColorAt(i, c);
-            im.setColorAt(i, c);
-          }
-          if (im.instanceColor) im.instanceColor.needsUpdate = true;
-        }
         im.computeBoundingSphere();
         im.computeBoundingBox();
         im.updateMatrix();

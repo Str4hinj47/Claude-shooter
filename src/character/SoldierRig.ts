@@ -104,26 +104,25 @@ export function upgradeCharacterMaterial(orig: THREE.Material): THREE.MeshPhysic
     p.envMapIntensity = 1.85;
   } else if (/opacity|hair/i.test(name)) {
     p.metalness = 0.0;
-    p.roughness = 0.60;
-    p.sheen = 0.52;
-    p.sheenRoughness = 0.42;
-    p.sheenColor = new THREE.Color(0xd8dee9);
+    p.roughness = 0.65;
+    p.sheen = 0.15;
+    p.sheenRoughness = 0.55;
+    p.sheenColor = new THREE.Color(0x9aa3b0);
     p.alphaTest = Math.max(p.alphaTest || 0, 0.44);
     p.transparent = false;
     p.side = THREE.DoubleSide;
-    p.envMapIntensity = 0.85;
+    p.envMapIntensity = 0.45;
   } else if (/head|skin|face/i.test(name)) {
     p.metalness = 0.0;
-    p.roughness = 0.52;
+    p.roughness = 0.58;
     p.roughnessMap = maps.skinRoughness;
-    p.sheen = 0.44;
-    p.sheenRoughness = 0.54;
-    p.sheenColor = new THREE.Color(0xffb899);
-    p.clearcoat = 0.06;
-    p.clearcoatRoughness = 0.52;
-    p.ior = 1.42;
-    p.specularIntensity = 0.45;
-    p.envMapIntensity = 0.88;
+    p.sheen = 0.12;
+    p.sheenRoughness = 0.62;
+    p.sheenColor = new THREE.Color(0xd99b7c);
+    p.clearcoat = 0.0;
+    p.ior = 1.4;
+    p.specularIntensity = 0.22;
+    p.envMapIntensity = 0.45;
     if (p.normalMap) p.normalScale.set(0.95, 0.95);
     else {
       p.bumpMap = maps.skinRoughness;
@@ -146,33 +145,33 @@ export function upgradeCharacterMaterial(orig: THREE.Material): THREE.MeshPhysic
     if (p.normalMap) p.normalScale.set(1.35, 1.35);
   } else if (/equipment/i.test(name)) {
     p.metalness = 0.06;
-    p.roughness = 0.76;
+    p.roughness = 0.78;
     p.roughnessMap = maps.fabricRoughness;
-    p.sheen = 0.34;
-    p.sheenRoughness = 0.74;
-    p.sheenColor = new THREE.Color(0xcfd6df);
-    p.envMapIntensity = 0.86;
+    p.sheen = 0.12;
+    p.sheenRoughness = 0.72;
+    p.sheenColor = new THREE.Color(0x9ca3af);
+    p.envMapIntensity = 0.5;
     if (p.normalMap) p.normalScale.set(1.5, 1.5);
   } else if (/vanguard/i.test(name)) {
     p.metalness = 0.22;
     p.roughness = 0.48;
     p.roughnessMap = maps.fabricRoughness;
-    p.sheen = 0.28;
+    p.sheen = 0.18;
     p.sheenRoughness = 0.65;
     p.clearcoat = 0.16;
     p.clearcoatRoughness = 0.42;
-    p.envMapIntensity = 1.05;
+    p.envMapIntensity = 0.85;
     if (p.normalMap) p.normalScale.set(1.55, 1.55);
   } else {
-    // Clothing / uniforms (_body)
+    // Clothing / uniforms (_body, which also maps bare hands on Rocketbox characters)
     p.metalness = 0.01;
-    p.roughness = 0.88;
+    p.roughness = 0.86;
     p.roughnessMap = maps.fabricRoughness;
-    p.sheen = 0.65;
-    p.sheenRoughness = 0.82;
-    p.sheenColor = new THREE.Color(0xdce4ef);
-    p.specularIntensity = 0.24;
-    p.envMapIntensity = 0.74;
+    p.sheen = 0.06;
+    p.sheenRoughness = 0.65;
+    p.sheenColor = new THREE.Color(0x8a94a6);
+    p.specularIntensity = 0.12;
+    p.envMapIntensity = 0.36;
     if (p.normalMap) p.normalScale.set(1.45, 1.45);
     else {
       p.bumpMap = maps.fabricRoughness;
@@ -333,6 +332,8 @@ export class SoldierRig {
   private equipAlign: EquipmentAlignMap = {};
   /** bind-pose hips local position (restored each frame when clips don't animate it) */
   private bindHipsLocal = new THREE.Vector3();
+  /** pre-leg-IK hips local position saved before applyLegs() so lowering never accumulates */
+  private hipsPreLegLocal = new THREE.Vector3();
   /** true when a locomotion clip has a Hips position track (Mixamo mocap does, Rocketbox doesn't) */
   private hipsPosAnimated = true;
   /** true when loaded from a custom Rocketbox character GLB (baked clothing/gear, no procedural vest) */
@@ -683,6 +684,7 @@ export class SoldierRig {
     // character through the ground (Rocketbox clips have no pelvis position
     // tracks; Mixamo clips do).
     this.bindHipsLocal.copy(this.bones.Hips.position);
+    this.hipsPreLegLocal.copy(this.bindHipsLocal);
     const modelQInv = this.model.getWorldQuaternion(new THREE.Quaternion()).invert();
     (["Left", "Right"] as Side[]).forEach((side) => {
       const hand = this.bones[`${side}Hand`];
@@ -962,7 +964,10 @@ export class SoldierRig {
     this.root.visible = true;
     this.fall.visible = true;
     if (this.model) this.model.visible = true;
-    if (this.bones.Hips) this.bones.Hips.position.copy(this.bindHipsLocal);
+    if (this.bones.Hips) {
+      this.bones.Hips.position.copy(this.bindHipsLocal);
+      this.hipsPreLegLocal.copy(this.bindHipsLocal);
+    }
     if (pos) this.root.position.copy(pos);
     else this.root.position.y = 0;
     this.vel.set(0, 0, 0);
@@ -1192,10 +1197,15 @@ export class SoldierRig {
     const rawWalk = this.locoBlend * (1 - this.runBlend) + this.airBlend * 0.15 * (1 - this.locoBlend);
     const rawRun = this.locoBlend * this.runBlend + this.airBlend * 0.2 * (1 - this.locoBlend);
     const wSum = Math.max(1e-4, rawIdle + rawWalk + rawRun);
+    // Restore pre-leg-IK Hips position before evaluating the mixer so constant-value
+    // position tracks (e.g. Rocketbox GLBs skipped by PropertyMixer caching) never
+    // accumulate crouch/landing lowering across frames.
+    if (this.bones.Hips) this.bones.Hips.position.copy(this.hipsPreLegLocal);
     a.idle.setEffectiveWeight(rawIdle / wSum);
     a.walk.setEffectiveWeight(rawWalk / wSum);
     a.run.setEffectiveWeight(rawRun / wSum);
     this.mixer.update(0);
+    if (this.bones.Hips) this.hipsPreLegLocal.copy(this.bones.Hips.position);
   }
 
   /* ---------------------------------------------------------------- */
@@ -1263,8 +1273,11 @@ export class SoldierRig {
       }
     }
 
-    // Always restore bind Hips offset on Rocketbox rigs before leg IK so hips never pop or sink
-    if (!this.hipsPosAnimated && B.Hips) B.Hips.position.copy(this.bindHipsLocal);
+    // Always restore pre-leg-IK Hips offset before leg IK so hips never pop or sink
+    if (B.Hips) {
+      if (!this.hipsPosAnimated) B.Hips.position.copy(this.bindHipsLocal);
+      this.hipsPreLegLocal.copy(B.Hips.position);
+    }
     this.model.updateMatrixWorld(true);
 
     // ----- LEGS : smooth crouch / landing / airborne via two-bone IK
@@ -1389,9 +1402,8 @@ export class SoldierRig {
     const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
     // lower hips (and push them back a little for balance)
     const hips = B.Hips;
-    // restore bind offset first when clips don't animate hips position,
-    // otherwise last frame's lowering persists and accumulates (sink bug)
-    if (!this.hipsPosAnimated) hips.position.copy(this.bindHipsLocal);
+    // Always start from the un-lowered frame base so lowering never accumulates across frames
+    hips.position.copy(this.hipsPreLegLocal);
     const hp = hips.getWorldPosition(new THREE.Vector3());
     hp.y -= depth;
     hp.addScaledVector(fwd, -depth * 0.35);
@@ -1805,8 +1817,8 @@ export class SoldierRig {
             s.emissive = new THREE.Color(visorHex).multiplyScalar(0.35);
           }
         } else if (this.isRocketbox) {
-          // Subtle fabric/gear tint so Rocketbox textures keep natural depth & camo pattern
-          s.color.setHex(0xffffff).lerp(body, 0.42);
+          // Gentle fabric/gear tint so Rocketbox textures keep natural depth, dark suits, & skin hands
+          s.color.setHex(0xffffff).lerp(body, 0.24);
         } else {
           // multiply the authored colour so texture detail survives the tint
           s.color.copy(body);
@@ -1827,6 +1839,7 @@ export class SoldierRig {
     const visor = new THREE.Color(app.visorColor);
     const armor = new THREE.Color(app.armorColor);
     if (this.isRocketbox) {
+      const isDefaultArmor = /^#?e6e8ec$/i.test((app.armorColor || "").trim());
       this.model.traverse((o) => {
         const m = o as THREE.Mesh;
         if (!m.isMesh) return;
@@ -1836,7 +1849,11 @@ export class SoldierRig {
           if (!s || !("color" in s)) return;
           const nm = s.name || "";
           if (/head|skin|face|opacity|hair|knife|pistol|tools|visor/i.test(nm)) return;
-          s.color.setHex(0xffffff).lerp(armor, 0.36);
+          if (isDefaultArmor) {
+            s.color.setHex(0xffffff);
+          } else {
+            s.color.setHex(0xffffff).lerp(armor, 0.24);
+          }
         });
       });
       if (this.equipment) {

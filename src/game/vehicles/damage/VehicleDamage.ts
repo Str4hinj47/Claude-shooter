@@ -102,8 +102,11 @@ export class VehicleCrashDeformer {
     if (!root) return false;
     this.bound = true;
 
-    root.updateMatrixWorld(true);
-    _invRoot.copy(root.matrixWorld).invert();
+    // Align chassis deformation coordinates with `v.group` (+Z forward, +Y up),
+    // accounting for `modelRoot.rotation.y = Math.PI` when mounted inside `v.group`.
+    const chassis = root.parent ?? root;
+    chassis.updateMatrixWorld(true);
+    _invRoot.copy(chassis.matrixWorld).invert();
 
     const skipSet = new Set<THREE.Object3D>();
     root.traverse((obj) => {
@@ -118,7 +121,12 @@ export class VehicleCrashDeformer {
       if (/^door_(fl|fr|rl|rr)$/.test(obj.name)) {
         const box = new THREE.Box3().setFromObject(obj);
         const ctr = box.isEmpty() ? new THREE.Vector3() : box.getCenter(new THREE.Vector3()).applyMatrix4(_invRoot);
-        const sideSign = ctr.x < 0 ? -1 : 1;
+        const sideSign =
+          obj === root.userData?.driverDoor && typeof root.userData?.driverDoorSign === "number"
+            ? (root.userData.driverDoorSign as number)
+            : ctr.x < 0
+              ? 1
+              : -1;
         this.doors.push({
           name: obj.name,
           node: obj,
@@ -321,6 +329,32 @@ export class VehicleCrashDeformer {
       if (touched) {
         posAttr.needsUpdate = true;
         geo.computeVertexNormals();
+        if (bm.restNorm) {
+          const normAttr = geo.getAttribute("normal") as THREE.BufferAttribute | undefined;
+          if (normAttr) {
+            const nArr = normAttr.array as Float32Array;
+            const rArr = bm.restNorm;
+            for (let i = 0; i < posAttr.count; i++) {
+              const disp = bm.dispMag[i];
+              const ix = i * 3;
+              if (disp <= 0.002) {
+                nArr[ix] = rArr[ix];
+                nArr[ix + 1] = rArr[ix + 1];
+                nArr[ix + 2] = rArr[ix + 2];
+              } else {
+                const w = Math.min(1, disp / 0.075);
+                const nx = rArr[ix] + (nArr[ix] - rArr[ix]) * w;
+                const ny = rArr[ix + 1] + (nArr[ix + 1] - rArr[ix + 1]) * w;
+                const nz = rArr[ix + 2] + (nArr[ix + 2] - rArr[ix + 2]) * w;
+                const invLen = 1 / (Math.hypot(nx, ny, nz) || 1);
+                nArr[ix] = nx * invLen;
+                nArr[ix + 1] = ny * invLen;
+                nArr[ix + 2] = nz * invLen;
+              }
+            }
+            normAttr.needsUpdate = true;
+          }
+        }
       }
     }
 

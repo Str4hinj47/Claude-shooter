@@ -683,7 +683,7 @@ export class Game {
       pmrem.dispose();
     }
     this.scene.environment = this.hangarEnv;
-    this.scene.environmentIntensity = 0.72;
+    this.scene.environmentIntensity = 0.48;
 
     // Tactical studio dais + subtle amber perimeter ring
     const floor = new THREE.Mesh(
@@ -710,15 +710,15 @@ export class Game {
     ring.position.y = 0.103;
     this.missionRoot.add(ring);
 
-    // 3-point tactical studio lighting (with bright front-key fill so dark/metallic armors read crisply)
-    const hemi = new THREE.HemisphereLight(0xaac8e8, 0x1e2530, 1.35);
-    const key = new THREE.DirectionalLight(0xfff1dc, 2.5);
+    // 3-point tactical studio lighting balanced so dark suits & skin tones retain rich contrast
+    const hemi = new THREE.HemisphereLight(0xaac8e8, 0x1e2530, 0.85);
+    const key = new THREE.DirectionalLight(0xfff1dc, 1.85);
     key.position.set(2.4, 4.2, 4.0);
     key.castShadow = true;
     key.shadow.mapSize.set(1024, 1024);
-    const rim = new THREE.DirectionalLight(0xf59e0b, 1.9);
+    const rim = new THREE.DirectionalLight(0xf59e0b, 1.35);
     rim.position.set(-2.8, 3.0, -2.5);
-    const fill = new THREE.DirectionalLight(0x93c5fd, 1.45);
+    const fill = new THREE.DirectionalLight(0x93c5fd, 0.95);
     fill.position.set(-1.6, 1.8, 3.6);
     this.missionRoot.add(hemi, key, rim, fill);
 
