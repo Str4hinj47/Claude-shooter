@@ -3060,7 +3060,10 @@ export class Game {
     } else {
       /* dead / complete: keep the character animating */
       rig.setVisible(true);
-      rig.update(dt);
+      const gy = this.level
+        ? this.level.groundHeightAt(rig.root.position.x, rig.root.position.z, rig.root.position.y)
+        : rig.groundY;
+      rig.update(dt, gy);
       this.updateCamera(rawDt, dt);
     }
 

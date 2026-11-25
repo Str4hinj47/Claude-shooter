@@ -957,7 +957,9 @@ export class Enemy extends Fighter {
 
   update(dt: number) {
     if (this.dead) {
-      this.rig.update(dt);
+      const my = this.rig.root.position;
+      const gy = this.host.groundHeightAt(my.x, my.z, my.y);
+      this.rig.update(dt, gy);
       return;
     }
     this.aiUpdate(dt, {
@@ -985,7 +987,9 @@ export class Ally extends Fighter {
 
   update(dt: number) {
     if (this.dead) {
-      this.rig.update(dt);
+      const my = this.rig.root.position;
+      const gy = this.host.groundHeightAt(my.x, my.z, my.y);
+      this.rig.update(dt, gy);
       return;
     }
     const rig = this.rig;
@@ -1108,6 +1112,6 @@ export class RescueNPC {
   }
 
   update(dt: number) {
-    this.rig.update(dt);
+    this.rig.update(dt, this.y);
   }
 }

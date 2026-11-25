@@ -1921,7 +1921,7 @@ export class SoldierRig {
       p.obj.rotation.x += p.ang.x * dt;
       p.obj.rotation.y += p.ang.y * dt;
       p.obj.rotation.z += p.ang.z * dt;
-      const floor = p === this.weaponProp ? 0.07 : 0.04;
+      const floor = this.groundY + (p === this.weaponProp ? 0.07 : 0.04);
       if (p.obj.position.y < floor) {
         p.obj.position.y = floor;
         if (p.vel.y < -1.2) {
