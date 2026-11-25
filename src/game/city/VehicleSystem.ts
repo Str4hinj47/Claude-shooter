@@ -897,7 +897,7 @@ export class WestgateVehicleManager {
     }
 
     // 2. Ambient NPC road traffic along Westgate Bay's 149 connected lanes (location & vehicle-value weighted)
-    const spawns = this.bridge.sampleTrafficSpawnPoints(88, 22);
+    const spawns = this.bridge.sampleTrafficSpawnPoints(150, 18);
     const exclusionZones: Array<{ x: number; z: number }> = [
       { x: SAFEHOUSE_SPAWN[0], z: SAFEHOUSE_SPAWN[1] },
       ...WESTGATE_TELEPORTS.map((t) => ({ x: t.x, z: t.z })),
@@ -963,11 +963,11 @@ export class WestgateVehicleManager {
     // 3. Real Parked Street Cars across Westgate Bay's ParkedBaySlots (also location & value weighted)
     const bays = this.bridge.roads.getParkedBays();
     const parkedPlaced: Array<{ x: number; z: number; id: TrafficId }> = [];
-    const bayStride = Math.max(1, Math.floor(bays.length / 40));
-    for (let bi = 0; bi < bays.length && parkedPlaced.length < 24; bi += bayStride) {
+    const bayStride = Math.max(1, Math.floor(bays.length / 80));
+    for (let bi = 0; bi < bays.length && parkedPlaced.length < 60; bi += bayStride) {
       const bay = bays[bi];
       if (!isClearOfSpawns(bay.x, bay.z, 16)) continue;
-      if (parkedPlaced.some((p) => (p.x - bay.x) * (p.x - bay.x) + (p.z - bay.z) * (p.z - bay.z) < 32 * 32)) continue;
+      if (parkedPlaced.some((p) => (p.x - bay.x) * (p.x - bay.x) + (p.z - bay.z) * (p.z - bay.z) < 22 * 22)) continue;
       if (this.vehicles.some((v) => Math.hypot(v.pos.x - bay.x, v.pos.z - bay.z) < 10)) continue;
       const gy = this.bridge.groundHeightAt(bay.x, bay.z, bay.y + 1.5);
       if (gy < 2.0) continue;
@@ -2000,7 +2000,46 @@ export class WestgateVehicleManager {
     const lane = v.lane!;
     const dxToP = v.pos.x - playerPos.x;
     const dzToP = v.pos.z - playerPos.z;
-    if (dxToP * dxToP + dzToP * dzToP > 680 * 680) {
+    const dToP2 = dxToP * dxToP + dzToP * dzToP;
+    if (dToP2 > 310 * 310 && !v.disabled && v.hp >= v.maxHp * 0.9) {
+      // Stream far-off NPC traffic smoothly onto active lanes 105m-245m around the player
+      const allLanes = this.bridge.roads.getLanes();
+      if (allLanes.length > 0) {
+        v.npcSeed = ((v.npcSeed ?? Math.round(Math.abs(v.pos.x * 13 + v.pos.z * 7))) + 37) & 0x7fffffff;
+        for (let tries = 0; tries < 8; tries++) {
+          const cand = allLanes[(v.npcSeed + tries * 19) % allLanes.length];
+          if (cand.length < 36) continue;
+          const ct = 0.2 + ((v.npcSeed + tries * 7) % 60) * 0.01;
+          const pt = cand.curve.getPointAt(ct);
+          const dm2 = (pt.x - playerPos.x) * (pt.x - playerPos.x) + (pt.z - playerPos.z) * (pt.z - playerPos.z);
+          if (dm2 < 105 * 105 || dm2 > 245 * 245) continue;
+          const blocked = this.vehicles.some((o) => {
+            if (o === v) return false;
+            const ox = o.pos.x - pt.x;
+            const oz = o.pos.z - pt.z;
+            return ox * ox + oz * oz < 15 * 15;
+          });
+          if (blocked) continue;
+          const tan = cand.curve.getTangentAt(ct);
+          v.lane = cand;
+          v.laneT = ct;
+          v.laneSpeed = Math.min(cand.speedLimit * 0.85, v.spec.maxSpeed * 0.65);
+          v.speed = v.laneSpeed * 0.85;
+          v.turnCurve = null;
+          v.turnNextLane = null;
+          v.upcomingNextLane = null;
+          v.upcomingTurnDir = null;
+          v.npcSignal = null;
+          v.npcBraking = false;
+          const gy = this.bridge.groundHeightAt(pt.x, pt.z, pt.y + 1.0);
+          v.pos.set(pt.x, gy, pt.z);
+          v.yaw = Math.atan2(tan.x, tan.z);
+          this.syncTransform(v, 0);
+          return;
+        }
+      }
+    }
+    if (dToP2 > 680 * 680) {
       v.turnCurve = null;
       v.npcSignal = null;
       v.npcBraking = false;

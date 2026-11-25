@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import type { TerrainHeightFn } from "./HeightSystem";
 import type { RoadNetwork } from "./RoadNetwork";
+import { OPEN_WORLD_MISSION_SITES } from "./OpenWorldMissions";
 
 export interface DistrictInfo {
   id:
@@ -197,9 +198,22 @@ export function buildWestgateTerrainFn(roads: RoadNetwork): TerrainHeightFn {
     const shDx = x - -322;
     const shDz = z - 310;
     const shDist = Math.hypot(shDx, shDz);
-    if (shDist < 36) {
-      const w = 1 - smoothstep(19, 36, shDist);
+    if (shDist < 42) {
+      const w = 1 - smoothstep(26, 42, shDist);
       h = lerp(h, 5.35, w);
+    }
+
+    // Grade live open-world campaign compound blocks smoothly flush with surrounding city streets
+    for (const idKey of [1, 2, 3, 4, 5, 6] as const) {
+      const site = OPEN_WORLD_MISSION_SITES[idKey];
+      if (!site) continue;
+      if (site.missionId === 4 && z > 479) continue; // preserve Seaport harbor water basin south of the pier edge
+      const cd = Math.hypot(x - site.x, z - site.z);
+      const outer = site.clearRadius + 10;
+      if (cd < outer) {
+        const w = 1 - smoothstep(site.clearRadius - 6, outer, cd);
+        h = lerp(h, site.y, w);
+      }
     }
 
     // Grade roundabout central aprons smoothly

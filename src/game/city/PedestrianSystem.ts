@@ -135,7 +135,7 @@ export class PedestrianSystem {
     this.signals = signals;
 
     this.buildSidewalkAndPlazaRoutes();
-    this.spawnCrowd(72);
+    this.spawnCrowd(180);
   }
 
   private buildSidewalkAndPlazaRoutes(): void {
@@ -748,8 +748,39 @@ export class PedestrianSystem {
       }
 
       const dFocus2 = (a.x - focusPos.x) * (a.x - focusPos.x) + (a.z - focusPos.z) * (a.z - focusPos.z);
-      const nearVisual = dFocus2 < 115 * 115;
-      if (nearVisual && !a.modelRequested && dFocus2 < 95 * 95) {
+      // Stream far-away calm pedestrians onto sidewalk routes 46-138m around focusPos so neighborhoods stay lively
+      if (
+        dFocus2 > 165 * 165 &&
+        a.state === "walk" &&
+        !a.witnessReported &&
+        a.witnessSuspicion < 0.05 &&
+        this.routes.length > 0 &&
+        ((i + this.frameTick) & 7) === 0
+      ) {
+        for (let tries = 0; tries < 6; tries++) {
+          const candIdx = (a.id * 31 + this.frameTick * 7 + tries * 53) % this.routes.length;
+          const seg = this.routes[candIdx];
+          const mx = (seg.ax + seg.bx) * 0.5;
+          const mz = (seg.az + seg.bz) * 0.5;
+          const dm2 = (mx - focusPos.x) * (mx - focusPos.x) + (mz - focusPos.z) * (mz - focusPos.z);
+          if (dm2 >= 46 * 46 && dm2 <= 138 * 138) {
+            a.routeIdx = candIdx;
+            a.routeT = 0.2 + ((a.id % 7) * 0.1);
+            a.x = seg.ax + (seg.bx - seg.ax) * a.routeT;
+            a.z = seg.az + (seg.bz - seg.az) * a.routeT;
+            a.y = this.terrainAt(a.x, a.z);
+            a.targetYaw = Math.atan2(seg.dirX * a.routeDir, seg.dirZ * a.routeDir);
+            a.yaw = a.targetYaw;
+            a.isCrossingRoad = !!seg.isCrosswalk;
+            a.root.position.set(a.x, a.y, a.z);
+            a.root.rotation.set(0, a.yaw, 0);
+            break;
+          }
+        }
+      }
+
+      const nearVisual = dFocus2 < 125 * 125;
+      if (nearVisual && !a.modelRequested && dFocus2 < 105 * 105) {
         this.ensureAgentModel(a);
       }
       a.root.visible = nearVisual;

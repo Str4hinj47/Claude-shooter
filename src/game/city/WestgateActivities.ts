@@ -123,6 +123,8 @@ export interface SpeedTrapDef {
   targetKmh: number;
 }
 
+import { OPEN_WORLD_MISSION_SITES } from "./OpenWorldMissions";
+
 export interface ContractSpotDef {
   missionId: number;
   x: number;
@@ -133,12 +135,16 @@ export interface ContractSpotDef {
 
 export const WESTGATE_CONTRACT_SPOTS: ContractSpotDef[] = [
   { missionId: 0, x: -238, z: 295, yawDeg: 120, districtLabel: "Old Quarter Safehouse" },
-  { missionId: 1, x: -224, z: -815, yawDeg: 170, districtLabel: "Vinewood Crest Estates" },
-  { missionId: 2, x: -292, z: -135, yawDeg: 90, districtLabel: "Midtown Construction Tower" },
-  { missionId: 3, x: 42, z: -165, yawDeg: -65, districtLabel: "Downtown Financial Plaza" },
-  { missionId: 4, x: 635, z: 432, yawDeg: 0, districtLabel: "Eastgate Seaport Docks" },
-  { missionId: 5, x: 114, z: -162, yawDeg: 90, districtLabel: "City Hall / Apex Plaza" },
-  { missionId: 6, x: -116, z: -974, yawDeg: 180, districtLabel: "Observatory Summit Ridge" },
+  ...[1, 2, 3, 4, 5, 6].map((id) => {
+    const s = OPEN_WORLD_MISSION_SITES[id];
+    return {
+      missionId: id,
+      x: s.approachX,
+      z: s.approachZ,
+      yawDeg: id === 4 ? 0 : 180,
+      districtLabel: s.districtLabel,
+    };
+  }),
 ];
 
 export const WESTGATE_SPEED_TRAPS: SpeedTrapDef[] = [

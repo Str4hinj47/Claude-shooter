@@ -974,10 +974,10 @@ export class Enemy extends Fighter {
 export class Ally extends Fighter {
   private fireTimer = 0;
 
-  constructor(host: CombatHost, x: number, z: number) {
+  constructor(host: CombatHost, x: number, z: number, y = 0) {
     super(
       host,
-      { x, z, mode: "guard" },
+      { x, z, y, mode: "guard" },
       { ...host.mission, enemyAccuracy: 0.62, enemyDamage: [5, 9] },
       100000, // invulnerable
       false,

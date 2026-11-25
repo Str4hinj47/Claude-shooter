@@ -1,5 +1,6 @@
 import * as THREE from "three";
-import type { LevelResult } from "../levels";
+import { buildMissionCompoundAt, type EmbeddedMissionCompound, type LevelResult } from "../levels";
+import { OPEN_WORLD_MISSION_SITES } from "./OpenWorldMissions";
 import { OpenWorldEngine } from "./OpenWorldEngine";
 import { buildWestgateTerrainFn, buildWestgateTerrainMesh, getDistrictAt, setTerrainWeather } from "./WestgateTerrain";
 import { buildWestgateRoadLandmarks, populateWestgateRoads, setBridgeLandmarkDarkness } from "./WestgateRoads";
@@ -50,6 +51,13 @@ import {
   type TimeOfDayMode,
   type WestgateTeleportSpot,
 } from "./WestgateMeta";
+import {
+  SAFEHOUSE_ORIGIN,
+  SAFEHOUSE_YAW,
+  registerSafehouseGarageSpatial,
+  resetSafehouseGarageDoorState,
+  updateSafehouseGarageDoor,
+} from "./SafehouseResidence";
 
 export {
   TIME_OF_DAY_LABELS,
@@ -219,6 +227,30 @@ export function buildWestgateWorld(
 
   // 8. Finalize roads, bridge WalkableSurfaces, props, and prewarm spawn chunks
   engine.finalizeStaticWorld(WESTGATE_SPAWN[0], WESTGATE_SPAWN[1]);
+  registerSafehouseGarageSpatial(engine.spatialAABBs);
+
+  // 8b. Embed all 6 campaign mission compounds directly inside Westgate Bay's city blocks
+  const embeddedCompounds: Array<{ site: (typeof OPEN_WORLD_MISSION_SITES)[number]; comp: EmbeddedMissionCompound }> = [];
+  const compoundDestroyables = new Map<number, THREE.Mesh[]>();
+  const tmpCompBox = new THREE.Box3();
+  for (const id of [1, 2, 3, 4, 5, 6] as const) {
+    const site = OPEN_WORLD_MISSION_SITES[id];
+    if (!site) continue;
+    const comp = buildMissionCompoundAt(id, site);
+    content.add(comp.root);
+    engine.spatialAABBs.insertMany(comp.aabbs);
+    for (const col of comp.colliders) {
+      col.updateWorldMatrix(true, false);
+      tmpCompBox.setFromObject(col);
+      engine.spatialColliders.insert(col, tmpCompBox);
+    }
+    for (const ws of comp.walkableSurfaces) {
+      engine.heightSystem.addSurface(ws);
+    }
+    compoundDestroyables.set(id, comp.destroyables);
+    embeddedCompounds.push({ site, comp });
+  }
+
   upgradeWestgatePropsWithGlbs(engine.props);
   content.add(engine.root);
 
@@ -308,6 +340,8 @@ export function buildWestgateWorld(
   // 10. Rain & snow precipitation + tire road spray + Time-of-Day lighting
   const weather = createWeatherState("auto");
   const precipitation = new Precipitation(main);
+  precipitation.addShelterZone(SAFEHOUSE_ORIGIN.x, SAFEHOUSE_ORIGIN.y, SAFEHOUSE_ORIGIN.z, SAFEHOUSE_YAW, -20.1, 5.3, -6.7, 4.3, 8.8);
+  precipitation.addShelterZone(SAFEHOUSE_ORIGIN.x, SAFEHOUSE_ORIGIN.y, SAFEHOUSE_ORIGIN.z, SAFEHOUSE_YAW, -9.2, 0.1, 3.5, 7.2, 4.0);
   const spray = new RoadSpray(main);
   const baseFogColor = new THREE.Color(0xadd0e8);
   const stormFogColor = new THREE.Color(0x6b7c8e);
@@ -533,6 +567,15 @@ export function buildWestgateWorld(
     wildlife.update(dt, focus);
     shops.update(dt, focus);
     pedestrians.update(dt, focus, vehicles.getPedVehicleQueries(focus));
+    updateSafehouseGarageDoor(dt, focus, vehicles.activeVehicle?.pos ?? null);
+    for (let i = 0; i < embeddedCompounds.length; i++) {
+      const { site, comp } = embeddedCompounds[i];
+      const dx = focus.x - site.x;
+      const dz = focus.z - site.z;
+      const vis = dx * dx + dz * dz < 360 * 360;
+      comp.root.visible = vis;
+      if (vis) comp.update(dt);
+    }
   };
 
   return {
@@ -564,6 +607,7 @@ export function buildWestgateWorld(
     collectibles,
     bodyCarry,
     contracts,
+    compoundDestroyables,
     minimapData,
     getDistrictAt,
     weather,
@@ -598,6 +642,7 @@ export function buildWestgateWorld(
     getTimeOfDayDarkness: () => todDarkness,
     updateWeatherFx,
     disposeExtra: () => {
+      resetSafehouseGarageDoorState();
       precipitation.dispose();
       spray.dispose();
       mainSky.dispose();

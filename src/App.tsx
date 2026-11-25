@@ -515,6 +515,7 @@ export default function App() {
             setCamTick={setCamTick}
             onExitToScreen={exitToScreen}
             onStartMission={startMission}
+            onClearEndInfo={() => setEndInfo(null)}
             onBuyCar={handleBuyCar}
             onSelectCar={handleSelectCar}
           />

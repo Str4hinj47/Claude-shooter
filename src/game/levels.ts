@@ -2421,31 +2421,12 @@ function buildRange(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.
 }
 
 /* ---------------- M1: Highland Village ---------------- */
-function buildVillage(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.WebGLRenderer): LevelResult {
-  const K = new Kit(content, 1337);
-  K.clearZone(-6.2, 41.0, 4.5);
-  K.clearZone(0, 44, 4.5);
-  const ambient = setupAmbient(main, renderer, {
-    sunElev: 10,
-    sunAzim: 62,
-    turbidity: 4.2,
-    rayleigh: 1.5,
-    fogColor: 0xd9b48f,
-    fogDensity: 0.0055,
-    hemiSky: 0xa6bed4,
-    hemiGround: 0x5c4b32,
-    hemiIntensity: 0.65,
-    sunColor: 0xffd79b,
-    sunIntensity: 3.8,
-    envIntensity: 0.65,
-    exposure: 1.05,
-    shadowFar: 100,
-  });
-  content.add(ambient.sun, ambient.hemi, ambient.skyMesh);
-  if (ambient.stars) content.add(ambient.stars);
-
-  // ground: textured valley turf + cobblestone village avenue + church square plaza
-  K.ground(400, materialFor(0x4c6836, { roughness: 0.94, family: "grass", seed: 101, repeat: 115 }));
+function populateVillageCompound(K: Kit, embedded = false): void {
+  if (!embedded) {
+    // ground: textured valley turf + cobblestone village avenue + church square plaza
+    K.ground(400, materialFor(0x4c6836, { roughness: 0.94, family: "grass", seed: 101, repeat: 115 }));
+  }
+  const content = K.scene;
   const roadMat = materialFor(0x6e6558, { roughness: 0.88, family: "stone", seed: 102, repeat: 16 });
   const road = K.mesh(roadMat, new THREE.PlaneGeometry(7.2, 108), 0, 0.02, 10);
   road.rotation.x = -Math.PI / 2;
@@ -2670,68 +2651,82 @@ function buildVillage(content: THREE.Object3D, main: THREE.Scene, renderer: THRE
   K.wireStrand(4.2, -6, 4.2, 8, 5.1, 0.45);
   K.wireStrand(4.2, 8, 4.2, 22, 5.1, 0.45);
   K.wireStrand(-4.2, 8, 4.2, 8, 5.1, 0.55);
-  K.dustMotes(90, 110, 14, 90, 0xe8d8b0, 0.2);
+  if (!embedded) {
+    K.dustMotes(90, 110, 14, 90, 0xe8d8b0, 0.2);
 
-  // hills ring: rolling olive-green foothills blending naturally into dawn haze (no tiled stone UVs)
-  const hillMatA = new THREE.MeshStandardMaterial({ color: 0x4b5c38, roughness: 0.97, flatShading: true });
-  const hillMatB = new THREE.MeshStandardMaterial({ color: 0x3f4e30, roughness: 0.98, flatShading: true });
-  for (let i = 0; i < 18; i++) {
-    const a = (i / 18) * Math.PI * 2;
-    const r = 84 + (i % 3) * 14;
-    const h = 12 + K.rng() * 11;
-    const rad = h * 1.55;
-    const geo = new THREE.IcosahedronGeometry(rad, 2);
-    const pos = geo.attributes.position as THREE.BufferAttribute;
-    for (let vi = 0; vi < pos.count; vi++) {
-      const px = pos.getX(vi);
-      const py = pos.getY(vi);
-      const pz = pos.getZ(vi);
-      const ridge = 1 + Math.sin(px * 0.16 + i) * 0.18 + Math.cos(pz * 0.14 - i) * 0.14;
-      pos.setXYZ(vi, px * ridge, py * 0.56, pz * ridge);
+    // hills ring: rolling olive-green foothills blending naturally into dawn haze (no tiled stone UVs)
+    const hillMatA = new THREE.MeshStandardMaterial({ color: 0x4b5c38, roughness: 0.97, flatShading: true });
+    const hillMatB = new THREE.MeshStandardMaterial({ color: 0x3f4e30, roughness: 0.98, flatShading: true });
+    for (let i = 0; i < 18; i++) {
+      const a = (i / 18) * Math.PI * 2;
+      const r = 84 + (i % 3) * 14;
+      const h = 12 + K.rng() * 11;
+      const rad = h * 1.55;
+      const geo = new THREE.IcosahedronGeometry(rad, 2);
+      const pos = geo.attributes.position as THREE.BufferAttribute;
+      for (let vi = 0; vi < pos.count; vi++) {
+        const px = pos.getX(vi);
+        const py = pos.getY(vi);
+        const pz = pos.getZ(vi);
+        const ridge = 1 + Math.sin(px * 0.16 + i) * 0.18 + Math.cos(pz * 0.14 - i) * 0.14;
+        pos.setXYZ(vi, px * ridge, py * 0.56, pz * ridge);
+      }
+      geo.computeVertexNormals();
+      const hill = K.mesh(i % 2 === 0 ? hillMatA : hillMatB, geo, Math.cos(a) * r, h * 0.25, Math.sin(a) * r, a + K.rng() * 0.4);
+      hill.scale.set(1.4, 1.0, 0.95);
+      content.add(hill);
     }
-    geo.computeVertexNormals();
-    const hill = K.mesh(i % 2 === 0 ? hillMatA : hillMatB, geo, Math.cos(a) * r, h * 0.25, Math.sin(a) * r, a + K.rng() * 0.4);
-    hill.scale.set(1.4, 1.0, 0.95);
-    content.add(hill);
   }
+}
 
+function buildVillage(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.WebGLRenderer): LevelResult {
+  const K = new Kit(content, 1337);
+  K.clearZone(-6.2, 41.0, 4.5);
+  K.clearZone(0, 44, 4.5);
+  const ambient = setupAmbient(main, renderer, {
+    sunElev: 10,
+    sunAzim: 62,
+    turbidity: 4.2,
+    rayleigh: 1.5,
+    fogColor: 0xd9b48f,
+    fogDensity: 0.0055,
+    hemiSky: 0xa6bed4,
+    hemiGround: 0x5c4b32,
+    hemiIntensity: 0.65,
+    sunColor: 0xffd79b,
+    sunIntensity: 3.8,
+    envIntensity: 0.65,
+    exposure: 1.05,
+    shadowFar: 100,
+  });
+  content.add(ambient.sun, ambient.hemi, ambient.skyMesh);
+  if (ambient.stars) content.add(ambient.stars);
+  populateVillageCompound(K, false);
   return finish(K, ambient);
 }
 
 /* ---------------- M2: Meridian Tower construction ---------------- */
-function buildConstruction(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.WebGLRenderer): LevelResult {
-  const K = new Kit(content, 4242);
-  K.clearZone(0, 46, 10);
-  const ambient = setupAmbient(main, renderer, {
-    sunElev: 46,
-    sunAzim: 210,
-    turbidity: 6.5,
-    rayleigh: 0.9,
-    fogColor: 0xb4bac0,
-    fogDensity: 0.0055,
-    hemiSky: 0xcbd2dc,
-    hemiGround: 0x625a50,
-    hemiIntensity: 0.78,
-    sunColor: 0xf8f4ea,
-    sunIntensity: 2.9,
-    envIntensity: 0.55,
-    exposure: 1.02,
-    shadowFar: 95,
-  });
-  content.add(ambient.sun, ambient.hemi, ambient.skyMesh);
-  if (ambient.stars) content.add(ambient.stars);
-
-  // site ground (concrete slab + mud patches)
-  const gc = noiseCanvas(1024, "#8a847c", [["rgba(0,0,0,0.14)", 9000], ["rgba(255,255,255,0.08)", 4000]], K.rng);
-  K.ground(300, new THREE.MeshStandardMaterial({ map: toTex(gc, 40), bumpMap: toTex(gc, 40, false), bumpScale: 0.9, roughness: 0.95 }));
-  const mud = K.mesh(new THREE.MeshStandardMaterial({ color: 0x5a4a38, roughness: 1 }), new THREE.PlaneGeometry(20, 14), -14, 0.02, 4);
+function populateConstructionCompound(K: Kit, embedded = false): void {
+  const content = K.scene;
+  if (!embedded) {
+    // site ground (concrete slab + mud patches)
+    const gc = noiseCanvas(1024, "#8a847c", [["rgba(0,0,0,0.14)", 9000], ["rgba(255,255,255,0.08)", 4000]], K.rng);
+    K.ground(300, new THREE.MeshStandardMaterial({ map: toTex(gc, 40), bumpMap: toTex(gc, 40, false), bumpScale: 0.9, roughness: 0.95 }));
+  } else {
+    const padMat = materialFor(0x88827a, { roughness: 0.94, family: "concrete", seed: 79, repeat: 10 });
+    const pad = K.mesh(padMat, new THREE.PlaneGeometry(54, 72), 0, 0.025, 0);
+    pad.rotation.x = -Math.PI / 2;
+    pad.receiveShadow = true;
+    content.add(pad);
+  }
+  const mud = K.mesh(new THREE.MeshStandardMaterial({ color: 0x5a4a38, roughness: 1 }), new THREE.PlaneGeometry(20, 14), -14, 0.03, 4);
   mud.rotation.x = -Math.PI / 2;
   mud.receiveShadow = true;
   content.add(mud);
   // expansion joints
   const jointMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.9 });
-  for (let z = -40; z <= 40; z += 8) {
-    const j = K.mesh(jointMat, new THREE.PlaneGeometry(60, 0.12), 0, 0.03, z);
+  for (let z = -34; z <= 34; z += 8) {
+    const j = K.mesh(jointMat, new THREE.PlaneGeometry(50, 0.12), 0, 0.036, z);
     j.rotation.x = -Math.PI / 2;
     content.add(j);
   }
@@ -2760,7 +2755,7 @@ function buildConstruction(content: THREE.Object3D, main: THREE.Scene, renderer:
   K.solid(K.box(blockWall, 5.2, 2.8, 0.35, bx + 6.0, 0, bz + 6.7), "concrete");
   K.solid(K.box(blockWall, 5.2, 2.8, 0.35, bx - 6.0, 0, bz - 6.7), "concrete");
   K.solid(K.box(blockWall, 5.2, 2.8, 0.35, bx + 6.0, 0, bz - 6.7), "concrete");
-  K.solid(K.box(blockWall, 0.35, 2.8, 4.6, bx + 2.2, 0, bz - 2.2), "concrete");
+  K.solid(K.box(blockWall, 0.35, 2.8, 3.6, bx + 2.6, 0, bz - 2.8), "concrete");
   K.solid(K.box(blockWall, 4.0, 1.1, 0.35, bx - 2.5, 0, bz - 2.8), "concrete");
   // 2nd floor walkable concrete deck (y = 3.0..3.36m) split around stairwell cutout [-7.2..-1.2, -13.5..-11.5]
   const f2Slabs: [number, number, number, number][] = [
@@ -2853,8 +2848,17 @@ function buildConstruction(content: THREE.Object3D, main: THREE.Scene, renderer:
 
   // stacked concrete barriers forming corner cover / lanes through the site
   const wedgeMat = new THREE.MeshStandardMaterial({ color: 0xc8b020, roughness: 0.7, metalness: 0.3 });
-  for (const [wx, wz, ry] of [[0, 18, 0.4], [0, -14, -0.4], [-14, 26, 0.2], [14, 26, -0.2]] as const) {
-    K.solid(K.box(wedgeMat, 4, 1.2, 1.6, wx, 0, wz, ry), "concrete");
+  // Axis-aligned interior barrier leaving a wide >3.5m walkable lane past the partition & Tower Core terminal
+  K.solid(K.box(wedgeMat, 2.4, 1.2, 0.85, -2.8, 0, -14.2, 0), "concrete");
+  // Exterior rotated jersey barriers with tight segmented AABBs along their rotated axis
+  for (const [wx, wz, ry] of [[0, 18, 0.4], [-14, 26, 0.2], [14, 26, -0.2]] as const) {
+    K.box(wedgeMat, 4, 1.2, 1.6, wx, 0, wz, ry);
+    const c = Math.cos(ry);
+    const s = Math.sin(ry);
+    for (let i = -2; i <= 2; i++) {
+      const lx = i * 0.72;
+      K.colliderBox(0.85, 1.2, 1.25, wx + lx * c, 0, wz - lx * s, 0, "concrete");
+    }
   }
 
   // containers
@@ -2940,39 +2944,50 @@ function buildConstruction(content: THREE.Object3D, main: THREE.Scene, renderer:
   K.wireStrand(-6, -16, 8, -16, 18.5, 0.8);
   K.wireStrand(-18, 2, 12, 18, 12.5, 1.0);
   K.wallStreak(-18, 2.0, -16.86, 5, 3, 0, false);
-  K.dustMotes(110, 120, 18, 110, 0xd0c0a0, 0.3);
+  if (!embedded) {
+    K.dustMotes(110, 120, 18, 110, 0xd0c0a0, 0.3);
+  }
+}
 
+function buildConstruction(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.WebGLRenderer): LevelResult {
+  const K = new Kit(content, 4242);
+  K.clearZone(0, 46, 10);
+  const ambient = setupAmbient(main, renderer, {
+    sunElev: 46,
+    sunAzim: 210,
+    turbidity: 6.5,
+    rayleigh: 0.9,
+    fogColor: 0xb4bac0,
+    fogDensity: 0.0055,
+    hemiSky: 0xcbd2dc,
+    hemiGround: 0x625a50,
+    hemiIntensity: 0.78,
+    sunColor: 0xf8f4ea,
+    sunIntensity: 2.9,
+    envIntensity: 0.55,
+    exposure: 1.02,
+    shadowFar: 95,
+  });
+  content.add(ambient.sun, ambient.hemi, ambient.skyMesh);
+  if (ambient.stars) content.add(ambient.stars);
+  populateConstructionCompound(K, false);
   return finish(K, ambient);
 }
 
 /* ---------------- M3: Downtown District ---------------- */
-function buildDowntown(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.WebGLRenderer): LevelResult {
-  const K = new Kit(content, 90210);
-  K.clearZone(0, 46, 9);
-  const ambient = setupAmbient(main, renderer, {
-    sunElev: 22,
-    sunAzim: 255,
-    turbidity: 4,
-    rayleigh: 0.8,
-    fogColor: 0x090e1a,
-    fogDensity: 0.0082,
-    hemiSky: 0x263858,
-    hemiGround: 0x0c1018,
-    hemiIntensity: 0.44,
-    sunColor: 0x7ba4ff,
-    sunIntensity: 0.92,
-    envIntensity: 0.36,
-    exposure: 1.15,
-    stars: true,
-    shadowFar: 110,
-    nightSky: { zenith: 0x040712, horizon: 0x15223a, moonColor: 0x8fb4ff },
-  });
-  content.add(ambient.sun, ambient.hemi, ambient.skyMesh);
-  if (ambient.stars) content.add(ambient.stars);
-
-  // asphalt ground
-  const gc = noiseCanvas(1024, "#4a4c4e", [["rgba(255,255,255,0.06)", 9000], ["rgba(0,0,0,0.3)", 6000]], K.rng);
-  K.ground(300, new THREE.MeshStandardMaterial({ map: toTex(gc, 60), bumpMap: toTex(gc, 60, false), bumpScale: 1.1, roughness: 0.93 }));
+function populateDowntownCompound(K: Kit, embedded = false): void {
+  const content = K.scene;
+  if (!embedded) {
+    // asphalt ground
+    const gc = noiseCanvas(1024, "#4a4c4e", [["rgba(255,255,255,0.06)", 9000], ["rgba(0,0,0,0.3)", 6000]], K.rng);
+    K.ground(300, new THREE.MeshStandardMaterial({ map: toTex(gc, 60), bumpMap: toTex(gc, 60, false), bumpScale: 1.1, roughness: 0.93 }));
+  } else {
+    const plazaMat = materialFor(0x464a50, { roughness: 0.92, family: "asphalt", seed: 90, repeat: 8 });
+    const plaza = K.mesh(plazaMat, new THREE.PlaneGeometry(46, 78), 0, 0.025, 4);
+    plaza.rotation.x = -Math.PI / 2;
+    plaza.receiveShadow = true;
+    content.add(plaza);
+  }
   // sidewalks (E-W along z 8..12 and N-S strip)
   const sideMat = new THREE.MeshStandardMaterial({ color: 0x7a7670, roughness: 0.95 });
   for (const sx of [-10, 10]) {
@@ -3057,20 +3072,22 @@ function buildDowntown(content: THREE.Object3D, main: THREE.Scene, renderer: THR
   K.car(2.6, 16, -0.35, 0x8a7a2e);
   K.car(-2.5, 22, 0.2, 0x3a3a5a);
 
-  // distant skyline (Meridian Tower under construction completion)
-  const farMat = new THREE.MeshStandardMaterial({ color: 0x4a4f58, roughness: 0.9 });
-  for (let i = 0; i < 12; i++) {
-    const fx = -70 + i * 12 + K.rng() * 6;
-    const fz = -50 - K.rng() * 20;
-    const fh = 25 + K.rng() * 55;
-    const fb = K.box(farMat, 8 + K.rng() * 8, fh, 8 + K.rng() * 8, fx, 0, fz);
-    K.scene.add(fb);
+  if (!embedded) {
+    // distant skyline (Meridian Tower under construction completion)
+    const farMat = new THREE.MeshStandardMaterial({ color: 0x4a4f58, roughness: 0.9 });
+    for (let i = 0; i < 12; i++) {
+      const fx = -70 + i * 12 + K.rng() * 6;
+      const fz = -50 - K.rng() * 20;
+      const fh = 25 + K.rng() * 55;
+      const fb = K.box(farMat, 8 + K.rng() * 8, fh, 8 + K.rng() * 8, fx, 0, fz);
+      K.scene.add(fb);
+    }
+    // completed Meridian Tower in the distance (foreshadowing M2)
+    const mt = K.box(new THREE.MeshStandardMaterial({ color: 0x5a6270, roughness: 0.85, emissive: 0x1a2230, emissiveIntensity: 0.6 }), 16, 78, 16, -58, 0, -56);
+    K.scene.add(mt);
+    const mtSign = K.mesh(new THREE.MeshStandardMaterial({ color: 0xd8b01c, emissive: 0xd8b01c, emissiveIntensity: 0.8 }), new THREE.PlaneGeometry(10, 3), -58, 41, -47.92);
+    K.scene.add(mtSign);
   }
-  // completed Meridian Tower in the distance (foreshadowing M2)
-  const mt = K.box(new THREE.MeshStandardMaterial({ color: 0x5a6270, roughness: 0.85, emissive: 0x1a2230, emissiveIntensity: 0.6 }), 16, 78, 16, -58, 0, -56);
-  K.scene.add(mt);
-  const mtSign = K.mesh(new THREE.MeshStandardMaterial({ color: 0xd8b01c, emissive: 0xd8b01c, emissiveIntensity: 0.8 }), new THREE.PlaneGeometry(10, 3), -58, 41, -47.92);
-  K.scene.add(mtSign);
 
   // cover props
   K.sandbag(-7, 16, 0, 4);
@@ -3119,47 +3136,58 @@ function buildDowntown(content: THREE.Object3D, main: THREE.Scene, renderer: THR
   K.rubble(2, -18, 4);
   K.rock(-12, 26, 0.8);
   K.rock(12, 22, 0.9);
+}
 
+function buildDowntown(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.WebGLRenderer): LevelResult {
+  const K = new Kit(content, 90210);
+  K.clearZone(0, 46, 9);
+  const ambient = setupAmbient(main, renderer, {
+    sunElev: 22,
+    sunAzim: 255,
+    turbidity: 4,
+    rayleigh: 0.8,
+    fogColor: 0x090e1a,
+    fogDensity: 0.0082,
+    hemiSky: 0x263858,
+    hemiGround: 0x0c1018,
+    hemiIntensity: 0.44,
+    sunColor: 0x7ba4ff,
+    sunIntensity: 0.92,
+    envIntensity: 0.36,
+    exposure: 1.15,
+    stars: true,
+    shadowFar: 110,
+    nightSky: { zenith: 0x040712, horizon: 0x15223a, moonColor: 0x8fb4ff },
+  });
+  content.add(ambient.sun, ambient.hemi, ambient.skyMesh);
+  if (ambient.stars) content.add(ambient.stars);
+  populateDowntownCompound(K, false);
   return finish(K, ambient);
 }
 
 /* ---------------- M4: Westgate Port ---------------- */
-function buildPort(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.WebGLRenderer): LevelResult {
-  const K = new Kit(content, 5150);
-  K.clearZone(0, -10, 8);
-  K.clearZone(0, 48, 8);
-  const ambient = setupAmbient(main, renderer, {
-    sunElev: 20,
-    sunAzim: 235,
-    turbidity: 5,
-    rayleigh: 1.0,
-    fogColor: 0x060a14,
-    fogDensity: 0.009,
-    hemiSky: 0x24344c,
-    hemiGround: 0x080c14,
-    hemiIntensity: 0.42,
-    sunColor: 0x6f98f2,
-    sunIntensity: 0.88,
-    envIntensity: 0.34,
-    exposure: 1.18,
-    stars: true,
-    shadowFar: 100,
-    nightSky: { zenith: 0x03060f, horizon: 0x101c30, moonColor: 0x7da4ff },
-  });
-  content.add(ambient.sun, ambient.hemi, ambient.skyMesh);
-  if (ambient.stars) content.add(ambient.stars);
-
+function populatePortCompound(K: Kit, embedded = false): void {
+  const content = K.scene;
   // dock concrete deck (south half)
   const dc = noiseCanvas(1024, "#6a6a64", [["rgba(0,0,0,0.2)", 8000], ["rgba(255,255,255,0.05)", 4000]], K.rng);
-  const deck = K.mesh(new THREE.MeshStandardMaterial({ map: toTex(dc, 40), bumpMap: toTex(dc, 40, false), bumpScale: 1, roughness: 0.93 }), new THREE.PlaneGeometry(90, 70), 0, 0, 21);
+  const deckW = embedded ? 58 : 90;
+  const deckD = embedded ? 58 : 70;
+  const deckZ = embedded ? 15 : 21;
+  const deck = K.mesh(new THREE.MeshStandardMaterial({ map: toTex(dc, 40), bumpMap: toTex(dc, 40, false), bumpScale: 1, roughness: 0.93 }), new THREE.PlaneGeometry(deckW, deckD), 0, embedded ? 0.04 : 0, deckZ);
   deck.rotation.x = -Math.PI / 2;
   deck.receiveShadow = true;
   K.scene.add(deck);
   K.colliders.push(deck);
 
   // water (north half) + dock edge line
-  K.water(400);
-  const edge = K.mesh(new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.9 }), new THREE.PlaneGeometry(90, 0.5), 0, 0.05, -14);
+  if (!embedded) {
+    K.water(400);
+  } else {
+    // Concrete seawall face along z = -14 down to Westgate harbor water
+    const wallMat = materialFor(0x4a4c50, { roughness: 0.92, family: "concrete", seed: 89 });
+    K.solid(K.box(wallMat, 58, 3.2, 0.8, 0, -3.15, -14.1), "concrete");
+  }
+  const edge = K.mesh(new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.9 }), new THREE.PlaneGeometry(embedded ? 58 : 90, 0.5), 0, 0.05, -14);
   edge.rotation.x = -Math.PI / 2;
   K.scene.add(edge);
 
@@ -3299,7 +3327,33 @@ function buildPort(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.W
   K.wireStrand(-13, -8.5, 13, -8.5, 17, 0.9);
   K.wireStrand(-13, -8.5, -13, 8, 16, 0.8);
   K.wireStrand(13, -8.5, 13, 8, 16, 0.8);
+}
 
+function buildPort(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.WebGLRenderer): LevelResult {
+  const K = new Kit(content, 5150);
+  K.clearZone(0, -10, 8);
+  K.clearZone(0, 48, 8);
+  const ambient = setupAmbient(main, renderer, {
+    sunElev: 20,
+    sunAzim: 235,
+    turbidity: 5,
+    rayleigh: 1.0,
+    fogColor: 0x060a14,
+    fogDensity: 0.009,
+    hemiSky: 0x24344c,
+    hemiGround: 0x080c14,
+    hemiIntensity: 0.42,
+    sunColor: 0x6f98f2,
+    sunIntensity: 0.88,
+    envIntensity: 0.34,
+    exposure: 1.18,
+    stars: true,
+    shadowFar: 100,
+    nightSky: { zenith: 0x03060f, horizon: 0x101c30, moonColor: 0x7da4ff },
+  });
+  content.add(ambient.sun, ambient.hemi, ambient.skyMesh);
+  if (ambient.stars) content.add(ambient.stars);
+  populatePortCompound(K, false);
   return finish(K, ambient);
 }
 
@@ -3322,34 +3376,18 @@ function stripeLabel(): THREE.Texture {
 }
 
 /* ---------------- M5: Meridian HQ ---------------- */
-function buildHQ(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.WebGLRenderer): LevelResult {
-  const K = new Kit(content, 700013);
-  K.clearZone(0, 44, 9);
-  K.clearZone(0, -43, 8);
-  const ambient = setupAmbient(main, renderer, {
-    sunElev: 24,
-    sunAzim: 115,
-    turbidity: 8,
-    rayleigh: 0.6,
-    fogColor: 0x080b12,
-    fogDensity: 0.0105,
-    hemiSky: 0x263244,
-    hemiGround: 0x080a0f,
-    hemiIntensity: 0.4,
-    sunColor: 0x6e84b8,
-    sunIntensity: 0.78,
-    envIntensity: 0.32,
-    exposure: 1.16,
-    stars: true,
-    shadowFar: 105,
-    nightSky: { zenith: 0x03050b, horizon: 0x111724, moonColor: 0x8aa2d8 },
-  });
-  content.add(ambient.sun, ambient.hemi, ambient.skyMesh);
-  if (ambient.stars) content.add(ambient.stars);
-
-  // ground: compound asphalt + gravel
-  const gc = noiseCanvas(1024, "#40413f", [["rgba(0,0,0,0.25)", 9000], ["rgba(255,255,255,0.04)", 4000]], K.rng);
-  K.ground(300, new THREE.MeshStandardMaterial({ map: toTex(gc, 50), bumpMap: toTex(gc, 50, false), bumpScale: 1, roughness: 0.95 }));
+function populateHQCompound(K: Kit, embedded = false): void {
+  const content = K.scene;
+  if (!embedded) {
+    // ground: compound asphalt + gravel
+    const gc = noiseCanvas(1024, "#40413f", [["rgba(0,0,0,0.25)", 9000], ["rgba(255,255,255,0.04)", 4000]], K.rng);
+    K.ground(300, new THREE.MeshStandardMaterial({ map: toTex(gc, 50), bumpMap: toTex(gc, 50, false), bumpScale: 1, roughness: 0.95 }));
+  } else {
+    const pad = K.mesh(materialFor(0x404246, { roughness: 0.94, family: "asphalt", seed: 99, repeat: 8 }), new THREE.PlaneGeometry(54, 78), 0, 0.025, 0);
+    pad.rotation.x = -Math.PI / 2;
+    pad.receiveShadow = true;
+    K.scene.add(pad);
+  }
 
   // Main Meridian Tower with Playable Ground-Floor Marble & Glass Lobby (fight INSIDE the HQ through to the helipad!)
   const glassF = facade({ base: "#2e343c", glass: "#0a0d12", frame: "#4a5058", glow: "#ffca7a", bayW: 2, floorH: 3.4, cols: 4, rows: 3, rng: K.rng, sign: "MERIDIAN" });
@@ -3507,66 +3545,78 @@ function buildHQ(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.Web
     rainPos[i * 3 + 2] = (K.rng() - 0.5) * 130;
   }
   rainGeo.setAttribute("position", new THREE.BufferAttribute(rainPos, 3));
-  const rain = new THREE.Points(rainGeo, new THREE.PointsMaterial({ color: 0x8ab0d0, size: 0.08, transparent: true, opacity: 0.4, depthWrite: false }));
-  K.scene.add(rain);
-  K.extras.push({
-    update: (dt: number) => {
-      const p = rain.geometry.attributes.position as THREE.BufferAttribute;
-      for (let i = 0; i < rainCount; i++) {
-        p.array[i * 3 + 1] -= 26 * dt;
-        if (p.array[i * 3 + 1] < 0) p.array[i * 3 + 1] = 45;
-      }
-      p.needsUpdate = true;
-    },
-  });
-  // lightning flashes
-  const flash = new THREE.PointLight(0xb8c8e8, 0, 120, 2);
-  K.scene.add(flash);
-  let lightningTimer = 5;
-  K.extras.push({
-    update: (dt: number) => {
-      lightningTimer -= dt;
-      if (lightningTimer <= 0) {
-        lightningTimer = 6 + Math.random() * 10;
-        flash.position.set((Math.random() - 0.5) * 90, 30, (Math.random() - 0.5) * 90);
-        flash.intensity = 2.5;
-      }
-      flash.intensity = Math.max(0, flash.intensity - dt * 10);
-    },
-  });
+  if (!embedded) {
+    const rain = new THREE.Points(rainGeo, new THREE.PointsMaterial({ color: 0x8ab0d0, size: 0.08, transparent: true, opacity: 0.4, depthWrite: false }));
+    K.scene.add(rain);
+    K.extras.push({
+      update: (dt: number) => {
+        const p = rain.geometry.attributes.position as THREE.BufferAttribute;
+        for (let i = 0; i < rainCount; i++) {
+          p.array[i * 3 + 1] -= 26 * dt;
+          if (p.array[i * 3 + 1] < 0) p.array[i * 3 + 1] = 45;
+        }
+        p.needsUpdate = true;
+      },
+    });
+    // lightning flashes
+    const flash = new THREE.PointLight(0xb8c8e8, 0, 120, 2);
+    K.scene.add(flash);
+    let lightningTimer = 5;
+    K.extras.push({
+      update: (dt: number) => {
+        lightningTimer -= dt;
+        if (lightningTimer <= 0) {
+          lightningTimer = 6 + Math.random() * 10;
+          flash.position.set((Math.random() - 0.5) * 90, 30, (Math.random() - 0.5) * 90);
+          flash.intensity = 2.5;
+        }
+        flash.intensity = Math.max(0, flash.intensity - dt * 10);
+      },
+    });
+  }
+}
 
+function buildHQ(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.WebGLRenderer): LevelResult {
+  const K = new Kit(content, 700013);
+  K.clearZone(0, 44, 9);
+  K.clearZone(0, -43, 8);
+  const ambient = setupAmbient(main, renderer, {
+    sunElev: 24,
+    sunAzim: 115,
+    turbidity: 8,
+    rayleigh: 0.6,
+    fogColor: 0x080b12,
+    fogDensity: 0.0105,
+    hemiSky: 0x263244,
+    hemiGround: 0x080a0f,
+    hemiIntensity: 0.4,
+    sunColor: 0x6e84b8,
+    sunIntensity: 0.78,
+    envIntensity: 0.32,
+    exposure: 1.16,
+    stars: true,
+    shadowFar: 105,
+    nightSky: { zenith: 0x03050b, horizon: 0x111724, moonColor: 0x8aa2d8 },
+  });
+  content.add(ambient.sun, ambient.hemi, ambient.skyMesh);
+  if (ambient.stars) content.add(ambient.stars);
+  populateHQCompound(K, false);
   return finish(K, ambient);
 }
 
 /* ---------------- M6: Iron Citadel (260m Black-Site Fortress) ---------------- */
-function buildCitadel(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.WebGLRenderer): LevelResult {
-  const K = new Kit(content, 900017);
-  K.clearZone(0, 84, 10);
-  K.clearZone(0, -84, 8);
-  const ambient = setupAmbient(main, renderer, {
-    sunElev: 25,
-    sunAzim: 145,
-    turbidity: 7,
-    rayleigh: 0.7,
-    fogColor: 0x080b15,
-    fogDensity: 0.0072,
-    hemiSky: 0x28334a,
-    hemiGround: 0x0a0d14,
-    hemiIntensity: 0.44,
-    sunColor: 0x7898e8,
-    sunIntensity: 0.88,
-    envIntensity: 0.36,
-    exposure: 1.18,
-    stars: true,
-    shadowFar: 160,
-    nightSky: { zenith: 0x03050d, horizon: 0x13192b, moonColor: 0x9eb8ff },
-  });
-  content.add(ambient.sun, ambient.hemi, ambient.skyMesh);
-  if (ambient.stars) content.add(ambient.stars);
-
-  // Massive 380m alpine dark-stone & asphalt compound ground
-  const gc = noiseCanvas(1024, "#363a42", [["rgba(0,0,0,0.25)", 9500], ["rgba(255,255,255,0.05)", 4500]], K.rng);
-  K.ground(380, new THREE.MeshStandardMaterial({ map: toTex(gc, 65), bumpMap: toTex(gc, 65, false), bumpScale: 1.1, roughness: 0.94 }));
+function populateCitadelCompound(K: Kit, embedded = false): void {
+  const content = K.scene;
+  if (!embedded) {
+    // Massive 380m alpine dark-stone & asphalt compound ground
+    const gc = noiseCanvas(1024, "#363a42", [["rgba(0,0,0,0.25)", 9500], ["rgba(255,255,255,0.05)", 4500]], K.rng);
+    K.ground(380, new THREE.MeshStandardMaterial({ map: toTex(gc, 65), bumpMap: toTex(gc, 65, false), bumpScale: 1.1, roughness: 0.94 }));
+  } else {
+    const pad = K.mesh(materialFor(0x363a42, { roughness: 0.94, family: "asphalt", seed: 105, repeat: 12 }), new THREE.PlaneGeometry(114, 152), 0, 0.025, 0);
+    pad.rotation.x = -Math.PI / 2;
+    pad.receiveShadow = true;
+    K.scene.add(pad);
+  }
 
   const wallMat = materialFor(0x464a54, { roughness: 0.88, family: "stone", seed: 101 });
   const darkSteel = materialFor(0x282d36, { roughness: 0.55, metalness: 0.55, family: "metal", seed: 102 });
@@ -3574,12 +3624,14 @@ function buildCitadel(content: THREE.Object3D, main: THREE.Scene, renderer: THRE
   const stairMat = new THREE.MeshStandardMaterial({ color: 0x5c6470, roughness: 0.75, metalness: 0.4 });
   const citadelF = facade({ base: "#323844", glass: "#0d121a", frame: "#4a5260", glow: "#c084fc", bayW: 2, floorH: 3.4, cols: 4, rows: 2, rng: K.rng });
 
-  // Outer perimeter mountain ridge walls (keeps 260m arena framed)
-  for (const sx of [-70, 70]) {
-    K.solid(K.box(wallMat, 3.0, 7.0, 204, sx, 0, -5), "concrete");
+  if (!embedded) {
+    // Outer perimeter mountain ridge walls (keeps 260m arena framed)
+    for (const sx of [-70, 70]) {
+      K.solid(K.box(wallMat, 3.0, 7.0, 204, sx, 0, -5), "concrete");
+    }
+    K.solid(K.box(wallMat, 144, 7.0, 3.0, 0, 0, -106), "concrete");
+    K.solid(K.box(wallMat, 144, 7.0, 3.0, 0, 0, 96), "concrete");
   }
-  K.solid(K.box(wallMat, 144, 7.0, 3.0, 0, 0, -106), "concrete");
-  K.solid(K.box(wallMat, 144, 7.0, 3.0, 0, 0, 96), "concrete");
 
   // ---- Zone 1: South Perimeter Wall (z = +54) with 3 breach gaps + Twin Watchtowers ----
   K.solid(K.box(wallMat, 44, 4.2, 1.0, -46, 0, 54), "concrete");
@@ -3704,28 +3756,56 @@ function buildCitadel(content: THREE.Object3D, main: THREE.Scene, renderer: THRE
   }
   K.streetlight(-12, -78, Math.PI / 2, true, 0xa3c8ff);
   K.streetlight(12, -78, -Math.PI / 2, true, 0xa3c8ff);
-  const rainGeo = new THREE.BufferGeometry();
-  const rainCount = 1100;
-  const rainPos = new Float32Array(rainCount * 3);
-  for (let i = 0; i < rainCount; i++) {
-    rainPos[i * 3] = (K.rng() - 0.5) * 180;
-    rainPos[i * 3 + 1] = K.rng() * 50;
-    rainPos[i * 3 + 2] = (K.rng() - 0.5) * 200;
+  if (!embedded) {
+    const rainGeo = new THREE.BufferGeometry();
+    const rainCount = 1100;
+    const rainPos = new Float32Array(rainCount * 3);
+    for (let i = 0; i < rainCount; i++) {
+      rainPos[i * 3] = (K.rng() - 0.5) * 180;
+      rainPos[i * 3 + 1] = K.rng() * 50;
+      rainPos[i * 3 + 2] = (K.rng() - 0.5) * 200;
+    }
+    rainGeo.setAttribute("position", new THREE.BufferAttribute(rainPos, 3));
+    const rain = new THREE.Points(rainGeo, new THREE.PointsMaterial({ color: 0x94b8dc, size: 0.08, transparent: true, opacity: 0.42, depthWrite: false }));
+    K.scene.add(rain);
+    K.extras.push({
+      update: (dt: number) => {
+        const p = rain.geometry.attributes.position as THREE.BufferAttribute;
+        for (let i = 0; i < rainCount; i++) {
+          p.array[i * 3 + 1] -= 28 * dt;
+          if (p.array[i * 3 + 1] < 0) p.array[i * 3 + 1] = 50;
+        }
+        p.needsUpdate = true;
+      },
+    });
   }
-  rainGeo.setAttribute("position", new THREE.BufferAttribute(rainPos, 3));
-  const rain = new THREE.Points(rainGeo, new THREE.PointsMaterial({ color: 0x94b8dc, size: 0.08, transparent: true, opacity: 0.42, depthWrite: false }));
-  K.scene.add(rain);
-  K.extras.push({
-    update: (dt: number) => {
-      const p = rain.geometry.attributes.position as THREE.BufferAttribute;
-      for (let i = 0; i < rainCount; i++) {
-        p.array[i * 3 + 1] -= 28 * dt;
-        if (p.array[i * 3 + 1] < 0) p.array[i * 3 + 1] = 50;
-      }
-      p.needsUpdate = true;
-    },
-  });
+}
 
+function buildCitadel(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.WebGLRenderer): LevelResult {
+  const K = new Kit(content, 900017);
+  K.clearZone(0, 84, 10);
+  K.clearZone(0, -84, 8);
+  const ambient = setupAmbient(main, renderer, {
+    sunElev: 25,
+    sunAzim: 145,
+    turbidity: 7,
+    rayleigh: 0.7,
+    fogColor: 0x080b15,
+    fogDensity: 0.0072,
+    hemiSky: 0x28334a,
+    hemiGround: 0x0a0d14,
+    hemiIntensity: 0.44,
+    sunColor: 0x7898e8,
+    sunIntensity: 0.88,
+    envIntensity: 0.36,
+    exposure: 1.18,
+    stars: true,
+    shadowFar: 160,
+    nightSky: { zenith: 0x03050d, horizon: 0x13192b, moonColor: 0x9eb8ff },
+  });
+  content.add(ambient.sun, ambient.hemi, ambient.skyMesh);
+  if (ambient.stars) content.add(ambient.stars);
+  populateCitadelCompound(K, false);
   return finish(K, ambient);
 }
 
@@ -3754,6 +3834,7 @@ export interface LevelResult extends World {
   collectibles?: import("./city/CollectiblesSystem").CollectiblesSystem;
   bodyCarry?: import("./city/BodyCarrySystem").BodyCarrySystem;
   contracts?: import("./city/ContractSurveillance").ContractSurveillanceSystem;
+  compoundDestroyables?: Map<number, THREE.Mesh[]>;
   minimapData?: MinimapData;
   getDistrictAt?: (x: number, z: number) => DistrictInfo;
   weather?: WeatherState;
@@ -3830,6 +3911,113 @@ function finish(K: Kit, ambient: ReturnType<typeof setupAmbient>): LevelResult {
     spatialColliders,
     heightSystem,
     disposeExtra: ambient.dispose,
+  };
+}
+
+export interface EmbeddedMissionCompound {
+  missionId: number;
+  root: THREE.Group;
+  aabbs: THREE.Box3[];
+  colliders: THREE.Object3D[];
+  destroyables: THREE.Mesh[];
+  walkableSurfaces: WalkableSurface[];
+  update: (dt: number) => void;
+}
+
+function transformBoxXZ(box: THREE.Box3, ox: number, oy: number, oz: number, c: number, s: number): THREE.Box3 {
+  const xs = [box.min.x, box.max.x];
+  const zs = [box.min.z, box.max.z];
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (const lx of xs) {
+    for (const lz of zs) {
+      const wx = ox + lx * c + lz * s;
+      const wz = oz - lx * s + lz * c;
+      if (wx < minX) minX = wx;
+      if (wx > maxX) maxX = wx;
+      if (wz < minZ) minZ = wz;
+      if (wz > maxZ) maxZ = wz;
+    }
+  }
+  return new THREE.Box3(
+    new THREE.Vector3(minX, box.min.y + oy, minZ),
+    new THREE.Vector3(maxX, box.max.y + oy, maxZ),
+  );
+}
+
+export function buildMissionCompoundAt(
+  missionId: number,
+  origin: { x: number; y: number; z: number; yaw?: number },
+): EmbeddedMissionCompound {
+  const yaw = origin.yaw ?? 0;
+  const group = new THREE.Group();
+  group.name = `MissionCompound_M${missionId}`;
+  group.position.set(origin.x, origin.y, origin.z);
+  group.rotation.y = yaw;
+
+  const seeds: Record<number, number> = { 1: 1337, 2: 4242, 3: 90210, 4: 5150, 5: 700013, 6: 900017 };
+  const K = new Kit(group, seeds[missionId] ?? 1337 + missionId);
+  switch (missionId) {
+    case 1: populateVillageCompound(K, true); break;
+    case 2: populateConstructionCompound(K, true); break;
+    case 3: populateDowntownCompound(K, true); break;
+    case 4: populatePortCompound(K, true); break;
+    case 5: populateHQCompound(K, true); break;
+    case 6: populateCitadelCompound(K, true); break;
+  }
+  group.updateMatrixWorld(true);
+
+  const c = Math.cos(yaw);
+  const s = Math.sin(yaw);
+  const invC = Math.cos(-yaw);
+  const invS = Math.sin(-yaw);
+  const aabbs = K.aabbs.map((b) => transformBoxXZ(b, origin.x, origin.y, origin.z, c, s));
+  const walkableSurfaces: WalkableSurface[] = K.walkableSurfaces.map((ws) => {
+    const b = transformBoxXZ(
+      new THREE.Box3(new THREE.Vector3(ws.minX, 0, ws.minZ), new THREE.Vector3(ws.maxX, 1, ws.maxZ)),
+      origin.x,
+      origin.y,
+      origin.z,
+      c,
+      s,
+    );
+    return {
+      id: `m${missionId}_${ws.id}`,
+      minX: b.min.x,
+      maxX: b.max.x,
+      minZ: b.min.z,
+      maxZ: b.max.z,
+      minY: ws.minY + origin.y,
+      maxY: ws.maxY + origin.y,
+      heightAt: (wx: number, wz: number) => {
+        const dx = wx - origin.x;
+        const dz = wz - origin.z;
+        const lx = dx * invC + dz * invS;
+        const lz = -dx * invS + dz * invC;
+        const ly = ws.heightAt(lx, lz);
+        return ly === null ? null : ly + origin.y;
+      },
+    };
+  });
+
+  const update = (dt: number) => {
+    for (let i = 0; i < K.beacons.length; i++) {
+      const b = K.beacons[i];
+      b.phase += b.speed * dt;
+      b.mesh.visible = Math.sin(b.phase) > 0;
+    }
+    for (let i = 0; i < K.extras.length; i++) {
+      K.extras[i].update(dt);
+    }
+  };
+
+  return {
+    missionId,
+    root: group,
+    aabbs,
+    colliders: K.colliders,
+    destroyables: K.destroyables,
+    walkableSurfaces,
+    update,
   };
 }
 

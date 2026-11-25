@@ -1,5 +1,18 @@
 import * as THREE from "three";
 
+export interface ShelterZone {
+  ox: number;
+  oy: number;
+  oz: number;
+  cos: number;
+  sin: number;
+  minLx: number;
+  maxLx: number;
+  minLz: number;
+  maxLz: number;
+  maxY: number;
+}
+
 export class Precipitation {
   readonly group = new THREE.Group();
   private rain: THREE.LineSegments;
@@ -15,6 +28,46 @@ export class Precipitation {
   private readonly rainCount = 1600;
   private readonly snowCount = 4400;
   private readonly box = { x: 46, y: 22, z: 56 };
+  private shelters: ShelterZone[] = [];
+
+  addShelterZone(
+    ox: number,
+    oy: number,
+    oz: number,
+    yaw: number,
+    minLx: number,
+    maxLx: number,
+    minLz: number,
+    maxLz: number,
+    height = 9.0,
+  ) {
+    this.shelters.push({
+      ox,
+      oy,
+      oz,
+      cos: Math.cos(yaw),
+      sin: Math.sin(yaw),
+      minLx,
+      maxLx,
+      minLz,
+      maxLz,
+      maxY: oy + height,
+    });
+  }
+
+  private isInsideShelter(wx: number, wy: number, wz: number): boolean {
+    for (let i = 0; i < this.shelters.length; i++) {
+      const s = this.shelters[i];
+      if (wy > s.maxY || wy < s.oy - 0.5) continue;
+      const dx = wx - s.ox;
+      const dz = wz - s.oz;
+      if (dx * dx + dz * dz > 1600) continue;
+      const lx = dx * s.cos - dz * s.sin;
+      const lz = dx * s.sin + dz * s.cos;
+      if (lx >= s.minLx && lx <= s.maxLx && lz >= s.minLz && lz <= s.maxLz) return true;
+    }
+    return false;
+  }
 
   constructor(scene: THREE.Scene) {
     this.rainGeo = new THREE.BufferGeometry();
@@ -110,6 +163,11 @@ export class Precipitation {
     const wind = weather.wind * 2.5;
     const forward = speed * 0.35;
 
+    const gx = this.group.position.x;
+    const gy = this.group.position.y;
+    const gz = this.group.position.z;
+    const hasShelter = this.shelters.length > 0;
+
     if (this.rain.visible) {
       const count = Math.floor(this.rainCount * Math.max(0.05, rain));
       this.rainGeo.setDrawRange(0, count * 2);
@@ -132,9 +190,15 @@ export class Precipitation {
         this.rainPos[i6] = x;
         this.rainPos[i6 + 1] = y;
         this.rainPos[i6 + 2] = z;
-        this.rainPos[i6 + 3] = x - (wind / mag) * len * 0.3;
-        this.rainPos[i6 + 4] = y - (vy / mag) * len;
-        this.rainPos[i6 + 5] = z - (vz / mag) * len;
+        if (hasShelter && this.isInsideShelter(gx + x, gy + y, gz + z)) {
+          this.rainPos[i6 + 3] = x;
+          this.rainPos[i6 + 4] = y;
+          this.rainPos[i6 + 5] = z;
+        } else {
+          this.rainPos[i6 + 3] = x - (wind / mag) * len * 0.3;
+          this.rainPos[i6 + 4] = y - (vy / mag) * len;
+          this.rainPos[i6 + 5] = z - (vz / mag) * len;
+        }
       }
       this.rainGeo.attributes.position.needsUpdate = true;
     }
@@ -153,6 +217,10 @@ export class Precipitation {
         if (x > this.box.x / 2) x -= this.box.x;
         if (x < -this.box.x / 2) x += this.box.x;
         if (y < -10) y = this.box.y - 10 + Math.random() * 5;
+        if (hasShelter && this.isInsideShelter(gx + x, gy + y, gz + z)) {
+          // Keep logical flake outside covered building footprint or parked above roof
+          y = this.box.y - 4 + Math.random() * 4;
+        }
         this.snowPos[i3] = x;
         this.snowPos[i3 + 1] = y;
         this.snowPos[i3 + 2] = z;

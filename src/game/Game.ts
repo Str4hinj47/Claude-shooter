@@ -38,7 +38,13 @@ import { VehicleAudio, type EngineHud } from "./vehicles/audio/VehicleAudio";
 import { TIME_OF_DAY_LABELS, TIME_OF_DAY_MODES, type TimeOfDayMode } from "./city/WestgateMeta";
 import type { MinimapData } from "./city/MinimapData";
 import type { SurveillanceHudState } from "./city/ContractSurveillance";
-import { SAFEHOUSE_CAR_SPOT, SAFEHOUSE_STATIONS } from "./city/SafehouseResidence";
+import { SAFEHOUSE_CAR_SPOT, SAFEHOUSE_STATIONS, updateSafehouseGarageDoor } from "./city/SafehouseResidence";
+import {
+  getOpenWorldMissionSite,
+  localToWorldMissionPos,
+  localToWorldMissionYaw,
+  type OpenWorldMissionSite,
+} from "./city/OpenWorldMissions";
 import type { HomeStation, StationKind } from "./city/HomeInteriors";
 import { characterUrl, loadCharacterId } from "./characters";
 import type { SpatialAABBGrid } from "./city/SpatialIndex";
@@ -585,6 +591,15 @@ export class Game {
   private nearbyContractSpot: { missionId: number; x: number; z: number; yawDeg: number } | null = null;
   private nearbyPrompt: { key: "F" | "G"; label: string; accent: string } | null = null;
   private openWorldReturnSpot: { x: number; z: number; yawDeg: number } | null = null;
+  private activeContract: {
+    def: MissionDef;
+    site: OpenWorldMissionSite;
+    stage: "travel" | "infiltrate" | "escape";
+    spawned: boolean;
+  } | null = null;
+  private contractGroup: THREE.Group | null = null;
+  private approachRing: THREE.Mesh | null = null;
+  private approachBeacon: THREE.Mesh | null = null;
   private composer: EffectComposer | null = null;
   private bloomPass: UnrealBloomPass | null = null;
   private composerRT: THREE.WebGLRenderTarget | null = null;
@@ -989,6 +1004,26 @@ export class Game {
 
   /* ------------------------------------------------------------ */
   async startMission(id: number, cb: GameCallbacks, opts?: { fromOpenWorld?: boolean }) {
+    const isCampaignContract = id >= 1 && id <= 6;
+    if (
+      isCampaignContract &&
+      this.mission?.id === -1 &&
+      this.level &&
+      this.rig &&
+      !this.rig.dead &&
+      this.phase === "ready"
+    ) {
+      this.menuHangar = false;
+      this.cb = cb;
+      this.paused = false;
+      this.pausedRendered = false;
+      this.weaponWheelOpen = false;
+      this.mapOpen = false;
+      this.phoneOpen = false;
+      this.activateOpenWorldContract(id);
+      return;
+    }
+
     const seq = ++this.missionSeq;
     this.menuHangar = false;
     this.cb = cb;
@@ -1001,6 +1036,8 @@ export class Game {
     } else if (!opts?.fromOpenWorld && id !== -1) {
       this.openWorldReturnSpot = null;
     }
+    this.clearActiveContractEntities();
+    this.activeContract = null;
     this.nearbyContractSpot = null;
     this.activeApartmentId = null;
     this.activeGarageId = null;
@@ -1012,7 +1049,8 @@ export class Game {
     this.stats = getPlayerStats();
     this.maxHealth = this.stats.maxHp;
     this.emitHud();
-    const mission = id === -1 ? OPEN_WORLD_MISSION : MISSIONS.find((m) => m.id === id) ?? MISSIONS[0];
+    const pendingContractId = isCampaignContract ? id : null;
+    const mission = id === -1 || isCampaignContract ? OPEN_WORLD_MISSION : MISSIONS.find((m) => m.id === id) ?? MISSIONS[0];
     this.mission = mission;
     this.camera.rotation.set(0, 0, 0);
     this.camera.fov = 62;
@@ -1282,7 +1320,17 @@ export class Game {
       this.renderer.compile(this.scene, this.camera);
     } catch {}
     this.phase = "ready";
-    this.queueDialogue(mission.intro);
+    if (pendingContractId !== null) {
+      const def = MISSIONS.find((m) => m.id === pendingContractId);
+      if (def) {
+        const tod: TimeOfDayMode =
+          def.night ? "night" : def.timeOfDay === "Sunset" ? "sunset" : def.timeOfDay === "Dawn" ? "dawn" : "afternoon";
+        this.level?.setTimeOfDay?.(tod);
+      }
+      this.activateOpenWorldContract(pendingContractId);
+    } else {
+      this.queueDialogue(mission.intro);
+    }
     this.emitHud();
     (window as unknown as { __game: Game }).__game = this;
     this.startLoop();
@@ -1915,12 +1963,13 @@ export class Game {
       this.dialogue = null;
       if (document.pointerLockElement) document.exitPointerLock();
       this.emitHud();
-      // practice range: free respawn
-      if (this.mission?.practice) {
+      // practice range (or open-world free-roam without an active contract): free respawn
+      if (this.mission?.practice && !this.activeContract) {
         this.practiceRespawnT = 1.2;
       } else {
-        const { reward } = awardMissionReward(this.mission!.id, this.killed, this.stealthKills, this.alerts, false);
-        this.cb?.onMissionEnd(this.mission!, false, reward);
+        const endMission = this.activeContract?.def ?? this.mission!;
+        const { reward } = awardMissionReward(endMission.id, this.killed, this.stealthKills, this.alerts, false);
+        this.cb?.onMissionEnd(endMission, false, reward);
       }
     }
   }
@@ -1930,6 +1979,13 @@ export class Game {
     if (!this.mission) return;
     this.stats = getPlayerStats();
     this.maxHealth = this.stats.maxHp;
+    if (this.activeContract) {
+      const id = this.activeContract.def.id;
+      this.activeContract = null;
+      this.clearActiveContractEntities();
+      void this.startMission(id, this.cb!);
+      return;
+    }
     if (this.mission.practice) {
       this.health = this.maxHealth;
       const sp = this.mission.spawn;
@@ -1966,9 +2022,10 @@ export class Game {
   /* ------------------------------------------------------------ */
   private onFirstContact() {
     this.alerts++;
-    if (this.firstContact || !this.mission) return;
+    const mDef = this.activeContract?.def ?? this.mission;
+    if (this.firstContact || !mDef) return;
     this.firstContact = true;
-    if (this.mission.onFirstContact) this.queueDialogue(this.mission.onFirstContact);
+    if (mDef.onFirstContact) this.queueDialogue(mDef.onFirstContact);
   }
 
   private onEnemyKilled(e: Fighter, stealth = false) {
@@ -1980,18 +2037,19 @@ export class Game {
         this.bossEntity = null;
       }
     this.updateObjectives();
+    const mDef = this.activeContract?.def ?? this.mission!;
     // halfway line
-    const eliminateTotal = this.mission!.enemies.filter((s) => !s.boss).length;
+    const eliminateTotal = mDef.enemies.filter((s) => !s.boss).length;
     if (!this.halfwayPlayed && eliminateTotal > 0 && this.killed >= Math.ceil(eliminateTotal / 2)) {
       this.halfwayPlayed = true;
-      if (this.mission!.onHalfway) this.queueDialogue(this.mission!.onHalfway);
+      if (mDef.onHalfway) this.queueDialogue(mDef.onHalfway);
     }
     // objective dialogue once all non-extract objectives are complete
-    if (!this.objectiveDialoguePlayed && this.mission!.onObjective) {
-      const allNonExtract = this.objectives.filter((o) => o.id !== "extract").every((o) => o.done);
+    if (!this.objectiveDialoguePlayed && mDef.onObjective) {
+      const allNonExtract = this.objectives.filter((o) => o.id !== "extract" && o.id !== "travel").every((o) => o.done);
       if (allNonExtract) {
         this.objectiveDialoguePlayed = true;
-        this.queueDialogue(this.mission!.onObjective);
+        this.queueDialogue(mDef.onObjective);
       }
     }
     this.emitHud();
@@ -2015,12 +2073,13 @@ export class Game {
   }
 
   private updateObjectives() {
-    if (!this.mission) return;
-    const eliminateTotal = this.mission.enemies.filter((e) => !e.boss).length;
+    const mDef = this.activeContract?.def ?? this.mission;
+    if (!mDef) return;
+    const eliminateTotal = mDef.enemies.filter((e) => !e.boss).length;
     let newlyCompletedMilestone = false;
     for (const o of this.objectives) {
       if (o.done) continue;
-      const def = this.mission.objectives.find((x) => x.id === o.id);
+      const def = mDef.objectives.find((x) => x.id === o.id);
       const kind = def?.kind;
       if (kind === "eliminate") {
         o.progress = Math.min(eliminateTotal, this.killed - (this.bossKilled ? 1 : 0));
@@ -2052,23 +2111,24 @@ export class Game {
       }
       // kind "reach" handled by proximity checks in frame
     }
-    if (newlyCompletedMilestone && !this.mission.practice && this.health > 0) {
+    if (newlyCompletedMilestone && (!mDef.practice || !!this.activeContract) && this.health > 0) {
       this.health = Math.min(this.maxHealth, this.health + 25);
     }
-    const nonExtract = this.objectives.filter((o) => o.id !== "extract");
+    const nonExtract = this.objectives.filter((o) => o.id !== "extract" && o.id !== "travel");
     const doneNonExtract = nonExtract.filter((o) => o.done).length;
     if (!this.halfwayPlayed && nonExtract.length >= 2 && doneNonExtract >= Math.floor(nonExtract.length / 2)) {
       this.halfwayPlayed = true;
-      if (this.mission.onHalfway) this.queueDialogue(this.mission.onHalfway);
+      if (mDef.onHalfway) this.queueDialogue(mDef.onHalfway);
     }
   }
 
   private checkAllNonExtractDone() {
-    if (!this.objectiveDialoguePlayed && this.mission?.onObjective) {
-      const allNonExtract = this.objectives.filter((o) => o.id !== "extract").every((o) => o.done);
+    const mDef = this.activeContract?.def ?? this.mission;
+    if (!this.objectiveDialoguePlayed && mDef?.onObjective) {
+      const allNonExtract = this.objectives.filter((o) => o.id !== "extract" && o.id !== "travel").every((o) => o.done);
       if (allNonExtract) {
         this.objectiveDialoguePlayed = true;
-        this.queueDialogue(this.mission.onObjective);
+        this.queueDialogue(mDef.onObjective);
       }
     }
   }
@@ -2125,12 +2185,16 @@ export class Game {
 
   private checkProximityObjectives(dt: number) {
     if (!this.mission || !this.level) return;
+    const mDef = this.activeContract?.def ?? this.mission;
+    const site = this.activeContract?.site ?? null;
     const p = this.rig.root.position;
     for (const o of this.objectives) {
-      if (o.done) continue;
-      const def = this.mission.objectives.find((x) => x.id === o.id);
+      if (o.done || o.id === "travel") continue;
+      if (this.activeContract && o.id === "extract") continue; // open-world exfil requires physically leaving the area
+      const def = mDef.objectives.find((x) => x.id === o.id);
       if (!def || def.kind !== "reach" || !def.at) continue;
-      const d = Math.hypot(p.x - def.at[0], p.z - def.at[1]);
+      const [tx, , tz] = site ? localToWorldMissionPos(site, def.at[0], 0, def.at[1]) : [def.at[0], 0, def.at[1]];
+      const d = Math.hypot(p.x - tx, p.z - tz);
       if (d < 4.5) {
         if (def.id === "extract") {
           // extraction only counts once every other objective is complete
@@ -2145,7 +2209,7 @@ export class Game {
         }
         if (def.id === "rescue" && !this.objectiveDialoguePlayed) {
           this.objectiveDialoguePlayed = true;
-          if (this.mission.onObjective) this.queueDialogue(this.mission.onObjective);
+          if (mDef.onObjective) this.queueDialogue(mDef.onObjective);
         }
         this.emitHud();
       }
@@ -2156,11 +2220,11 @@ export class Game {
       if (d < 3.5) {
         this.rescued = true;
         this.updateObjectives();
-        if (!this.objectiveDialoguePlayed && this.mission.onObjective) {
-          const allNonExtract = this.objectives.filter((o) => o.id !== "extract").every((o) => o.done);
-          if (allNonExtract || this.mission.id === 1) {
+        if (!this.objectiveDialoguePlayed && mDef.onObjective) {
+          const allNonExtract = this.objectives.filter((o) => o.id !== "extract" && o.id !== "travel").every((o) => o.done);
+          if (allNonExtract || mDef.id === 1) {
             this.objectiveDialoguePlayed = true;
-            this.queueDialogue(this.mission.onObjective);
+            this.queueDialogue(mDef.onObjective);
           }
         }
         this.emitHud();
@@ -2168,10 +2232,11 @@ export class Game {
     }
     // extract ring fade in/out + vertical exfil beam
     if (this.extractRing) {
-      const ex = this.mission.extraction;
-      const d = Math.hypot(p.x - ex[0], p.z - ex[1]);
+      const ex = mDef.extraction;
+      const [exX, , exZ] = site ? localToWorldMissionPos(site, ex[0], 0, ex[1]) : [ex[0], 0, ex[1]];
+      const d = Math.hypot(p.x - exX, p.z - exZ);
       const mat = this.extractRing.material as THREE.MeshBasicMaterial;
-      const allDone = this.objectives.filter((o) => o.id !== "extract").every((o) => o.done);
+      const allDone = this.objectives.filter((o) => o.id !== "extract" && o.id !== "travel").every((o) => o.done);
       mat.opacity = 0.35 + Math.max(0, 0.25 - d / 20) + (allDone ? 0.25 : 0);
       mat.color.setHex(allDone ? 0x34d399 : 0xffcc44);
       if (this.extractBeacon) {
@@ -2185,6 +2250,411 @@ export class Game {
       this.rescueBeacon.rotation.y += dt * 1.5;
       this.rescueBeacon.visible = !this.rescued;
     }
+  }
+
+  private clearActiveContractEntities() {
+    for (const [mesh] of this.destroyableHp) {
+      if (!mesh.visible) {
+        mesh.visible = true;
+        if (this.level?.spatialColliders) {
+          mesh.updateWorldMatrix(true, false);
+          this.level.spatialColliders.insert(mesh, new THREE.Box3().setFromObject(mesh));
+        }
+      }
+    }
+    this.destroyableHp.clear();
+    if (this.approachRing) {
+      this.missionRoot.remove(this.approachRing);
+      this.approachRing.geometry.dispose();
+      (this.approachRing.material as THREE.Material).dispose();
+      this.approachRing = null;
+    }
+    if (this.approachBeacon) {
+      this.missionRoot.remove(this.approachBeacon);
+      this.approachBeacon.geometry.dispose();
+      (this.approachBeacon.material as THREE.Material).dispose();
+      this.approachBeacon = null;
+    }
+    if (this.extractRing) {
+      this.missionRoot.remove(this.extractRing);
+      this.extractRing.geometry.dispose();
+      (this.extractRing.material as THREE.Material).dispose();
+      this.extractRing = null;
+    }
+    if (this.extractBeacon) {
+      this.missionRoot.remove(this.extractBeacon);
+      this.extractBeacon.geometry.dispose();
+      (this.extractBeacon.material as THREE.Material).dispose();
+      this.extractBeacon = null;
+    }
+    if (this.rescueBeacon) {
+      this.missionRoot.remove(this.rescueBeacon);
+      disposeObject(this.rescueBeacon);
+      this.rescueBeacon = null;
+    }
+    if (this.contractGroup) {
+      this.missionRoot.remove(this.contractGroup);
+      disposeObject(this.contractGroup);
+      this.contractGroup = null;
+    }
+    this.enemies = [];
+    this.enemyHits = [];
+    this.ally = null;
+    this.npc = null;
+    this.bossEntity = null;
+    this.interactables = [];
+    this.activeInteract = null;
+    this.interactHoldT = 0;
+    this.interactTickCd = 0;
+    this.guardFlashlights = [];
+  }
+
+  private activateOpenWorldContract(missionId: number) {
+    const def = MISSIONS.find((m) => m.id === missionId);
+    const site = getOpenWorldMissionSite(missionId);
+    if (!def || !site || !this.level || !this.rig) return;
+
+    this.clearActiveContractEntities();
+    this.firstContact = false;
+    this.killed = 0;
+    this.stealthKills = 0;
+    this.alerts = 0;
+    this.shotsFired = 0;
+    this.shotsHit = 0;
+    this.headshots = 0;
+    this.missionElapsedSec = 0;
+    this.activeDifficulty = loadSave().difficulty ?? "operative";
+    this.bossKilled = false;
+    this.destroyed = 0;
+    this.rescued = false;
+    this.objectiveDialoguePlayed = false;
+    this.halfwayPlayed = false;
+    this.dialogueQueue = [];
+    this.dialogue = null;
+
+    this.activeContract = { def, site, stage: "travel", spawned: false };
+    this.objectives = [
+      {
+        id: "travel",
+        label: `Drive to ${def.name} · ${site.districtLabel}`,
+        done: false,
+        progress: 0,
+        total: 1,
+      },
+      ...def.objectives.map((o: ObjectiveDef) => ({
+        id: o.id,
+        label: o.id === "extract" ? `Leave the area (${site.escapeRadius}m clear of site)` : o.label,
+        done: false,
+        progress: 0,
+        total: o.count ?? (o.kind === "reach" || o.kind === "rescue" ? 1 : 0),
+      })),
+    ];
+
+    const p = this.level.vehicles?.activeVehicle?.pos ?? this.rig.root.position;
+    const distSite = Math.hypot(p.x - site.x, p.z - site.z);
+    const distApp = Math.hypot(p.x - site.approachX, p.z - site.approachZ);
+    if (distSite <= site.enterRadius || distApp <= 22) {
+      this.objectives[0].done = true;
+      this.objectives[0].progress = 1;
+      this.activeContract.stage = "infiltrate";
+      void this.spawnContractEncounter();
+      this.activityToast = {
+        title: `${def.codename} · ${def.name}`,
+        subtitle: `Infiltrate ${site.districtLabel}`,
+        accent: def.accent,
+      };
+      this.activityToastTimer = 4.0;
+    } else {
+      const gy = this.level.groundHeightAt(site.approachX, site.approachZ, 20);
+      const ringGeo = new THREE.RingGeometry(4.2, 4.85, 40);
+      const ringMat = new THREE.MeshBasicMaterial({
+        color: 0xfbbf24,
+        transparent: true,
+        opacity: 0.72,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      });
+      this.approachRing = new THREE.Mesh(ringGeo, ringMat);
+      this.approachRing.rotation.x = -Math.PI / 2;
+      this.approachRing.position.set(site.approachX, gy + 0.12, site.approachZ);
+      this.missionRoot.add(this.approachRing);
+
+      const beam = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.35, 1.35, 22, 16, 1, true),
+        new THREE.MeshBasicMaterial({
+          color: 0xfbbf24,
+          transparent: true,
+          opacity: 0.22,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+        }),
+      );
+      beam.position.set(site.approachX, gy + 11, site.approachZ);
+      this.approachBeacon = beam;
+      this.missionRoot.add(beam);
+
+      this.activityToast = {
+        title: `CONTRACT ACTIVE · ${def.codename}`,
+        subtitle: `Drive to ${def.name} (${site.districtLabel} · ${Math.round(distApp)}m)`,
+        accent: def.accent,
+      };
+      this.activityToastTimer = 4.6;
+    }
+    this.emitHud();
+  }
+
+  private async spawnContractEncounter() {
+    const ac = this.activeContract;
+    if (!ac || !this.level || ac.spawned) return;
+    ac.spawned = true;
+    const { def, site } = ac;
+    const seq = this.missionSeq;
+    const group = new THREE.Group();
+    group.name = `ContractEncounter_M${def.id}`;
+    this.contractGroup = group;
+    this.missionRoot.add(group);
+
+    const host: CombatHost = {
+      colliders: this.level.colliders,
+      aabbs: this.level.aabbs,
+      spatialAABBs: this.level.spatial,
+      rayQuery: this.level.spatialColliders
+        ? (origin, dir, maxDist) => this.level!.spatialColliders!.queryRay(origin, dir, maxDist, this.rayScratch)
+        : undefined,
+      groundHeightAt: (x, z, y) => (this.level ? this.level.groundHeightAt(x, z, y) : 0),
+      fx: this.fx,
+      sfx: this.sfx,
+      playerPos: (out: THREE.Vector3) => {
+        const r = this.rig?.root.position;
+        return r ? out.set(r.x, r.y + this.rig.eyeHeight, r.z) : out.set(0, 1.6, 0);
+      },
+      playerAlive: () => !this.rig?.dead,
+      playerCrouching: () => this.crouchToggle,
+      playerSprinting: () => this.rig?.status === "Sprinting",
+      playerDetectMult: () => this.stats.enemyDetectSpeedMult,
+      playerVisionRangeMult: () => this.stats.enemyVisionRangeMult,
+      difficultyScale: () => DIFFICULTY_PROFILES[this.activeDifficulty],
+      onPlayerHit: (dmg) => this.damage(dmg, Math.random() * Math.PI * 2),
+      onKilled: (e, stealth) => this.onEnemyKilled(e, stealth),
+      onAlert: () => this.onFirstContact(),
+      enemies: () => this.enemies,
+      mission: def,
+    };
+
+    const spawnedEnemies = def.enemies.map((sp) => {
+      const [wx, , wz] = localToWorldMissionPos(site, sp.x, 0, sp.z);
+      const wy = (sp.y ?? 0) + site.y;
+      const yawDeg =
+        sp.yawDeg !== undefined
+          ? sp.yawDeg + THREE.MathUtils.radToDeg(site.yaw)
+          : THREE.MathUtils.radToDeg(Math.atan2(-sp.x, -sp.z) + site.yaw);
+      const patrol = sp.patrol?.map(([px, pz]) => {
+        const [wpx, , wpz] = localToWorldMissionPos(site, px, 0, pz);
+        return [wpx, wpz] as [number, number];
+      });
+      return new Enemy(host, { ...sp, x: wx, y: wy, z: wz, yawDeg, patrol }, def);
+    });
+
+    const batchSize = 4;
+    for (let i = 0; i < spawnedEnemies.length; i += batchSize) {
+      const slice = spawnedEnemies.slice(i, i + batchSize);
+      await Promise.all(slice.map((e) => e.build(group, def.tint, 0.95 + Math.random() * 0.12)));
+      if (this.disposed || seq !== this.missionSeq || this.activeContract !== ac) return;
+      for (const e of slice) {
+        this.enemyHits.push(e.hitbox);
+        if (e.boss) this.bossEntity = e;
+        this.enemies.push(e);
+      }
+    }
+
+    if (def.ally) {
+      const [ax, ay, az] = localToWorldMissionPos(site, def.ally[0], 0, def.ally[1]);
+      this.ally = new Ally(host, ax, az, ay);
+      await this.ally.build(group, [0x3f6b3a, 0x88ff88], 1.0);
+      if (this.disposed || seq !== this.missionSeq || this.activeContract !== ac) return;
+    }
+
+    if (def.rescue) {
+      const [rx, ry, rz] = localToWorldMissionPos(site, def.rescue[0], 0, def.rescue[1]);
+      this.npc = new RescueNPC(rx, rz, ry);
+      await this.npc.build(group, [0xc9b48a, 0xffe0a0]);
+      if (this.disposed || seq !== this.missionSeq || this.activeContract !== ac) return;
+
+      const rGrp = new THREE.Group();
+      rGrp.position.set(rx, ry, rz);
+      const ringMesh = new THREE.Mesh(
+        new THREE.RingGeometry(0.6, 0.78, 36),
+        new THREE.MeshBasicMaterial({ color: 0xffc857, transparent: true, opacity: 0.65, side: THREE.DoubleSide, depthWrite: false }),
+      );
+      ringMesh.rotation.x = -Math.PI / 2;
+      ringMesh.position.y = 0.07;
+      rGrp.add(ringMesh);
+      const beam = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.18, 0.55, 3.4, 20, 1, true),
+        new THREE.MeshBasicMaterial({ color: 0xffd060, transparent: true, opacity: 0.16, depthWrite: false, side: THREE.DoubleSide }),
+      );
+      beam.position.y = 1.75;
+      rGrp.add(beam);
+      const diamond = new THREE.Mesh(
+        new THREE.OctahedronGeometry(0.24, 0),
+        new THREE.MeshStandardMaterial({ color: 0xffd060, emissive: 0xffaa20, emissiveIntensity: 1.5, roughness: 0.2 }),
+      );
+      diamond.position.y = 2.6;
+      diamond.scale.set(0.85, 1.35, 0.85);
+      rGrp.add(diamond);
+      this.rescueBeacon = rGrp;
+      this.missionRoot.add(rGrp);
+    }
+
+    const compDestroyables = this.level.compoundDestroyables?.get(def.id) ?? [];
+    for (const m of compDestroyables) {
+      m.visible = true;
+      this.destroyableHp.set(m, 100);
+      if (this.level.spatialColliders) {
+        m.updateWorldMatrix(true, false);
+        this.level.spatialColliders.insert(m, new THREE.Box3().setFromObject(m));
+      }
+    }
+
+    for (const idef of def.interactables ?? []) {
+      const [ix, iy, iz] = localToWorldMissionPos(site, idef.x, idef.y ?? 0, idef.z);
+      const inst = createInteractableProp({
+        ...idef,
+        x: ix,
+        y: iy,
+        z: iz,
+        ry: idef.ry !== undefined ? localToWorldMissionYaw(site, idef.ry) : site.yaw,
+      });
+      group.add(inst.group);
+      this.interactables.push(inst);
+    }
+
+    this.queueDialogue(def.intro);
+    this.emitHud();
+  }
+
+  private updateOpenWorldContract(_dt: number, playerPos: THREE.Vector3) {
+    const ac = this.activeContract;
+    if (!ac || this.phase !== "ready") return;
+    const { def, site } = ac;
+    const dSite = Math.hypot(playerPos.x - site.x, playerPos.z - site.z);
+    const dApp = Math.hypot(playerPos.x - site.approachX, playerPos.z - site.approachZ);
+
+    if (ac.stage === "travel") {
+      if (this.approachBeacon) {
+        (this.approachBeacon.material as THREE.MeshBasicMaterial).opacity =
+          0.18 + Math.sin(performance.now() * 0.004) * 0.06;
+      }
+      const tr = this.objectives.find((o) => o.id === "travel");
+      if (tr) {
+        tr.label = `Drive to ${def.name} · ${site.districtLabel} (${Math.round(dApp)}m)`;
+      }
+      if (dSite <= site.enterRadius || dApp <= 22) {
+        if (tr) {
+          tr.done = true;
+          tr.progress = 1;
+          tr.label = `Arrived at ${def.name}`;
+        }
+        if (this.approachRing) {
+          this.missionRoot.remove(this.approachRing);
+          this.approachRing.geometry.dispose();
+          (this.approachRing.material as THREE.Material).dispose();
+          this.approachRing = null;
+        }
+        if (this.approachBeacon) {
+          this.missionRoot.remove(this.approachBeacon);
+          this.approachBeacon.geometry.dispose();
+          (this.approachBeacon.material as THREE.Material).dispose();
+          this.approachBeacon = null;
+        }
+        ac.stage = "infiltrate";
+        void this.spawnContractEncounter();
+        this.activityToast = {
+          title: `${def.codename} · ON SITE`,
+          subtitle: `Complete objectives inside ${def.name}`,
+          accent: def.accent,
+        };
+        this.activityToastTimer = 3.8;
+        this.emitHud();
+      }
+      return;
+    }
+
+    if (ac.stage === "infiltrate") {
+      if (!ac.spawned) return;
+      const nonExtractDone = this.objectives
+        .filter((o) => o.id !== "extract" && o.id !== "travel")
+        .every((o) => o.done);
+      if (nonExtractDone) {
+        ac.stage = "escape";
+        if (!this.objectiveDialoguePlayed && def.onObjective) {
+          this.objectiveDialoguePlayed = true;
+          this.queueDialogue(def.onObjective);
+        }
+        this.activityToast = {
+          title: "EXFILTRATE THE AREA",
+          subtitle: `Leave ${def.name} (${site.escapeRadius}m away)`,
+          accent: "#34d399",
+        };
+        this.activityToastTimer = 4.4;
+        this.emitHud();
+      }
+      return;
+    }
+
+    if (ac.stage === "escape") {
+      const exObj = this.objectives.find((o) => o.id === "extract");
+      const rem = Math.max(0, Math.round(site.escapeRadius - dSite));
+      if (exObj) {
+        exObj.label = `Leave the area (${rem}m to clear)`;
+      }
+      if (dSite >= site.escapeRadius) {
+        if (exObj) {
+          exObj.done = true;
+          exObj.progress = 1;
+          exObj.label = "Area cleared";
+        }
+        this.completeOpenWorldContract();
+      }
+    }
+  }
+
+  private completeOpenWorldContract() {
+    const ac = this.activeContract;
+    if (!ac) return;
+    const completedMission = ac.def;
+    const seq = this.missionSeq;
+    const { reward } = awardMissionReward(
+      completedMission.id,
+      this.killed,
+      this.stealthKills,
+      this.alerts,
+      true,
+      {
+        shotsFired: this.shotsFired,
+        shotsHit: this.shotsHit,
+        headshots: this.headshots,
+        durationSec: this.missionElapsedSec,
+      },
+    );
+    this.activeContract = null;
+    this.clearActiveContractEntities();
+    this.objectives = [];
+    this.phase = "complete";
+    if (document.pointerLockElement) document.exitPointerLock();
+    if (completedMission.onExtraction) this.queueDialogue(completedMission.onExtraction);
+    this.activityToast = {
+      title: `CONTRACT COMPLETE · ${completedMission.codename}`,
+      subtitle: `+$${reward.credits.toLocaleString()} · Continue exploring Westgate Bay`,
+      accent: "#34d399",
+    };
+    this.activityToastTimer = 4.8;
+    this.emitHud();
+    setTimeout(() => {
+      if (this.disposed || seq !== this.missionSeq) return;
+      this.cb?.onMissionEnd(completedMission, true, reward);
+    }, 1500);
   }
 
   private completeMission() {
@@ -2540,6 +3010,10 @@ export class Game {
   }
 
   private damageDestroyable(mesh: THREE.Object3D, point: THREE.Vector3, n: THREE.Vector3, dmg = 34) {
+    if (this.mission?.id === -1 && !this.destroyableHp.has(mesh)) {
+      this.fx.impact(point, n, "metal");
+      return;
+    }
     let hp = this.destroyableHp.get(mesh) ?? 100;
     if (!mesh.visible || hp <= 0) return;
     hp -= dmg;
@@ -2553,11 +3027,12 @@ export class Game {
       this.fx.impact(point, n, "metal");
       this.fx.tracer(point.clone().addScaledVector(n, -1.5), point.clone().add(new THREE.Vector3(0, 2, 0)));
       this.updateObjectives();
-      if (!this.objectiveDialoguePlayed && this.mission?.onObjective) {
-        const allNonExtract = this.objectives.filter((o) => o.id !== "extract").every((o) => o.done);
+      const mDef = this.activeContract?.def ?? this.mission;
+      if (!this.objectiveDialoguePlayed && mDef?.onObjective) {
+        const allNonExtract = this.objectives.filter((o) => o.id !== "extract" && o.id !== "travel").every((o) => o.done);
         if (allNonExtract) {
           this.objectiveDialoguePlayed = true;
-          this.queueDialogue(this.mission.onObjective);
+          this.queueDialogue(mDef.onObjective);
         }
       }
       this.emitHud();
@@ -2869,7 +3344,7 @@ export class Game {
             this.activityToastTimer = 5.0;
           }
           this.checkDistrictDiscovery(activeVeh.pos);
-          const nearC = this.level.activities.findNearbyContract(activeVeh.pos, 11.5);
+          const nearC = !this.activeContract ? this.level.activities.findNearbyContract(activeVeh.pos, 11.5) : null;
           this.nearbyContractSpot = nearC
             ? { missionId: nearC.missionId, x: nearC.x, z: nearC.z, yawDeg: nearC.yawDeg }
             : null;
@@ -3030,7 +3505,7 @@ export class Game {
           this.level.activities.updateStunts(dt, rig.root.position, false, false);
           this.level.activities.updateRace(dt, rig.root.position);
           this.checkDistrictDiscovery(rig.root.position);
-          const nearC = this.level.activities.findNearbyContract(rig.root.position, 11.5);
+          const nearC = !this.activeContract ? this.level.activities.findNearbyContract(rig.root.position, 11.5) : null;
           this.nearbyContractSpot = nearC
             ? { missionId: nearC.missionId, x: nearC.x, z: nearC.z, yawDeg: nearC.yawDeg }
             : null;
@@ -3069,6 +3544,14 @@ export class Game {
 
     /* ---- AI & Objectives ---- */
     if (this.phase === "ready") {
+      if (this.activeContract) {
+        const cPos =
+          this.level?.aircraft?.activeAircraft?.pos ??
+          this.level?.boats?.activeBoat?.pos ??
+          this.level?.vehicles?.activeVehicle?.pos ??
+          rig.root.position;
+        this.updateOpenWorldContract(dt, cPos);
+      }
       for (const e of this.enemies) e.update(dt);
       this.ally?.update(dt);
       this.npc?.update(dt);
@@ -3712,6 +4195,7 @@ export class Game {
     const spot = new THREE.Vector3(SAFEHOUSE_CAR_SPOT.x, 5.5, SAFEHOUSE_CAR_SPOT.z);
     const yawRad = THREE.MathUtils.degToRad(SAFEHOUSE_CAR_SPOT.yawDeg);
     const v = this.level.vehicles.spawnAndEnterCarAt(carId, spot, yawRad);
+    updateSafehouseGarageDoor(1.0, v.pos, v.pos, true);
     const audioCar: CarId = v.spec.id;
     this.vehAudio.setCar(audioCar);
     this.vehAudio.setPerspective(this.vehCam.preset === "hood" || this.vehCam.preset === "bumper" ? "cabin" : "exterior");
@@ -4840,8 +5324,21 @@ export class Game {
     void this.startMission(missionId, this.cb, { fromOpenWorld: true });
   }
 
+  continueInOpenWorld() {
+    if (this.mission?.id !== -1) return;
+    this.phase = "ready";
+    this.paused = false;
+    this.pausedRendered = false;
+    this.emitHud();
+    this.requestLock(true);
+  }
+
   async returnToOpenWorld() {
     if (!this.cb) return;
+    if (this.mission?.id === -1) {
+      this.continueInOpenWorld();
+      return;
+    }
     if (document.pointerLockElement) document.exitPointerLock();
     const ret = this.openWorldReturnSpot;
     this.openWorldReturnSpot = null;
@@ -4953,7 +5450,11 @@ export class Game {
     const boats = this.level?.boats ? this.level.boats.getBlips() : [];
     const stashes = this.level?.collectibles ? this.level.collectibles.getStashBlips() : [];
     const ar = this.level?.activities?.getActiveRaceState() ?? null;
-    const raceCheckpoint = ar ? ar.nextCheckpoint : null;
+    const raceCheckpoint = ar
+      ? ar.nextCheckpoint
+      : this.activeContract?.stage === "travel"
+        ? { x: this.activeContract.site.approachX, z: this.activeContract.site.approachZ }
+        : null;
     const randomEvent = this.level?.randomEvents ? this.level.randomEvents.getActiveBlip() : null;
     const surv = this.rig ? this.level?.contracts?.getHudState(this.rig.root.position) ?? null : null;
     const surveillanceTarget = surv
@@ -5049,21 +5550,33 @@ export class Game {
           holding: this.keys.has("KeyF") && this.interactHoldT > 0.01,
         }
       : null;
-    const extractReady =
-      !!mission &&
-      !mission.practice &&
-      this.objectives.some((o) => o.id === "extract") &&
-      this.objectives.filter((o) => o.id !== "extract").every((o) => o.done) &&
-      !this.objectives.find((o) => o.id === "extract")?.done;
+    const extractReady = this.activeContract
+      ? this.activeContract.stage === "escape"
+      : !!mission &&
+        !mission.practice &&
+        this.objectives.some((o) => o.id === "extract") &&
+        this.objectives.filter((o) => o.id !== "extract").every((o) => o.done) &&
+        !this.objectives.find((o) => o.id === "extract")?.done;
     let extractDist: number | null = null;
     let extractDirAngle: number | null = null;
     if (extractReady && mission && r) {
-      const dx = mission.extraction[0] - r.root.position.x;
-      const dz = mission.extraction[1] - r.root.position.z;
-      extractDist = Math.round(Math.hypot(dx, dz));
-      const dotFwd = dx * Math.sin(this.camYaw) + dz * Math.cos(this.camYaw);
-      const dotRgt = dx * -Math.cos(this.camYaw) + dz * Math.sin(this.camYaw);
-      extractDirAngle = Math.atan2(dotRgt, dotFwd);
+      if (this.activeContract) {
+        const site = this.activeContract.site;
+        const dxAway = r.root.position.x - site.x;
+        const dzAway = r.root.position.z - site.z;
+        const dSite = Math.hypot(dxAway, dzAway);
+        extractDist = Math.max(0, Math.round(site.escapeRadius - dSite));
+        const dotFwd = dxAway * Math.sin(this.camYaw) + dzAway * Math.cos(this.camYaw);
+        const dotRgt = dxAway * -Math.cos(this.camYaw) + dzAway * Math.sin(this.camYaw);
+        extractDirAngle = Math.atan2(dotRgt, dotFwd);
+      } else {
+        const dx = mission.extraction[0] - r.root.position.x;
+        const dz = mission.extraction[1] - r.root.position.z;
+        extractDist = Math.round(Math.hypot(dx, dz));
+        const dotFwd = dx * Math.sin(this.camYaw) + dz * Math.cos(this.camYaw);
+        const dotRgt = dx * -Math.cos(this.camYaw) + dz * Math.sin(this.camYaw);
+        extractDirAngle = Math.atan2(dotRgt, dotFwd);
+      }
     }
     const boss = this.bossEntity && !this.bossEntity.isDead && this.bossEntity.alerted
       ? { name: this.bossEntity.name || "Boss", hp: Math.max(1, this.bossEntity.hp), maxHp: this.bossEntity.maxHp }
@@ -5152,7 +5665,32 @@ export class Game {
       }
     }
     let nextContractMarker: HudState["nextContractMarker"] = null;
-    if (isOpenWorld && r && this.level?.activities) {
+    if (this.activeContract && r && this.level) {
+      if (this.activeContract.stage === "travel") {
+        const { def, site } = this.activeContract;
+        const dx = site.approachX - r.root.position.x;
+        const dz = site.approachZ - r.root.position.z;
+        const dist = Math.round(Math.hypot(dx, dz));
+        const dotFwd = dx * Math.sin(this.camYaw) + dz * Math.cos(this.camYaw);
+        const dotRgt = dx * -Math.cos(this.camYaw) + dz * Math.sin(this.camYaw);
+        const dirAngle = Math.atan2(dotRgt, dotFwd);
+        const groundY = this.level.groundHeightAt(site.approachX, site.approachZ, 20);
+        const proj = new THREE.Vector3(site.approachX, groundY + 4.8, site.approachZ).project(this.camera);
+        const onScreen = proj.z >= -1 && proj.z <= 1 && Math.abs(proj.x) <= 0.94 && Math.abs(proj.y) <= 0.9;
+        nextContractMarker = {
+          missionId: def.id,
+          codename: def.codename,
+          name: def.name,
+          district: site.districtLabel,
+          dist,
+          dirAngle,
+          screenX: proj.x * 0.5 + 0.5,
+          screenY: -proj.y * 0.5 + 0.5,
+          onScreen,
+          accent: def.accent,
+        };
+      }
+    } else if (isOpenWorld && r && this.level?.activities) {
       const contracts = this.level.activities.getContractSummaries();
       const targetC =
         contracts.find((c) => c.missionId >= 1 && c.unlocked && !c.completed) ??
@@ -5184,14 +5722,24 @@ export class Game {
         }
       }
     }
-    const hasOpenWorldReturn = !isOpenWorld && this.openWorldReturnSpot !== null;
+    const hasOpenWorldReturn = (!isOpenWorld && this.openWorldReturnSpot !== null) || (isOpenWorld && this.phase === "complete");
+    const hudMission = this.activeContract
+      ? {
+          id: this.activeContract.def.id,
+          codename: this.activeContract.def.codename,
+          name: this.activeContract.def.name,
+          location: this.activeContract.site.districtLabel,
+          timeOfDay: timeOfDayLabel,
+          accent: this.activeContract.def.accent,
+        }
+      : mission
+        ? { id: mission.id, codename: mission.codename, name: mission.name, location: mission.location, timeOfDay: mission.timeOfDay, accent: mission.accent }
+        : null;
     this.onHud({
       loading: this.phase === "loading",
       progress: this.progress,
       phase: this.phase,
-      mission: mission
-        ? { id: mission.id, codename: mission.codename, name: mission.name, location: mission.location, timeOfDay: mission.timeOfDay, accent: mission.accent }
-        : null,
+      mission: hudMission,
       objectives: this.objectives,
       dialogue: this.dialogue,
       boss,

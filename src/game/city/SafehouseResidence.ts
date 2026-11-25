@@ -2,8 +2,9 @@ import * as THREE from "three";
 import { materialFor } from "../kit/surface";
 import type { CityChunk } from "./ChunkStreamer";
 import type { WalkableSurface, WorldHeightSystem } from "./HeightSystem";
-import { addLodBox, addSolidBox, addVisualBox, registerNightGlowMaterial } from "./CityBuildingKit";
+import { addLodBox, addVisualBox, registerNightGlowMaterial } from "./CityBuildingKit";
 import { attachGlbToGroup } from "./PropModels";
+import type { SpatialAABBGrid } from "./SpatialIndex";
 import {
   buildDetailedCloset,
   buildDetailedKingBed,
@@ -31,8 +32,8 @@ export function safehouseLocalToWorld(lx: number, lz: number, ly = 0): { x: numb
   };
 }
 
-// Player spawns on the front driveway walk facing the Safehouse, Open Garage & Personal Car
-const _spawnW = safehouseLocalToWorld(1.8, 10.4, 0.14);
+// Player spawns on the front driveway walk facing the Safehouse, Garage Door & Front Porch
+const _spawnW = safehouseLocalToWorld(1.8, 10.6, 0.14);
 export const SAFEHOUSE_SPAWN: [number, number, number] = [
   Number(_spawnW.x.toFixed(2)),
   Number(_spawnW.z.toFixed(2)),
@@ -40,7 +41,7 @@ export const SAFEHOUSE_SPAWN: [number, number, number] = [
 ];
 
 // Personal car parked INSIDE the 1-car garage bay facing straight out down the driveway
-const _carW = safehouseLocalToWorld(2.4, 0.7, 0.14);
+const _carW = safehouseLocalToWorld(2.4, 0.7, 0.13);
 export const SAFEHOUSE_CAR_SPOT = {
   x: Number(_carW.x.toFixed(2)),
   z: Number(_carW.z.toFixed(2)),
@@ -53,7 +54,7 @@ export const SAFEHOUSE_STATIONS: HomeStation[] = [
     kind: "bed",
     label: "Master Bed · Sleep & Save",
     sublabel: "Saves progress & advances day/night cycle",
-    pos: safehouseLocalToWorld(-16.2, -3.2, 0.14),
+    pos: safehouseLocalToWorld(-16.2, -3.2, 0.16),
     radius: 3.0,
   },
   {
@@ -61,8 +62,8 @@ export const SAFEHOUSE_STATIONS: HomeStation[] = [
     kind: "closet",
     label: "Walk-In Wardrobe Closet",
     sublabel: "Customize operator uniform, armor & tactical gear",
-    pos: safehouseLocalToWorld(-15.5, 2.2, 0.14),
-    radius: 1.9,
+    pos: safehouseLocalToWorld(-15.6, 2.0, 0.16),
+    radius: 2.0,
     autoOpen: true,
   },
   {
@@ -70,7 +71,7 @@ export const SAFEHOUSE_STATIONS: HomeStation[] = [
     kind: "garage_door",
     label: "Garage Door · Customize Car",
     sublabel: "[F] Overtake Car Customizer · [G] Drive Car Out",
-    pos: safehouseLocalToWorld(-0.75, 1.2, 0.14),
+    pos: safehouseLocalToWorld(-0.75, 1.2, 0.16),
     radius: 2.2,
   },
   {
@@ -78,7 +79,7 @@ export const SAFEHOUSE_STATIONS: HomeStation[] = [
     kind: "weapon_bench",
     label: "Gunsmith Weapon Workbench",
     sublabel: "Customize optics, muzzles, finishes & weapon upgrades",
-    pos: safehouseLocalToWorld(2.4, -3.1, 0.14),
+    pos: safehouseLocalToWorld(2.4, -3.1, 0.13),
     radius: 1.9,
     autoOpen: true,
   },
@@ -87,7 +88,7 @@ export const SAFEHOUSE_STATIONS: HomeStation[] = [
     kind: "garage_mod",
     label: "Overtake Garage Mod Bay",
     sublabel: "Customize paint, rims, window tint & engine tuning",
-    pos: safehouseLocalToWorld(2.4, 0.7, 0.14),
+    pos: safehouseLocalToWorld(2.4, 0.7, 0.13),
     radius: 3.0,
   },
   {
@@ -95,14 +96,105 @@ export const SAFEHOUSE_STATIONS: HomeStation[] = [
     kind: "intel_board",
     label: "Intel & Surveillance Board",
     sublabel: "Inspect Target Dossiers & Start Contracts (H1–H3)",
-    pos: safehouseLocalToWorld(-0.95, -1.35, 0.14),
+    pos: safehouseLocalToWorld(-0.95, -1.35, 0.16),
     radius: 2.2,
   },
 ];
 
+// ---- Animated Exterior Sectional Garage Door State ----
+interface GarageDoorPanel {
+  pivot: THREE.Group;
+  closedY: number;
+  closedZ: number;
+  openY: number;
+  openZ: number;
+  openRotX: number;
+}
+
+interface GarageDoorRuntime {
+  panels: GarageDoorPanel[];
+  doorWorldPos: THREE.Vector3;
+  closedBoxes: THREE.Box3[];
+  spatialAABBs: SpatialAABBGrid | null;
+  aabbIds: number[];
+  colliderActive: boolean;
+  openT: number;
+}
+
+let activeGarageDoor: GarageDoorRuntime | null = null;
+
+export function resetSafehouseGarageDoorState(): void {
+  activeGarageDoor = null;
+}
+
+export function registerSafehouseGarageSpatial(spatial: SpatialAABBGrid): void {
+  if (!activeGarageDoor) return;
+  activeGarageDoor.spatialAABBs = spatial;
+  if (activeGarageDoor.colliderActive && activeGarageDoor.aabbIds.length === 0) {
+    activeGarageDoor.aabbIds = spatial.insertMany(activeGarageDoor.closedBoxes);
+  }
+}
+
 /**
- * Builds the player's walkable 2-story Modern Residence, furnished open-plan interior,
- * 1-car garage with interior garage access door, workbench & gun rack, driveway, courtyard, and illuminated pool patio.
+ * Smoothly opens/closes the exterior sectional garage door when the player or their car
+ * approaches the garage doorway (from either driveway or interior), and toggles its collider.
+ */
+export function updateSafehouseGarageDoor(
+  dt: number,
+  playerPos: { x: number; y: number; z: number } | null,
+  vehiclePos: { x: number; y: number; z: number } | null,
+  forceOpen = false,
+): void {
+  const gd = activeGarageDoor;
+  if (!gd) return;
+
+  let wantOpen = forceOpen;
+  if (!wantOpen && playerPos) {
+    const dp = Math.hypot(playerPos.x - gd.doorWorldPos.x, playerPos.z - gd.doorWorldPos.z);
+    if (dp < 6.4) wantOpen = true;
+  }
+  if (!wantOpen && vehiclePos) {
+    const dv = Math.hypot(vehiclePos.x - gd.doorWorldPos.x, vehiclePos.z - gd.doorWorldPos.z);
+    if (dv < 7.8) wantOpen = true;
+  }
+
+  const target = wantOpen ? 1 : 0;
+  const speed = wantOpen ? 1.85 : 1.35;
+  if (gd.openT < target) gd.openT = Math.min(target, gd.openT + dt * speed);
+  else if (gd.openT > target) gd.openT = Math.max(target, gd.openT - dt * speed);
+
+  const ease = gd.openT * gd.openT * (3 - 2 * gd.openT);
+  for (let i = 0; i < gd.panels.length; i++) {
+    const p = gd.panels[i];
+    const phase = Math.max(0, Math.min(1, ease * 1.18 - i * 0.05));
+    p.pivot.position.y = THREE.MathUtils.lerp(p.closedY, p.openY, phase);
+    p.pivot.position.z = THREE.MathUtils.lerp(p.closedZ, p.openZ, phase);
+    p.pivot.rotation.x = THREE.MathUtils.lerp(0, p.openRotX, phase);
+  }
+
+  const shouldCollide = gd.openT < 0.42;
+  if (shouldCollide !== gd.colliderActive) {
+    gd.colliderActive = shouldCollide;
+    if (gd.spatialAABBs) {
+      if (shouldCollide && gd.aabbIds.length === 0) {
+        gd.aabbIds = gd.spatialAABBs.insertMany(gd.closedBoxes);
+      } else if (!shouldCollide && gd.aabbIds.length > 0) {
+        for (let i = 0; i < gd.aabbIds.length; i++) {
+          gd.spatialAABBs.remove(gd.aabbIds[i]);
+        }
+        gd.aabbIds = [];
+      }
+    }
+  }
+}
+
+/**
+ * Builds the player's redesigned Modern West Coast Safehouse Residence on Mirror Park Crescent:
+ * - Strictly disjoint, non-overlapping floor/patio/driveway/pool-deck slabs (zero Z-fighting)
+ * - Solid masonry walls, recessed front porch with double doors, framed tinted windows (zero floating transparency)
+ * - Animated exterior cedar-and-aluminum sectional garage door
+ * - Segmented tight wall collision AABBs so rotated doorways & hallways never snag
+ * - Real CC0 Poly Haven & KayKit PBR furniture inside warm-lit Living Room, Kitchen, Master Suite & Walk-In Closet
  */
 export function buildPlayerSafehouse(
   chunk: CityChunk,
@@ -120,22 +212,6 @@ export function buildPlayerSafehouse(
     z: SAFEHOUSE_ORIGIN.z - lx * s + lz * c,
   });
 
-  const boxSolid = (
-    lx: number,
-    ly: number,
-    lz: number,
-    w: number,
-    h: number,
-    d: number,
-    mat: THREE.Material,
-    kind: "concrete" | "wood" | "metal" | "dirt" = "concrete",
-    localYaw = 0,
-    castShadow = true,
-  ) => {
-    const p = wPos(lx, lz, ly);
-    addSolidBox(chunk, p.x, p.y, p.z, w, h, d, mat, yaw + localYaw, kind, castShadow, true);
-  };
-
   const boxVisual = (
     lx: number,
     ly: number,
@@ -148,146 +224,314 @@ export function buildPlayerSafehouse(
     castShadow = false,
   ) => {
     const p = wPos(lx, lz, ly);
-    addVisualBox(chunk.nearGroup, p.x, p.y, p.z, w, h, d, mat, yaw + localYaw, castShadow, true);
+    return addVisualBox(chunk.nearGroup, p.x, p.y, p.z, w, h, d, mat, yaw + localYaw, castShadow, true);
+  };
+
+  /**
+   * Registers a seamless visual mesh PLUS tightly segmented (`<= 0.65m`) rotated collider AABBs
+   * so rotated walls at `SAFEHOUSE_YAW` never leak fat diagonal AABBs into doorways or rooms.
+   */
+  const boxWallSolid = (
+    lx: number,
+    ly: number,
+    lz: number,
+    w: number,
+    h: number,
+    d: number,
+    mat: THREE.Material,
+    kind: "concrete" | "wood" | "metal" | "dirt" = "concrete",
+    localYaw = 0,
+    castShadow = true,
+  ) => {
+    const p = wPos(lx, lz, ly);
+    const vis = addVisualBox(chunk.nearGroup, p.x, p.y, p.z, w, h, d, mat, yaw + localYaw, castShadow, true);
+    vis.userData.kind = kind;
+    chunk.colliders.push(vis);
+
+    const totalYaw = yaw + localYaw;
+    const ca = Math.abs(Math.cos(totalYaw));
+    const sa = Math.abs(Math.sin(totalYaw));
+    const maxSpan = 0.65;
+
+    if (w >= d && w > maxSpan) {
+      const segs = Math.ceil(w / maxSpan);
+      const segW = w / segs;
+      const hx = (segW * ca + d * sa) * 0.5;
+      const hz = (segW * sa + d * ca) * 0.5;
+      const lc = Math.cos(localYaw);
+      const ls = Math.sin(localYaw);
+      for (let i = 0; i < segs; i++) {
+        const dx = -w * 0.5 + segW * (i + 0.5);
+        const sp = wPos(lx + dx * lc, lz - dx * ls, ly);
+        chunk.aabbs.push(new THREE.Box3(new THREE.Vector3(sp.x - hx, sp.y, sp.z - hz), new THREE.Vector3(sp.x + hx, sp.y + h, sp.z + hz)));
+      }
+    } else if (d > maxSpan) {
+      const segs = Math.ceil(d / maxSpan);
+      const segD = d / segs;
+      const hx = (w * ca + segD * sa) * 0.5;
+      const hz = (w * sa + segD * ca) * 0.5;
+      const lc = Math.cos(localYaw);
+      const ls = Math.sin(localYaw);
+      for (let i = 0; i < segs; i++) {
+        const dz = -d * 0.5 + segD * (i + 0.5);
+        const sp = wPos(lx + dz * ls, lz + dz * lc, ly);
+        chunk.aabbs.push(new THREE.Box3(new THREE.Vector3(sp.x - hx, sp.y, sp.z - hz), new THREE.Vector3(sp.x + hx, sp.y + h, sp.z + hz)));
+      }
+    } else {
+      const hx = (w * ca + d * sa) * 0.5;
+      const hz = (w * sa + d * ca) * 0.5;
+      chunk.aabbs.push(new THREE.Box3(new THREE.Vector3(p.x - hx, p.y, p.z - hz), new THREE.Vector3(p.x + hx, p.y + h, p.z + hz)));
+    }
+  };
+
+  /** Helper for non-overlapping floor/deck slabs (visual + collider raycast, walking handled by floorSurf). */
+  const floorSlab = (
+    lx: number,
+    topY: number,
+    lz: number,
+    w: number,
+    thickness: number,
+    d: number,
+    mat: THREE.Material,
+    kind: "concrete" | "wood" | "dirt" = "concrete",
+  ) => {
+    const p = wPos(lx, lz, topY - thickness);
+    const mesh = addVisualBox(chunk.nearGroup, p.x, p.y, p.z, w, thickness, d, mat, yaw, false, true);
+    mesh.userData.kind = kind;
+    chunk.colliders.push(mesh);
   };
 
   // ---- Palette & Architectural Materials ----
-  const lawnMat = materialFor(0x45733a, { roughness: 0.94, family: "grass", seed: 101, repeat: 8 });
-  const concreteMat = materialFor(0xc2c6cc, { roughness: 0.84, metalness: 0.04, family: "concrete", seed: 102, repeat: 4 });
-  const drivewayMat = materialFor(0x888e97, { roughness: 0.85, metalness: 0.05, family: "concrete", seed: 103, repeat: 6 });
-  const stuccoMat = materialFor(0xf1ede4, { roughness: 0.84, metalness: 0.02, family: "plaster", seed: 104, repeat: 3 });
-  const slateMat = materialFor(0x2c323b, { roughness: 0.68, metalness: 0.18, family: "concrete", seed: 105, repeat: 3 });
-  const cedarMat = materialFor(0x8b5a36, { roughness: 0.76, metalness: 0.04, family: "wood", seed: 106, repeat: 3 });
-  const oakFloorMat = materialFor(0x9c7248, { roughness: 0.64, metalness: 0.06, family: "wood", seed: 107, repeat: 5 });
-  const garageFloorMat = materialFor(0x565c64, { roughness: 0.74, metalness: 0.12, family: "concrete", seed: 108, repeat: 4 });
-  const glassMat = new THREE.MeshStandardMaterial({
-    color: 0x6ea8c9,
-    roughness: 0.08,
-    metalness: 0.45,
-    transparent: true,
-    opacity: 0.42,
-  });
-  const darkMetalMat = materialFor(0x1b2028, { roughness: 0.38, metalness: 0.78, family: "metal", seed: 109 });
-  const sofaMat = new THREE.MeshStandardMaterial({ color: 0x353d47, roughness: 0.88 });
+  const lawnMat = materialFor(0x467038, { roughness: 0.94, family: "grass", seed: 101, repeat: 8 });
+  const limestoneMat = materialFor(0xe8dfd0, { roughness: 0.82, metalness: 0.03, family: "plaster", seed: 104, repeat: 4 });
+  const warmPlasterMat = materialFor(0xf4efe6, { roughness: 0.84, metalness: 0.02, family: "plaster", seed: 114, repeat: 3 });
+  const slateMat = materialFor(0x282e37, { roughness: 0.64, metalness: 0.22, family: "concrete", seed: 105, repeat: 3 });
+  const cedarMat = materialFor(0x935d36, { roughness: 0.72, metalness: 0.05, family: "wood", seed: 106, repeat: 3 });
+  const oakFloorMat = materialFor(0x9e7449, { roughness: 0.58, metalness: 0.06, family: "wood", seed: 107, repeat: 5 });
+  const drivewayMat = materialFor(0x7c828b, { roughness: 0.84, metalness: 0.05, family: "concrete", seed: 103, repeat: 6 });
+  const porchStoneMat = materialFor(0xcac4b8, { roughness: 0.8, metalness: 0.04, family: "concrete", seed: 102, repeat: 4 });
+  const garageFloorMat = materialFor(0x525861, { roughness: 0.72, metalness: 0.14, family: "concrete", seed: 108, repeat: 4 });
+  const darkMetalMat = materialFor(0x1b2028, { roughness: 0.34, metalness: 0.82, family: "metal", seed: 109 });
   const cushionMat = new THREE.MeshStandardMaterial({ color: 0xd4a359, roughness: 0.82 });
   const redToolMat = new THREE.MeshStandardMaterial({ color: 0xc92a2a, roughness: 0.42, metalness: 0.55 });
+  const foliageMat = materialFor(0x2f5a29, { roughness: 0.9, family: "grass", seed: 121, repeat: 2 });
+
+  // Deeply tinted, semi-reflective architectural window glazing (NEVER ghost-clear!)
+  const archWindowMat = new THREE.MeshStandardMaterial({
+    color: 0x162533,
+    roughness: 0.09,
+    metalness: 0.78,
+    transparent: true,
+    opacity: 0.86,
+  });
+  const frostedLiteMat = new THREE.MeshStandardMaterial({
+    color: 0xd8e4ef,
+    emissive: 0x3b4d63,
+    emissiveIntensity: 0.35,
+    roughness: 0.28,
+    metalness: 0.2,
+  });
+  const poolTileMat = materialFor(0x164e63, { roughness: 0.5, metalness: 0.15, family: "concrete", seed: 118, repeat: 3 });
   const poolWaterMat = registerNightGlowMaterial(
     new THREE.MeshStandardMaterial({
       color: 0x0ea5e9,
       emissive: 0x0284c7,
-      emissiveIntensity: 0.25,
-      roughness: 0.12,
-      metalness: 0.45,
+      emissiveIntensity: 0.28,
+      roughness: 0.1,
+      metalness: 0.48,
     }),
-    0.25,
+    0.28,
     1.5,
   );
   const warmGlowMat = registerNightGlowMaterial(
     new THREE.MeshStandardMaterial({
       color: 0xfff1d0,
       emissive: 0xffcf78,
-      emissiveIntensity: 0.5,
-      roughness: 0.3,
+      emissiveIntensity: 0.55,
+      roughness: 0.28,
     }),
-    0.5,
+    0.55,
     2.8,
   );
   const tvScreenMat = new THREE.MeshStandardMaterial({
-    color: 0x111827,
-    emissive: 0x1e40af,
-    emissiveIntensity: 0.9,
-    roughness: 0.18,
+    color: 0x0f172a,
+    emissive: 0x1d4ed8,
+    emissiveIntensity: 0.85,
+    roughness: 0.14,
   });
 
-  // ---- 1. Estate Lot Pad, Manicured Lawn, 1-Car Driveway & Entry Walk ----
-  // Base grass estate pad (40m x 36m)
-  boxSolid(-5.5, -0.18, 0, 38, 0.28, 34, lawnMat, "dirt", 0, false);
+  // Helper: Framed Architectural Window on a knee-wall (no floating transparent sheets!)
+  const addFramedWindow = (
+    lx: number,
+    lz: number,
+    span: number,
+    alongX: boolean,
+    sillH = 0.95,
+    winH = 2.15,
+    totalH = 4.4,
+    panes = 2,
+  ) => {
+    const t = 0.36;
+    if (alongX) {
+      boxWallSolid(lx, 0.16, lz, span, sillH, t, limestoneMat, "concrete");
+      boxWallSolid(lx, 0.16 + sillH + winH, lz, span, totalH - sillH - winH, t, limestoneMat, "concrete");
+      // Sill & Header + dark metal frame
+      boxVisual(lx, 0.16 + sillH - 0.04, lz, span + 0.08, 0.08, t + 0.08, slateMat);
+      boxVisual(lx, 0.16 + sillH + winH, lz, span + 0.06, 0.07, t + 0.06, darkMetalMat);
+      boxVisual(lx, 0.16 + sillH, lz, span - 0.12, winH, 0.08, archWindowMat);
+      for (let i = 0; i <= panes; i++) {
+        const mx = lx - span * 0.5 + (span * i) / panes;
+        boxVisual(mx, 0.16 + sillH, lz, 0.08, winH, 0.14, darkMetalMat);
+      }
+    } else {
+      boxWallSolid(lx, 0.16, lz, t, sillH, span, limestoneMat, "concrete");
+      boxWallSolid(lx, 0.16 + sillH + winH, lz, t, totalH - sillH - winH, span, limestoneMat, "concrete");
+      boxVisual(lx, 0.16 + sillH - 0.04, lz, t + 0.08, 0.08, span + 0.08, slateMat);
+      boxVisual(lx, 0.16 + sillH + winH, lz, t + 0.06, 0.07, span + 0.06, darkMetalMat);
+      boxVisual(lx, 0.16 + sillH, lz, 0.08, winH, span - 0.12, archWindowMat);
+      for (let i = 0; i <= panes; i++) {
+        const mz = lz - span * 0.5 + (span * i) / panes;
+        boxVisual(lx, 0.16 + sillH, mz, 0.14, winH, 0.08, darkMetalMat);
+      }
+    }
+  };
 
-  // 1-car Driveway extending from 1-car garage (+lx=2.4, +lz=4..33.2) right out to Mirror Park Crescent curb
-  boxSolid(2.4, -0.04, 18.6, 4.8, 0.18, 29.2, drivewayMat, "concrete", 0, false);
-  // Subtle concrete apron border strips
-  boxVisual(-0.15, 0.11, 18.6, 0.28, 0.06, 29.2, concreteMat);
-  boxVisual(4.95, 0.11, 18.6, 0.28, 0.06, 29.2, concreteMat);
+  // ---- 1. Disjoint Non-Overlapping Grounds, Driveway, Porch, Garage & Pool Deck ----
+  // Base lawn estate pad: top = y0 + 0.06 (strictly below all paved slabs >= y0 + 0.11)
+  floorSlab(-5.75, 0.06, 2.0, 34.0, 0.3, 38.0, lawnMat, "dirt");
 
-  // Front entry courtyard patio + stepping pavers
-  boxSolid(-4.2, -0.02, 5.2, 11.2, 0.16, 4.8, concreteMat, "concrete", 0, false);
-  for (let i = 0; i < 5; i++) {
-    boxSolid(-2.8, -0.02, 9.2 + i * 2.2, 2.4, 0.16, 1.3, concreteMat, "concrete", 0, false);
+  // 1-car Driveway (lx = 0.2..4.8, lz = 4.6..33.2) -> top = y0 + 0.11
+  floorSlab(2.5, 0.11, 18.9, 4.6, 0.14, 28.6, drivewayMat, "concrete");
+  // Disjoint flanking stone driveway curbs (top = y0 + 0.13)
+  floorSlab(0.02, 0.13, 18.9, 0.34, 0.16, 28.6, porchStoneMat, "concrete");
+  floorSlab(4.98, 0.13, 18.9, 0.34, 0.16, 28.6, porchStoneMat, "concrete");
+
+  // Garage threshold apron (lx = 0.2..4.8, lz = 4.2..4.6) -> top = y0 + 0.12
+  floorSlab(2.5, 0.12, 4.4, 4.6, 0.15, 0.4, slateMat, "concrete");
+
+  // Garage floor slab (lx = -0.1..5.1, lz = -4.2..4.2) -> top = y0 + 0.13
+  floorSlab(2.5, 0.13, 0.0, 5.2, 0.16, 8.4, garageFloorMat, "concrete");
+
+  // Front Porch & Entry Courtyard (lx = -11.4..-0.1, lz = 3.5..7.8) -> top = y0 + 0.14
+  floorSlab(-5.75, 0.14, 5.65, 11.3, 0.16, 4.3, porchStoneMat, "concrete");
+
+  // Continuous Front Entry Walkway connecting porch to driveway/curb (lx = -5.8..-3.4, lz = 7.8..16.5) -> top = y0 + 0.11
+  floorSlab(-4.6, 0.11, 12.15, 2.4, 0.14, 8.7, porchStoneMat, "concrete");
+  // Disjoint stone walkway curbs
+  floorSlab(-5.92, 0.13, 12.15, 0.24, 0.16, 8.7, slateMat, "concrete");
+  floorSlab(-3.28, 0.13, 12.15, 0.24, 0.16, 8.7, slateMat, "concrete");
+
+  // Interior hardwood floor strictly inside house footprint (lx = -20.0..-0.15, lz = -6.5..3.5) -> top = y0 + 0.16
+  floorSlab(-10.075, 0.16, -1.5, 19.85, 0.18, 10.0, oakFloorMat, "wood");
+
+  // Backyard Pool Patio — 4 strictly disjoint deck slabs surrounding the recessed pool basin (top = y0 + 0.14)
+  floorSlab(-10.6, 0.14, -10.7, 4.8, 0.16, 8.2, porchStoneMat, "concrete"); // west deck (-13.0..-8.2)
+  floorSlab(2.45, 0.14, -10.7, 5.3, 0.16, 8.2, porchStoneMat, "concrete"); // east deck (-0.2..5.1)
+  floorSlab(-4.2, 0.14, -13.8, 8.0, 0.16, 2.0, porchStoneMat, "concrete"); // north coping (-8.2..-0.2, -14.8..-12.8)
+  floorSlab(-4.2, 0.14, -7.5, 8.0, 0.16, 1.8, porchStoneMat, "concrete"); // south apron (-8.2..-0.2, -8.4..-6.6)
+  // Pool basin (lx = -8.2..-0.2, lz = -12.8..-8.4)
+  floorSlab(-4.2, 0.02, -10.6, 8.0, 0.08, 4.4, poolTileMat, "concrete");
+  boxVisual(-4.2, 0.02, -10.6, 7.8, 0.1, 4.2, poolWaterMat);
+
+  // ---- 2. Main Architectural Residence + Master Suite Wing (lx = -20.0 .. -0.15) ----
+  // Master Suite outer west wall (lx = -19.85, lz = -6.5..3.5) with framed north-west window
+  boxWallSolid(-19.85, 0.16, 0.4, 0.38, 4.4, 6.2, limestoneMat, "concrete");
+  addFramedWindow(-19.85, -4.6, 3.8, false, 0.95, 2.15, 4.4, 2);
+
+  // Master Suite north pool-facing wall (lz = -6.5) with wide framed picture window
+  boxWallSolid(-18.6, 0.16, -6.5, 2.5, 4.4, 0.36, limestoneMat, "concrete");
+  addFramedWindow(-15.5, -6.5, 3.7, true, 0.9, 2.25, 4.4, 3);
+  boxWallSolid(-12.45, 0.16, -6.5, 2.4, 4.4, 0.36, limestoneMat, "concrete");
+
+  // Master Suite south street-facing wall (lz = 3.5) with cedar accent cladding + clerestory window
+  boxWallSolid(-18.6, 0.16, 3.5, 2.5, 4.4, 0.36, slateMat, "concrete");
+  addFramedWindow(-15.5, 3.5, 3.7, true, 1.45, 1.45, 4.4, 3);
+  boxWallSolid(-12.45, 0.16, 3.5, 2.4, 4.4, 0.36, slateMat, "concrete");
+  boxVisual(-15.5, 0.16, 3.72, 3.7, 1.38, 0.08, cedarMat);
+
+  // Interior divider wall between Living Room & Master Suite (lx = -11.3, 2.2m open arched doorway at lz = -3.3..-1.1)
+  boxWallSolid(-11.3, 0.16, 1.2, 0.34, 4.4, 4.6, warmPlasterMat, "concrete");
+  boxWallSolid(-11.3, 0.16, -4.9, 0.34, 4.4, 3.2, warmPlasterMat, "concrete");
+  boxWallSolid(-11.3, 2.75, -2.2, 0.34, 1.81, 2.2, warmPlasterMat, "concrete");
+  // Trim doorframe around bedroom entrance
+  boxVisual(-11.3, 0.16, -1.08, 0.4, 2.6, 0.08, darkMetalMat);
+  boxVisual(-11.3, 0.16, -3.32, 0.4, 2.6, 0.08, darkMetalMat);
+  boxVisual(-11.3, 2.68, -2.2, 0.4, 0.08, 2.32, darkMetalMat);
+
+  // Living/Kitchen North Wall (lz = -6.5) with wide framed backyard terrace window + open 1.9m patio doorway
+  boxWallSolid(-9.4, 0.16, -6.5, 3.8, 4.4, 0.36, limestoneMat, "concrete");
+  addFramedWindow(-5.5, -6.5, 4.0, true, 0.9, 2.25, 4.4, 3);
+  boxWallSolid(-2.9, 0.16, -6.5, 1.2, 4.4, 0.36, limestoneMat, "concrete");
+  // Open patio doorway at lx = -2.3..-0.4 (1.9m clear walkout to pool deck!)
+  boxWallSolid(-1.35, 2.76, -6.5, 1.9, 1.8, 0.36, limestoneMat, "concrete");
+  boxVisual(-1.35, 2.68, -6.5, 2.0, 0.08, 0.42, darkMetalMat);
+
+  // Front South Facade (lz = 3.5): framed windows + solid piers + real Front Double-Door Porch Entryway (lx = -5.8..-3.4)!
+  boxWallSolid(-10.1, 0.16, 3.5, 2.4, 4.4, 0.36, slateMat, "concrete");
+  addFramedWindow(-7.45, 3.5, 2.9, true, 0.92, 2.2, 4.4, 2);
+  boxWallSolid(-5.9, 0.16, 3.5, 0.22, 4.4, 0.36, slateMat, "concrete");
+  // 2.4m Front Double Doorway at lx = -4.6 (-5.8 .. -3.4) with walnut double-door frame & open door leaf
+  boxWallSolid(-4.6, 2.86, 3.5, 2.4, 1.7, 0.36, slateMat, "concrete");
+  boxVisual(-5.76, 0.16, 3.5, 0.1, 2.7, 0.42, darkMetalMat);
+  boxVisual(-3.44, 0.16, 3.5, 0.1, 2.7, 0.42, darkMetalMat);
+  boxVisual(-4.6, 2.78, 3.5, 2.44, 0.1, 0.42, darkMetalMat);
+  // Left stationary walnut door panel with frosted accent lite + right door swung 82 deg inward cleanly
+  boxWallSolid(-5.32, 0.16, 3.5, 0.84, 2.62, 0.08, cedarMat, "wood");
+  boxVisual(-5.32, 0.85, 3.5, 0.24, 1.5, 0.1, frostedLiteMat);
+  boxVisual(-3.62, 0.16, 2.85, 0.08, 2.62, 1.18, cedarMat, 0.18);
+  // Warm exterior sconce lights + illuminated house number "420"
+  boxVisual(-6.2, 1.9, 3.72, 0.14, 0.36, 0.1, warmGlowMat);
+  boxVisual(-3.0, 1.9, 3.72, 0.14, 0.36, 0.1, warmGlowMat);
+  boxVisual(-6.2, 1.4, 3.72, 0.46, 0.22, 0.04, darkMetalMat);
+
+  addFramedWindow(-1.9, 3.5, 2.8, true, 0.92, 2.2, 4.4, 2);
+  boxWallSolid(-0.35, 0.16, 3.5, 0.45, 4.4, 0.36, slateMat, "concrete");
+
+  // Front Architectural Timber-Soffit Canopy + Twin Steel Columns (at porch corners, zero visual float!)
+  boxWallSolid(-4.6, 3.52, 5.45, 9.4, 0.28, 3.9, slateMat, "concrete");
+  boxVisual(-4.6, 3.46, 5.45, 9.0, 0.08, 3.6, cedarMat);
+  boxVisual(-4.6, 3.43, 6.8, 8.2, 0.05, 0.14, warmGlowMat);
+  boxWallSolid(-8.95, 0.14, 7.05, 0.32, 3.42, 0.32, darkMetalMat, "metal");
+  boxWallSolid(-0.35, 0.14, 7.05, 0.32, 3.42, 0.32, darkMetalMat, "metal");
+
+  // East dividing wall between Living Room & 1-Car Garage (lx = -0.3, open doorway at lz = 0.2..2.2)
+  boxWallSolid(-0.3, 0.16, -3.15, 0.34, 4.4, 6.7, warmPlasterMat, "concrete");
+  boxWallSolid(-0.3, 0.16, 2.85, 0.34, 4.4, 1.3, warmPlasterMat, "concrete");
+  boxWallSolid(-0.3, 2.75, 1.2, 0.34, 1.81, 2.0, warmPlasterMat, "concrete");
+
+  // Ground Floor Roof Slabs + Cantilevered 2nd Floor Architectural Volume
+  boxWallSolid(-15.65, 4.56, -1.5, 9.0, 0.34, 10.6, slateMat, "concrete");
+  boxWallSolid(-5.8, 4.56, -1.5, 11.4, 0.34, 10.6, slateMat, "concrete");
+
+  // 2nd Floor Architectural Suite (-11.0 .. -2.0, lz = -5.6 .. +2.6) — solid walls & framed dark-tinted gallery windows
+  boxWallSolid(-6.5, 4.9, -1.5, 9.0, 3.1, 8.2, limestoneMat, "concrete");
+  boxVisual(-6.5, 5.3, 2.62, 6.8, 2.15, 0.12, archWindowMat);
+  for (const mx of [-9.9, -8.2, -6.5, -4.8, -3.1]) {
+    boxVisual(mx, 5.28, 2.64, 0.1, 2.2, 0.14, darkMetalMat);
+  }
+  boxVisual(-6.5, 5.26, 2.66, 7.0, 0.1, 0.16, darkMetalMat);
+  boxVisual(-6.5, 7.46, 2.66, 7.0, 0.1, 0.16, darkMetalMat);
+  // Cedar upper fascia & overhanging flat roof
+  boxVisual(-6.5, 8.0, -1.5, 10.2, 0.34, 9.4, slateMat);
+  boxVisual(-6.5, 7.94, 2.9, 9.8, 0.08, 0.7, cedarMat);
+  boxVisual(-6.5, 7.9, 2.9, 8.4, 0.04, 0.12, warmGlowMat);
+
+  // 2nd-floor terrace parapet & brushed-steel rail posts (solid masonry curb + steel bars, no transparent sheet!)
+  boxVisual(-1.2, 4.9, -1.5, 0.24, 0.38, 8.2, slateMat);
+  boxVisual(-1.2, 5.88, -1.5, 0.1, 0.07, 8.2, darkMetalMat);
+  for (const rz of [-5.5, -3.5, -1.5, 0.5, 2.5]) {
+    boxVisual(-1.2, 5.28, rz, 0.08, 0.62, 0.08, darkMetalMat);
+  }
+  boxVisual(1.85, 4.9, 2.5, 6.1, 0.38, 0.24, slateMat);
+  boxVisual(1.85, 5.88, 2.5, 6.1, 0.07, 0.1, darkMetalMat);
+  for (const rx of [-1.2, 0.6, 2.4, 4.2, 4.9]) {
+    boxVisual(rx, 5.28, 2.5, 0.08, 0.62, 0.08, darkMetalMat);
   }
 
-  // ---- 2. Main 2-Story Residence + Walkable Master Bedroom Wing (-lx = -19.8 .. -0.3) ----
-  // Interior hardwood floor slab covering living room + master bedroom suite
-  boxSolid(-10.0, -0.02, -1.5, 19.6, 0.16, 10.4, oakFloorMat, "wood", 0, false);
-
-  // Interior divider wall between Living Room & Master Bedroom (open 2.4m doorway at lz = -2.2..-4.6)
-  boxSolid(-11.3, 0.14, 0.9, 0.38, 4.4, 5.2, stuccoMat, "concrete");
-  boxSolid(-11.3, 0.14, -5.6, 0.38, 4.4, 1.8, stuccoMat, "concrete");
-  boxSolid(-11.3, 2.8, -3.4, 0.38, 1.74, 2.6, stuccoMat, "concrete");
-
-  // Master Bedroom Wing outer walls (lx = -19.8, lz = -6.5..+3.5)
-  boxSolid(-19.8, 0.14, -1.5, 0.42, 4.4, 10.2, stuccoMat, "concrete");
-  // Master Bedroom north pool-facing wall with panoramic glass
-  boxSolid(-18.3, 0.14, -6.5, 3.0, 4.4, 0.35, stuccoMat, "concrete");
-  boxSolid(-12.7, 0.14, -6.5, 2.8, 4.4, 0.35, stuccoMat, "concrete");
-  boxVisual(-15.5, 0.14, -6.5, 2.8, 3.2, 0.1, glassMat);
-  boxSolid(-15.5, 3.34, -6.5, 2.8, 1.2, 0.35, stuccoMat, "concrete");
-  // Master Bedroom south facade wall
-  boxSolid(-15.6, 0.14, 3.5, 8.6, 4.4, 0.35, slateMat, "concrete");
-  // Master Bedroom Wing roof slab & recessed warm lighting
-  boxSolid(-15.6, 4.45, -1.5, 9.0, 0.36, 11.2, slateMat, "concrete");
-  boxVisual(-15.6, 4.38, -1.5, 5.4, 0.06, 0.22, warmGlowMat);
-
-  // East wall between house & garage (segmented for tight world-AABB clearance, with open doorway at lz = 0.2..2.2)
-  for (const wz of [-5.85, -4.6, -3.35, -2.1, -0.85]) {
-    boxSolid(-0.3, 0.14, wz, 0.36, 4.4, 1.25, slateMat, "concrete");
-  }
-  boxSolid(-0.3, 0.14, 2.9, 0.36, 4.4, 1.4, slateMat, "concrete");
-  boxSolid(-0.3, 2.8, 0.9, 0.36, 1.74, 2.6, slateMat, "concrete"); // lintel above connecting door
-
-  // Back north/patio wall (-lz = -6.5): wide open panoramic glass wall & slider opening onto pool deck
-  boxSolid(-9.6, 0.14, -6.5, 3.6, 4.4, 0.35, stuccoMat, "concrete");
-  boxSolid(-2.0, 0.14, -6.5, 3.6, 4.4, 0.35, stuccoMat, "concrete");
-  boxVisual(-5.8, 0.14, -6.5, 4.0, 3.2, 0.1, glassMat); // panoramic window behind dining area
-  boxSolid(-5.8, 3.34, -6.5, 4.0, 1.2, 0.35, stuccoMat, "concrete");
-
-  // Front south facade (+lz = +3.5): wide 3.8m open entryway right into living room + floor-to-ceiling glass wings
-  boxSolid(-10.0, 0.14, 3.5, 2.8, 4.4, 0.35, slateMat, "concrete");
-  boxVisual(-7.6, 0.14, 3.5, 2.0, 3.2, 0.1, glassMat);
-  boxSolid(-7.6, 3.34, 3.5, 2.0, 1.2, 0.35, darkMetalMat, "metal");
-  // Open 3.8m glass portico threshold (-6.6 .. -2.8) — player walks straight in!
-  boxSolid(-4.7, 3.4, 3.5, 3.8, 1.14, 0.35, slateMat, "concrete");
-  boxSolid(-1.5, 0.14, 3.5, 2.6, 4.4, 0.35, slateMat, "concrete");
-
-  // Front timber-slat overhang canopy above entry
-  boxSolid(-4.5, 3.35, 5.1, 8.6, 0.24, 3.2, cedarMat, "wood");
-  boxVisual(-4.5, 3.3, 5.1, 7.6, 0.06, 0.3, warmGlowMat);
-  // Canopy steel support column
-  boxSolid(-8.5, 0.14, 6.2, 0.26, 3.25, 0.26, darkMetalMat, "metal");
-
-  // Main Living Room Roof + Cantilevered 2nd Floor Architectural Volume!
-  boxSolid(-5.8, 4.45, -1.5, 12.2, 0.36, 11.2, slateMat, "concrete");
-  // 2nd Floor architectural volume (-11.0..-2.0, lz = -5.5..+2.5, height 3.2m)
-  boxSolid(-6.6, 4.81, -1.6, 9.2, 3.1, 8.2, stuccoMat, "concrete");
-  boxVisual(-6.6, 5.25, 2.52, 7.2, 2.1, 0.12, glassMat); // 2nd-floor panoramic glass
-  boxSolid(-6.6, 7.91, -1.6, 10.2, 0.32, 9.2, slateMat, "concrete"); // upper flat roof overhang
-  // 2nd-floor roof terrace glass balustrade with brushed-steel shoes, stanchions & top handrails
-  boxVisual(-1.2, 4.66, -1.6, 0.12, 0.08, 8.2, darkMetalMat);
-  boxVisual(-1.2, 4.74, -1.6, 0.06, 1.0, 8.1, glassMat);
-  boxVisual(-1.2, 5.74, -1.6, 0.12, 0.06, 8.2, darkMetalMat);
-  for (const rz of [-5.6, -2.9, -0.2, 2.4]) {
-    boxVisual(-1.2, 4.7, rz, 0.1, 1.06, 0.1, darkMetalMat);
-  }
-  boxVisual(1.5, 4.66, 2.4, 5.4, 0.08, 0.12, darkMetalMat);
-  boxVisual(1.5, 4.74, 2.4, 5.3, 1.0, 0.06, glassMat);
-  boxVisual(1.5, 5.74, 2.4, 5.4, 0.06, 0.12, darkMetalMat);
-  for (const rx of [-1.2, 0.6, 2.4, 4.15]) {
-    boxVisual(rx, 4.7, 2.4, 0.1, 1.06, 0.1, darkMetalMat);
-  }
-
-  // ---- 3. Furnished Living Room, Kitchen, Master Bedroom & Walk-In Closet ----
+  // ---- 3. Warm Interior Lighting, Real CC0 Furniture & Living/Bedroom Suites ----
   const interiorCtx: InteriorBuilderCtx = {
     solid: (lx, ly, lz, w, h, d, mat, kind = "concrete", localYaw = 0, cs = true) =>
-      boxSolid(lx, ly - y0, lz, w, h, d, mat, kind, localYaw, cs),
+      boxWallSolid(lx, ly - y0, lz, w, h, d, mat, kind, localYaw, cs),
     visual: (lx, ly, lz, w, h, d, mat, localYaw = 0, cs = false) =>
       boxVisual(lx, ly - y0, lz, w, h, d, mat, localYaw, cs),
     addMesh: (mesh, lx, ly, lz, localYaw = 0) => {
@@ -295,61 +539,77 @@ export function buildPlayerSafehouse(
       mesh.position.set(p.x, p.y, p.z);
       mesh.rotation.y = yaw + localYaw;
       mesh.castShadow = true;
+      mesh.receiveShadow = true;
       chunk.nearGroup.add(mesh);
     },
   };
   const pal = createInteriorPalette();
 
-  // Master Bedroom: King Platform Bed facing north pool window + Walk-in Wardrobe Closet on south wall
-  buildDetailedKingBed(interiorCtx, pal, -16.4, y0 + 0.14, -4.4, 0);
-  buildDetailedCloset(interiorCtx, pal, -15.6, y0 + 0.14, 2.85, Math.PI);
-
-  // L-shaped sectional sofa + throw pillows + glass coffee table
-  boxSolid(-8.4, 0.14, -0.6, 3.0, 0.48, 1.05, sofaMat, "wood");
-  boxSolid(-8.4, 0.62, -0.98, 3.0, 0.42, 0.28, sofaMat, "wood");
-  boxSolid(-9.45, 0.14, 0.5, 1.0, 0.48, 2.2, sofaMat, "wood");
-  boxVisual(-8.0, 0.64, -0.7, 0.48, 0.34, 0.24, cushionMat);
-  boxVisual(-7.1, 0.64, -0.7, 0.48, 0.34, 0.24, cushionMat);
-  boxSolid(-7.6, 0.14, 0.8, 1.5, 0.38, 0.9, darkMetalMat, "metal");
-  boxVisual(-7.6, 0.52, 0.8, 1.54, 0.05, 0.94, glassMat);
-
-  // Media console + wide 75" glowing OLED TV on west wall (south of bedroom doorway)
-  boxSolid(-10.75, 0.14, 1.2, 0.65, 0.55, 2.6, cedarMat, "wood");
-  boxVisual(-11.0, 1.15, 1.2, 0.12, 1.25, 2.1, darkMetalMat);
-  boxVisual(-10.92, 1.18, 1.2, 0.06, 1.12, 1.94, tvScreenMat);
-
-  // Kitchen island & counter along north-east interior
-  boxSolid(-2.8, 0.14, -4.6, 3.6, 0.95, 0.85, slateMat, "concrete");
-  boxVisual(-2.8, 1.09, -4.6, 3.7, 0.08, 0.95, concreteMat); // marble countertop
-  boxSolid(-2.8, 0.14, -2.8, 2.8, 0.92, 1.05, cedarMat, "wood");
-  boxVisual(-2.8, 1.06, -2.8, 2.9, 0.08, 1.15, concreteMat);
-  // Real GLB Safehouse furniture accents (sofa, TV, kitchen appliances, plant, garage gas can)
   const addSafehouseGlb = (file: string, lx: number, ly: number, lz: number, axis: "x" | "y" | "z", meters: number, localYaw = 0) => {
     const g = new THREE.Group();
     interiorCtx.addMesh(g, lx, y0 + ly, lz, localYaw);
     attachGlbToGroup(g, file, 0, 0, 0, { axis, targetMeters: meters });
   };
-  addSafehouseGlb("int_couch_l.glb", -8.6, 0.14, -0.3, "x", 2.9, Math.PI * 0.5);
-  addSafehouseGlb("int_tv.glb", -10.8, 0.72, 1.2, "x", 1.85, Math.PI * 0.5);
-  addSafehouseGlb("int_plant.glb", -10.4, 0.14, -3.6, "y", 1.25);
-  addSafehouseGlb("int_fridge.glb", -0.9, 0.14, -4.6, "y", 2.05);
-  addSafehouseGlb("int_oven.glb", -2.8, 0.14, -4.6, "y", 0.94);
-  addSafehouseGlb("gas_can.glb", 4.4, 0.14, -3.4, "y", 0.65, 0.4);
-  // Warm interior recessed ceiling light strips
-  boxVisual(-6.0, 4.38, -1.5, 6.0, 0.06, 0.22, warmGlowMat);
-  boxVisual(-3.0, 4.38, -3.5, 3.2, 0.06, 0.2, warmGlowMat);
 
-  // ---- 4. Attached 1-Car Garage (lx = -0.1 .. +5.1, lz = -4.2 .. +4.2) + Interior Garage Access Door ----
-  // Interior Garage Door Frame & Ajar Steel Fire Door inside the house (lx = -0.3, lz = 1.2)
-  boxVisual(-0.3, 0.14, 0.22, 0.44, 2.55, 0.08, darkMetalMat); // hinge jamb
-  boxVisual(-0.3, 0.14, 2.18, 0.44, 2.55, 0.08, darkMetalMat); // latch jamb
-  // Ajar steel door leaf swung 82 deg into the garage so player walks right through
-  boxVisual(0.28, 0.14, 0.35, 0.07, 2.42, 1.05, slateMat, 1.38);
-  boxVisual(0.28, 1.45, 0.35, 0.09, 0.55, 0.24, glassMat, 1.38);
-  // Glowing cyan smart-garage keypad on the house side of the garage door
-  boxVisual(-0.52, 1.28, 2.28, 0.05, 0.24, 0.16, pal.coolGlow);
+  // Master Bedroom Suite (west wing): Modern CC0 Double Bed + Walk-In Closet + Reading Corner
+  buildDetailedKingBed(interiorCtx, pal, -16.2, y0 + 0.16, -4.45, 0);
+  buildDetailedCloset(interiorCtx, pal, -15.6, y0 + 0.16, 2.75, Math.PI);
+  addSafehouseGlb("ph_lounge_chair.glb", -18.3, 0.16, 1.8, "y", 1.05, Math.PI * 0.72);
+  addSafehouseGlb("kk_art_frame.glb", -16.2, 2.05, -6.28, "y", 1.15, 0);
+  addSafehouseGlb("ph_ceiling_lamp.glb", -15.8, 3.62, -1.5, "y", 0.92);
+  addSafehouseGlb("int_plant.glb", -12.4, 0.16, -5.6, "y", 1.3);
 
-  // Surveillance Intel Corkboard mounted on interior dividing wall (lx = -0.35, lz = -1.35)
+  // Warm interior PointLights (subtle warm residential glow so interiors never feel dark & gloomy)
+  for (const [plx, ply, plz, intensity] of [
+    [-15.6, 3.7, -1.5, 4.5],
+    [-6.2, 3.8, -1.0, 5.5],
+    [-2.4, 3.8, -3.5, 4.0],
+    [2.4, 3.2, 0.0, 4.5],
+  ] as const) {
+    const lp = wPos(plx, plz, ply);
+    const pt = new THREE.PointLight(0xffe5bd, intensity, 13.5, 1.6);
+    pt.position.set(lp.x, lp.y, lp.z);
+    chunk.nearGroup.add(pt);
+  }
+
+  // Living Room Lounge: Poly Haven CC0 Sofa + Coffee Table + Armchair + Media Console + 75" TV + Rug + Floor Lamp
+  addSafehouseGlb("kk_rug.glb", -7.2, 0.165, 0.25, "x", 4.1, Math.PI * 0.5);
+  addSafehouseGlb("ph_sofa.glb", -6.2, 0.16, 0.35, "x", 2.35, -Math.PI * 0.5);
+  addSafehouseGlb("ph_armchair.glb", -7.9, 0.16, -1.45, "y", 0.98, 0.25);
+  addSafehouseGlb("ph_coffee_table.glb", -8.0, 0.16, 0.35, "z", 1.25, 0);
+  addSafehouseGlb("kk_lamp_stand.glb", -6.2, 0.16, -1.4, "y", 1.75);
+  addSafehouseGlb("ph_media_console.glb", -10.55, 0.16, 0.6, "x", 2.45, Math.PI * 0.5);
+  boxVisual(-11.04, 1.15, 0.6, 0.08, 1.18, 2.04, darkMetalMat);
+  boxVisual(-10.98, 1.18, 0.6, 0.04, 1.06, 1.9, tvScreenMat);
+  addSafehouseGlb("kk_art_frame.glb", -7.2, 2.15, -6.28, "y", 1.2, 0);
+  addSafehouseGlb("ph_ceiling_lamp.glb", -7.4, 3.62, 0.2, "y", 0.95);
+
+  // Dining & Kitchen Suite (north-east living wing)
+  addSafehouseGlb("ph_dining_table.glb", -3.0, 0.16, -0.6, "x", 1.95, Math.PI * 0.5);
+  addSafehouseGlb("ph_dining_chair.glb", -3.95, 0.16, -0.6, "y", 0.96, Math.PI * 0.5);
+  addSafehouseGlb("ph_dining_chair.glb", -2.05, 0.16, -0.6, "y", 0.96, -Math.PI * 0.5);
+  // Modern kitchen counter & appliances along north-east wall
+  boxWallSolid(-3.55, 0.16, -5.85, 3.6, 0.92, 0.78, slateMat, "concrete");
+  boxVisual(-3.55, 1.08, -5.85, 3.68, 0.07, 0.84, porchStoneMat);
+  addSafehouseGlb("int_fridge.glb", -1.1, 0.16, -5.8, "y", 2.05);
+  addSafehouseGlb("int_oven.glb", -3.2, 0.16, -5.82, "y", 0.94);
+  addSafehouseGlb("int_sink.glb", -4.4, 0.16, -5.82, "y", 0.94);
+  addSafehouseGlb("int_plant.glb", -10.5, 0.16, -5.6, "y", 1.25);
+  addSafehouseGlb("ph_ceiling_lamp.glb", -3.2, 3.62, -3.4, "y", 0.92);
+
+  // Warm recessed ceiling cove light strips
+  boxVisual(-7.2, 4.48, -1.5, 6.0, 0.06, 0.18, warmGlowMat);
+  boxVisual(-15.6, 4.48, -1.5, 5.4, 0.06, 0.18, warmGlowMat);
+  boxVisual(-3.2, 4.48, -3.5, 3.2, 0.06, 0.18, warmGlowMat);
+
+  // ---- 4. Attached 1-Car Garage + Interior Fire Door + Animated Exterior Sectional Garage Door ----
+  // Interior Garage Door Frame & Ajar Steel Fire Door (lx = -0.3, lz = 1.2)
+  boxVisual(-0.3, 0.16, 0.22, 0.4, 2.55, 0.08, darkMetalMat);
+  boxVisual(-0.3, 0.16, 2.18, 0.4, 2.55, 0.08, darkMetalMat);
+  boxVisual(0.28, 0.16, 0.35, 0.07, 2.42, 1.05, slateMat, 1.38);
+  boxVisual(-0.5, 1.28, 2.28, 0.05, 0.24, 0.16, pal.coolGlow);
+
+  // Surveillance Intel Corkboard mounted on interior dividing wall (lx = -0.34, lz = -1.35)
   const corkMat = materialFor(0xb88652, { roughness: 0.9, family: "wood", seed: 917 });
   const cardMat = new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.65 });
   const redPinMat = new THREE.MeshStandardMaterial({ color: 0xef4444, emissive: 0xdc2626, emissiveIntensity: 1.4 });
@@ -361,82 +621,162 @@ export function buildPlayerSafehouse(
   }
   boxVisual(-0.4, 1.05, -1.35, 0.03, 0.07, 1.4, warmGlowMat);
 
-  // Ribbed concrete 1-car garage pad (5.2m wide — fits strictly 1 car!)
-  boxSolid(2.4, -0.02, 0.0, 5.2, 0.16, 8.6, garageFloorMat, "concrete", 0, false);
-  // East garage wall + back north garage wall (segmented for tight world-AABB clearance!)
-  for (const wz of [-3.4, -2.15, -0.9, 0.35, 1.6, 2.85, 3.7]) {
-    boxSolid(5.1, 0.14, wz, 0.36, 3.55, 1.25, stuccoMat, "concrete");
-  }
-  for (const wx of [0.2, 1.4, 2.6, 3.8, 4.8]) {
-    boxSolid(wx, 0.14, -4.1, 1.2, 3.55, 0.36, stuccoMat, "concrete");
-  }
-  // Garage roof slab (forms 2nd floor sun deck above 1-car garage)
-  boxSolid(2.4, 3.69, 0.0, 5.6, 0.34, 9.0, slateMat, "concrete");
+  // East & North Garage Walls (tightly segmented via boxWallSolid)
+  boxWallSolid(5.1, 0.13, 0.0, 0.36, 3.6, 8.4, limestoneMat, "concrete");
+  boxWallSolid(2.5, 0.13, -4.15, 5.2, 3.6, 0.36, limestoneMat, "concrete");
+  // Garage Roof Slab (forms 2nd-floor terrace)
+  boxWallSolid(2.5, 3.73, 0.0, 5.6, 0.34, 8.8, slateMat, "concrete");
 
-  // Front 1-car garage portal frame (4.1m clear width centered at lx = 2.4) + raised sectional door
-  boxSolid(0.05, 0.14, 4.1, 0.52, 3.55, 0.42, slateMat, "concrete");
-  boxSolid(4.75, 0.14, 4.1, 0.52, 3.55, 0.42, slateMat, "concrete");
-  boxSolid(2.4, 3.05, 4.1, 5.2, 0.65, 0.42, slateMat, "concrete");
-  // Raised sectional 1-car garage door panels overhead
-  boxVisual(2.4, 2.88, 3.6, 4.0, 0.18, 0.9, cedarMat);
-  // Overhead bright shop LED strips
-  boxVisual(2.4, 3.62, 0.5, 3.0, 0.06, 0.18, warmGlowMat);
-  boxVisual(2.4, 3.62, -2.0, 3.0, 0.06, 0.18, warmGlowMat);
+  // Front 1-Car Garage Portal Frame (4.16m clear width centered at lx = 2.5, lz = 4.1)
+  boxWallSolid(0.08, 0.13, 4.1, 0.56, 3.6, 0.42, slateMat, "concrete");
+  boxWallSolid(4.92, 0.13, 4.1, 0.56, 3.6, 0.42, slateMat, "concrete");
+  boxWallSolid(2.5, 3.05, 4.1, 5.2, 0.68, 0.42, slateMat, "concrete");
+  // Exterior cedar accent header + twin exterior garage coach sconces + smart keypad
+  boxVisual(2.5, 3.12, 4.33, 4.3, 0.42, 0.06, cedarMat);
+  boxVisual(0.08, 2.05, 4.34, 0.14, 0.34, 0.1, warmGlowMat);
+  boxVisual(4.92, 2.05, 4.34, 0.14, 0.34, 0.1, warmGlowMat);
+  boxVisual(0.08, 1.32, 4.34, 0.14, 0.22, 0.05, pal.coolGlow);
 
-  // 1-Car Garage Gunsmith Weapon Workbench + Overtake Mod Bay + Tool Chest & Spare Tires
-  buildDetailedWeaponWorkbench(interiorCtx, pal, 2.4, y0 + 0.14, -3.45, 0);
-  buildGarageModBay(interiorCtx, pal, 2.4, y0 + 0.14, 0.7, 0);
-  boxSolid(0.55, 0.14, -3.45, 0.9, 1.1, 0.68, redToolMat, "metal"); // snap-on style tool chest
-  // Spare wheel stack in NE corner
+  // ---- REAL ANIMATED EXTERIOR SECTIONAL GARAGE DOOR (lx = 2.5, lz = 4.08, 4.2m wide x 2.9m tall) ----
+  const doorRoot = new THREE.Group();
+  const drOrigin = wPos(2.5, 4.08, 0.13);
+  doorRoot.position.set(drOrigin.x, drOrigin.y, drOrigin.z);
+  doorRoot.rotation.y = yaw;
+  chunk.nearGroup.add(doorRoot);
+
+  // Side vertical guide tracks inside garage portal
+  for (const tx of [-2.12, 2.12]) {
+    const track = new THREE.Mesh(new THREE.BoxGeometry(0.08, 2.92, 0.12), darkMetalMat);
+    track.position.set(tx, 1.46, -0.06);
+    doorRoot.add(track);
+  }
+
+  const panels: GarageDoorPanel[] = [];
+  const panelH = 0.71;
+  for (let i = 0; i < 4; i++) {
+    const pivot = new THREE.Group();
+    const closedY = panelH * (i + 0.5);
+    const closedZ = 0;
+    pivot.position.set(0, closedY, closedZ);
+
+    // Cedar timber panel body + dark aluminum frame stiles
+    const body = new THREE.Mesh(new THREE.BoxGeometry(4.2, panelH - 0.03, 0.09), cedarMat);
+    body.castShadow = true;
+    body.receiveShadow = true;
+    pivot.add(body);
+
+    const rail = new THREE.Mesh(new THREE.BoxGeometry(4.24, 0.04, 0.11), darkMetalMat);
+    rail.position.y = -panelH * 0.5 + 0.02;
+    pivot.add(rail);
+
+    // Top panel features 4 sleek frosted clerestory garage window lites!
+    if (i === 3) {
+      for (const wx of [-1.45, -0.48, 0.48, 1.45]) {
+        const frm = new THREE.Mesh(new THREE.BoxGeometry(0.76, 0.34, 0.11), darkMetalMat);
+        frm.position.x = wx;
+        pivot.add(frm);
+        const lite = new THREE.Mesh(new THREE.BoxGeometry(0.68, 0.26, 0.12), frostedLiteMat);
+        lite.position.x = wx;
+        pivot.add(lite);
+      }
+    }
+
+    doorRoot.add(pivot);
+    panels.push({
+      pivot,
+      closedY,
+      closedZ,
+      openY: 2.86 - i * 0.03,
+      openZ: -0.65 - i * 0.72,
+      openRotX: -Math.PI * 0.5,
+    });
+  }
+
+  // Segmented tight world-space collision AABBs for the closed exterior garage door (disabled smoothly when open)
+  const closedBoxes: THREE.Box3[] = [];
+  const doorSegs = 6;
+  const doorW = 4.2 / doorSegs;
+  const dhx = (doorW * Math.abs(c) + 0.18 * Math.abs(s)) * 0.5;
+  const dhz = (doorW * Math.abs(s) + 0.18 * Math.abs(c)) * 0.5;
+  for (let i = 0; i < doorSegs; i++) {
+    const lx = 2.5 - 2.1 + doorW * (i + 0.5);
+    const sp = wPos(lx, 4.08, 0.13);
+    closedBoxes.push(new THREE.Box3(new THREE.Vector3(sp.x - dhx, sp.y, sp.z - dhz), new THREE.Vector3(sp.x + dhx, sp.y + 2.9, sp.z + dhz)));
+  }
+
+  activeGarageDoor = {
+    panels,
+    doorWorldPos: new THREE.Vector3(drOrigin.x, drOrigin.y + 1.2, drOrigin.z),
+    closedBoxes,
+    spatialAABBs: null,
+    aabbIds: [],
+    colliderActive: true,
+    openT: 0,
+  };
+
+  // Overhead shop LED strips inside garage
+  boxVisual(2.5, 3.64, 0.6, 3.2, 0.06, 0.18, warmGlowMat);
+  boxVisual(2.5, 3.64, -2.0, 3.2, 0.06, 0.18, warmGlowMat);
+
+  // 1-Car Garage Gunsmith Weapon Workbench + Overtake Mod Bay + Tool Chest + Steel Shelving
+  buildDetailedWeaponWorkbench(interiorCtx, pal, 2.4, y0 + 0.13, -3.45, 0);
+  buildGarageModBay(interiorCtx, pal, 2.4, y0 + 0.13, 0.7, 0);
+  boxWallSolid(0.45, 0.13, -3.45, 0.9, 1.1, 0.68, redToolMat, "metal");
+  addSafehouseGlb("ph_steel_shelves.glb", 4.55, 0.13, -1.2, "y", 2.0, -Math.PI * 0.5);
+  addSafehouseGlb("gas_can.glb", 4.4, 0.13, -3.4, "y", 0.65, 0.4);
   for (let i = 0; i < 3; i++) {
-    const tp = wPos(4.45, -3.3, 0.28 + i * 0.26);
-    const tire = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.32, 0.32, 0.22, 14),
-      darkMetalMat,
-    );
+    const tp = wPos(4.5, -3.3, 0.26 + i * 0.25);
+    const tire = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.32, 0.22, 14), darkMetalMat);
     tire.position.set(tp.x, tp.y, tp.z);
     tire.castShadow = true;
     chunk.nearGroup.add(tire);
   }
 
-  // ---- 5. Backyard Swimming Pool Patio, Timber Pergola & Privacy Fence (lz = -7 .. -14) ----
-  boxSolid(-3.5, -0.02, -10.5, 14.5, 0.16, 7.6, concreteMat, "concrete", 0, false);
-  // Illuminated swimming pool basin & stone coping
-  boxVisual(-4.0, 0.09, -10.6, 7.8, 0.08, 4.4, poolWaterMat);
-  boxVisual(-4.0, 0.07, -10.6, 8.2, 0.06, 4.8, slateMat);
-  // Cedar pergola beams over poolside terrace
-  for (const px of [0.8, 3.2]) {
+  // ---- 5. Backyard Pergola, Loungers & Landscaping Planters ----
+  for (const px of [0.8, 3.4]) {
     boxVisual(px, 0.14, -8.8, 0.18, 2.75, 0.18, cedarMat);
-    boxVisual(px, 0.14, -12.4, 0.18, 2.75, 0.18, cedarMat);
+    boxVisual(px, 0.14, -12.6, 0.18, 2.75, 0.18, cedarMat);
   }
-  boxVisual(2.0, 2.9, -10.6, 2.8, 0.16, 4.0, cedarMat);
-  // Poolside timber loungers
-  for (const lx of [1.2, 2.8]) {
-    boxSolid(lx, 0.14, -10.4, 0.85, 0.34, 2.0, cedarMat, "wood");
-    boxVisual(lx, 0.48, -10.0, 0.78, 0.12, 1.2, cushionMat);
-  }
-
-  // ---- 6. Perimeter Stone Wall & 1-Car Driveway Gate Pillars (segmented for tight AABBs) ----
-  for (const wx of [-19.4, -15.4, -11.4, -7.4, -3.6]) {
-    boxSolid(wx, 0.14, 15.5, 3.6, 1.05, 0.45, slateMat, "concrete");
-  }
-  boxSolid(8.2, 0.14, 15.5, 3.6, 1.05, 0.45, slateMat, "concrete");
-  // Left & Right illuminated driveway stone pillars framing the 1-car driveway
-  for (const px of [-0.8, 5.6]) {
-    boxSolid(px, 0.14, 15.5, 0.85, 1.65, 0.85, slateMat, "concrete");
-    boxVisual(px, 1.79, 15.5, 0.62, 0.18, 0.62, warmGlowMat);
-  }
-  // Low side privacy walls
-  for (const wz of [-10, -2, 6, 12]) {
-    boxSolid(-21.4, 0.14, wz, 0.45, 1.45, 7.6, slateMat, "concrete");
-    boxSolid(10.0, 0.14, wz, 0.45, 1.45, 7.6, slateMat, "concrete");
+  boxVisual(2.1, 2.9, -10.7, 3.0, 0.14, 4.2, cedarMat);
+  for (const lx of [1.3, 2.9]) {
+    boxWallSolid(lx, 0.14, -10.5, 0.85, 0.34, 2.0, cedarMat, "wood");
+    boxVisual(lx, 0.48, -10.1, 0.78, 0.12, 1.2, cushionMat);
   }
 
-  // ---- 7. Register WalkableSurface covering the entire residence, bedroom wing, 1-car garage & driveway ----
-  const surfMinX = Math.min(wPos(-21, -16).x, wPos(10, -16).x, wPos(-21, 28).x, wPos(10, 28).x) - 1;
-  const surfMaxX = Math.max(wPos(-21, -16).x, wPos(10, -16).x, wPos(-21, 28).x, wPos(10, 28).x) + 1;
-  const surfMinZ = Math.min(wPos(-21, -16).z, wPos(10, -16).z, wPos(-21, 28).z, wPos(10, 28).z) - 1;
-  const surfMaxZ = Math.max(wPos(-21, -16).z, wPos(10, -16).z, wPos(-21, 28).z, wPos(10, 28).z) + 1;
+  // Front Landscaped Stone Planter Boxes with Boxwood Shrubs flanking porch & driveway
+  for (const [plx, plz, pw, pd] of [
+    [-9.8, 6.2, 2.4, 1.2],
+    [-1.2, 6.2, 1.6, 1.2],
+    [-7.8, 9.6, 1.2, 3.4],
+  ] as const) {
+    boxWallSolid(plx, 0.06, plz, pw, 0.42, pd, slateMat, "concrete");
+    boxVisual(plx, 0.48, plz, pw - 0.24, 0.48, pd - 0.24, foliageMat);
+  }
+  // Walkway LED bollards
+  for (const bz of [9.5, 12.5, 15.2]) {
+    boxVisual(-6.05, 0.13, bz, 0.14, 0.65, 0.14, darkMetalMat);
+    boxVisual(-6.05, 0.78, bz, 0.12, 0.12, 0.12, warmGlowMat);
+  }
+
+  // ---- 6. Perimeter Stone Wall & Illuminated Driveway Gate Pillars (tightly segmented!) ----
+  for (const wx of [-19.4, -15.4, -11.4, -7.8]) {
+    boxWallSolid(wx, 0.06, 16.5, 3.4, 1.1, 0.42, slateMat, "concrete");
+  }
+  boxWallSolid(8.0, 0.06, 16.5, 4.2, 1.1, 0.42, slateMat, "concrete");
+  for (const px of [-0.5, 5.4]) {
+    boxWallSolid(px, 0.06, 16.5, 0.82, 1.65, 0.82, slateMat, "concrete");
+    boxVisual(px, 1.71, 16.5, 0.6, 0.18, 0.6, warmGlowMat);
+  }
+  for (const wz of [-10, -2, 6, 12.5]) {
+    boxWallSolid(-21.6, 0.06, wz, 0.42, 1.45, 7.6, slateMat, "concrete");
+    boxWallSolid(10.2, 0.06, wz, 0.42, 1.45, 7.6, slateMat, "concrete");
+  }
+
+  // ---- 7. Register WalkableSurface matching exact non-overlapping floor heights ----
+  const surfMinX = Math.min(wPos(-22, -17).x, wPos(11, -17).x, wPos(-22, 34).x, wPos(11, 34).x) - 1;
+  const surfMaxX = Math.max(wPos(-22, -17).x, wPos(11, -17).x, wPos(-22, 34).x, wPos(11, 34).x) + 1;
+  const surfMinZ = Math.min(wPos(-22, -17).z, wPos(11, -17).z, wPos(-22, 34).z, wPos(11, 34).z) - 1;
+  const surfMaxZ = Math.max(wPos(-22, -17).z, wPos(11, -17).z, wPos(-22, 34).z, wPos(11, 34).z) + 1;
   const floorSurf: WalkableSurface = {
     id: "oq_player_safehouse_pad",
     minX: surfMinX,
@@ -450,8 +790,19 @@ export function buildPlayerSafehouse(
       const dz = qz - SAFEHOUSE_ORIGIN.z;
       const lx = dx * c - dz * s;
       const lz = dx * s + dz * c;
-      if (lx >= -20.0 && lx <= 5.2 && lz >= -14.2 && lz <= 13.2) return y0 + 0.14;
-      if (lx >= -0.3 && lx <= 5.2 && lz > 13.2 && lz <= 33.2) return y0 + 0.14;
+      // Interior living + master bedroom
+      if (lx >= -20.0 && lx <= -0.15 && lz >= -6.5 && lz <= 3.5) return y0 + 0.16;
+      // Front porch
+      if (lx >= -11.4 && lx <= -0.1 && lz > 3.5 && lz <= 7.8) return y0 + 0.14;
+      // Garage pad & threshold
+      if (lx >= -0.15 && lx <= 5.1 && lz >= -4.2 && lz <= 4.6) return y0 + 0.13;
+      // Backyard pool deck (around water)
+      if (lx >= -13.0 && lx <= 5.1 && lz >= -14.8 && lz <= -6.5) return y0 + 0.14;
+      // Entry walkway & driveway
+      if (lx >= -5.8 && lx <= -3.4 && lz > 7.8 && lz <= 16.5) return y0 + 0.11;
+      if (lx >= 0.2 && lx <= 4.8 && lz > 4.6 && lz <= 33.2) return y0 + 0.11;
+      // Estate lawn
+      if (lx >= -22.5 && lx <= 11.0 && lz >= -17.0 && lz <= 21.0) return y0 + 0.06;
       return null;
     },
   };

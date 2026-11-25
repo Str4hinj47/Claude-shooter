@@ -20,6 +20,7 @@ interface PauseAndEndProps {
   setCamTick: React.Dispatch<React.SetStateAction<number>>;
   onExitToScreen: (target: Exclude<Screen, "playing">) => void;
   onStartMission: (m: MissionDef) => void;
+  onClearEndInfo?: () => void;
   onBuyCar: (carId: CarId) => void;
   onSelectCar: (carId: CarId, paintHex?: string | null) => void;
 }
@@ -35,6 +36,7 @@ export function PauseAndEndOverlays({
   setCamTick,
   onExitToScreen,
   onStartMission,
+  onClearEndInfo,
   onBuyCar,
   onSelectCar,
 }: PauseAndEndProps) {
@@ -72,14 +74,26 @@ export function PauseAndEndOverlays({
               )}
 
             <div className="mt-6 flex flex-wrap items-center gap-3">
-              <TacticalButton tone="signal" onClick={() => gameRef.current?.respawn()}>
+              <TacticalButton
+                tone="signal"
+                onClick={() => {
+                  onClearEndInfo?.();
+                  gameRef.current?.respawn();
+                }}
+              >
                 <RotateCcw className="size-3.5" />
                 Retry mission
               </TacticalButton>
               {hud.hasOpenWorldReturn && (
-                <TacticalButton tone="ice" onClick={() => void gameRef.current?.returnToOpenWorld()}>
+                <TacticalButton
+                  tone="ice"
+                  onClick={() => {
+                    onClearEndInfo?.();
+                    void gameRef.current?.returnToOpenWorld();
+                  }}
+                >
                   <Compass className="size-3.5" />
-                  Return to Westgate Bay
+                  Continue in Westgate Bay
                 </TacticalButton>
               )}
               <TacticalButton tone="gold" onClick={() => onExitToScreen("upgrades")}>
@@ -184,8 +198,14 @@ export function PauseAndEndOverlays({
               </TacticalButton>
               <div className="flex flex-wrap gap-3">
                 {hud.hasOpenWorldReturn && (
-                  <TacticalButton tone="ice" onClick={() => void gameRef.current?.returnToOpenWorld()}>
-                    Return to Westgate Bay
+                  <TacticalButton
+                    tone="ice"
+                    onClick={() => {
+                      onClearEndInfo?.();
+                      void gameRef.current?.returnToOpenWorld();
+                    }}
+                  >
+                    Continue in Westgate Bay
                   </TacticalButton>
                 )}
                 <TacticalButton tone="ghost" onClick={() => onExitToScreen("home")}>

@@ -131,8 +131,8 @@ export function createInteriorPalette(opts: {
 }
 
 /**
- * Detailed King Platform Bed with upholstered headboard, layered mattress, white duvet,
- * folded accent throw, four pillows, woven area rug, and twin nightstands with warm lamps.
+ * Detailed King Platform Bed: uses open-source CC0 double bed GLB (`kk_bed_double.glb`)
+ * over a textured area rug, flanked by twin nightstands, warm table lamps, and framed art.
  */
 export function buildDetailedKingBed(
   ctx: InteriorBuilderCtx,
@@ -149,61 +149,35 @@ export function buildDetailedKingBed(
     z: cz - dx * s + dz * c,
   });
 
-  // Woven area rug under bed
-  const rg = at(0, 0.25);
-  ctx.visual(rg.x, yFloor + 0.015, rg.z, 3.4, 0.025, 3.2, pal.rugMat, yaw);
+  // Woven area rug under bed (clean thin GLB + fallback visual pad)
+  const rg = at(0, 0.2);
+  const rugAnchor = new THREE.Group();
+  ctx.addMesh(rugAnchor, rg.x, yFloor + 0.005, rg.z, yaw);
+  attachGlbToGroup(rugAnchor, "kk_rug.glb", 0, 0, 0, { axis: "x", targetMeters: 3.4 });
 
-  // Solid walnut platform frame
+  // Open-source modern double bed model (no oversized primitive boxes hiding it!)
   const pf = at(0, 0);
-  ctx.solid(pf.x, yFloor, pf.z, 2.24, 0.24, 2.4, pal.woodDark, "wood", yaw);
-
-  // Tufted upholstered headboard against -Z side
-  const hb = at(0, -1.12);
-  ctx.solid(hb.x, yFloor + 0.24, hb.z, 2.48, 1.08, 0.16, pal.fabricSofa, "wood", yaw);
-  const hbt = at(0, -1.12);
-  ctx.visual(hbt.x, yFloor + 1.34, hbt.z, 2.52, 0.04, 0.18, pal.brass, yaw);
-
-  // Mattress + crisp white duvet + folded end throw
-  const mt = at(0, 0.02);
-  ctx.solid(mt.x, yFloor + 0.24, mt.z, 2.04, 0.28, 2.18, pal.linenWhite, "wood", yaw);
-  const th = at(0, 0.62);
-  ctx.visual(th.x, yFloor + 0.54, th.z, 2.08, 0.05, 0.92, pal.fabricBed, yaw);
-
-  // Four pillows (two back Euro shams + two front pillows)
-  for (const px of [-0.52, 0.52]) {
-    const p1 = at(px, -0.82);
-    ctx.visual(p1.x, yFloor + 0.58, p1.z, 0.78, 0.16, 0.42, pal.linenWhite, yaw);
-    const p2 = at(px, -0.52);
-    ctx.visual(p2.x, yFloor + 0.56, p2.z, 0.64, 0.14, 0.34, pal.accentPillow, yaw);
-  }
-
-  // Twin floating nightstands + warm glowing bedside lamps
-  for (const nx of [-1.52, 1.52]) {
-    const ns = at(nx, -0.82);
-    ctx.solid(ns.x, yFloor, ns.z, 0.58, 0.54, 0.48, pal.woodDark, "wood", yaw);
-    ctx.visual(ns.x, yFloor + 0.55, ns.z, 0.6, 0.03, 0.5, pal.stoneCounter, yaw);
-    const lb = at(nx, -0.82);
-    const base = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.09, 0.16, 12), pal.brass);
-    ctx.addMesh(base, lb.x, yFloor + 0.64, lb.z);
-    const shade = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.15, 0.22, 14), pal.warmGlow);
-    ctx.addMesh(shade, lb.x, yFloor + 0.82, lb.z);
-
-    const nsAnchor = new THREE.Group();
-    ctx.addMesh(nsAnchor, ns.x, yFloor, ns.z);
-    attachGlbToGroup(nsAnchor, "int_nightstand.glb", 0, 0, 0, { axis: "y", targetMeters: 0.56 });
-    if (nx < 0) {
-      attachGlbToGroup(nsAnchor, "int_lamp.glb", 0, 0.56, 0, { axis: "y", targetMeters: 0.45 });
-    }
-  }
-
   const bedAnchor = new THREE.Group();
-  ctx.addMesh(bedAnchor, pf.x, yFloor + 0.02, pf.z);
-  attachGlbToGroup(bedAnchor, "int_bed.glb", 0, 0, 0, { axis: "z", targetMeters: 2.32 });
+  ctx.addMesh(bedAnchor, pf.x, yFloor + 0.02, pf.z, yaw);
+  attachGlbToGroup(bedAnchor, "kk_bed_double.glb", 0, 0, 0, { axis: "z", targetMeters: 2.35 });
+
+  // Twin nightstands + warm glowing bedside lamps
+  for (const nx of [-1.52, 1.52]) {
+    const ns = at(nx, -0.78);
+    const nsAnchor = new THREE.Group();
+    ctx.addMesh(nsAnchor, ns.x, yFloor, ns.z, yaw);
+    attachGlbToGroup(nsAnchor, "int_nightstand.glb", 0, 0, 0, { axis: "y", targetMeters: 0.56 });
+    attachGlbToGroup(nsAnchor, "int_lamp.glb", 0, 0.56, 0, { axis: "y", targetMeters: 0.44 });
+    // Subtle warm lamp shade glow
+    const shade = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.11, 0.14, 12), pal.warmGlow);
+    ctx.addMesh(shade, ns.x, yFloor + 0.88, ns.z, yaw);
+  }
 }
 
 /**
- * Detailed Walk-In Wardrobe Closet with oak cabinetry, hanging jackets & tactical vests on a chrome rail,
- * folded apparel shelves, shoe rack, and an illuminated full-length dressing mirror.
+ * Detailed Walk-In Wardrobe Closet: sleek Poly Haven & KayKit CC0 cabinetry
+ * (steel-and-oak drawer cabinet, decorated double wardrobe, oak cubby shelves),
+ * runner rug, and an illuminated full-length dressing mirror.
  */
 export function buildDetailedCloset(
   ctx: InteriorBuilderCtx,
@@ -220,57 +194,35 @@ export function buildDetailedCloset(
     z: cz - dx * s + dz * c,
   });
 
-  // Back & side oak wardrobe shell
-  const bk = at(0, -0.34);
-  ctx.solid(bk.x, yFloor, bk.z, 2.75, 2.45, 0.1, pal.woodDark, "wood", yaw);
-  for (const sx of [-1.32, 0.45, 1.32]) {
-    const p = at(sx, 0);
-    ctx.solid(p.x, yFloor, p.z, 0.08, 2.45, 0.68, pal.woodDark, "wood", yaw);
-  }
-  const tp = at(0, 0);
-  ctx.solid(tp.x, yFloor + 2.38, tp.z, 2.75, 0.08, 0.72, pal.woodDark, "wood", yaw);
+  // Left module: Poly Haven CC0 black steel & oak drawer cabinet
+  const leftPos = at(-1.32, 0.0);
+  const leftAnchor = new THREE.Group();
+  ctx.addMesh(leftAnchor, leftPos.x, yFloor, leftPos.z, yaw);
+  attachGlbToGroup(leftAnchor, "ph_drawer_cabinet.glb", 0, 0, 0, { axis: "y", targetMeters: 1.95 });
 
-  // Warm backlit LED strip inside closet top
-  const led = at(-0.4, 0.05);
-  ctx.visual(led.x, yFloor + 2.33, led.z, 2.4, 0.04, 0.08, pal.warmGlow, yaw);
+  // Center module: KayKit CC0 decorated double wardrobe cabinet
+  const midPos = at(0.05, 0.0);
+  const midAnchor = new THREE.Group();
+  ctx.addMesh(midAnchor, midPos.x, yFloor, midPos.z, yaw);
+  attachGlbToGroup(midAnchor, "kk_wardrobe.glb", 0, 0, 0, { axis: "y", targetMeters: 2.02 });
 
-  // Left bay: chrome hanging rail + 6 tailored coats/tactical jackets + bottom shoe tier
-  const rail = at(-0.44, 0);
-  ctx.visual(rail.x, yFloor + 1.88, rail.z, 1.65, 0.035, 0.035, pal.chrome, yaw);
-  const coatColors = [0x1f2937, 0x334155, 0x5c4033, 0x1e293b, 0x4b5563, 0x2f3e46];
-  coatColors.forEach((hex, idx) => {
-    const cp = at(-1.08 + idx * 0.25, 0.02);
-    const coatMat = new THREE.MeshStandardMaterial({ color: hex, roughness: 0.8 });
-    ctx.visual(cp.x, yFloor + 1.05, cp.z, 0.17, 0.78, 0.44, coatMat, yaw);
+  // Right module: Poly Haven CC0 oak cubby wardrobe shelves with storage bins
+  const rightPos = at(1.38, 0.0);
+  const rightAnchor = new THREE.Group();
+  ctx.addMesh(rightAnchor, rightPos.x, yFloor, rightPos.z, yaw + Math.PI * 0.5);
+  attachGlbToGroup(rightAnchor, "ph_wardrobe_shelves.glb", 0, 0, 0, { axis: "y", targetMeters: 1.85 });
+
+  // Illuminated full-length dressing mirror (opaque silvered mirror glass in brass frame)
+  const mir = at(2.26, -0.08);
+  ctx.solid(mir.x, yFloor, mir.z, 0.74, 2.06, 0.08, pal.brass, "metal", yaw);
+  const mirrorMat = new THREE.MeshStandardMaterial({
+    color: 0xb8c4d0,
+    roughness: 0.06,
+    metalness: 0.94,
   });
-  // Shoe shelf + 3 pairs of boots/sneakers
-  const shoeShelf = at(-0.44, 0.04);
-  ctx.visual(shoeShelf.x, yFloor + 0.32, shoeShelf.z, 1.66, 0.04, 0.56, pal.woodLight, yaw);
-  for (let i = 0; i < 3; i++) {
-    const sp = at(-0.95 + i * 0.46, 0.08);
-    ctx.visual(sp.x, yFloor + 0.4, sp.z, 0.24, 0.14, 0.32, pal.metalDark, yaw);
-  }
-
-  // Right bay: folded tactical stacks & drawers
-  for (let row = 0; row < 4; row++) {
-    const sh = at(0.88, 0);
-    ctx.visual(sh.x, yFloor + 0.48 + row * 0.46, sh.z, 0.78, 0.04, 0.56, pal.woodLight, yaw);
-    if (row < 3) {
-      ctx.visual(sh.x, yFloor + 0.56 + row * 0.46, sh.z, 0.48, 0.14, 0.36, row % 2 === 0 ? pal.fabricBed : pal.linenWhite, yaw);
-    }
-  }
-
-  // Illuminated full-length mirror on right outer side
-  const mir = at(1.66, -0.2);
-  ctx.solid(mir.x, yFloor, mir.z, 0.72, 2.05, 0.08, pal.brass, "metal", yaw);
-  const mirGlass = at(1.66, -0.14);
-  ctx.visual(mirGlass.x, yFloor + 0.14, mirGlass.z, 0.62, 1.82, 0.03, pal.glass, yaw);
-  ctx.visual(mirGlass.x, yFloor + 1.98, mirGlass.z, 0.64, 0.04, 0.04, pal.warmGlow, yaw);
-
-  const shelfPos = at(-1.95, 0.0);
-  const shelfAnchor = new THREE.Group();
-  ctx.addMesh(shelfAnchor, shelfPos.x, yFloor, shelfPos.z);
-  attachGlbToGroup(shelfAnchor, "int_bookshelf.glb", 0, 0, 0, { axis: "y", targetMeters: 2.15 });
+  const mirFace = at(2.26, -0.03);
+  ctx.visual(mirFace.x, yFloor + 0.14, mirFace.z, 0.62, 1.82, 0.03, mirrorMat, yaw);
+  ctx.visual(mirFace.x, yFloor + 1.98, mirFace.z, 0.64, 0.04, 0.04, pal.warmGlow, yaw);
 }
 
 /**

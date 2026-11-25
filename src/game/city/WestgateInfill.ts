@@ -23,6 +23,7 @@ import {
 import { coastLineX, getDistrictAt, riverCenterX } from "./WestgateTerrain";
 import { attachGlbToGroup } from "./PropModels";
 import { pickTownhouseModel } from "./HouseCatalog";
+import { OPEN_WORLD_MISSION_SITES } from "./OpenWorldMissions";
 
 interface ExclusionCircle {
   x: number;
@@ -34,6 +35,7 @@ interface ExclusionCircle {
 const PROTECTED_ZONES: ExclusionCircle[] = [
   { x: -322, z: 310, r: 35 }, // Player Safehouse Estate & Backyard Pool
   { x: -298, z: 342, r: 16 }, // Safehouse Driveway Entrance
+  ...Object.values(OPEN_WORLD_MISSION_SITES).map((s) => ({ x: s.x, z: s.z, r: s.clearRadius + 8 })),
   { x: 24, z: -82, r: 22 }, // Downtown Civic Roundabout
   { x: 60, z: -80, r: 36 }, // Legion Roundabout
   { x: 58, z: -162, r: 32 }, // Legion Square
