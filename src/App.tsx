@@ -207,6 +207,7 @@ export default function App() {
     setEndInfo(null);
     setHomeModal(null);
     setScreen("playing");
+    game.current?.requestLock(true);
     if (m.id === -1 && gpsTargetId === null) {
       const s = loadSave();
       const maxU = Math.max(1, s.unlocked);
@@ -411,9 +412,23 @@ export default function App() {
 
   const spreadPx = 6 + hud.spread * 1800;
   const playing = screen === "playing";
+  const hideGameCursor =
+    playing &&
+    hud.phase === "ready" &&
+    !hud.paused &&
+    !hud.dead &&
+    !hud.weaponWheelOpen &&
+    !hud.mapOpen &&
+    !hud.phoneOpen &&
+    !homeModal &&
+    !endInfo;
 
   return (
-    <div className="relative h-screen w-screen select-none overflow-hidden bg-[#07080b] font-sans text-[#f2efe9]">
+    <div
+      className={`relative h-screen w-screen select-none overflow-hidden bg-[#07080b] font-sans text-[#f2efe9] ${
+        hideGameCursor ? "cursor-none [&_*]:!cursor-none" : ""
+      }`}
+    >
       {/* Live 3D viewport (Menu Spotlight OR Active Mission / Westgate Bay) */}
       <div ref={host} className="absolute inset-0" />
 

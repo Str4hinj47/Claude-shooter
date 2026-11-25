@@ -511,7 +511,10 @@ export class Game {
   private disposed = false;
   private ro?: ResizeObserver;
   private cleanup: (() => void)[] = [];
-  private lockFailed = false;
+  private lastLockAttemptMs = 0;
+  private mouseEdgeTurn = 0;
+  private lastClientX: number | null = null;
+  private lastClientY: number | null = null;
   private zoomDist = 2.7;
   private weaponIdx = 0;
   private weaponAmmo = WEAPONS.map((w) => ({ mag: w.magSize, reserve: w.reserveMax, adsFov: w.adsFovDefault }));
@@ -852,23 +855,35 @@ export class Game {
 
   setWeaponWheelOpen(open: boolean) {
     this.weaponWheelOpen = open;
+    this.mouseEdgeTurn = 0;
+    this.lastClientX = null;
+    this.lastClientY = null;
     if (open) {
       this.mouseL = false;
       this.mouseR = false;
+    } else if (this.isActiveGameplay()) {
+      this.requestLock();
     }
+    this.syncCursorStyle();
     this.emitHud();
   }
 
   setMapOpen(open: boolean) {
     if (this.mapOpen === open) return;
     this.mapOpen = open;
+    this.mouseEdgeTurn = 0;
+    this.lastClientX = null;
+    this.lastClientY = null;
     if (open) {
       this.mouseL = false;
       this.mouseR = false;
       this.weaponWheelOpen = false;
       this.phoneOpen = false;
       if (document.pointerLockElement) document.exitPointerLock();
+    } else if (this.isActiveGameplay()) {
+      this.requestLock();
     }
+    this.syncCursorStyle();
     this.emitHud();
   }
 
@@ -879,13 +894,19 @@ export class Game {
       return;
     }
     this.phoneOpen = open;
+    this.mouseEdgeTurn = 0;
+    this.lastClientX = null;
+    this.lastClientY = null;
     if (open) {
       this.mouseL = false;
       this.mouseR = false;
       this.weaponWheelOpen = false;
       this.mapOpen = false;
       if (document.pointerLockElement) document.exitPointerLock();
+    } else if (this.isActiveGameplay()) {
+      this.requestLock();
     }
+    this.syncCursorStyle();
     this.emitHud();
   }
 
@@ -1472,10 +1493,21 @@ export class Game {
     });
     on(window, "blur", () => {
       this.keys.clear();
+      this.mouseL = false;
+      this.mouseR = false;
+      this.mouseEdgeTurn = 0;
+      this.lastClientX = null;
+      this.lastClientY = null;
       if (this.weaponWheelOpen) {
         this.weaponWheelOpen = false;
         this.emitHud();
       }
+      this.syncCursorStyle();
+    });
+    on(document, "mouseleave", () => {
+      this.mouseEdgeTurn = 0;
+      this.lastClientX = null;
+      this.lastClientY = null;
     });
     on(el, "contextmenu", (e: Event) => e.preventDefault());
     on(el, "mousedown", (e: MouseEvent) => {
@@ -1483,7 +1515,7 @@ export class Game {
       if (this.weaponWheelOpen || this.mapOpen) return;
       if (this.phoneOpen) {
         this.setPhoneOpen(false);
-        if (!this.locked && !this.lockFailed) this.requestLock();
+        if (!this.locked) this.requestLock();
         return;
       }
       if (e.button === 0) {
@@ -1491,13 +1523,15 @@ export class Game {
           this.setHolstered(false);
         }
         this.mouseL = true;
-        if (!this.locked && !this.lockFailed) this.requestLock();
       }
       if (e.button === 2) {
         if (this.holstered && this.phase === "ready" && !this.paused && !this.level?.vehicles?.activeVehicle) {
           this.setHolstered(false);
         }
         this.mouseR = true;
+      }
+      if (!this.locked && (this.isActiveGameplay() || this.showcase)) {
+        this.requestLock();
       }
     });
     on(window, "mouseup", (e: MouseEvent) => {
@@ -1510,18 +1544,51 @@ export class Game {
         if (drag) this.menuYaw += e.movementX * 0.008;
         return;
       }
-      if (this.weaponWheelOpen || this.mapOpen || this.phoneOpen) return;
-      if (!this.locked && !drag) return;
+      if (this.weaponWheelOpen || this.mapOpen || this.phoneOpen) {
+        this.mouseEdgeTurn = 0;
+        this.lastClientX = null;
+        this.lastClientY = null;
+        return;
+      }
+      const activeLook = this.isActiveGameplay() || this.showcase;
+      if (!activeLook) return;
+      if (!this.locked && this.showcase && !drag) return;
+
+      let dx = e.movementX || 0;
+      let dy = e.movementY || 0;
+      if (!this.locked) {
+        if (dx === 0 && dy === 0 && this.lastClientX !== null && this.lastClientY !== null) {
+          dx = clamp(e.clientX - this.lastClientX, -120, 120);
+          dy = clamp(e.clientY - this.lastClientY, -120, 120);
+        } else {
+          dx = clamp(dx, -220, 220);
+          dy = clamp(dy, -220, 220);
+        }
+        this.lastClientX = e.clientX;
+        this.lastClientY = e.clientY;
+        const w = Math.max(1, window.innerWidth || this.container.clientWidth || 1);
+        const edge = 44;
+        if (e.clientX <= edge) {
+          this.mouseEdgeTurn = clamp((edge - e.clientX) / edge, 0, 1);
+        } else if (e.clientX >= w - edge) {
+          this.mouseEdgeTurn = -clamp((e.clientX - (w - edge)) / edge, 0, 1);
+        } else {
+          this.mouseEdgeTurn = 0;
+        }
+      } else {
+        this.mouseEdgeTurn = 0;
+      }
+
       const fovScale = clamp(this.camera.fov / 62, 0.2, 1.0);
       const s = 0.0022 * fovScale * this.aimSensitivity;
       if (this.level?.vehicles?.activeVehicle && this.vehCam.preset === "free") {
-        this.freeYaw -= e.movementX * 0.006 * this.freeCamera.sensitivity;
-        this.freePitch = clamp(this.freePitch + e.movementY * 0.004 * this.freeCamera.sensitivity, -0.42, 1.12);
+        this.freeYaw -= dx * 0.006 * this.freeCamera.sensitivity;
+        this.freePitch = clamp(this.freePitch + dy * 0.004 * this.freeCamera.sensitivity, -0.42, 1.12);
         this.freeIdle = 0;
       } else {
         const yDir = this.invertY ? 1 : -1;
-        this.camYaw -= e.movementX * s;
-        this.camPitch = clamp(this.camPitch + e.movementY * s * yDir, -1.2, 1.25);
+        this.camYaw -= dx * s;
+        this.camPitch = clamp(this.camPitch + dy * s * yDir, -1.2, 1.25);
       }
       if (!this.showcase) {
         this.yaw = this.camYaw;
@@ -1567,22 +1634,47 @@ export class Game {
     );
     on(document, "pointerlockchange", () => {
       this.locked = document.pointerLockElement === el;
+      this.mouseEdgeTurn = 0;
+      this.lastClientX = null;
+      this.lastClientY = null;
+      this.syncCursorStyle();
       this.emitHud();
     });
     on(document, "pointerlockerror", () => {
-      this.lockFailed = true;
+      this.syncCursorStyle();
       this.emitHud();
     });
     this.ro = new ResizeObserver(() => this.resize());
     this.ro.observe(this.container);
   }
 
-  private requestLock() {
+  private isActiveGameplay() {
+    return (
+      !this.menuHangar &&
+      this.phase === "ready" &&
+      !this.paused &&
+      !this.rig?.dead &&
+      !this.weaponWheelOpen &&
+      !this.mapOpen &&
+      !this.phoneOpen
+    );
+  }
+
+  private syncCursorStyle() {
+    if (this.disposed) return;
+    this.renderer.domElement.style.cursor = this.isActiveGameplay() ? "none" : "";
+  }
+
+  requestLock(force = false) {
+    if (this.locked) return;
+    const now = performance.now();
+    if (!force && now - this.lastLockAttemptMs < 500) return;
+    this.lastLockAttemptMs = now;
     try {
       const p = this.renderer.domElement.requestPointerLock() as unknown as Promise<void> | undefined;
-      p?.catch?.(() => (this.lockFailed = true));
+      p?.catch?.(() => {});
     } catch {
-      this.lockFailed = true;
+      // Fallback mouselook + CSS cursor hiding remain active if Pointer Lock is disallowed
     }
   }
 
@@ -1672,10 +1764,20 @@ export class Game {
   setPaused(v: boolean) {
     this.paused = v;
     this.pausedRendered = false;
+    this.mouseEdgeTurn = 0;
+    this.lastClientX = null;
+    this.lastClientY = null;
     if (this.level?.vehicles?.activeVehicle) {
       this.vehAudio.setActive(!v);
     }
-    if (v && document.pointerLockElement) document.exitPointerLock();
+    if (v) {
+      this.mouseL = false;
+      this.mouseR = false;
+      if (document.pointerLockElement) document.exitPointerLock();
+    } else if (this.isActiveGameplay()) {
+      this.requestLock();
+    }
+    this.syncCursorStyle();
     this.startLoop();
     this.emitHud();
   }
@@ -2585,6 +2687,17 @@ export class Game {
       return;
     }
     const dead = rig.dead;
+
+    // Continuous 360-degree edge-turn fallback when pointer lock is unavailable
+    if (!this.locked && this.isActiveGameplay() && Math.abs(this.mouseEdgeTurn) > 0.01) {
+      if (this.level?.vehicles?.activeVehicle && this.vehCam.preset === "free") {
+        this.freeYaw += this.mouseEdgeTurn * 2.4 * this.freeCamera.sensitivity * rawDt;
+        this.freeIdle = 0;
+      } else {
+        this.camYaw += this.mouseEdgeTurn * 2.4 * this.aimSensitivity * rawDt;
+        if (!this.showcase) this.yaw = this.camYaw;
+      }
+    }
     const vehicles = this.level?.vehicles;
     const gripScale = this.level?.getWeatherGrip?.() ?? 1.0;
     const weatherDarkness = this.level?.weather
@@ -4880,6 +4993,7 @@ export class Game {
 
   /* ------------------------------------------------------------ */
   private emitHud() {
+    this.syncCursorStyle();
     const r = this.rig;
     const mission = this.mission;
     if (r && this.weaponAmmo[this.weaponIdx]) {
