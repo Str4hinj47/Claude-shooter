@@ -1,8 +1,8 @@
 import { ArrowUpRight, Car, Compass, MapPin, Navigation, Play, RotateCcw, Shield, Volume2, VolumeX } from "lucide-react";
 import { CAMERA_ORDER, type CameraPreset, type Game, type HudState } from "../game/Game";
 import { MISSIONS, type MissionDef } from "../game/story";
-import { WESTGATE_CONTRACT_SPOTS, WESTGATE_TELEPORTS } from "../game/city";
-import { TIME_OF_DAY_LABELS, TIME_OF_DAY_MODES, type TimeOfDayMode } from "../game/city/WestgateWorld";
+import { WESTGATE_CONTRACT_SPOTS } from "../game/city/WestgateActivities";
+import { TIME_OF_DAY_LABELS, TIME_OF_DAY_MODES, WESTGATE_TELEPORTS, type TimeOfDayMode } from "../game/city/WestgateMeta";
 import { WEATHER_MODES, type WeatherMode } from "../game/vehicles/weather";
 import { CARS, type CarId } from "../game/vehicles/catalog";
 import type { MissionReward, SaveData } from "../game/progression";

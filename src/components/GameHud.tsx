@@ -1,3 +1,4 @@
+import { lazy, Suspense } from "react";
 import { Check, Eye, EyeOff, Map as MapIcon, Pause, Play, Radio, ShieldAlert, Smartphone, Volume2, VolumeX } from "lucide-react";
 import type { Game, HudState, ObjectiveState } from "../game/Game";
 import type { GpsWaypoint } from "../game/city/GpsWaypoint";
@@ -5,9 +6,15 @@ import type { MissionDef } from "../game/story";
 import type { CarId } from "../game/vehicles/catalog";
 import type { ApartmentId, SaveData } from "../game/progression";
 import { WestgateMinimap } from "./WestgateMinimap";
-import { WestgateFullMap } from "./WestgateFullMap";
 import { WeaponWheel } from "./WeaponWheel";
-import { TacticalPhone } from "./TacticalPhone";
+import { WEAPONS } from "../character/rifle";
+
+const WestgateFullMap = lazy(() =>
+  import("./WestgateFullMap").then((m) => ({ default: m.WestgateFullMap })),
+);
+const TacticalPhone = lazy(() =>
+  import("./TacticalPhone").then((m) => ({ default: m.TacticalPhone })),
+);
 
 interface GameHudProps {
   hud: HudState;
@@ -171,15 +178,33 @@ export function GameHud({
                       <line x1="-11" y1="11" x2="-5" y2="5" />
                       <line x1="11" y1="11" x2="5" y2="5" />
                     </g>
-                    <g stroke={hud.hitCrit ? "#fbbf24" : "#ff3b30"} strokeWidth={hud.hitCrit ? "2.1" : "1.6"} strokeLinecap="square">
+                    <g stroke={hud.hitKill ? "#ef4444" : hud.hitCrit ? "#fbbf24" : "#f8fafc"} strokeWidth={hud.hitCrit || hud.hitKill ? "2.1" : "1.6"} strokeLinecap="square">
                       <line x1="-11" y1="-11" x2="-5" y2="-5" />
                       <line x1="11" y1="-11" x2="5" y2="-5" />
                       <line x1="-11" y1="11" x2="-5" y2="5" />
                       <line x1="11" y1="11" x2="5" y2="5" />
                     </g>
+                    {hud.hitKill && (
+                      <g stroke="#ef4444" strokeWidth="1.5" strokeLinecap="square">
+                        <line x1="-15" y1="-15" x2="-12" y2="-12" />
+                        <line x1="15" y1="-15" x2="12" y2="-12" />
+                        <line x1="-15" y1="15" x2="-12" y2="12" />
+                        <line x1="15" y1="15" x2="12" y2="12" />
+                      </g>
+                    )}
                   </g>
                 )}
               </svg>
+              {!hud.holstered && !hud.reloading && hud.ammo === 0 && (
+                <div className="mt-4 whitespace-nowrap text-center font-mono text-[10px] font-bold uppercase tracking-[0.22em] text-[#ff3b30] drop-shadow-[0_1px_4px_rgba(0,0,0,0.95)]">
+                  EMPTY · RELOAD [R]
+                </div>
+              )}
+              {!hud.holstered && !hud.reloading && hud.ammo > 0 && hud.ammo <= Math.max(2, Math.ceil((WEAPONS[hud.weaponIndex]?.magSize ?? 30) * 0.2)) && (
+                <div className="mt-4 whitespace-nowrap text-center font-mono text-[9px] font-bold uppercase tracking-[0.2em] text-[#f59e0b] drop-shadow-[0_1px_4px_rgba(0,0,0,0.95)]">
+                  LOW AMMO ({hud.ammo})
+                </div>
+              )}
             </div>
           );
         })()}
@@ -563,6 +588,85 @@ export function GameHud({
         </button>
       </div>
 
+      {/* 3D WORLD-SPACE WAYPOINT OVER NEXT MISSION START BEACON (Westgate Bay) */}
+      {hud.isOpenWorld &&
+        hud.phase === "ready" &&
+        !hud.dead &&
+        !hud.mapOpen &&
+        !hud.phoneOpen &&
+        !hud.nearbyContract &&
+        hud.nextContractMarker &&
+        hud.nextContractMarker.onScreen &&
+        hud.nextContractMarker.dist > 12 && (
+          <div
+            className="pointer-events-none fixed z-10 -translate-x-1/2 -translate-y-full"
+            style={{
+              left: `${(hud.nextContractMarker.screenX * 100).toFixed(2)}%`,
+              top: `${(hud.nextContractMarker.screenY * 100).toFixed(2)}%`,
+            }}
+          >
+            <div className="flex flex-col items-center">
+              <div
+                className="flex items-center gap-1.5 border bg-[#07090f]/90 px-2.5 py-1 shadow-[0_4px_20px_rgba(0,0,0,0.85)]"
+                style={{ borderColor: hud.nextContractMarker.accent }}
+              >
+                <span
+                  className="inline-block size-2 rotate-45"
+                  style={{ background: hud.nextContractMarker.accent }}
+                />
+                <span className="font-mono text-[10px] font-black uppercase tracking-[0.16em] text-[#f2efe9]">
+                  MISSION C{hud.nextContractMarker.missionId} · {hud.nextContractMarker.codename}
+                </span>
+                <span className="font-mono text-[10px] font-bold tabular-nums" style={{ color: hud.nextContractMarker.accent }}>
+                  {hud.nextContractMarker.dist}M
+                </span>
+              </div>
+              <div
+                className="h-3 w-0.5"
+                style={{ background: hud.nextContractMarker.accent }}
+              />
+            </div>
+          </div>
+        )}
+
+      {/* TOP-CENTER NEXT MISSION DIRECTION STRIP (Westgate Bay) */}
+      {hud.isOpenWorld &&
+        hud.phase === "ready" &&
+        !hud.dead &&
+        !hud.mapOpen &&
+        !hud.extractReady &&
+        !hud.nearbyContract &&
+        hud.nextContractMarker && (
+          <div className="pointer-events-none absolute left-1/2 top-24 -translate-x-1/2">
+            <div
+              className="flex items-center gap-2.5 border bg-[#080a0f]/92 px-4 py-1.5 shadow-lg"
+              style={{ borderColor: `${hud.nextContractMarker.accent}99` }}
+            >
+              <span
+                className="inline-block text-sm font-black"
+                style={{
+                  color: hud.nextContractMarker.accent,
+                  transform: `rotate(${Math.round((hud.nextContractMarker.dirAngle * 180) / Math.PI)}deg)`,
+                }}
+              >
+                ▲
+              </span>
+              <span className="font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-[#f2efe9]">
+                NEXT MISSION: C{hud.nextContractMarker.missionId} {hud.nextContractMarker.codename}
+              </span>
+              <span
+                className="font-mono text-[10px] font-black tabular-nums"
+                style={{ color: hud.nextContractMarker.accent }}
+              >
+                {hud.nextContractMarker.dist}M
+              </span>
+              <span className="hidden font-mono text-[9px] uppercase tracking-wider text-[#94a3b8] sm:inline">
+                · FOLLOW BEAM OR [M] MAP
+              </span>
+            </div>
+          </div>
+        )}
+
       {/* EXTRACTION BANNER (Top-Center below Threat bar) */}
       {hud.extractReady && !hud.dead && hud.extractDist !== null && (
         <div className="pointer-events-none absolute left-1/2 top-24 -translate-x-1/2">
@@ -928,12 +1032,12 @@ export function GameHud({
             </span>
             <div className="text-left">
               <div className="font-mono text-[10px] font-bold uppercase tracking-[0.22em]" style={{ color: hud.nearbyContract.accent }}>
-                Contract C{hud.nearbyContract.missionId} · {hud.nearbyContract.codename}
+                MISSION START · CONTRACT C{hud.nearbyContract.missionId} · {hud.nearbyContract.codename}
                 {hud.nearbyContract.completed ? " · Cleared" : ""}
               </div>
               <div className="font-display text-lg font-extrabold uppercase leading-none tracking-wide text-[#f2efe9]">
                 {hud.nearbyContract.unlocked
-                  ? `Start ${hud.nearbyContract.name}`
+                  ? `PRESS [G] TO START ${hud.nearbyContract.name}`
                   : `Clear Contract C${hud.nearbyContract.missionId - 1} First`}
               </div>
             </div>
@@ -1292,23 +1396,25 @@ export function GameHud({
       )}
 
       {/* GTA V-STYLE MODERN SKYPHONE ([P] or [↑]) */}
-      {hud.phase === "ready" && (
-        <TacticalPhone
-          open={hud.phoneOpen && !hud.dead && !hud.paused && !hud.mapOpen && !hud.weaponWheelOpen}
-          hud={hud}
-          save={save}
-          gameRef={gameRef}
-          gpsTargetId={gpsTargetId}
-          onSetGpsTarget={(id, wp) => {
-            setGpsTargetId(id);
-            setCustomWaypoint(wp ?? null);
-          }}
-          onStartMission={onStartMission}
-          onBuyCar={onBuyCar}
-          onSelectCar={onSelectCar}
-          onBuyApartment={onBuyApartment}
-          onClose={() => gameRef.current?.setPhoneOpen(false)}
-        />
+      {hud.phase === "ready" && hud.phoneOpen && !hud.dead && !hud.paused && !hud.mapOpen && !hud.weaponWheelOpen && (
+        <Suspense fallback={null}>
+          <TacticalPhone
+            open={true}
+            hud={hud}
+            save={save}
+            gameRef={gameRef}
+            gpsTargetId={gpsTargetId}
+            onSetGpsTarget={(id, wp) => {
+              setGpsTargetId(id);
+              setCustomWaypoint(wp ?? null);
+            }}
+            onStartMission={onStartMission}
+            onBuyCar={onBuyCar}
+            onSelectCar={onSelectCar}
+            onBuyApartment={onBuyApartment}
+            onClose={() => gameRef.current?.setPhoneOpen(false)}
+          />
+        </Suspense>
       )}
 
       {/* RADIAL WEAPON WHEEL (Hold Tab — kept mounted during play so release commits selection) */}
@@ -1334,21 +1440,23 @@ export function GameHud({
       {hud.isOpenWorld && hud.mapOpen && !hud.dead && (() => {
         const minimapData = gameRef.current?.getMinimapData();
         return minimapData ? (
-          <WestgateFullMap
-            data={minimapData}
-            getSample={(maxRadius?: number) => gameRef.current?.getMinimapSample(maxRadius) ?? null}
-            gpsTargetId={gpsTargetId}
-            customWaypoint={customWaypoint}
-            onSetGpsTarget={(id: string | null, wp?: GpsWaypoint | null) => {
-              setGpsTargetId(id);
-              setCustomWaypoint(wp ?? null);
-            }}
-            onFastTravel={(x: number, z: number, yawDeg?: number) => {
-              gameRef.current?.teleportTo(x, z, yawDeg);
-              gameRef.current?.setMapOpen(false);
-            }}
-            onClose={() => gameRef.current?.setMapOpen(false)}
-          />
+          <Suspense fallback={null}>
+            <WestgateFullMap
+              data={minimapData}
+              getSample={(maxRadius?: number) => gameRef.current?.getMinimapSample(maxRadius) ?? null}
+              gpsTargetId={gpsTargetId}
+              customWaypoint={customWaypoint}
+              onSetGpsTarget={(id: string | null, wp?: GpsWaypoint | null) => {
+                setGpsTargetId(id);
+                setCustomWaypoint(wp ?? null);
+              }}
+              onFastTravel={(x: number, z: number, yawDeg?: number) => {
+                gameRef.current?.teleportTo(x, z, yawDeg);
+                gameRef.current?.setMapOpen(false);
+              }}
+              onClose={() => gameRef.current?.setMapOpen(false)}
+            />
+          </Suspense>
         ) : null;
       })()}
 

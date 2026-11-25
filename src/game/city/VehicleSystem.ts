@@ -30,7 +30,7 @@ import {
 import { APARTMENTS, DEFAULT_CAR_CUSTOM, getCarCustomConfig, loadSave } from "../progression";
 import { SAFEHOUSE_CAR_SPOT, SAFEHOUSE_SPAWN } from "./SafehouseResidence";
 import { WESTGATE_CONTRACT_SPOTS } from "./WestgateActivities";
-import { WESTGATE_TELEPORTS } from "./WestgateWorld";
+import { WESTGATE_TELEPORTS } from "./WestgateMeta";
 import { clamp, damp, dampAngle, lerp, smoothstep, wrapAngle } from "../../character/math";
 import type { TrafficSignalManager } from "./TrafficSignals";
 import type { PedVehicleQuery } from "./PedestrianSystem";
@@ -589,12 +589,13 @@ export class WestgateVehicleManager {
     this.spawnAll();
     if (typeof window !== "undefined" && typeof fetch === "function") {
       const save = loadSave();
-      // Await the player's selected car first so the safehouse vehicle is ready immediately,
-      // then stream the Overtake NPC traffic & highway trucks in the background.
+      // Stream ONLY the player's selected car first, followed sequentially (2-at-a-time)
+      // by the lightweight NPC road fleet. Heavy dealership/exotic cars (Audi, Challenger,
+      // Ferrari, R8, Mustang, Mercedes, Range Rover) stream lazily when near the player or summoned.
       void (async () => {
         await this.streamModel(save.selectedCar);
         if (this.disposed) return;
-        const preloadOrder: TrafficId[] = [
+        const npcFleet: TrafficId[] = [
           "compact",
           "hatch",
           "sedan",
@@ -602,19 +603,16 @@ export class WestgateVehicleManager {
           "taxi",
           "offroad",
           "police_cruiser",
-          "golf",
-          "mercedes",
-          "audi",
-          "rangerover",
-          "mustang",
-          "challenger",
-          "r8",
-          "ferrari",
           "semi",
           "kraz",
         ];
-        for (const id of preloadOrder) {
-          if (id !== save.selectedCar) void this.streamModel(id);
+        const queue = npcFleet.filter((id) => id !== save.selectedCar);
+        for (let i = 0; i < queue.length; i += 2) {
+          if (this.disposed) return;
+          await Promise.all([
+            this.streamModel(queue[i]),
+            queue[i + 1] ? this.streamModel(queue[i + 1]) : Promise.resolve(),
+          ]);
         }
       })();
     }

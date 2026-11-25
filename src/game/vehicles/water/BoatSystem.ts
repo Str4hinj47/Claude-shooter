@@ -30,6 +30,7 @@ export const STARTER_BOAT_DOCK = { x: -726, z: 486, yawDeg: 270 } as const;
 export class BoatSystem {
   readonly group = new THREE.Group();
   readonly boats: DriveableBoat[] = [];
+  private readonly boatGlbMeta = new Map<DriveableBoat, { glb: string; len: number; draft: number; requested?: boolean }>();
   activeBoat: DriveableBoat | null = null;
   private animT = 0;
   private readonly terrainAt: (x: number, z: number) => number;
@@ -38,6 +39,18 @@ export class BoatSystem {
     this.group.name = "westgate-boats";
     this.terrainAt = terrainAt;
     this.spawnBoats();
+  }
+
+  private ensureBoatModel(b: DriveableBoat): void {
+    const meta = this.boatGlbMeta.get(b);
+    if (!meta || meta.requested) return;
+    meta.requested = true;
+    void loadCityGlb(meta.glb).then((scene) => {
+      if (!scene) return;
+      const fitted = fitGlbToDimension(scene, "z", meta.len, meta.draft);
+      b.group.clear();
+      b.group.add(fitted);
+    });
   }
 
   private buildSpeedboatMesh(accentHex: number): THREE.Group {
@@ -111,13 +124,7 @@ export class BoatSystem {
         group: mesh,
       };
       this.boats.push(boat);
-
-      void loadCityGlb(s.glb).then((scene) => {
-        if (!scene) return;
-        const fitted = fitGlbToDimension(scene, "z", s.len, s.draft);
-        boat.group.clear();
-        boat.group.add(fitted);
-      });
+      this.boatGlbMeta.set(boat, { glb: s.glb, len: s.len, draft: s.draft });
     }
   }
 
@@ -132,6 +139,7 @@ export class BoatSystem {
   summonStarterBoatNear(pos: THREE.Vector3): DriveableBoat | null {
     const starter = this.getStarterBoat();
     if (!starter || this.activeBoat === starter) return null;
+    this.ensureBoatModel(starter);
 
     let bestX: number = STARTER_BOAT_DOCK.x;
     let bestZ: number = STARTER_BOAT_DOCK.z;
@@ -205,11 +213,14 @@ export class BoatSystem {
     return best;
   }
 
-  update(dt: number, input: BoatInput): void {
+  update(dt: number, input: BoatInput, focusPos?: THREE.Vector3): void {
     const cdt = Math.min(Math.max(dt, 0), 0.05);
     this.animT += cdt;
 
     for (const b of this.boats) {
+      if (focusPos && Math.hypot(b.pos.x - focusPos.x, b.pos.z - focusPos.z) < 320) {
+        this.ensureBoatModel(b);
+      }
       const active = b === this.activeBoat;
       const throttle = active ? input.throttle : 0;
       const steer = active ? input.steer : 0;

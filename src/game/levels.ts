@@ -28,19 +28,14 @@ import {
   scatterInstances,
 } from "./kit/geom";
 import { materialFor } from "./kit/surface";
-import {
-  buildWestgateWorld,
-  OpenWorldEngine,
-  SpatialAABBGrid,
-  SpatialColliderGrid,
-  WorldHeightSystem,
-  type DistrictInfo,
-  type MinimapData,
-  type TimeOfDayMode,
-  type WalkableSurface,
-  type WestgateActivityManager,
-  type WestgateVehicleManager,
-} from "./city";
+import { SpatialAABBGrid, SpatialColliderGrid } from "./city/SpatialIndex";
+import { WorldHeightSystem, type WalkableSurface } from "./city/HeightSystem";
+import type { DistrictInfo } from "./city/WestgateTerrain";
+import type { TimeOfDayMode } from "./city/WestgateMeta";
+import type { MinimapData } from "./city/MinimapData";
+import type { OpenWorldEngine } from "./city/OpenWorldEngine";
+import type { WestgateActivityManager } from "./city/WestgateActivities";
+import type { WestgateVehicleManager } from "./city/VehicleSystem";
 import type { WeatherMode, WeatherState } from "./vehicles/weather";
 
 /* ====================== seeded RNG ====================== */
@@ -3839,7 +3834,6 @@ function finish(K: Kit, ambient: ReturnType<typeof setupAmbient>): LevelResult {
 
 export function buildLevel(missionId: number, content: THREE.Object3D, main: THREE.Scene, renderer: THREE.WebGLRenderer): LevelResult {
   switch (missionId) {
-    case -1: return buildWestgateWorld(content, main, renderer);
     case 0: return buildRange(content, main, renderer);
     case 1: return buildVillage(content, main, renderer);
     case 2: return buildConstruction(content, main, renderer);
@@ -3849,4 +3843,12 @@ export function buildLevel(missionId: number, content: THREE.Object3D, main: THR
     case 6: return buildCitadel(content, main, renderer);
     default: return buildRange(content, main, renderer);
   }
+}
+
+export async function buildLevelAsync(missionId: number, content: THREE.Object3D, main: THREE.Scene, renderer: THREE.WebGLRenderer): Promise<LevelResult> {
+  if (missionId === -1) {
+    const { buildWestgateWorld } = await import("./city/WestgateWorld");
+    return buildWestgateWorld(content, main, renderer);
+  }
+  return buildLevel(missionId, content, main, renderer);
 }

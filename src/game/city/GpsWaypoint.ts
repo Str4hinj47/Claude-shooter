@@ -1,5 +1,5 @@
 import { WESTGATE_CONTRACT_SPOTS } from "./WestgateActivities";
-import { WESTGATE_TELEPORTS } from "./WestgateWorld";
+import { WESTGATE_TELEPORTS } from "./WestgateMeta";
 import { APARTMENTS } from "../progression";
 
 export interface GpsWaypoint {

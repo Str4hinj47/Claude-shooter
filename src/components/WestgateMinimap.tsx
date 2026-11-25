@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { computeWestgateGpsRoute, type MinimapData } from "../game/city/MinimapData";
 import { WESTGATE_CONTRACT_SPOTS } from "../game/city/WestgateActivities";
-import { WESTGATE_TELEPORTS } from "../game/city/WestgateWorld";
+import { WESTGATE_TELEPORTS } from "../game/city/WestgateMeta";
 import { resolveGpsTarget, type GpsWaypoint } from "../game/city/GpsWaypoint";
 
 export interface MinimapLiveSample {
@@ -559,6 +559,40 @@ export function WestgateMinimap({
           ctx.lineWidth = 1.5 / zoom;
           ctx.strokeStyle = "#ffffff";
           ctx.stroke();
+        }
+      }
+
+      // Mission Start Contract Beacons (C0–C6) — pulsing radar ring on next uncompleted contract
+      if (sample.contracts) {
+        const nextActive = sample.contracts.find((c) => c.missionId >= 1 && c.unlocked && !c.completed);
+        for (const c of sample.contracts) {
+          const isNext = nextActive?.missionId === c.missionId;
+          const sz = (isNext ? 8.2 : 6.0) / zoom;
+          if (isNext) {
+            const pulse = 1 + 0.55 * (0.5 + 0.5 * Math.sin(now * 0.006));
+            ctx.beginPath();
+            ctx.arc(c.x, c.z, (sz * 1.45 * pulse), 0, TAU);
+            ctx.strokeStyle = "#ff3b30";
+            ctx.lineWidth = 2.0 / zoom;
+            ctx.stroke();
+          }
+          ctx.beginPath();
+          ctx.moveTo(c.x, c.z - sz);
+          ctx.lineTo(c.x + sz, c.z);
+          ctx.lineTo(c.x, c.z + sz);
+          ctx.lineTo(c.x - sz, c.z);
+          ctx.closePath();
+          ctx.fillStyle = c.completed ? "#2dd4bf" : !c.unlocked ? "#64748b" : isNext ? "#ff3b30" : "#f59e0b";
+          ctx.fill();
+          ctx.lineWidth = 1.6 / zoom;
+          ctx.strokeStyle = "#07080b";
+          ctx.stroke();
+
+          ctx.font = `800 ${Math.max(9, 10 / zoom)}px ui-monospace, monospace`;
+          ctx.fillStyle = isNext ? "#ffffff" : "#e2e8f0";
+          ctx.textAlign = "left";
+          ctx.textBaseline = "middle";
+          ctx.fillText(`C${c.missionId}`, c.x + sz * 1.18, c.z);
         }
       }
 

@@ -1,11 +1,15 @@
 import * as THREE from "three";
 import { GLTFLoader, type GLTF } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
+import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
 import * as SkeletonUtils from "three/examples/jsm/utils/SkeletonUtils.js";
-import soldierUrl from "../assets/soldier.glb?url";
 import { applyWeaponCustomization, buildRifle, buildWeapon, RIFLE, tintWeapon, WEAPONS, type Rifle, type WeaponId, type WeaponSpec } from "./rifle";
 import { buildEquipment, type EquipmentAlignMap, type SoldierEquipment } from "./equipment";
 import { DEFAULT_WEAPON_CONFIGS, type SoldierAppearance, type WeaponCustomConfig } from "../game/progression";
 import { Spring, clamp, damp, dampAngle, easeInOut, lerp, smoothstep, wrapAngle } from "./math";
+
+const BASE_URL = (import.meta as unknown as { env?: { BASE_URL?: string } }).env?.BASE_URL ?? "/";
+const soldierUrl = `${BASE_URL}characters/soldier.glb`;
 
 interface CharDetailMaps {
   fabricRoughness: THREE.DataTexture;
@@ -189,12 +193,26 @@ interface CalibrationData {
 
 const cachedGltfMap = new Map<string, Promise<GLTF>>();
 const calibratedCache = new Map<string, CalibrationData>();
+let sharedSoldierLoader: GLTFLoader | null = null;
+function getSoldierLoader(): GLTFLoader {
+  if (sharedSoldierLoader) return sharedSoldierLoader;
+  const draco = new DRACOLoader();
+  draco.setDecoderPath(`${BASE_URL}draco/`);
+  draco.setWorkerLimit(1);
+  const loader = new GLTFLoader();
+  loader.setDRACOLoader(draco);
+  loader.setMeshoptDecoder(MeshoptDecoder);
+  sharedSoldierLoader = loader;
+  return loader;
+}
 export function loadCachedSoldierGltf(url: string, onProgress?: (p: number) => void): Promise<GLTF> {
   let promise = cachedGltfMap.get(url);
   if (!promise) {
-    promise = new GLTFLoader().loadAsync(url, (e) => {
-      if (e.total) onProgress?.(e.loaded / e.total);
-    });
+    promise = MeshoptDecoder.ready.then(() =>
+      getSoldierLoader().loadAsync(url, (e) => {
+        if (e.total) onProgress?.(e.loaded / e.total);
+      }),
+    );
     cachedGltfMap.set(url, promise);
   } else {
     onProgress?.(1);
@@ -363,6 +381,7 @@ export class SoldierRig {
   bodyYaw = 0;
   private turning = false;
   private sprinting = false;
+  private sprintSuppressT = 0;
   private moveSign = 1;
 
   // smooth state
@@ -834,7 +853,10 @@ export class SoldierRig {
   fire(): boolean {
     if (this.dead || this.holstered || this.carryingBody || this.reloadT >= 0) return false;
     if (this.fireCd > 0) return false;
-    if (this.sprintBlend > 0.4 || this.aimBlend < 0.55) {
+    // Break sprint immediately when firing so sprint-to-fire responds without dropping inputs
+    this.sprintSuppressT = 0.35;
+    this.sprinting = false;
+    if (this.sprintBlend > 0.55 || this.aimBlend < 0.38) {
       this.aimTimer = 3;
       return false;
     }
@@ -994,6 +1016,7 @@ export class SoldierRig {
     this.time += dt;
     this.fireCd = Math.max(0, this.fireCd - dt);
     this.hitT = Math.max(0, this.hitT - dt);
+    this.sprintSuppressT = Math.max(0, this.sprintSuppressT - dt);
 
     this.groundY = groundY;
     this.updateLocomotion(dt);
@@ -1015,14 +1038,21 @@ export class SoldierRig {
       dir.copy(inp.move).setY(0).normalize();
       const psi = Math.atan2(dir.x, dir.z);
       rel = wrapAngle(psi - this.aimYaw);
-      const sprintOK = inp.sprint && !inp.crouch && !inp.ads && !this.carryingBody && Math.abs(rel) < 1.1 && this.reloadT < 0;
+      const sprintOK =
+        inp.sprint &&
+        this.sprintSuppressT <= 0 &&
+        !inp.crouch &&
+        !inp.ads &&
+        !this.carryingBody &&
+        Math.abs(rel) < 1.1 &&
+        this.reloadT < 0;
       this.sprinting = sprintOK;
       const baseSpd = sprintOK
         ? this.runN
         : inp.crouch
-          ? this.walkN * 0.6 * this.crouchSpeedMult
+          ? this.walkN * 0.62 * this.crouchSpeedMult
           : inp.ads
-            ? this.walkN * 0.55
+            ? this.walkN * 0.62
             : this.walkN;
       target = this.carryingBody ? baseSpd * this.carrySpeedMult : baseSpd;
     } else {
@@ -1046,7 +1076,7 @@ export class SoldierRig {
     this.moveSignSmooth = damp(this.moveSignSmooth, this.moveSign, 13, dt);
 
     const desired = dir.multiplyScalar(target);
-    const rate = this.grounded ? (wantMove ? 8 : 11) : 2.6;
+    const rate = this.grounded ? (wantMove ? 13 : 16) : 3.2;
     this.vel.x = damp(this.vel.x, desired.x, rate, dt);
     this.vel.z = damp(this.vel.z, desired.z, rate, dt);
     if (this.dead) {
@@ -1178,8 +1208,8 @@ export class SoldierRig {
     // ----- state smoothing
     this.aimTimer = Math.max(0, this.aimTimer - dt);
     const wantAim = !dead && (inp.ads || this.aimTimer > 0 || this.reloadT >= 0) && !this.sprinting;
-    this.aimBlend = damp(this.aimBlend, wantAim ? 1 : 0, wantAim ? 13 : 4.5, dt);
-    this.sprintBlend = damp(this.sprintBlend, this.sprinting ? 1 : 0, 7, dt);
+    this.aimBlend = damp(this.aimBlend, wantAim ? 1 : 0, wantAim ? 18 : 5, dt);
+    this.sprintBlend = damp(this.sprintBlend, this.sprinting ? 1 : 0, this.sprinting ? 8 : 14, dt);
     let crouchT = inp.crouch && !dead ? 1 : 0;
     this.crouchAmt = damp(this.crouchAmt, crouchT, 9, dt);
     this.leanS = damp(this.leanS, dead ? 0 : inp.lean, 10, dt);

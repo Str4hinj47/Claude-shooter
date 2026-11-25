@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Compass, Crosshair, Layers, MapPin, Navigation, RotateCcw, X, Zap } from "lucide-react";
 import { computeWestgateGpsRoute, type MinimapData } from "../game/city/MinimapData";
 import { WESTGATE_CONTRACT_SPOTS, WESTGATE_SPEED_TRAPS } from "../game/city/WestgateActivities";
-import { WESTGATE_TELEPORTS } from "../game/city/WestgateWorld";
+import { WESTGATE_TELEPORTS } from "../game/city/WestgateMeta";
 import { getDistrictAt } from "../game/city/WestgateTerrain";
 import { MISSIONS } from "../game/story";
 import { resolveGpsTarget, type GpsWaypoint } from "../game/city/GpsWaypoint";

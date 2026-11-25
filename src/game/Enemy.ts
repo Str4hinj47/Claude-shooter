@@ -372,7 +372,7 @@ export class Fighter {
         this.alerted = true;
         this.host.onAlert(this);
       }
-      this.burstTimer = Math.max(this.burstTimer, 0.28 + (1 - this.mission.enemyAccuracy) * 0.28);
+      this.burstTimer = Math.max(this.burstTimer, 0.38 + (1 - this.mission.enemyAccuracy) * 0.30);
     }
   }
 
@@ -428,7 +428,7 @@ export class Fighter {
         this.alerted = true;
         this.host.onAlert(this);
       }
-      this.burstTimer = Math.max(this.burstTimer, 0.3 + (1 - this.mission.enemyAccuracy) * 0.3);
+      this.burstTimer = Math.max(this.burstTimer, 0.38 + (1 - this.mission.enemyAccuracy) * 0.30);
       if (this.hearingCooldown <= 0) {
         this.hearingCooldown = 1.2;
         this.broadcastAlert(pos, 14);
@@ -444,14 +444,15 @@ export class Fighter {
     return true;
   }
 
-  /** Radio/shout callout to nearby teammates */
+  /** Radio/shout callout to nearby teammates on the same or adjacent floor */
   protected broadcastAlert(pos: THREE.Vector3, radius: number) {
     const my = this.rig.root.position;
     for (const e of this.host.enemies()) {
       if ((e as Fighter) === this || e.isDead) continue;
+      if (Math.abs(e.rig.root.position.y - my.y) > 4.2) continue;
       const d = Math.hypot(e.rig.root.position.x - my.x, e.rig.root.position.z - my.z);
       if (d <= radius) {
-        e.alertFrom(pos, 0.2 + (d / radius) * 0.4, 0.62);
+        e.alertFrom(pos, 0.24 + (d / radius) * 0.42, 0.58);
       }
     }
   }
@@ -636,7 +637,9 @@ export class Fighter {
       const bodyPt = this.tmp3.set(bp.x, bp.y + 0.45, bp.z);
       if (this.hasLineOfSight(eye, bodyPt)) {
         e.bodyDiscovered = true;
-        this.alertFrom(bp, 0.14, 0.72);
+        this.lastSeen.copy(bp);
+        this.searchTimer = Math.max(this.searchTimer, 4.2);
+        this.alertFrom(bp, 0.22, 0.72);
         this.broadcastAlert(bp, 14);
         break;
       }
@@ -724,7 +727,7 @@ export class Fighter {
           this.alerted = true;
           host.onAlert(this);
         }
-        this.burstTimer = Math.max(this.burstTimer, 0.22 + (1 - this.mission.enemyAccuracy) * 0.28);
+        this.burstTimer = Math.max(this.burstTimer, 0.36 + (1 - this.mission.enemyAccuracy) * 0.30);
         this.broadcastAlert(this.lastSeen, 20);
       }
       this.sightLost = 0;
@@ -1011,18 +1014,22 @@ export class Ally extends Fighter {
     mv.set(mvx, 0, mvz);
     if (mv.lengthSq() > 0.0004) mv.normalize();
     rig.input.sprint = dist > 16;
-    rig.input.crouch = false;
-    rig.input.ads = true;
+    const combatActive = host.enemies().some((e) => !e.isDead && e.state === "attack");
+    rig.input.crouch = !combatActive && host.playerCrouching();
+    rig.input.ads = combatActive;
 
-    // ---- engage the nearest enemy
+    // ---- engage alerted enemies only so stealth approaches aren't blown
     let target: Enemy | null = null;
     let bestD = 40;
-    for (const e of host.enemies()) {
-      if (e.isDead) continue;
-      const d = Math.hypot(e.rig.root.position.x - my.x, e.rig.root.position.z - my.z);
-      if (d < bestD && this.hasLineOfSight(this.eyePos(this.tmp2), e.rig.root.position.clone().setY(e.rig.root.position.y + 1.2))) {
-        bestD = d;
-        target = e;
+    if (combatActive) {
+      for (const e of host.enemies()) {
+        if (e.isDead) continue;
+        const d = Math.hypot(e.rig.root.position.x - my.x, e.rig.root.position.z - my.z);
+        const effD = e.state === "attack" ? d : d + 12;
+        if (effD < bestD && this.hasLineOfSight(this.eyePos(this.tmp2), e.rig.root.position.clone().setY(e.rig.root.position.y + 1.2))) {
+          bestD = effD;
+          target = e;
+        }
       }
     }
     if (target) {

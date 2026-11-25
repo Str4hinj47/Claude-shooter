@@ -175,7 +175,10 @@ export interface ContractBeaconRuntime {
   pos: THREE.Vector3;
   crystal: THREE.Mesh;
   ringMat: THREE.MeshBasicMaterial;
+  outerRing: THREE.Mesh;
+  outerRingMat: THREE.MeshBasicMaterial;
   beamMat: THREE.MeshBasicMaterial;
+  isNextActive: boolean;
 }
 
 export class WestgateActivityManager {
@@ -263,10 +266,13 @@ export class WestgateActivityManager {
     }
 
     // Mission Contract Launch Beacons linking Campaign Missions M0–M6 into Westgate Bay
-    const ringGeo = new THREE.RingGeometry(1.9, 2.35, 28);
+    const ringGeo = new THREE.RingGeometry(2.15, 2.75, 32);
     ringGeo.rotateX(-Math.PI / 2);
-    const beamGeo = new THREE.CylinderGeometry(0.14, 0.45, 7.5, 12, 1, true);
-    const crystalGeo = new THREE.OctahedronGeometry(0.55, 0);
+    const outerRingGeo = new THREE.RingGeometry(3.2, 3.65, 32);
+    outerRingGeo.rotateX(-Math.PI / 2);
+    const tallBeamGeo = new THREE.CylinderGeometry(0.32, 1.35, 54, 14, 1, true);
+    const stdBeamGeo = new THREE.CylinderGeometry(0.22, 0.9, 26, 12, 1, true);
+    const crystalGeo = new THREE.OctahedronGeometry(0.7, 0);
     const save = loadSave();
     for (const d of save.discoveredDistricts ?? []) {
       this.discoveredDistricts.add(d);
@@ -279,12 +285,19 @@ export class WestgateActivityManager {
       }
     });
 
+    const unlockMax = Math.max(1, save.unlocked);
+    const nextActiveId =
+      WESTGATE_CONTRACT_SPOTS.find(
+        (s) => s.missionId >= 1 && s.missionId <= unlockMax && !save.records[s.missionId]?.completed,
+      )?.missionId ?? Math.min(MISSIONS.length - 1, unlockMax);
+
     for (const spot of WESTGATE_CONTRACT_SPOTS) {
       const m = MISSIONS.find((mi) => mi.id === spot.missionId);
       if (!m) continue;
       const y = terrainAt(spot.x, spot.z);
-      const unlocked = spot.missionId <= Math.max(1, save.unlocked);
+      const unlocked = spot.missionId <= unlockMax;
       const completed = !!save.records[spot.missionId]?.completed;
+      const isNextActive = spot.missionId === nextActiveId;
       const col = unlocked ? (completed ? 0xfbbf24 : new THREE.Color(m.accent).getHex()) : 0x64748b;
 
       const g = new THREE.Group();
@@ -293,29 +306,56 @@ export class WestgateActivityManager {
       const ringMat = new THREE.MeshBasicMaterial({
         color: col,
         transparent: true,
-        opacity: unlocked ? 0.85 : 0.35,
+        opacity: isNextActive ? 0.96 : unlocked ? 0.85 : 0.32,
         side: THREE.DoubleSide,
       });
       const ring = new THREE.Mesh(ringGeo, ringMat);
-      ring.position.y = 0.08;
+      ring.position.y = 0.09;
+
+      const outerRingMat = new THREE.MeshBasicMaterial({
+        color: col,
+        transparent: true,
+        opacity: isNextActive ? 0.68 : unlocked ? 0.35 : 0.12,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      });
+      const outerRing = new THREE.Mesh(outerRingGeo, outerRingMat);
+      outerRing.position.y = 0.1;
 
       const beamMat = new THREE.MeshBasicMaterial({
         color: col,
         transparent: true,
-        opacity: unlocked ? 0.22 : 0.08,
+        opacity: isNextActive ? 0.34 : unlocked ? 0.2 : 0.06,
         side: THREE.DoubleSide,
         depthWrite: false,
+        blending: THREE.AdditiveBlending,
       });
-      const beam = new THREE.Mesh(beamGeo, beamMat);
-      beam.position.y = 3.8;
+      const beamH = isNextActive ? 54 : 26;
+      const beam = new THREE.Mesh(isNextActive ? tallBeamGeo : stdBeamGeo, beamMat);
+      beam.position.y = beamH * 0.5;
 
       const crystal = new THREE.Mesh(
         crystalGeo,
         new THREE.MeshBasicMaterial({ color: col, wireframe: !unlocked }),
       );
-      crystal.position.y = 2.0;
+      crystal.position.y = 2.25;
 
-      g.add(ring, beam, crystal);
+      // Floating high-contrast overhead MISSION START billboard sprite
+      const sign = this.buildContractBillboardSprite(
+        spot.missionId,
+        m.codename,
+        m.name,
+        unlocked,
+        completed,
+        isNextActive,
+        m.accent,
+      );
+      if (sign) {
+        sign.position.set(0, isNextActive ? 5.2 : 4.5, 0);
+        g.add(sign);
+      }
+
+      g.add(ring, outerRing, beam, crystal);
       this.buildContractStagingSite(g, spot.missionId, col);
       this.root.add(g);
       this.contracts.push({
@@ -323,7 +363,10 @@ export class WestgateActivityManager {
         pos: new THREE.Vector3(spot.x, y, spot.z),
         crystal,
         ringMat,
+        outerRing,
+        outerRingMat,
         beamMat,
+        isNextActive,
       });
     }
 
@@ -610,11 +653,86 @@ export class WestgateActivityManager {
     }
   }
 
+  private buildContractBillboardSprite(
+    missionId: number,
+    codename: string,
+    name: string,
+    unlocked: boolean,
+    completed: boolean,
+    isNextActive: boolean,
+    accent: string,
+  ): THREE.Sprite | null {
+    if (typeof document === "undefined") return null;
+    const canvas = document.createElement("canvas");
+    canvas.width = 512;
+    canvas.height = 176;
+    const ctx = canvas.getContext("2d");
+    if (!ctx || typeof ctx.fillText !== "function") return null;
+
+    const borderCol = unlocked ? (completed ? "#fbbf24" : accent) : "#64748b";
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Dark tactical plate
+    ctx.fillStyle = "rgba(7, 9, 14, 0.92)";
+    ctx.fillRect(10, 10, 492, 136);
+    ctx.strokeStyle = borderCol;
+    ctx.lineWidth = isNextActive ? 6 : 4;
+    ctx.strokeRect(10, 10, 492, 136);
+
+    // Header strip
+    ctx.fillStyle = borderCol;
+    ctx.fillRect(10, 10, 492, 42);
+    ctx.fillStyle = "#07090e";
+    ctx.font = "900 24px ui-monospace, monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const tag = !unlocked
+      ? `LOCKED · CONTRACT C${missionId}`
+      : isNextActive
+        ? `★ START MISSION · C${missionId}`
+        : completed
+          ? `REPLAY MISSION · C${missionId}`
+          : `MISSION START · C${missionId}`;
+    ctx.fillText(tag, 256, 31);
+
+    // Codename + location
+    ctx.fillStyle = "#f2efe9";
+    ctx.font = "800 34px sans-serif";
+    ctx.fillText(codename, 256, 82);
+
+    ctx.fillStyle = unlocked ? "#cbd5e1" : "#94a3b8";
+    ctx.font = "600 20px ui-monospace, monospace";
+    ctx.fillText(unlocked ? `${name} · PRESS [G]` : `CLEAR C${missionId - 1} FIRST`, 256, 120);
+
+    // Downward pointer arrow beneath plate
+    ctx.fillStyle = borderCol;
+    ctx.beginPath();
+    ctx.moveTo(234, 146);
+    ctx.lineTo(278, 146);
+    ctx.lineTo(256, 172);
+    ctx.closePath();
+    ctx.fill();
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: true });
+    const sp = new THREE.Sprite(mat);
+    sp.scale.set(isNextActive ? 6.2 : 5.0, isNextActive ? 2.15 : 1.75, 1);
+    return sp;
+  }
+
   update(dt: number, pos: THREE.Vector3, speedMs: number, driving: boolean): SpeedTrapHit | null {
     this.animT += dt;
     for (const c of this.contracts) {
-      c.crystal.rotation.y += dt * 1.6;
-      c.crystal.position.y = 2.0 + Math.sin(this.animT * 2.4 + c.spot.missionId) * 0.22;
+      c.crystal.rotation.y += dt * (c.isNextActive ? 2.4 : 1.6);
+      c.crystal.position.y = 2.25 + Math.sin(this.animT * 2.6 + c.spot.missionId) * 0.28;
+      const pulse = 0.5 + 0.5 * Math.sin(this.animT * (c.isNextActive ? 4.2 : 2.2) + c.spot.missionId);
+      const s = 1 + pulse * (c.isNextActive ? 0.28 : 0.14);
+      c.outerRing.scale.set(s, s, 1);
+      c.outerRingMat.opacity = c.isNextActive ? 0.35 + (1 - pulse) * 0.55 : 0.18 + (1 - pulse) * 0.25;
+      if (c.isNextActive) {
+        c.beamMat.opacity = 0.26 + pulse * 0.18;
+      }
     }
 
     let hit: SpeedTrapHit | null = null;
@@ -640,7 +758,7 @@ export class WestgateActivityManager {
     return hit;
   }
 
-  findNearbyContract(pos: THREE.Vector3, maxDist = 8.5): ContractSpotDef | null {
+  findNearbyContract(pos: THREE.Vector3, maxDist = 11.5): ContractSpotDef | null {
     let best: ContractSpotDef | null = null;
     let bestD2 = maxDist * maxDist;
     for (const c of this.contracts) {

@@ -39,6 +39,7 @@ export interface FlyableAircraft {
 export class AirVehicleSystem {
   readonly group = new THREE.Group();
   readonly aircraft: FlyableAircraft[] = [];
+  private readonly airGlbMeta = new Map<FlyableAircraft, { glb: string; kind: AirKind; targetLen: number; beacon: THREE.Mesh; requested?: boolean }>();
   activeAircraft: FlyableAircraft | null = null;
   onRotorDownwash?: (pos: THREE.Vector3, overWater: boolean, power: number) => void;
 
@@ -55,6 +56,33 @@ export class AirVehicleSystem {
     this.terrainAt = terrainAt;
     this.groundAt = groundAt;
     this.spawnFleet();
+  }
+
+  private ensureAircraftModel(ac: FlyableAircraft): void {
+    const meta = this.airGlbMeta.get(ac);
+    if (!meta || meta.requested) return;
+    meta.requested = true;
+    void loadCityGlb(meta.glb).then((scene) => {
+      if (!scene) return;
+      const fitted = fitGlbToDimension(scene, "z", meta.targetLen, 0);
+      const glbRotors: THREE.Object3D[] = [];
+      fitted.traverse((o) => {
+        const n = o.name.toLowerCase();
+        if (meta.kind === "helicopter") {
+          if (n === "empty001" || n === "cube004") glbRotors.push(o);
+          else if (n === "empty" || n === "cube002") {
+            o.userData.isTailRotor = true;
+            glbRotors.push(o);
+          }
+        } else if (n === "prop") {
+          o.userData.isProp = true;
+          glbRotors.push(o);
+        }
+      });
+      ac.group.clear();
+      ac.group.add(fitted, meta.beacon);
+      ac.rotors = glbRotors;
+    });
   }
 
   private buildHelicopterMesh(accentHex: number): { group: THREE.Group; rotors: THREE.Object3D[] } {
@@ -213,28 +241,7 @@ export class AirVehicleSystem {
         homeYaw: yaw,
       };
       this.aircraft.push(ac);
-
-      void loadCityGlb(sp.glb).then((scene) => {
-        if (!scene) return;
-        const fitted = fitGlbToDimension(scene, "z", sp.targetLen, 0);
-        const glbRotors: THREE.Object3D[] = [];
-        fitted.traverse((o) => {
-          const n = o.name.toLowerCase();
-          if (sp.kind === "helicopter") {
-            if (n === "empty001" || n === "cube004") glbRotors.push(o);
-            else if (n === "empty" || n === "cube002") {
-              o.userData.isTailRotor = true;
-              glbRotors.push(o);
-            }
-          } else if (n === "prop") {
-            o.userData.isProp = true;
-            glbRotors.push(o);
-          }
-        });
-        ac.group.clear();
-        ac.group.add(fitted, beacon);
-        ac.rotors = glbRotors;
-      });
+      this.airGlbMeta.set(ac, { glb: sp.glb, kind: sp.kind, targetLen: sp.targetLen, beacon });
     }
   }
 
@@ -270,7 +277,7 @@ export class AirVehicleSystem {
     return { pos: ex, altitudeAboveGround: alt };
   }
 
-  update(dt: number, input: AirInput): void {
+  update(dt: number, input: AirInput, focusPos?: THREE.Vector3): void {
     const cdt = Math.min(Math.max(dt, 0), 0.05);
     this.animT += cdt;
     this.downwashAcc += cdt;
@@ -279,6 +286,9 @@ export class AirVehicleSystem {
 
     const strobeOn = Math.sin(this.animT * 7.5) > 0.35;
     for (const a of this.aircraft) {
+      if (focusPos && Math.hypot(a.pos.x - focusPos.x, a.pos.z - focusPos.z) < 340) {
+        this.ensureAircraftModel(a);
+      }
       const isActive = a === this.activeAircraft;
       const effIn = isActive ? input : { throttle: 0, roll: 0, yaw: 0, climb: 0 };
 

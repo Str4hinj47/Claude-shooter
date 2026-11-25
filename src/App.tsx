@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Game, type HudState } from "./game/Game";
-import { MISSIONS, OPEN_WORLD_MISSION, type MissionDef } from "./game/story";
+import { MISSIONS, type MissionDef } from "./game/story";
 import {
   CHARACTERS,
   characterUrl,
@@ -42,7 +42,11 @@ import { WEAPONS } from "./character/rifle";
 import { MenuShell, type Screen } from "./components/MenuShell";
 import { GameHud } from "./components/GameHud";
 import { PauseAndEndOverlays } from "./components/PauseAndEndOverlays";
-import { InteriorModals, type HomeModalKind } from "./components/InteriorModals";
+import type { HomeModalKind } from "./components/InteriorModals";
+
+const InteriorModals = lazy(() =>
+  import("./components/InteriorModals").then((m) => ({ default: m.InteriorModals })),
+);
 
 const initial: HudState = {
   loading: true,
@@ -72,6 +76,7 @@ const initial: HudState = {
   spread: 0.01,
   hitMarker: 0,
   hitCrit: false,
+  hitKill: false,
   damageFlash: 0,
   damageDirRad: 0,
   timeScale: 1,
@@ -122,6 +127,7 @@ const initial: HudState = {
   timeOfDayLabel: "Afternoon",
   activityToast: null,
   nearbyContract: null,
+  nextContractMarker: null,
   hasOpenWorldReturn: false,
   cameraPreset: "close",
   credits: 180,
@@ -147,7 +153,7 @@ export default function App() {
   const host = useRef<HTMLDivElement>(null);
   const game = useRef<Game | null>(null);
   const [hud, setHud] = useState<HudState>(initial);
-  const [screen, setScreen] = useState<Screen>("playing");
+  const [screen, setScreen] = useState<Screen>("home");
   const [save, setSave] = useState<SaveData>(() => loadSave());
   const [selectedMissionId, setSelectedMissionId] = useState<number>(() => {
     const s = loadSave();
@@ -171,17 +177,8 @@ export default function App() {
 
   useEffect(() => {
     if (!host.current) return;
-    const g = new Game(host.current, setHud, { initialHangar: false });
+    const g = new Game(host.current, setHud, { initialHangar: true });
     game.current = g;
-    void g.startMission(OPEN_WORLD_MISSION.id, {
-      onHud: setHud,
-      onMissionEnd: (mission, success, reward) => {
-        setEndInfo({ mission, success, reward });
-        setSave(loadSave());
-      },
-      onOpenHomeStation: openHomeStationHandler,
-      characterUrl: characterUrl(loadCharacterId()),
-    });
     return () => {
       g.dispose();
       game.current = null;
@@ -210,6 +207,14 @@ export default function App() {
     setEndInfo(null);
     setHomeModal(null);
     setScreen("playing");
+    if (m.id === -1 && gpsTargetId === null) {
+      const s = loadSave();
+      const maxU = Math.max(1, s.unlocked);
+      const nextId =
+        MISSIONS.find((mi) => mi.id >= 1 && mi.id <= maxU && !s.records[mi.id]?.completed)?.id ??
+        Math.min(MISSIONS.length - 1, maxU);
+      setGpsTargetId(`contract:${nextId}`);
+    }
     void game.current?.startMission(m.id, {
       onHud: setHud,
       onMissionEnd: (mission, success, reward) => {
@@ -463,24 +468,26 @@ export default function App() {
             onBuyApartment={handleBuyApartment}
           />
           {homeModal && (
-            <InteriorModals
-              modal={homeModal.kind}
-              apartmentId={homeModal.apartmentId}
-              carId={homeModal.carId}
-              save={save}
-              characterId={characterId}
-              onClose={closeHomeModal}
-              onDriveOut={handleDriveOutFromModal}
-              onBuyCar={handleBuyCar}
-              onSelectCar={handleSelectCar}
-              onUpdateCarCustom={handleUpdateCarCustom}
-              onUpgradeCarTuning={handleUpgradeCarTuning}
-              onUpdateWeaponConfig={handleUpdateWeaponConfig}
-              onPurchaseUpgrade={handleBuyUpgrade}
-              onSelectCharacter={handleSelectCharacter}
-              onUpdateAppearance={updateAppearance}
-              onBuyAndEnterApartment={handleBuyAndEnterApartment}
-            />
+            <Suspense fallback={null}>
+              <InteriorModals
+                modal={homeModal.kind}
+                apartmentId={homeModal.apartmentId}
+                carId={homeModal.carId}
+                save={save}
+                characterId={characterId}
+                onClose={closeHomeModal}
+                onDriveOut={handleDriveOutFromModal}
+                onBuyCar={handleBuyCar}
+                onSelectCar={handleSelectCar}
+                onUpdateCarCustom={handleUpdateCarCustom}
+                onUpgradeCarTuning={handleUpgradeCarTuning}
+                onUpdateWeaponConfig={handleUpdateWeaponConfig}
+                onPurchaseUpgrade={handleBuyUpgrade}
+                onSelectCharacter={handleSelectCharacter}
+                onUpdateAppearance={updateAppearance}
+                onBuyAndEnterApartment={handleBuyAndEnterApartment}
+              />
+            </Suspense>
           )}
           <PauseAndEndOverlays
             hud={homeModal ? { ...hud, paused: false } : hud}

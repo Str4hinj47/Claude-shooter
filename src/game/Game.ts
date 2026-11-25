@@ -7,7 +7,7 @@ import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { SoldierRig, MAG_SIZE, type RigStatus } from "../character/SoldierRig";
 import { WEAPONS, type WeaponId } from "../character/rifle";
 import { type World, type SurfaceKind } from "./world";
-import { buildLevel, type LevelResult } from "./levels";
+import { buildLevelAsync, type LevelResult } from "./levels";
 import { CombatFX, Sfx } from "./fx";
 import { Spring, clamp, damp, lerp } from "../character/math";
 import { Ally, Enemy, Fighter, RescueNPC, resolveCircleAABBs, type CombatHost, type SoundKind } from "./Enemy";
@@ -35,7 +35,7 @@ import {
 import { type CarId } from "./vehicles/catalog";
 import { WEATHER_MODES, type WeatherMode } from "./vehicles/weather";
 import { VehicleAudio, type EngineHud } from "./vehicles/audio/VehicleAudio";
-import { TIME_OF_DAY_LABELS, TIME_OF_DAY_MODES, type TimeOfDayMode } from "./city/WestgateWorld";
+import { TIME_OF_DAY_LABELS, TIME_OF_DAY_MODES, type TimeOfDayMode } from "./city/WestgateMeta";
 import type { MinimapData } from "./city/MinimapData";
 import type { SurveillanceHudState } from "./city/ContractSurveillance";
 import { SAFEHOUSE_CAR_SPOT, SAFEHOUSE_STATIONS } from "./city/SafehouseResidence";
@@ -118,6 +118,7 @@ export interface HudState {
   spread: number;
   hitMarker: number;
   hitCrit: boolean;
+  hitKill: boolean;
   damageFlash: number;
   damageDirRad: number;
   timeScale: number;
@@ -156,6 +157,18 @@ export interface HudState {
     location: string;
     unlocked: boolean;
     completed: boolean;
+    accent: string;
+  } | null;
+  nextContractMarker: {
+    missionId: number;
+    codename: string;
+    name: string;
+    district: string;
+    dist: number;
+    dirAngle: number;
+    screenX: number;
+    screenY: number;
+    onScreen: boolean;
     accent: string;
   } | null;
   hasOpenWorldReturn: boolean;
@@ -465,6 +478,8 @@ export class Game {
   private shakeY = new Spring(300, 20);
   private hitMarker = 0;
   private hitCrit = false;
+  private hitKill = false;
+  private outOfCombatT = 0;
   private damageFlash = 0;
   private damageDirRad = 0;
   private spread = 0;
@@ -1046,7 +1061,14 @@ export class Game {
     }
 
     // build the world
-    this.level = buildLevel(mission.id, this.missionRoot, this.scene, this.renderer);
+    this.level = await buildLevelAsync(mission.id, this.missionRoot, this.scene, this.renderer);
+    if (this.disposed || seq !== this.missionSeq) {
+      this.level.disposeExtra?.();
+      this.level.vehicles?.dispose();
+      this.level.openWorld?.dispose();
+      this.level = null;
+      return;
+    }
     this.world = this.level;
     this.wireOpenWorldCallbacks();
 
@@ -1069,6 +1091,8 @@ export class Game {
     this.pitch = this.camPitch = 0.05;
     this.maxHealth = this.stats.maxHp;
     this.health = this.maxHealth;
+    this.outOfCombatT = 0;
+    this.hitKill = false;
     this.showcase = false;
     this.crouchToggle = false;
     this.holstered = mission.id === -1;
@@ -1777,6 +1801,7 @@ export class Game {
     this.armor = Math.max(0, this.armor - absorbed);
     this.health = Math.max(0, this.health - (scaled - absorbed));
     this.damageFlash = 1.0;
+    this.outOfCombatT = 0;
     this.damageDirRad = angle - this.camYaw;
     this.rig.hit(angle);
     this.shakeX.kick((Math.random() - 0.5) * 8);
@@ -1890,6 +1915,7 @@ export class Game {
   private updateObjectives() {
     if (!this.mission) return;
     const eliminateTotal = this.mission.enemies.filter((e) => !e.boss).length;
+    let newlyCompletedMilestone = false;
     for (const o of this.objectives) {
       if (o.done) continue;
       const def = this.mission.objectives.find((x) => x.id === o.id);
@@ -1899,18 +1925,39 @@ export class Game {
         if (o.total > 0 && o.progress >= o.total) o.done = true;
       } else if (kind === "boss") {
         o.progress = this.bossKilled ? 1 : 0;
-        if (o.total > 0 && o.progress >= o.total) o.done = true;
+        if (o.total > 0 && o.progress >= o.total) {
+          o.done = true;
+          newlyCompletedMilestone = true;
+        }
       } else if (kind === "destroy") {
         o.progress = this.destroyed;
-        if (o.total > 0 && o.progress >= o.total) o.done = true;
+        if (o.total > 0 && o.progress >= o.total) {
+          o.done = true;
+          newlyCompletedMilestone = true;
+        }
       } else if (kind === "rescue") {
         o.progress = this.rescued ? 1 : 0;
-        if (o.progress >= o.total) o.done = true;
+        if (o.progress >= o.total) {
+          o.done = true;
+          newlyCompletedMilestone = true;
+        }
       } else if (kind === "interact") {
         o.progress = this.interactables.filter((x) => x.def.objId === o.id && x.done).length;
-        if (o.total > 0 && o.progress >= o.total) o.done = true;
+        if (o.total > 0 && o.progress >= o.total) {
+          o.done = true;
+          newlyCompletedMilestone = true;
+        }
       }
       // kind "reach" handled by proximity checks in frame
+    }
+    if (newlyCompletedMilestone && !this.mission.practice && this.health > 0) {
+      this.health = Math.min(this.maxHealth, this.health + 25);
+    }
+    const nonExtract = this.objectives.filter((o) => o.id !== "extract");
+    const doneNonExtract = nonExtract.filter((o) => o.done).length;
+    if (!this.halfwayPlayed && nonExtract.length >= 2 && doneNonExtract >= Math.floor(nonExtract.length / 2)) {
+      this.halfwayPlayed = true;
+      if (this.mission.onHalfway) this.queueDialogue(this.mission.onHalfway);
     }
   }
 
@@ -2162,7 +2209,8 @@ export class Game {
     if (this.mission?.id === -1 && this.rig && !this.rig.dead && this.phase === "ready") {
       if (this.level?.contracts?.tryStealthTakedown(this.rig.root.position)) {
         this.sfx.takedown();
-        this.hitMarker = 0.25;
+        this.hitMarker = 0.28;
+        this.hitKill = true;
         this.camKick.kick(0.9);
         this.emitHud();
         return true;
@@ -2171,7 +2219,8 @@ export class Game {
     const target = this.findTakedownTarget();
     if (!target) return false;
     this.sfx.takedown();
-    this.hitMarker = 0.25;
+    this.hitMarker = 0.28;
+    this.hitKill = true;
     this.camKick.kick(0.9);
     target.takeDamage(1000, true);
     this.emitHud();
@@ -2236,8 +2285,10 @@ export class Game {
           const isLimb = !isHeadshot && h.point.y < ep.y + 0.78;
           const zoneMult = isHeadshot ? 2.0 : isLimb ? 0.72 : 1.0;
           fighter.takeDamage(shotDamage * zoneMult, isSuppressed, h.point);
-          this.hitMarker = isHeadshot ? 0.28 : 0.2;
+          const killedNow = fighter.isDead;
+          this.hitMarker = killedNow ? 0.34 : isHeadshot ? 0.28 : 0.2;
           this.hitCrit = isHeadshot;
+          this.hitKill = this.hitKill || killedNow;
           if (isHeadshot) {
             hitHead = true;
             if (p === 0) this.sfx.headshotPing();
@@ -2705,7 +2756,7 @@ export class Game {
             this.activityToastTimer = 5.0;
           }
           this.checkDistrictDiscovery(activeVeh.pos);
-          const nearC = this.level.activities.findNearbyContract(activeVeh.pos, 9.0);
+          const nearC = this.level.activities.findNearbyContract(activeVeh.pos, 11.5);
           this.nearbyContractSpot = nearC
             ? { missionId: nearC.missionId, x: nearC.x, z: nearC.z, yawDeg: nearC.yawDeg }
             : null;
@@ -2866,7 +2917,7 @@ export class Game {
           this.level.activities.updateStunts(dt, rig.root.position, false, false);
           this.level.activities.updateRace(dt, rig.root.position);
           this.checkDistrictDiscovery(rig.root.position);
-          const nearC = this.level.activities.findNearbyContract(rig.root.position, 8.5);
+          const nearC = this.level.activities.findNearbyContract(rig.root.position, 11.5);
           this.nearbyContractSpot = nearC
             ? { missionId: nearC.missionId, x: nearC.x, z: nearC.z, yawDeg: nearC.yawDeg }
             : null;
@@ -2909,12 +2960,28 @@ export class Game {
       this.updateInteractables(dt);
       this.checkProximityObjectives(dt);
       this.updateObjectives();
+      // Out-of-combat triage regeneration up to 45% max HP after 6.5s clean break
+      const inActiveFight = this.enemies.some(
+        (e) => !e.isDead && e.state === "attack" && e.rig.root.position.distanceToSquared(rig.root.position) < 24 * 24,
+      );
+      if (inActiveFight) {
+        this.outOfCombatT = 0;
+      } else {
+        this.outOfCombatT += dt;
+        const triageCap = this.maxHealth * 0.45;
+        if (this.outOfCombatT >= 6.5 && !rig.dead && this.health > 0 && this.health < triageCap) {
+          this.health = Math.min(triageCap, this.health + 5 * dt);
+        }
+      }
     }
 
     /* ---- spread marker ---- */
     this.spread = damp(this.spread, (this.adsBlend > 0.5 ? 0.002 : 0.01) + clamp(rig.speed / 4, 0, 1.2) * 0.012 + (rig.grounded ? 0 : 0.02), 8, rawDt);
     this.hitMarker = Math.max(0, this.hitMarker - rawDt);
-    if (this.hitMarker <= 0) this.hitCrit = false;
+    if (this.hitMarker <= 0) {
+      this.hitCrit = false;
+      this.hitKill = false;
+    }
     this.damageFlash = Math.max(0, this.damageFlash - rawDt * 2.2);
     if (this.phase === "ready" && !this.paused) {
       const frameMs = clamp(rawDt * 1000, 4, 80);
@@ -4695,7 +4762,7 @@ export class Game {
     }
     this.level.update(0.016, this.rig.root.position);
     if (this.mission?.id === -1 && this.level.activities) {
-      const nearC = this.level.activities.findNearbyContract(this.rig.root.position, 8.5);
+      const nearC = this.level.activities.findNearbyContract(this.rig.root.position, 11.5);
       this.nearbyContractSpot = nearC
         ? { missionId: nearC.missionId, x: nearC.x, z: nearC.z, yawDeg: nearC.yawDeg }
         : null;
@@ -4967,6 +5034,39 @@ export class Game {
         };
       }
     }
+    let nextContractMarker: HudState["nextContractMarker"] = null;
+    if (isOpenWorld && r && this.level?.activities) {
+      const contracts = this.level.activities.getContractSummaries();
+      const targetC =
+        contracts.find((c) => c.missionId >= 1 && c.unlocked && !c.completed) ??
+        contracts.find((c) => c.missionId === Math.min(MISSIONS.length - 1, Math.max(1, save.unlocked)));
+      if (targetC) {
+        const cm = MISSIONS.find((mi) => mi.id === targetC.missionId);
+        if (cm) {
+          const dx = targetC.x - r.root.position.x;
+          const dz = targetC.z - r.root.position.z;
+          const dist = Math.round(Math.hypot(dx, dz));
+          const dotFwd = dx * Math.sin(this.camYaw) + dz * Math.cos(this.camYaw);
+          const dotRgt = dx * -Math.cos(this.camYaw) + dz * Math.sin(this.camYaw);
+          const dirAngle = Math.atan2(dotRgt, dotFwd);
+          const groundY = this.level.groundHeightAt(targetC.x, targetC.z, 20);
+          const proj = new THREE.Vector3(targetC.x, groundY + 4.8, targetC.z).project(this.camera);
+          const onScreen = proj.z >= -1 && proj.z <= 1 && Math.abs(proj.x) <= 0.94 && Math.abs(proj.y) <= 0.9;
+          nextContractMarker = {
+            missionId: cm.id,
+            codename: cm.codename,
+            name: cm.name,
+            district: cm.location,
+            dist,
+            dirAngle,
+            screenX: (proj.x * 0.5 + 0.5),
+            screenY: (-proj.y * 0.5 + 0.5),
+            onScreen,
+            accent: cm.accent,
+          };
+        }
+      }
+    }
     const hasOpenWorldReturn = !isOpenWorld && this.openWorldReturnSpot !== null;
     this.onHud({
       loading: this.phase === "loading",
@@ -5000,6 +5100,7 @@ export class Game {
       spread: this.spread,
       hitMarker: this.hitMarker,
       hitCrit: this.hitCrit,
+      hitKill: this.hitKill,
       damageFlash: this.damageFlash,
       damageDirRad: this.damageDirRad,
       timeScale: this.timeScale,
@@ -5026,6 +5127,7 @@ export class Game {
       timeOfDayLabel,
       activityToast: this.activityToast,
       nearbyContract,
+      nextContractMarker,
       hasOpenWorldReturn,
       cameraPreset: this.vehCam.preset,
       credits,

@@ -392,9 +392,12 @@ export function MenuShell({
                 >
                   <div className="flex items-center justify-between">
                     <span className="font-mono text-[10px] font-bold uppercase tracking-[0.26em] text-[#ff3b30]">
-                      NEXT CONTRACT · C{nextMission.id}
+                      START HERE · NEXT CONTRACT C{nextMission.id}
                     </span>
-                    <ArrowUpRight className="size-4 text-[#ff3b30] transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
+                    <span className="inline-flex items-center gap-1 bg-[#ff3b30] px-1.5 py-0.5 font-mono text-[9px] font-black uppercase tracking-wider text-[#07080b]">
+                      BRIEFING
+                      <ArrowUpRight className="size-3 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
+                    </span>
                   </div>
                   <div className="mt-3">
                     <div className="font-display text-3xl font-extrabold uppercase leading-none tracking-wide text-[#f2efe9]">

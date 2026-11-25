@@ -31,10 +31,11 @@ import {
 import type { Game, HudState } from "../game/Game";
 import { MISSIONS, type MissionDef } from "../game/story";
 import { CARS, type CarId } from "../game/vehicles/catalog";
-import { WESTGATE_CONTRACT_SPOTS, WESTGATE_TELEPORTS, SAFEHOUSE_SPAWN } from "../game/city";
+import { WESTGATE_CONTRACT_SPOTS } from "../game/city/WestgateActivities";
+import { SAFEHOUSE_SPAWN } from "../game/city/SafehouseResidence";
 import { SURVEILLANCE_CONTRACTS } from "../game/city/ContractSurveillance";
 import { STARTER_BOAT_DOCK } from "../game/vehicles/water/BoatSystem";
-import { TIME_OF_DAY_LABELS, TIME_OF_DAY_MODES, type TimeOfDayMode } from "../game/city/WestgateWorld";
+import { TIME_OF_DAY_LABELS, TIME_OF_DAY_MODES, WESTGATE_TELEPORTS, type TimeOfDayMode } from "../game/city/WestgateMeta";
 import { WEATHER_MODES, type WeatherMode } from "../game/vehicles/weather";
 import { APARTMENTS, type ApartmentId, type SaveData } from "../game/progression";
 import type { GpsWaypoint } from "../game/city/GpsWaypoint";
