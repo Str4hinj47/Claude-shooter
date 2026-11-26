@@ -31,6 +31,7 @@ import {
 } from "lucide-react";
 import type { Game, HudState } from "../game/Game";
 import {
+  getMissionLetter,
   getStoryChapterForSurveillance,
   isStoryChapterCompleted,
   isStoryChapterUnlocked,
@@ -694,56 +695,57 @@ export function TacticalPhone({
                     const unlocked = isStoryChapterUnlocked(ch, save);
                     const completed = isStoryChapterCompleted(ch, save);
                     const isSurv = ch.kind === "surveillance" && ch.surveillanceId;
-                    const survDef = isSurv ? SURVEILLANCE_CONTRACTS.find((c) => c.id === ch.surveillanceId) : undefined;
-                    const spot = ch.missionId !== undefined ? WESTGATE_CONTRACT_SPOTS.find((s) => s.missionId === ch.missionId) : undefined;
+                    const spot = ch.surveillanceId
+                      ? WESTGATE_CONTRACT_SPOTS.find((s) => s.surveillanceId === ch.surveillanceId)
+                      : ch.missionId !== undefined
+                        ? WESTGATE_CONTRACT_SPOTS.find((s) => s.missionId === ch.missionId)
+                        : undefined;
+                    const letter = spot?.letter ?? getMissionLetter(ch.missionId ?? -1, ch.surveillanceId);
                     return (
                       <div
                         key={ch.chapter}
                         className="rounded-2xl border border-white/10 bg-white/[0.04] p-2.5"
                       >
-                        <div className="flex items-center justify-between gap-1">
-                          <span className="font-mono text-[9px] font-bold uppercase tracking-wider" style={{ color: ch.accent }}>
-                            CH {ch.code} · {ch.codename}
-                          </span>
-                          <div className="flex items-center gap-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex min-w-0 items-center gap-2">
+                            <span
+                              className="flex size-6 shrink-0 items-center justify-center rounded-full font-display text-xs font-black text-[#07090e]"
+                              style={{ background: unlocked ? ch.accent : "#475569" }}
+                            >
+                              {letter}
+                            </span>
+                            <div className="min-w-0">
+                              <div className="truncate text-xs font-bold text-white">{ch.codename}</div>
+                              <div className="truncate text-[10px] text-white/55">{ch.location}</div>
+                            </div>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-1">
                             {isSurv && (
                               <span className="rounded bg-amber-500/20 px-1.5 py-0.5 font-mono text-[8px] font-bold text-amber-300">
-                                SURV / TAKEDOWN
+                                HIT
                               </span>
                             )}
                             {completed && (
                               <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 font-mono text-[8px] font-bold text-emerald-300">
-                                CLEARED
+                                ✓
                               </span>
                             )}
                           </div>
                         </div>
-                        <div className="mt-0.5 text-xs font-bold text-white">{ch.title}</div>
-                        <div className="text-[10px] text-white/55">{ch.location}</div>
                         <div className="mt-2 flex gap-1.5">
-                          {hud.isOpenWorld && (spot || survDef) && (
+                          {hud.isOpenWorld && spot && (
                             <button
                               onClick={() => {
-                                if (survDef) {
-                                  onSetGpsTarget(`surv_home_${survDef.id}`, {
-                                    id: `surv_home_${survDef.id}`,
-                                    x: survDef.residence.x,
-                                    z: survDef.residence.z,
-                                    label: `Ch ${ch.code}: ${survDef.targetName}`,
-                                  });
-                                } else if (spot) {
-                                  onSetGpsTarget(`contract_${ch.missionId}`, {
-                                    id: `contract_${ch.missionId}`,
-                                    x: spot.x,
-                                    z: spot.z,
-                                    label: `Ch ${ch.code}: ${ch.codename}`,
-                                  });
+                                if (spot.surveillanceId) {
+                                  onSetGpsTarget(`surveillance:${spot.surveillanceId}`, null);
+                                } else {
+                                  onSetGpsTarget(`contract:${spot.missionId}`, null);
                                 }
                                 onClose();
                               }}
                               className="flex-1 cursor-pointer rounded-xl border border-sky-400/35 bg-sky-500/15 py-1 text-[10px] font-semibold text-sky-300 hover:bg-sky-500/30"
                             >
-                              GPS Pin
+                              GPS [{letter}]
                             </button>
                           )}
                           <button

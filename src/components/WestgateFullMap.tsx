@@ -4,7 +4,6 @@ import { computeWestgateGpsRoute, type MinimapData } from "../game/city/MinimapD
 import { WESTGATE_CONTRACT_SPOTS, WESTGATE_SPEED_TRAPS } from "../game/city/WestgateActivities";
 import { WESTGATE_TELEPORTS } from "../game/city/WestgateMeta";
 import { getDistrictAt, rawWestgateTerrainHeight } from "../game/city/WestgateTerrain";
-import { MISSIONS } from "../game/story";
 import { resolveGpsTarget, type GpsWaypoint } from "../game/city/GpsWaypoint";
 import { APARTMENTS, loadSave } from "../game/progression";
 import type { MinimapLiveSample } from "./WestgateMinimap";
@@ -21,7 +20,18 @@ interface WestgateFullMapProps {
 }
 
 type MarkerHit =
-  | { kind: "contract"; missionId: number; x: number; z: number; label: string; sub: string; accent: string; yawDeg: number }
+  | {
+      kind: "contract";
+      missionId: number;
+      surveillanceId?: string;
+      letter: string;
+      x: number;
+      z: number;
+      label: string;
+      sub: string;
+      accent: string;
+      yawDeg: number;
+    }
   | { kind: "trap"; id: string; x: number; z: number; label: string; sub: string; targetKmh: number }
   | { kind: "sector"; id: string; x: number; z: number; label: string; sub: string; yawDeg: number };
 
@@ -279,15 +289,16 @@ export function WestgateFullMap({
   const allMarkers = useMemo<MarkerHit[]>(() => {
     const out: MarkerHit[] = [];
     for (const c of WESTGATE_CONTRACT_SPOTS) {
-      const m = MISSIONS.find((mi) => mi.id === c.missionId);
       out.push({
         kind: "contract",
         missionId: c.missionId,
+        surveillanceId: c.surveillanceId,
+        letter: c.letter,
         x: c.x,
         z: c.z,
-        label: `C${c.missionId} · ${m?.codename ?? "CONTRACT"}`,
-        sub: `${m?.name ?? ""} · ${c.districtLabel}`,
-        accent: m?.accent ?? "#ff3b30",
+        label: `[${c.letter}] ${c.codename}`,
+        sub: `${c.title} · ${c.districtLabel}`,
+        accent: c.accent,
         yawDeg: c.yawDeg,
       });
     }
@@ -763,37 +774,48 @@ export function WestgateFullMap({
         }
       }
 
-      // 10. Contract Beacons (C0–C6)
+      // 10. GTA V Mission Letter Markers (V, S, H, T, M, J, B, C)
       if (layers.contracts) {
-        const cMap = new Map((sample?.contracts ?? []).map((c) => [c.missionId, c]));
+        const cKey = (missionId: number, surveillanceId?: string) => (surveillanceId ? `s:${surveillanceId}` : `m:${missionId}`);
+        const cMap = new Map((sample?.contracts ?? []).map((c) => [cKey(c.missionId, c.surveillanceId), c]));
         for (const c of WESTGATE_CONTRACT_SPOTS) {
-          const st = cMap.get(c.missionId);
-          const m = MISSIONS.find((mi) => mi.id === c.missionId);
-          const isSel = selectedMarker?.kind === "contract" && selectedMarker.missionId === c.missionId;
-          const col = st?.completed ? "#2dd4bf" : st?.unlocked === false ? "#64748b" : m?.accent ?? "#ff3b30";
-          const sz = (isSel ? 10.5 : 7.8) / zoom;
-          // Outer soft halo
-          ctx.beginPath();
-          ctx.arc(c.x, c.z, sz * 1.45, 0, TAU);
-          ctx.fillStyle = "rgba(0, 0, 0, 0.45)";
-          ctx.fill();
+          const st = cMap.get(cKey(c.missionId, c.surveillanceId));
+          const isNext = !!st?.isNextActive;
+          const isSel =
+            selectedMarker?.kind === "contract" &&
+            selectedMarker.missionId === c.missionId &&
+            selectedMarker.surveillanceId === c.surveillanceId;
+          const col = st?.completed ? "#2dd4bf" : st?.unlocked === false ? "#64748b" : c.accent;
+          const r = (isSel ? 13.5 : isNext ? 12.2 : 9.4) / zoom;
+
+          if (isNext) {
+            const pulse = 1 + 0.45 * (0.5 + 0.5 * Math.sin(now * 0.007));
+            ctx.beginPath();
+            ctx.arc(c.x, c.z, r * 1.45 * pulse, 0, TAU);
+            ctx.strokeStyle = col;
+            ctx.lineWidth = 2.4 / zoom;
+            ctx.stroke();
+          }
 
           ctx.beginPath();
-          ctx.moveTo(c.x, c.z - sz);
-          ctx.lineTo(c.x + sz, c.z);
-          ctx.lineTo(c.x, c.z + sz);
-          ctx.lineTo(c.x - sz, c.z);
-          ctx.closePath();
-          ctx.fillStyle = col;
+          ctx.arc(c.x, c.z, r, 0, TAU);
+          ctx.fillStyle = "#080a0f";
           ctx.fill();
-          ctx.lineWidth = 1.8 / zoom;
-          ctx.strokeStyle = "#f8fafc";
+          ctx.lineWidth = (isNext ? 2.6 : 1.8) / zoom;
+          ctx.strokeStyle = col;
           ctx.stroke();
 
-          ctx.font = `700 ${Math.max(10, 10.5 / zoom)}px ui-monospace, monospace`;
-          ctx.textAlign = "left";
+          ctx.font = `900 ${Math.round((isNext ? 13.5 : 10.5) / zoom)}px ui-sans-serif, system-ui, sans-serif`;
+          ctx.fillStyle = col;
+          ctx.textAlign = "center";
           ctx.textBaseline = "middle";
-          drawOutlinedText(ctx, `C${c.missionId}`, c.x + sz * 1.3, c.z, "#f8fafc", "rgba(7, 10, 15, 0.92)", Math.max(2, 2.5 / zoom));
+          ctx.fillText(c.letter, c.x, c.z + 0.5 / zoom);
+
+          if (isNext || isSel) {
+            ctx.font = `700 ${Math.max(10, 10 / zoom)}px ui-monospace, monospace`;
+            ctx.textAlign = "left";
+            drawOutlinedText(ctx, c.codename, c.x + r * 1.28, c.z, "#f8fafc", "rgba(7, 10, 15, 0.92)", Math.max(2, 2.5 / zoom));
+          }
         }
       }
 
@@ -928,7 +950,10 @@ export function WestgateFullMap({
     if (best) {
       setSelectedMarker(best);
       if (best.kind === "contract") {
-        onSetGpsTarget(`contract:${best.missionId}`, null);
+        onSetGpsTarget(
+          best.surveillanceId ? `surveillance:${best.surveillanceId}` : `contract:${best.missionId}`,
+          null,
+        );
       } else if (best.kind === "sector") {
         onSetGpsTarget(best.id, null);
       } else {

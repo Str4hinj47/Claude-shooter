@@ -12,7 +12,18 @@ export interface MinimapLiveSample {
   speedKmh: number;
   vehicles: { x: number; z: number; isNpc: boolean; active: boolean; name?: string }[];
   traps?: { id: string; x: number; z: number; beaten: boolean; bestKmh?: number }[];
-  contracts?: { missionId: number; x: number; z: number; unlocked: boolean; completed: boolean }[];
+  contracts?: {
+    missionId: number;
+    surveillanceId?: string;
+    letter?: string;
+    accent?: string;
+    codename?: string;
+    x: number;
+    z: number;
+    unlocked: boolean;
+    completed: boolean;
+    isNextActive?: boolean;
+  }[];
   police?: { x: number; z: number; isSwat: boolean; isChopper?: boolean }[];
   garages?: { id: string; name: string; x: number; z: number }[];
   stores?: { id: string; name: string; x: number; z: number }[];
@@ -70,10 +81,10 @@ function subdividePolyline(pts: [number, number][], maxStep = 18): [number, numb
 }
 
 const GPS_SPOTS = [
-  { id: null as string | null, label: "Scenic Loop" },
+  { id: null as string | null, label: "Free Route" },
   ...WESTGATE_CONTRACT_SPOTS.map((c) => ({
-    id: `contract:${c.missionId}` as string | null,
-    label: `Contract C${c.missionId} · ${c.districtLabel}`,
+    id: (c.surveillanceId ? `surveillance:${c.surveillanceId}` : `contract:${c.missionId}`) as string | null,
+    label: `[${c.letter}] ${c.codename}`,
   })),
   ...WESTGATE_TELEPORTS.filter((t) =>
     [
@@ -562,37 +573,45 @@ export function WestgateMinimap({
         }
       }
 
-      // Mission Start Contract Beacons (C0–C6) — pulsing radar ring on next uncompleted contract
+      // GTA V Style Mission Letter Badges (V, S, H, T, M, J, B, C)
+      const nextActiveContract =
+        sample.contracts?.find((c) => c.isNextActive) ??
+        sample.contracts?.find((c) => (c.missionId >= 1 || c.surveillanceId) && c.unlocked && !c.completed);
+
       if (sample.contracts) {
-        const nextActive = sample.contracts.find((c) => c.missionId >= 1 && c.unlocked && !c.completed);
         for (const c of sample.contracts) {
-          const isNext = nextActive?.missionId === c.missionId;
-          const sz = (isNext ? 8.2 : 6.0) / zoom;
+          if (!c.unlocked && !c.completed) continue; // Keep locked clutter off the minimap so active letters stand out!
+          const isNext = nextActiveContract === c;
+          const rBadge = (isNext ? 10.5 : 8.2) / zoom;
+          const badgeCol = c.completed ? "#2dd4bf" : c.accent ?? (isNext ? "#ff3b30" : "#f59e0b");
+          const letter = c.letter ?? (c.surveillanceId ? "H" : `C${c.missionId}`);
+
           if (isNext) {
-            const pulse = 1 + 0.55 * (0.5 + 0.5 * Math.sin(now * 0.006));
+            const pulse = 1 + 0.55 * (0.5 + 0.5 * Math.sin(now * 0.007));
             ctx.beginPath();
-            ctx.arc(c.x, c.z, (sz * 1.45 * pulse), 0, TAU);
-            ctx.strokeStyle = "#ff3b30";
-            ctx.lineWidth = 2.0 / zoom;
+            ctx.arc(c.x, c.z, rBadge * 1.45 * pulse, 0, TAU);
+            ctx.strokeStyle = badgeCol;
+            ctx.lineWidth = 2.2 / zoom;
             ctx.stroke();
           }
+
+          ctx.save();
+          ctx.translate(c.x, c.z);
+          ctx.rotate(sample.heading); // Keep GTA V letter upright relative to screen!
           ctx.beginPath();
-          ctx.moveTo(c.x, c.z - sz);
-          ctx.lineTo(c.x + sz, c.z);
-          ctx.lineTo(c.x, c.z + sz);
-          ctx.lineTo(c.x - sz, c.z);
-          ctx.closePath();
-          ctx.fillStyle = c.completed ? "#2dd4bf" : !c.unlocked ? "#64748b" : isNext ? "#ff3b30" : "#f59e0b";
+          ctx.arc(0, 0, rBadge, 0, TAU);
+          ctx.fillStyle = "#090b10";
           ctx.fill();
-          ctx.lineWidth = 1.6 / zoom;
-          ctx.strokeStyle = "#07080b";
+          ctx.lineWidth = (isNext ? 2.4 : 1.8) / zoom;
+          ctx.strokeStyle = badgeCol;
           ctx.stroke();
 
-          ctx.font = `800 ${Math.max(9, 10 / zoom)}px ui-monospace, monospace`;
-          ctx.fillStyle = isNext ? "#ffffff" : "#e2e8f0";
-          ctx.textAlign = "left";
+          ctx.font = `900 ${Math.round((isNext ? 12.5 : 10) / zoom)}px ui-sans-serif, system-ui, sans-serif`;
+          ctx.fillStyle = badgeCol;
+          ctx.textAlign = "center";
           ctx.textBaseline = "middle";
-          ctx.fillText(`C${c.missionId}`, c.x + sz * 1.18, c.z);
+          ctx.fillText(letter, 0, 0.5 / zoom);
+          ctx.restore();
         }
       }
 
@@ -644,6 +663,51 @@ export function WestgateMinimap({
       ctx.strokeStyle = "rgba(255,255,255,0.34)";
       ctx.lineWidth = 1.5;
       ctx.stroke();
+
+      // GTA V Edge-Pinned Mission Letter on the radar perimeter whenever the next mission is off-radar!
+      if (nextActiveContract) {
+        const dx = (nextActiveContract.x - sample.x) * zoom;
+        const dz = (nextActiveContract.z - sample.z) * zoom;
+        const cosH = Math.cos(-sample.heading);
+        const sinH = Math.sin(-sample.heading);
+        const sx = anchorX + dx * cosH - dz * sinH;
+        const sy = anchorY + dx * sinH + dz * cosH;
+        const cx = S / 2;
+        const cy = S / 2;
+        const rx = sx - cx;
+        const ry = sy - cy;
+        const distFromCenter = Math.hypot(rx, ry);
+        if (distFromCenter > R - 11) {
+          const ux = rx / Math.max(1e-4, distFromCenter);
+          const uy = ry / Math.max(1e-4, distFromCenter);
+          const px = cx + ux * (R - 2);
+          const py = cy + uy * (R - 2);
+          const col = nextActiveContract.accent ?? "#ff3b30";
+          const letter = nextActiveContract.letter ?? "M";
+          const pulse = 1 + 0.2 * Math.sin(now * 0.008);
+
+          ctx.save();
+          ctx.beginPath();
+          ctx.arc(px, py, 12.5 * pulse, 0, TAU);
+          ctx.fillStyle = "rgba(0,0,0,0.45)";
+          ctx.fill();
+
+          ctx.beginPath();
+          ctx.arc(px, py, 10.5, 0, TAU);
+          ctx.fillStyle = "#090b10";
+          ctx.fill();
+          ctx.lineWidth = 2.4;
+          ctx.strokeStyle = col;
+          ctx.stroke();
+
+          ctx.font = "900 12px ui-sans-serif, system-ui, sans-serif";
+          ctx.fillStyle = col;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(letter, px, py + 0.5);
+          ctx.restore();
+        }
+      }
     };
 
     raf = requestAnimationFrame(render);

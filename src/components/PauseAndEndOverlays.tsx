@@ -4,7 +4,10 @@ import { CAMERA_ORDER, type CameraPreset, type Game, type HudState } from "../ga
 import {
   BOSS_TAUNTS,
   getNextChapterAfterMission,
+  isStoryChapterCompleted,
+  isStoryChapterUnlocked,
   MISSIONS,
+  STORYLINE_CHAPTERS,
   type MissionDef,
   type StoryChapterDef,
 } from "../game/story";
@@ -809,28 +812,35 @@ export function PauseAndEndOverlays({
                   </div>
                 )}
 
-                {/* Campaign Contracts C0-C6 */}
+                {/* GTA V Mission Letter Markers */}
                 <div data-augmented-ui="br-clip border inlay" className="voss-panel p-4 space-y-2.5">
                   <div className="flex items-center justify-between font-mono text-[10px] font-bold uppercase tracking-[0.24em] text-[#ff3b30]">
-                    <span>CAMPAIGN CONTRACTS (C0–C6)</span>
-                    <span className="text-[#8a909e]">BEACON [G]</span>
+                    <span>MISSION MARKERS</span>
+                    <span className="text-[#8a909e]">WALK IN TO START</span>
                   </div>
                   <div className="max-h-52 space-y-1.5 overflow-y-auto pr-1">
                     {WESTGATE_CONTRACT_SPOTS.map((spot) => {
-                      const cm = MISSIONS.find((mi) => mi.id === spot.missionId);
-                      if (!cm) return null;
-                      const unlocked = cm.id <= Math.max(1, save.unlocked);
-                      const cleared = !!save.records[cm.id]?.completed;
-                      const gpsId = `contract:${cm.id}`;
+                      const ch = STORYLINE_CHAPTERS.find((c) =>
+                        spot.surveillanceId ? c.surveillanceId === spot.surveillanceId : c.missionId === spot.missionId,
+                      );
+                      const unlocked = ch ? isStoryChapterUnlocked(ch, save) : spot.missionId <= Math.max(1, save.unlocked);
+                      const cleared = ch ? isStoryChapterCompleted(ch, save) : !!save.records[spot.missionId]?.completed;
+                      const gpsId = spot.surveillanceId ? `surveillance:${spot.surveillanceId}` : `contract:${spot.missionId}`;
                       const isGps = gpsTargetId === gpsId;
                       return (
                         <div
-                          key={cm.id}
-                          className="flex items-center justify-between gap-1.5 border border-white/10 bg-black/35 px-2.5 py-1.5"
+                          key={gpsId}
+                          className="flex items-center justify-between gap-2 border border-white/10 bg-black/35 px-2.5 py-1.5"
                         >
+                          <span
+                            className="flex size-6 shrink-0 items-center justify-center rounded-full font-display text-xs font-black text-[#07090e]"
+                            style={{ background: unlocked ? spot.accent : "#475569" }}
+                          >
+                            {spot.letter}
+                          </span>
                           <div className="min-w-0 flex-1">
                             <div className="truncate font-mono text-[11px] font-bold text-[#f2efe9]">
-                              <span className="text-[#ff3b30]">C{cm.id}</span> · {cm.codename}
+                              {spot.codename}
                               {cleared && <span className="ml-1.5 text-[9px] text-[#2dd4bf]">✓</span>}
                             </div>
                             <div className="truncate text-[10px] text-[#8a909e]">{spot.districtLabel}</div>
@@ -853,7 +863,7 @@ export function PauseAndEndOverlays({
                           <button
                             type="button"
                             onClick={() => {
-                              gameRef.current?.teleportTo(spot.x, spot.z + 6, spot.yawDeg);
+                              gameRef.current?.teleportTo(spot.x, spot.z + 10, spot.yawDeg);
                               gameRef.current?.setPaused(false);
                             }}
                             className="cursor-pointer border border-white/10 px-1.5 py-1 font-mono text-[9px] font-bold uppercase text-[#cfd4de] hover:border-white/40"
@@ -863,7 +873,14 @@ export function PauseAndEndOverlays({
                           <button
                             type="button"
                             disabled={!unlocked}
-                            onClick={() => gameRef.current?.launchContractFromOpenWorld(cm.id)}
+                            onClick={() => {
+                              if (spot.surveillanceId) {
+                                gameRef.current?.setPaused(false);
+                                gameRef.current?.startSurveillanceContract(spot.surveillanceId);
+                              } else {
+                                gameRef.current?.launchContractFromOpenWorld(spot.missionId);
+                              }
+                            }}
                             className={`cursor-pointer px-2 py-1 font-mono text-[9px] font-black uppercase ${
                               unlocked
                                 ? "bg-[#ff3b30] text-[#07080b] hover:brightness-110"

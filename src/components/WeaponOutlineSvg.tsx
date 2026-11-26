@@ -2,7 +2,9 @@ import React from "react";
 import { WEAPONS, type WeaponId } from "../character/rifle";
 
 interface WeaponOutlineSvgProps {
-  weaponIndex: number;
+  weaponIndex?: number;
+  weaponId?: WeaponId;
+  className?: string;
   holstered?: boolean;
   suppressed?: boolean;
 }
@@ -12,12 +14,17 @@ interface WeaponOutlineSvgProps {
  * displayed in the bottom-right HUD above the weapon name & ammo readout.
  */
 export const WeaponOutlineSvg: React.FC<WeaponOutlineSvgProps> = ({
-  weaponIndex,
+  weaponIndex = 0,
+  weaponId: weaponIdProp,
+  className,
   holstered = false,
   suppressed = true,
 }) => {
-  const spec = WEAPONS[weaponIndex] ?? WEAPONS[0];
-  const weaponId: WeaponId = spec?.id ?? "pistol";
+  const spec =
+    (weaponIdProp ? WEAPONS.find((w) => w.id === weaponIdProp) : undefined) ??
+    WEAPONS[weaponIndex] ??
+    WEAPONS[0];
+  const weaponId: WeaponId = weaponIdProp ?? spec?.id ?? "pistol";
 
   const strokeMain = holstered ? "#7a8499" : "#f2efe9";
   const strokeDetail = holstered ? "#525b6e" : "#cfd4de";
@@ -33,7 +40,7 @@ export const WeaponOutlineSvg: React.FC<WeaponOutlineSvgProps> = ({
     >
       <svg
         viewBox="0 0 220 68"
-        className="h-12 w-44 drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]"
+        className={className ?? "h-12 w-44 drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]"}
         fill="none"
         xmlns="http://www.w3.org/2000/svg"
       >

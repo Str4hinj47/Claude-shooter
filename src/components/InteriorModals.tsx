@@ -15,6 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { CarPreview3D } from "./CarPreview3D";
+import { WeaponOutlineSvg } from "./WeaponOutlineSvg";
 import {
   APARTMENTS,
   CAR_TUNING_COSTS,
@@ -442,7 +443,26 @@ export function InteriorModals({
                           </span>
                         </div>
                         <div className="mt-1 font-display text-xl font-bold uppercase">{c.name}</div>
-                        <p className="mt-1 text-xs text-[#9aa5b8]">{c.tagline}</p>
+                        <div className="mt-2 grid grid-cols-3 gap-1.5 font-mono text-[9px] text-[#9aa5b8]">
+                          {[
+                            ["SPD", c.stats.speed, "#38bdf8"],
+                            ["HDL", c.stats.handling, "#e5a93c"],
+                            ["GRP", c.stats.grip, "#2dd4bf"],
+                          ].map(([lbl, val, col]) => (
+                            <div key={lbl as string} className="rounded bg-black/40 px-1.5 py-1">
+                              <div>{lbl}</div>
+                              <div className="mt-0.5 flex gap-0.5">
+                                {[1, 2, 3, 4, 5].map((n) => (
+                                  <span
+                                    key={n}
+                                    className="h-1 flex-1"
+                                    style={{ background: n <= (val as number) ? (col as string) : "rgba(255,255,255,0.12)" }}
+                                  />
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                       <div className="mt-3">
                         {owned ? (
@@ -510,18 +530,19 @@ export function InteriorModals({
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 bg-[#0d121a] px-6 py-2.5">
-            <div className="flex gap-1.5">
+            <div className="flex flex-wrap gap-1.5">
               {WEAPONS.map((w) => (
                 <button
                   key={w.id}
                   onClick={() => setWeaponSlot(w.id)}
-                  className={`cursor-pointer rounded-lg border px-3 py-1.5 font-mono text-xs font-bold uppercase transition ${
+                  className={`flex cursor-pointer items-center gap-2 rounded-lg border px-2.5 py-1.5 font-mono text-xs font-bold uppercase transition ${
                     weaponSlot === w.id
                       ? "border-amber-400 bg-amber-500/20 text-amber-200"
                       : "border-white/10 bg-white/[0.03] text-[#8a909e] hover:text-white"
                   }`}
                 >
-                  {w.shortName}
+                  <WeaponOutlineSvg weaponId={w.id} className="h-5 w-14" />
+                  <span>{w.shortName}</span>
                 </button>
               ))}
             </div>

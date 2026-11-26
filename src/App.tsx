@@ -238,22 +238,18 @@ export default function App() {
           label: `Target: ${surv.targetName}`,
         });
       }
-    } else if (m.id === -1 && gpsTargetId === null) {
+    } else if (m.id === -1) {
       const s = loadSave();
       const ch = getNextStoryChapter(s);
-      if (ch.kind === "surveillance" && ch.surveillanceId) {
-        const surv = SURVEILLANCE_CONTRACTS.find((c) => c.id === ch.surveillanceId);
-        if (surv) {
-          setGpsTargetId(`surv_home_${surv.id}`);
-          setCustomWaypoint({
-            id: `surv_home_${surv.id}`,
-            x: surv.residence.x,
-            z: surv.residence.z,
-            label: `Ch ${ch.code}: ${surv.targetName}`,
-          });
-        }
-      } else if (ch.missionId !== undefined) {
-        setGpsTargetId(`contract:${ch.missionId}`);
+      const nextGps =
+        ch.kind === "surveillance" && ch.surveillanceId
+          ? `surveillance:${ch.surveillanceId}`
+          : ch.missionId !== undefined
+            ? `contract:${ch.missionId}`
+            : null;
+      if (nextGps && (!gpsTargetId || gpsTargetId.startsWith("contract:") || gpsTargetId.startsWith("surveillance:"))) {
+        setCustomWaypoint(null);
+        setGpsTargetId(nextGps);
       }
     }
     void game.current?.startMission(
@@ -262,7 +258,21 @@ export default function App() {
         onHud: setHud,
         onMissionEnd: (mission, success, reward) => {
           setEndInfo({ mission, success, reward });
-          setSave(loadSave());
+          const nextSave = loadSave();
+          setSave(nextSave);
+          if (success) {
+            const ch = getNextStoryChapter(nextSave);
+            const nextGps =
+              ch.kind === "surveillance" && ch.surveillanceId
+                ? `surveillance:${ch.surveillanceId}`
+                : ch.missionId !== undefined
+                  ? `contract:${ch.missionId}`
+                  : null;
+            if (nextGps) {
+              setCustomWaypoint(null);
+              setGpsTargetId(nextGps);
+            }
+          }
         },
         onOpenHomeStation: openHomeStationHandler,
         characterUrl: characterUrl(characterId),

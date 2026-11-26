@@ -6,6 +6,72 @@ import type { WeaponId } from "../character/rifle";
 import type { SoldierAppearance } from "./progression";
 import { SAFEHOUSE_SPAWN } from "./city/SafehouseResidence";
 
+/** GTA V-style bold single-letter map & radar identifiers per campaign mission */
+export const MISSION_LETTERS: Record<number, { letter: string; label: string; accent: string }> = {
+  0: { letter: "V", label: "Voss Safehouse", accent: "#2dd4bf" },
+  1: { letter: "S", label: "Sen. Sterling", accent: "#a8c686" },
+  2: { letter: "M", label: "Mara Vance", accent: "#38bdf8" },
+  3: { letter: "J", label: "Julian Mercer", accent: "#22d3ee" },
+  4: { letter: "T", label: "Victoria Thorne", accent: "#fbbf24" },
+  5: { letter: "B", label: "Brick Horvat", accent: "#ff5e5e" },
+  6: { letter: "C", label: "Consortium", accent: "#c084fc" },
+};
+
+export function getMissionLetter(missionId: number, surveillanceId?: string): string {
+  if (surveillanceId) return "H";
+  return MISSION_LETTERS[missionId]?.letter ?? "M";
+}
+
+export const SURVEILLANCE_START_SPOTS: {
+  surveillanceId: string;
+  chapter: number;
+  letter: string;
+  codename: string;
+  title: string;
+  districtLabel: string;
+  x: number;
+  z: number;
+  yawDeg: number;
+  accent: string;
+}[] = [
+  {
+    surveillanceId: "hit_port_auditor",
+    chapter: 2,
+    letter: "H",
+    codename: "THE PORT AUDITOR",
+    title: "Marcus Bell · Tail & Eliminate",
+    districtLabel: "Bell Suburban Home",
+    x: -265,
+    z: 488,
+    yawDeg: 180,
+    accent: "#f59e0b",
+  },
+  {
+    surveillanceId: "hit_pharma_fixer",
+    chapter: 5,
+    letter: "H",
+    codename: "THE PHARMA FIXER",
+    title: "Dr. Victor Kaine · Tail & Eliminate",
+    districtLabel: "Kaine Canalfront Villa",
+    x: -628,
+    z: 245,
+    yawDeg: 90,
+    accent: "#f59e0b",
+  },
+  {
+    surveillanceId: "hit_syndicate_architect",
+    chapter: 7,
+    letter: "H",
+    codename: "THE ARCHITECT",
+    title: "Damon Vale · Tail & Eliminate",
+    districtLabel: "Vale Canyon Crest Estate",
+    x: -358,
+    z: -818,
+    yawDeg: 180,
+    accent: "#f59e0b",
+  },
+];
+
 export interface DialogueLine {
   speaker: string;
   text: string;

@@ -19,8 +19,13 @@ export function resolveGpsTarget(
   if (!gpsTargetId) return customWaypoint ?? null;
   if (gpsTargetId.startsWith("contract:")) {
     const mid = Number(gpsTargetId.slice("contract:".length));
-    const c = WESTGATE_CONTRACT_SPOTS.find((s) => s.missionId === mid);
-    return c ? { id: gpsTargetId, label: `Contract C${c.missionId} · ${c.districtLabel}`, x: c.x, z: c.z } : null;
+    const c = WESTGATE_CONTRACT_SPOTS.find((s) => !s.surveillanceId && s.missionId === mid);
+    return c ? { id: gpsTargetId, label: `[${c.letter}] ${c.codename}`, x: c.x, z: c.z, color: c.accent } : null;
+  }
+  if (gpsTargetId.startsWith("surveillance:")) {
+    const sid = gpsTargetId.slice("surveillance:".length);
+    const c = WESTGATE_CONTRACT_SPOTS.find((s) => s.surveillanceId === sid);
+    return c ? { id: gpsTargetId, label: `[${c.letter}] ${c.codename}`, x: c.x, z: c.z, color: c.accent } : null;
   }
   const apt = APARTMENTS.find((a) => a.id === gpsTargetId);
   if (apt) return { id: apt.id, label: apt.name, x: apt.exitStreetPos.x, z: apt.exitStreetPos.z, color: apt.accentHex };

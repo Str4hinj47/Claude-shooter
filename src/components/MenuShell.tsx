@@ -10,15 +10,21 @@ import {
   Cpu,
   Crosshair,
   Download,
+  EyeOff,
+  Footprints,
+  Ghost,
   Lock,
   RotateCcw,
   Shield,
   Shuffle,
+  Skull,
+  Target,
   User,
   Volume2,
   Wrench,
 } from "lucide-react";
 import {
+  getMissionLetter,
   getStoryClearedCount,
   isStoryChapterCompleted,
   isStoryChapterUnlocked,
@@ -31,6 +37,7 @@ import {
 import { SURVEILLANCE_CONTRACTS } from "../game/city/ContractSurveillance";
 import { characterPreview, getSuitPreset, SUIT_PRESETS, type CharacterDef } from "../game/characters";
 import { CarPreview3D } from "./CarPreview3D";
+import { WeaponOutlineSvg } from "./WeaponOutlineSvg";
 import {
   canAfford,
   DEFAULT_APPEARANCE,
@@ -416,15 +423,38 @@ export function MenuShell({
               <div>
                 <div className="flex items-center gap-3 font-mono text-[10px] font-bold uppercase tracking-[0.32em] text-[#ff3b30]">
                   <span className="h-[1px] w-7 bg-[#ff3b30]" />
-                  <span>COVERT DIRECTIVE · {storyClearedCount}/{totalStoryChapters} CHAPTERS CLEARED · {ghostCount} GHOST</span>
+                  <span>{storyClearedCount}/{totalStoryChapters} CHAPTERS · {ghostCount} GHOST</span>
                 </div>
                 <h1 className="mt-2 font-display text-6xl font-extrabold uppercase leading-[0.88] tracking-[0.04em] text-[#f2efe9] sm:text-7xl">
                   BLACK<br />
                   <span className="text-[#ff3b30]">CONTRACT</span>
                 </h1>
-                <p className="mt-3 max-w-md text-xs leading-relaxed text-[#a0a6b3]">
-                  Infiltrate secured compounds, scrub black-site servers, recover stolen ledgers, or roam the 2.4 km Westgate Bay grid undetected.
-                </p>
+
+                {/* Visual Loadout Strip: Suit Swatches + Active Weapon Silhouette + Car */}
+                <div className="mt-4 flex flex-wrap items-center gap-3 border border-white/10 bg-[#0b0d13]/85 px-3 py-2">
+                  <img
+                    src={characterPreview("business")}
+                    alt="Julian Voss"
+                    className="h-9 w-9 shrink-0 border border-[#ff3b30]/50 object-cover object-top"
+                  />
+                  <div className="flex h-6 w-6 shrink-0 overflow-hidden border border-white/20">
+                    <div className="h-full w-3" style={{ backgroundColor: activeSuit.suitColor }} />
+                    <div className="h-full w-1.5" style={{ backgroundColor: activeSuit.tieColor }} />
+                    <div className="h-full flex-1" style={{ backgroundColor: activeSuit.gloveColor }} />
+                  </div>
+                  <div className="h-6 w-[1px] bg-white/10" />
+                  <div className="flex items-center gap-2 text-[#e5a93c]">
+                    <WeaponOutlineSvg weaponId={activeWeaponSpec.id} className="h-6 w-20" />
+                    <span className="font-mono text-[10px] font-bold uppercase">{activeWeaponSpec.shortName}</span>
+                  </div>
+                  <div className="h-6 w-[1px] bg-white/10" />
+                  <div className="flex items-center gap-1.5 text-[#38bdf8]">
+                    <Car className="size-3.5" />
+                    <span className="font-mono text-[10px] font-bold uppercase">
+                      {CARS.find((c) => c.id === save.selectedCar)?.name ?? "Golf"}
+                    </span>
+                  </div>
+                </div>
               </div>
 
               {/* Primary Asymmetric 2-Card Action Grid */}
@@ -441,10 +471,17 @@ export function MenuShell({
                   className="voss-panel-signal group flex cursor-pointer flex-col justify-between p-4 text-left transition hover:brightness-125 sm:col-span-7"
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <span className="font-mono text-[10px] font-bold uppercase tracking-[0.22em] text-[#ff3b30]">
-                      NEXT · CH {nextStoryChapter.code}
-                      {nextStoryChapter.kind === "surveillance" ? " // SURV & TAKEDOWN" : ""}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span
+                        className="flex size-7 items-center justify-center rounded-full font-display text-sm font-black text-[#07090e]"
+                        style={{ background: nextStoryChapter.accent }}
+                      >
+                        {getMissionLetter(nextStoryChapter.missionId ?? -1, nextStoryChapter.surveillanceId)}
+                      </span>
+                      <span className="font-mono text-[10px] font-bold uppercase tracking-[0.22em] text-[#ff3b30]">
+                        CH {nextStoryChapter.code}
+                      </span>
+                    </div>
                     <span className="inline-flex items-center gap-1 bg-[#ff3b30] px-1.5 py-0.5 font-mono text-[9px] font-black uppercase tracking-wider text-[#07080b]">
                       BRIEFING
                       <ArrowUpRight className="size-3 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
@@ -455,7 +492,7 @@ export function MenuShell({
                       {nextStoryChapter.codename}
                     </div>
                     <div className="mt-1 font-mono text-[10px] uppercase tracking-wider text-[#9ea4b0]">
-                      {nextStoryChapter.title} · {nextStoryChapter.location}
+                      {nextStoryChapter.location}
                     </div>
                   </div>
                 </button>
@@ -473,10 +510,10 @@ export function MenuShell({
                   </div>
                   <div className="mt-3">
                     <div className="font-display text-2xl font-extrabold uppercase leading-none tracking-wide text-[#f2efe9]">
-                      WESTGATE BAY
+                      WESTGATE
                     </div>
                     <div className="mt-1 font-mono text-[10px] uppercase tracking-wider text-[#8a909e]">
-                      Free Roam · 9 Cars
+                      Drive · Missions · 9 Cars
                     </div>
                   </div>
                 </button>
@@ -494,7 +531,7 @@ export function MenuShell({
                     className="h-9 w-9 shrink-0 border border-white/15 object-cover object-top"
                   />
                   <div className="min-w-0">
-                    <div className="font-mono text-[9px] uppercase tracking-[0.18em] text-[#8a909e]">WARDROBE</div>
+                    <div className="font-mono text-[9px] uppercase tracking-[0.18em] text-[#8a909e]">SUIT</div>
                     <div className="truncate font-display text-sm font-bold uppercase tracking-wide text-[#f2efe9]">
                       {activeSuit.name}
                     </div>
@@ -511,8 +548,9 @@ export function MenuShell({
                       <span className="text-[#2dd4bf]">{affordableCount} RDY</span>
                     )}
                   </div>
-                  <div className="truncate font-display text-sm font-bold uppercase tracking-wide text-[#e5a93c]">
-                    {WEAPONS[save.selectedWeapon]?.shortName ?? "M4A1-S"}
+                  <div className="mt-0.5 flex items-center justify-between gap-1 text-[#e5a93c]">
+                    <WeaponOutlineSvg weaponId={activeWeaponSpec.id} className="h-5 w-16" />
+                    <span className="truncate font-display text-xs font-bold uppercase">{activeWeaponSpec.shortName}</span>
                   </div>
                 </button>
 
@@ -632,7 +670,12 @@ export function MenuShell({
                       style={{ background: locked ? "#333" : active ? ch.accent : "transparent" }}
                     />
                     <div className="flex items-center gap-3 pl-1">
-                      <span className="font-mono text-xs font-bold text-[#8a909e]">{ch.code}</span>
+                      <span
+                        className="flex size-7 shrink-0 items-center justify-center rounded-full font-display text-sm font-black text-[#07090e]"
+                        style={{ background: locked ? "#334155" : ch.accent }}
+                      >
+                        {getMissionLetter(ch.missionId ?? -1, ch.surveillanceId)}
+                      </span>
                       <div>
                         <div className="flex items-center gap-2">
                           <span className="font-display text-base font-extrabold uppercase leading-none tracking-wide text-[#f2efe9]">
@@ -640,12 +683,12 @@ export function MenuShell({
                           </span>
                           {isSurv && (
                             <span className="border border-[#f59e0b]/45 bg-[#f59e0b]/15 px-1 py-0.5 font-mono text-[8px] font-bold uppercase tracking-wider text-[#f59e0b]">
-                              SURV · TAKEDOWN
+                              HIT
                             </span>
                           )}
                         </div>
                         <div className="mt-1 font-mono text-[10px] uppercase tracking-wider text-[#8a909e]">
-                          {ch.title}
+                          {ch.location}
                         </div>
                       </div>
                     </div>
@@ -675,153 +718,139 @@ export function MenuShell({
           <div className="lg:col-span-7">
             {activeSurvContract ? (
               <DossierShell tone="signal" className="flex h-full flex-col justify-between">
-                <div className="space-y-3.5">
-                  <div className="flex flex-wrap items-start justify-between gap-4 border-b border-white/10 pb-3">
-                    <div>
-                      <div
-                        className="font-mono text-[10px] font-bold uppercase tracking-[0.3em]"
-                        style={{ color: selectedChapter.accent }}
-                      >
-                        {selectedChapter.act} · CH {selectedChapter.code} // SURVEILLANCE &amp; TAKEDOWN ({activeSurvContract.code})
+                <div className="space-y-4">
+                  <div className="flex flex-wrap items-center justify-between gap-4 border-b border-white/10 pb-3.5">
+                    <div className="flex items-center gap-4">
+                      <img
+                        src={characterPreview("civilian")}
+                        alt={activeSurvContract.targetName}
+                        className="h-16 w-16 shrink-0 border-2 border-[#f59e0b]/70 object-cover object-top"
+                      />
+                      <div>
+                        <div className="flex items-center gap-2 font-mono text-[10px] font-bold uppercase tracking-[0.26em] text-[#f59e0b]">
+                          <span className="flex size-5 items-center justify-center rounded-full bg-[#f59e0b] font-display text-xs font-black text-[#07090e]">
+                            H
+                          </span>
+                          <span>CH {selectedChapter.code} // SURVEILLANCE</span>
+                        </div>
+                        <h2 className="mt-1 font-display text-4xl font-extrabold uppercase leading-none tracking-wide text-[#f2efe9]">
+                          {activeSurvContract.targetName}
+                        </h2>
+                        <div className="mt-1 font-mono text-[10px] uppercase tracking-wider text-[#e5a93c]">
+                          {activeSurvContract.targetRoleTitle} · {activeSurvContract.vehicle.label}
+                        </div>
                       </div>
-                      <h2 className="mt-1 font-display text-4xl font-extrabold uppercase leading-none tracking-wide text-[#f2efe9]">
-                        {activeSurvContract.targetName}
-                      </h2>
-                    </div>
-                    <div className="text-right font-mono text-[10px] uppercase tracking-wider text-[#8a909e]">
-                      <div>ROLE: <span className="text-[#e5a93c]">{activeSurvContract.targetRoleTitle}</span></div>
-                      <div>VEHICLE: <span className="text-[#f2efe9]">{activeSurvContract.vehicle.label}</span></div>
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-3 gap-2 border-b border-white/10 pb-4 font-mono text-[10px] uppercase">
-                    <div>
+                  {/* Visual 3-Stage Hit Pipeline */}
+                  <div className="grid grid-cols-3 gap-2">
+                    <div className="border border-white/10 bg-black/35 p-3 text-center">
+                      <EyeOff className="mx-auto size-5 text-[#f59e0b]" />
+                      <div className="mt-1.5 font-display text-sm font-bold uppercase text-[#f2efe9]">01 · TAIL</div>
+                      <div className="font-mono text-[9px] uppercase text-[#8a909e]">
+                        {activeSurvContract.schedule.length} PHASES
+                      </div>
+                    </div>
+                    <div className="border border-white/10 bg-black/35 p-3 text-center">
+                      <Crosshair className="mx-auto size-5 text-[#ff3b30]" />
+                      <div className="mt-1.5 font-display text-sm font-bold uppercase text-[#f2efe9]">02 · STRIKE</div>
+                      <div className="font-mono text-[9px] uppercase text-[#8a909e]">
+                        {activeSurvContract.schedule.filter((s) => s.isolatedWindow).length} WINDOWS
+                      </div>
+                    </div>
+                    <div className="border border-white/10 bg-black/35 p-3 text-center">
+                      <Compass className="mx-auto size-5 text-[#38bdf8]" />
+                      <div className="mt-1.5 font-display text-sm font-bold uppercase text-[#f2efe9]">03 · DUMP</div>
+                      <div className="font-mono text-[9px] uppercase text-[#8a909e]">DEEP PACIFIC</div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3 font-mono text-[10px] uppercase">
+                    <div className="border border-white/10 bg-black/35 p-3">
                       <div className="text-[#8a909e]">RESIDENCE</div>
-                      <div className="mt-0.5 font-bold text-[#f2efe9]">{activeSurvContract.residence.address}</div>
+                      <div className="mt-1 font-bold text-[#f2efe9]">{activeSurvContract.residence.address}</div>
                     </div>
-                    <div>
+                    <div className="border border-white/10 bg-black/35 p-3">
                       <div className="text-[#8a909e]">WORKPLACE</div>
-                      <div className="mt-0.5 font-bold text-[#f2efe9]">{activeSurvContract.workplace.name}</div>
+                      <div className="mt-1 font-bold text-[#f2efe9]">{activeSurvContract.workplace.name}</div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2 border border-white/10 bg-black/35 p-3 font-mono text-xs">
+                    <div>
+                      <div className="text-[9px] text-[#8a909e]">BASE</div>
+                      <div className="font-bold text-[#e5a93c]">+{activeSurvContract.rewardBase} CR</div>
                     </div>
                     <div>
-                      <div className="text-[#8a909e]">OPERATIVE</div>
-                      <div className="mt-0.5 font-bold text-[#38bdf8]">{selectedCharacter.name}</div>
+                      <div className="text-[9px] text-[#8a909e]">UNSEEN</div>
+                      <div className="font-bold text-[#38bdf8]">+{activeSurvContract.unseenBonus} CR</div>
                     </div>
-                  </div>
-
-                  <div className="space-y-2.5">
-                    <p
-                      className="border-l-2 pl-3.5 text-sm leading-relaxed text-[#cfd4de]"
-                      style={{ borderColor: selectedChapter.accent }}
-                    >
-                      {activeSurvContract.briefing}
-                    </p>
-                    <p className="border-l-2 border-white/20 pl-3.5 text-xs leading-relaxed text-[#9ea4b0]">
-                      {selectedChapter.tacticalFocus}
-                    </p>
-                  </div>
-
-                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                    <div className="border border-white/10 bg-black/35 p-4">
-                      <div className="mb-2.5 font-mono text-[10px] font-bold uppercase tracking-[0.26em] text-[#8a909e]">
-                        EXECUTION PROTOCOL
-                      </div>
-                      <ul className="space-y-2 text-xs text-[#f2efe9]">
-                        <li className="flex items-center gap-2">
-                          <span className="h-1.5 w-1.5 bg-[#f59e0b]" />
-                          <span>Tail {activeSurvContract.targetName} across {activeSurvContract.schedule.length} daily schedule phases</span>
-                        </li>
-                        <li className="flex items-center gap-2">
-                          <span className="h-1.5 w-1.5 bg-[#f59e0b]" />
-                          <span>Strike unseen in an isolated window ([F] Takedown, suppressed shot, or sabotage)</span>
-                        </li>
-                        <li className="flex items-center gap-2">
-                          <span className="h-1.5 w-1.5 bg-[#38bdf8]" />
-                          <span>Carry body [G], load trunk or boat [F], and dump in deep Pacific Ocean</span>
-                        </li>
-                      </ul>
-                    </div>
-
-                    <div className="border border-white/10 bg-black/35 p-4 space-y-2.5">
-                      <div className="font-mono text-[10px] font-bold uppercase tracking-[0.26em] text-[#8a909e]">
-                        CONTRACT PAYOUT &amp; BONUSES
-                      </div>
-                      <div className="space-y-1.5 font-mono text-xs">
-                        <div className="flex justify-between text-[#f2efe9]">
-                          <span>BASE CONTRACT</span>
-                          <span className="font-bold text-[#e5a93c]">+{activeSurvContract.rewardBase} CR</span>
-                        </div>
-                        <div className="flex justify-between text-[#38bdf8]">
-                          <span>UNSEEN / ACCIDENT BONUS</span>
-                          <span className="font-bold">+{activeSurvContract.unseenBonus} CR</span>
-                        </div>
-                        <div className="flex justify-between text-[#2dd4bf]">
-                          <span>DEEP OCEAN DISPOSAL</span>
-                          <span className="font-bold">+{activeSurvContract.deepSeaBonus} CR</span>
-                        </div>
-                      </div>
-                      <div className="border-t border-white/10 pt-2 font-mono text-[10px] text-[#8a909e]">
-                        ISOLATED STRIKE WINDOWS: {activeSurvContract.schedule.filter((s) => s.isolatedWindow).length} PER CYCLE
-                      </div>
+                    <div>
+                      <div className="text-[9px] text-[#8a909e]">OCEAN DUMP</div>
+                      <div className="font-bold text-[#2dd4bf]">+{activeSurvContract.deepSeaBonus} CR</div>
                     </div>
                   </div>
                 </div>
 
                 <div className="mt-4 flex items-center justify-end gap-4 border-t border-white/10 pt-3.5">
                   <TacticalButton tone="signal" onClick={() => onStartStoryChapter(selectedChapter)}>
-                    Deploy Surveillance Hit
+                    Deploy Hit
                     <ArrowUpRight className="size-4" />
                   </TacticalButton>
                 </div>
               </DossierShell>
             ) : (
               <DossierShell tone="signal" className="flex h-full flex-col justify-between">
-                <div className="space-y-3.5">
-                  <div className="flex flex-wrap items-start justify-between gap-4 border-b border-white/10 pb-3">
-                    <div>
-                      <div
-                        className="font-mono text-[10px] font-bold uppercase tracking-[0.3em]"
-                        style={{ color: activeMissionDef.accent }}
-                      >
-                        {activeMissionDef.id === 0
-                          ? "PROLOGUE · SAFEHOUSE RANGE"
-                          : `${selectedChapter.act} · CH ${selectedChapter.code} // ${activeMissionDef.codename}`}
-                      </div>
-                      <h2 className="mt-1 font-display text-4xl font-extrabold uppercase leading-none tracking-wide text-[#f2efe9]">
-                        {activeMissionDef.name}
-                      </h2>
-                    </div>
-                    <div className="text-right font-mono text-[10px] uppercase tracking-wider text-[#8a909e]">
-                      <div>CLIENT: <span className="text-[#e5a93c]">{activeMissionDef.client}</span></div>
-                      <div>HOSTILES: <span className="text-[#f2efe9]">{activeMissionDef.enemies.length} · {activeMissionDef.tintName}</span></div>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-3 gap-2 border-b border-white/10 pb-4 font-mono text-[10px] uppercase">
-                    <div>
-                      <div className="text-[#8a909e]">SECTOR</div>
-                      <div className="mt-0.5 font-bold text-[#f2efe9]">{activeMissionDef.location}</div>
-                    </div>
-                    <div>
-                      <div className="text-[#8a909e]">WINDOW</div>
-                      <div className="mt-0.5 font-bold text-[#f2efe9]">{activeMissionDef.timeOfDay}</div>
-                    </div>
-                    <div>
-                      <div className="text-[#8a909e]">OPERATIVE</div>
-                      <div className="mt-0.5 font-bold text-[#38bdf8]">{selectedCharacter.name}</div>
-                    </div>
-                  </div>
-
-                  <div className="space-y-2.5">
-                    {activeMissionDef.briefing.map((line, i) => (
-                      <p
-                        key={i}
-                        className="border-l-2 pl-3.5 text-sm leading-relaxed text-[#cfd4de]"
+                <div className="space-y-4">
+                  <div className="flex flex-wrap items-center justify-between gap-4 border-b border-white/10 pb-3.5">
+                    <div className="flex items-center gap-4">
+                      <img
+                        src={characterPreview(
+                          activeMissionDef.id === 0
+                            ? "business"
+                            : activeMissionDef.id >= 5
+                              ? "military"
+                              : "security",
+                        )}
+                        alt={activeMissionDef.codename}
+                        className="h-16 w-16 shrink-0 border-2 object-cover object-top"
                         style={{ borderColor: activeMissionDef.accent }}
-                      >
-                        {line}
-                      </p>
-                    ))}
+                      />
+                      <div>
+                        <div
+                          className="flex items-center gap-2 font-mono text-[10px] font-bold uppercase tracking-[0.26em]"
+                          style={{ color: activeMissionDef.accent }}
+                        >
+                          <span
+                            className="flex size-5 items-center justify-center rounded-full font-display text-xs font-black text-[#07090e]"
+                            style={{ background: activeMissionDef.accent }}
+                          >
+                            {getMissionLetter(activeMissionDef.id)}
+                          </span>
+                          <span>CH {selectedChapter.code} // {activeMissionDef.codename}</span>
+                        </div>
+                        <h2 className="mt-1 font-display text-4xl font-extrabold uppercase leading-none tracking-wide text-[#f2efe9]">
+                          {activeMissionDef.name}
+                        </h2>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Compact Visual Stats Bar */}
+                  <div className="grid grid-cols-3 gap-2 font-mono text-[10px] uppercase">
+                    <div className="border border-white/10 bg-black/35 p-2.5">
+                      <div className="text-[#8a909e]">SECTOR</div>
+                      <div className="mt-0.5 truncate font-bold text-[#f2efe9]">{activeMissionDef.location}</div>
+                    </div>
+                    <div className="border border-white/10 bg-black/35 p-2.5">
+                      <div className="text-[#8a909e]">HOSTILES</div>
+                      <div className="mt-0.5 font-bold text-[#ff3b30]">{activeMissionDef.enemies.length} ARMED</div>
+                    </div>
+                    <div className="border border-white/10 bg-black/35 p-2.5">
+                      <div className="text-[#8a909e]">WINDOW</div>
+                      <div className="mt-0.5 font-bold text-[#38bdf8]">{activeMissionDef.timeOfDay}</div>
+                    </div>
                   </div>
 
                   {(() => {
@@ -829,28 +858,28 @@ export function MenuShell({
                     if (!c.bannerTitle) return null;
                     return (
                       <div
-                        className={`border px-3.5 py-2.5 font-mono text-[11px] ${
+                        className={`flex items-center gap-2.5 border px-3 py-2 font-mono text-[10px] uppercase ${
                           c.bannerTone === "advantage"
                             ? "border-[#2dd4bf]/40 bg-[#2dd4bf]/10 text-[#2dd4bf]"
                             : "border-[#f59e0b]/45 bg-[#f59e0b]/10 text-[#fbbf24]"
                         }`}
                       >
-                        <div className="font-bold uppercase tracking-wider">{c.bannerTitle}</div>
-                        <div className="mt-0.5 text-[#cfd4de]">{c.bannerText}</div>
+                        <Shield className="size-4 shrink-0" />
+                        <span className="font-bold">{c.bannerTitle}</span>
                       </div>
                     );
                   })()}
 
                   <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                    <div className="border border-white/10 bg-black/35 p-4">
-                      <div className="mb-2.5 font-mono text-[10px] font-bold uppercase tracking-[0.26em] text-[#8a909e]">
-                        PRIMARY OBJECTIVES
+                    <div className="border border-white/10 bg-black/35 p-3.5">
+                      <div className="mb-2 font-mono text-[10px] font-bold uppercase tracking-[0.26em] text-[#8a909e]">
+                        OBJECTIVES
                       </div>
-                      <ul className="space-y-2">
+                      <ul className="space-y-1.5">
                         {activeMissionDef.objectives.map((o) => (
                           <li key={o.id} className="flex items-center gap-2 text-xs text-[#f2efe9]">
-                            <span className="h-1.5 w-1.5 bg-[#ff3b30]" />
-                            <span>{o.label}</span>
+                            <Target className="size-3.5 shrink-0 text-[#ff3b30]" />
+                            <span className="truncate">{o.label}</span>
                             {o.count !== undefined && (
                               <span className="ml-auto font-mono text-[10px] text-[#8a909e]">×{o.count}</span>
                             )}
@@ -942,16 +971,19 @@ export function MenuShell({
                     <button
                       key={w.id}
                       onClick={() => onSelectWeapon(idx)}
-                      className={`cursor-pointer border px-3 py-2 text-left transition ${
+                      className={`flex cursor-pointer flex-col items-start gap-1 border px-2.5 py-2 text-left transition ${
                         active
                           ? "border-[#ff3b30] bg-[#ff3b30]/15 text-[#f2efe9]"
                           : "border-white/10 bg-white/[0.03] text-[#8a909e] hover:border-white/30 hover:text-[#f2efe9]"
                       }`}
                     >
-                      <div className="font-mono text-[9px] font-bold text-[#ff3b30]">0{w.slot}</div>
-                      <div className="truncate font-display text-base font-bold uppercase tracking-wide">
-                        {w.shortName}
+                      <div className="flex w-full items-center justify-between">
+                        <span className="font-mono text-[9px] font-bold text-[#ff3b30]">0{w.slot}</span>
+                        <span className="truncate font-display text-sm font-bold uppercase tracking-wide">
+                          {w.shortName}
+                        </span>
                       </div>
+                      <WeaponOutlineSvg weaponId={w.id} className="h-7 w-full" />
                     </button>
                   );
                 })}
@@ -1300,13 +1332,10 @@ export function MenuShell({
                 />
                 <div>
                   <div className="font-mono text-[9px] uppercase tracking-[0.24em] text-[#ff3b30]">
-                    JULIAN VOSS · SIGNATURE OPERATIVE
+                    JULIAN VOSS // TAILOR
                   </div>
-                  <div className="font-display text-lg font-extrabold uppercase tracking-wide text-[#f2efe9]">
-                    Tailored Suits &amp; Calfskin Gloves
-                  </div>
-                  <div className="text-[11px] text-[#8a909e]">
-                    Curated suit &amp; tie palettes with fitted leather assassin gloves · More outfits coming later
+                  <div className="font-display text-xl font-extrabold uppercase tracking-wide text-[#f2efe9]">
+                    {activeSuit.name}
                   </div>
                 </div>
               </div>
@@ -1459,12 +1488,8 @@ export function MenuShell({
                   paintHex={featuredPaint}
                   custom={featuredCustom}
                   label={`${featuredCar.maker} ${featuredCar.name}`}
-                  className="h-56 w-full"
+                  className="h-64 w-full"
                 />
-
-                <p className="border-l-2 border-[#38bdf8] pl-3.5 text-sm leading-relaxed text-[#cfd4de]">
-                  {featuredCar.tagline}
-                </p>
 
                 {/* Performance Gauges */}
                 <div className="space-y-3 border border-white/10 bg-black/40 p-4 font-mono text-[11px] uppercase tracking-wider">
@@ -1573,25 +1598,30 @@ export function MenuShell({
           <div className="flex flex-col justify-between gap-5">
             <DossierShell tone="ice">
               <div className="mb-4 font-mono text-[10px] font-bold uppercase tracking-[0.3em] text-[#38bdf8]">
-                STEALTH DOCTRINE
+                STEALTH PROTOCOLS
               </div>
-              <ul className="space-y-3 text-xs leading-relaxed text-[#cfd4de]">
-                <li>
-                  <b className="text-[#f2efe9]">Silenced Arsenal:</b> Every weapon is suppressed. Unaware guards take{" "}
-                  <span className="text-[#2dd4bf]">2.5× ambush damage</span> and drop silently.
-                </li>
-                <li>
-                  <b className="text-[#f2efe9]">Vision Cones &amp; Suspicion:</b> Stay outside forward sightlines. Crouching reduces visual range and eliminates footstep noise.
-                </li>
-                <li>
-                  <b className="text-[#f2efe9]">Silent Takedowns:</b> Approach behind an unaware guard and press{" "}
-                  <kbd className="border border-white/15 bg-white/10 px-1.5 py-0.5 font-mono text-[10px] text-[#e5a93c]">V</kbd> for an instant quiet neutralization.
-                </li>
-                <li>
-                  <b className="text-[#f2efe9]">Ghost Protocol:</b> Complete any contract with{" "}
-                  <span className="text-[#38bdf8]">0 Alerts</span> for bonus Credits, Intel, and Salvage.
-                </li>
-              </ul>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="border border-white/10 bg-black/40 p-3.5">
+                  <Crosshair className="size-5 text-[#2dd4bf]" />
+                  <div className="mt-2 font-display text-lg font-extrabold uppercase text-[#f2efe9]">2.5× AMBUSH</div>
+                  <div className="font-mono text-[10px] uppercase text-[#8a909e]">SUPPRESSED · UNAWARE</div>
+                </div>
+                <div className="border border-white/10 bg-black/40 p-3.5">
+                  <Footprints className="size-5 text-[#38bdf8]" />
+                  <div className="mt-2 font-display text-lg font-extrabold uppercase text-[#f2efe9]">[C] SILENT</div>
+                  <div className="font-mono text-[10px] uppercase text-[#8a909e]">0% FOOTSTEP NOISE</div>
+                </div>
+                <div className="border border-white/10 bg-black/40 p-3.5">
+                  <Skull className="size-5 text-[#e5a93c]" />
+                  <div className="mt-2 font-display text-lg font-extrabold uppercase text-[#f2efe9]">[V] / [F] STRIKE</div>
+                  <div className="font-mono text-[10px] uppercase text-[#8a909e]">INSTANT TAKEDOWN</div>
+                </div>
+                <div className="border border-white/10 bg-black/40 p-3.5">
+                  <Ghost className="size-5 text-[#ff3b30]" />
+                  <div className="mt-2 font-display text-lg font-extrabold uppercase text-[#f2efe9]">0 ALERTS</div>
+                  <div className="font-mono text-[10px] uppercase text-[#8a909e]">+120 CR GHOST BONUS</div>
+                </div>
+              </div>
             </DossierShell>
 
             <div className="flex flex-wrap items-center justify-between gap-3 border border-white/12 bg-[#0c0e14]/90 p-4">

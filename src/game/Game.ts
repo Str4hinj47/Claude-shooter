@@ -24,14 +24,19 @@ import { Spring, clamp, damp, lerp } from "../character/math";
 import { Ally, Enemy, Fighter, RescueNPC, resolveCircleAABBs, type CombatHost, type SoundKind, type SquadCommsKind } from "./Enemy";
 import {
   BOSS_TAUNTS,
+  getMissionLetter,
   getNextChapterAfterSurveillance,
+  getStoryChapterForMission,
   getStoryChapterForSurveillance,
+  isStoryChapterCompleted,
+  isStoryChapterUnlocked,
   MISSIONS,
   OPEN_WORLD_MISSION,
   type DialogueLine,
   type MissionDef,
   type ObjectiveDef,
 } from "./story";
+import type { ContractSpotDef } from "./city/WestgateActivities";
 import { createInteractableProp, type InteractableInstance } from "./interactables";
 import {
   APARTMENTS,
@@ -193,6 +198,8 @@ export interface HudState {
   activityToast: { title: string; subtitle: string; accent: string } | null;
   nearbyContract: {
     missionId: number;
+    surveillanceId?: string;
+    letter: string;
     codename: string;
     name: string;
     location: string;
@@ -202,6 +209,8 @@ export interface HudState {
   } | null;
   nextContractMarker: {
     missionId: number;
+    surveillanceId?: string;
+    letter: string;
     codename: string;
     name: string;
     district: string;
@@ -685,7 +694,8 @@ export class Game {
   private joltPhysics: JoltPhysicsWorld | null = null;
   private parachuteMesh: THREE.Group | null = null;
   private lastShownPedVoiceAt = 0;
-  private nearbyContractSpot: { missionId: number; x: number; z: number; yawDeg: number } | null = null;
+  private nearbyContractSpot: ContractSpotDef | null = null;
+  private autoContractCooldown = 0;
   private nearbyPrompt: { key: "F" | "G"; label: string; accent: string } | null = null;
   private openWorldReturnSpot: { x: number; z: number; yawDeg: number } | null = null;
   private activeContract: {
@@ -1167,6 +1177,7 @@ export class Game {
     this.clearActiveContractEntities();
     this.activeContract = null;
     this.nearbyContractSpot = null;
+    this.autoContractCooldown = 3.5;
     this.activeApartmentId = null;
     this.activeGarageId = null;
     this.nearbyHomeStation = null;
@@ -4031,10 +4042,7 @@ export class Game {
             this.activityToastTimer = 5.0;
           }
           this.checkDistrictDiscovery(activeVeh.pos);
-          const nearC = !this.activeContract ? this.level.activities.findNearbyContract(activeVeh.pos, 11.5) : null;
-          this.nearbyContractSpot = nearC
-            ? { missionId: nearC.missionId, x: nearC.x, z: nearC.z, yawDeg: nearC.yawDeg }
-            : null;
+          this.handleContractSpotProximity(activeVeh.pos, dt);
           this.updateOpenWorldInteractions(dt, activeVeh.pos, activeVeh.speed, true);
         }
 
@@ -4201,10 +4209,7 @@ export class Game {
           this.level.activities.updateStunts(dt, rig.root.position, false, false);
           this.level.activities.updateRace(dt, rig.root.position);
           this.checkDistrictDiscovery(rig.root.position);
-          const nearC = !this.activeContract ? this.level.activities.findNearbyContract(rig.root.position, 11.5) : null;
-          this.nearbyContractSpot = nearC
-            ? { missionId: nearC.missionId, x: nearC.x, z: nearC.z, yawDeg: nearC.yawDeg }
-            : null;
+          this.handleContractSpotProximity(rig.root.position, dt);
           this.updateHomeStations();
           this.updateOpenWorldInteractions(dt, rig.root.position, rig.speed, false);
         } else {
@@ -6173,20 +6178,70 @@ export class Game {
     this.level?.pedestrians?.onVehicleHorn(av.pos.x, av.pos.z);
   }
 
+  private handleContractSpotProximity(pos: THREE.Vector3, dt: number) {
+    if (this.autoContractCooldown > 0) this.autoContractCooldown = Math.max(0, this.autoContractCooldown - dt);
+    if (
+      !this.level?.activities ||
+      this.activeContract ||
+      this.phase !== "ready" ||
+      this.paused ||
+      this.level.activities.getActiveRaceState() ||
+      (this.level.contracts && this.level.contracts.getHudState(pos) !== null)
+    ) {
+      this.nearbyContractSpot = null;
+      return;
+    }
+
+    const nearC = this.level.activities.findNearbyContract(pos, 11.5);
+    this.nearbyContractSpot = nearC ?? null;
+    if (!nearC || this.autoContractCooldown > 0) return;
+
+    const d = Math.hypot(pos.x - nearC.x, pos.z - nearC.z);
+    if (d > 6.8) return;
+
+    const save = loadSave();
+    const ch = nearC.surveillanceId
+      ? getStoryChapterForSurveillance(nearC.surveillanceId)
+      : getStoryChapterForMission(nearC.missionId);
+    const unlocked = ch ? isStoryChapterUnlocked(ch, save) : nearC.missionId === 0;
+    const completed = ch ? isStoryChapterCompleted(ch, save) : !!save.records[nearC.missionId]?.completed;
+
+    // Auto-start immediately upon entering the marked area for any unlocked, uncompleted chapter!
+    if (unlocked && !completed) {
+      this.autoContractCooldown = 5.0;
+      this.launchContractSpot(nearC);
+    }
+  }
+
+  private launchContractSpot(spot: ContractSpotDef) {
+    if (spot.surveillanceId) {
+      this.startSurveillanceContract(spot.surveillanceId, 7.1);
+      const ch = getStoryChapterForSurveillance(spot.surveillanceId);
+      if (ch?.introDialogue?.length) this.queueDialogue(ch.introDialogue);
+      return;
+    }
+    this.launchContractFromOpenWorld(spot.missionId);
+  }
+
   launchNearbyContract() {
     if (!this.nearbyContractSpot) return;
-    const threshold = Math.max(1, loadSave().unlocked);
-    if (this.nearbyContractSpot.missionId > threshold) {
+    const spot = this.nearbyContractSpot;
+    const save = loadSave();
+    const ch = spot.surveillanceId
+      ? getStoryChapterForSurveillance(spot.surveillanceId)
+      : getStoryChapterForMission(spot.missionId);
+    const unlocked = ch ? isStoryChapterUnlocked(ch, save) : spot.missionId === 0;
+    if (!unlocked) {
       this.activityToast = {
-        title: `Contract C${this.nearbyContractSpot.missionId} Locked`,
-        subtitle: `Complete Contract C${this.nearbyContractSpot.missionId - 1} first`,
+        title: `[${spot.letter}] ${spot.codename} Locked`,
+        subtitle: ch && ch.chapter > 1 ? `Clear Chapter 0${ch.chapter - 1} first` : "Clear prior chapter first",
         accent: "#f87171",
       };
       this.activityToastTimer = 3.0;
       this.emitHud();
       return;
     }
-    this.launchContractFromOpenWorld(this.nearbyContractSpot.missionId);
+    this.launchContractSpot(spot);
   }
 
   launchContractFromOpenWorld(missionId: number) {
@@ -6247,11 +6302,10 @@ export class Game {
       this.yaw = this.camYaw = r;
     }
     this.level.update(0.016, this.rig.root.position);
+    this.autoContractCooldown = 3.5;
     if (this.mission?.id === -1 && this.level.activities) {
       const nearC = this.level.activities.findNearbyContract(this.rig.root.position, 11.5);
-      this.nearbyContractSpot = nearC
-        ? { missionId: nearC.missionId, x: nearC.x, z: nearC.z, yawDeg: nearC.yawDeg }
-        : null;
+      this.nearbyContractSpot = nearC ?? null;
     } else {
       this.nearbyContractSpot = null;
     }
@@ -6529,18 +6583,23 @@ export class Game {
     const credits = save.currencies.credits;
     let nearbyContract: HudState["nearbyContract"] = null;
     if (isOpenWorld && this.nearbyContractSpot) {
-      const cm = MISSIONS.find((mi) => mi.id === this.nearbyContractSpot!.missionId);
-      if (cm) {
-        nearbyContract = {
-          missionId: cm.id,
-          codename: cm.codename,
-          name: cm.name,
-          location: cm.location,
-          unlocked: cm.id <= Math.max(1, save.unlocked),
-          completed: !!save.records[cm.id]?.completed,
-          accent: cm.accent,
-        };
-      }
+      const sp = this.nearbyContractSpot;
+      const ch = sp.surveillanceId
+        ? getStoryChapterForSurveillance(sp.surveillanceId)
+        : getStoryChapterForMission(sp.missionId);
+      const unlocked = ch ? isStoryChapterUnlocked(ch, save) : sp.missionId === 0;
+      const completed = ch ? isStoryChapterCompleted(ch, save) : !!save.records[sp.missionId]?.completed;
+      nearbyContract = {
+        missionId: sp.missionId,
+        surveillanceId: sp.surveillanceId,
+        letter: sp.letter,
+        codename: sp.codename,
+        name: sp.title,
+        location: sp.districtLabel,
+        unlocked,
+        completed,
+        accent: sp.accent,
+      };
     }
     let nextContractMarker: HudState["nextContractMarker"] = null;
     if (this.activeContract && r && this.level) {
@@ -6557,6 +6616,7 @@ export class Game {
         const onScreen = proj.z >= -1 && proj.z <= 1 && Math.abs(proj.x) <= 0.94 && Math.abs(proj.y) <= 0.9;
         nextContractMarker = {
           missionId: def.id,
+          letter: getMissionLetter(def.id),
           codename: def.codename,
           name: def.name,
           district: site.districtLabel,
@@ -6571,33 +6631,32 @@ export class Game {
     } else if (isOpenWorld && r && this.level?.activities) {
       const contracts = this.level.activities.getContractSummaries();
       const targetC =
-        contracts.find((c) => c.missionId >= 1 && c.unlocked && !c.completed) ??
-        contracts.find((c) => c.missionId === Math.min(MISSIONS.length - 1, Math.max(1, save.unlocked)));
+        contracts.find((c) => c.isNextActive) ??
+        contracts.find((c) => (c.missionId >= 1 || c.surveillanceId) && c.unlocked && !c.completed);
       if (targetC) {
-        const cm = MISSIONS.find((mi) => mi.id === targetC.missionId);
-        if (cm) {
-          const dx = targetC.x - r.root.position.x;
-          const dz = targetC.z - r.root.position.z;
-          const dist = Math.round(Math.hypot(dx, dz));
-          const dotFwd = dx * Math.sin(this.camYaw) + dz * Math.cos(this.camYaw);
-          const dotRgt = dx * -Math.cos(this.camYaw) + dz * Math.sin(this.camYaw);
-          const dirAngle = Math.atan2(dotRgt, dotFwd);
-          const groundY = this.level.groundHeightAt(targetC.x, targetC.z, 20);
-          const proj = new THREE.Vector3(targetC.x, groundY + 4.8, targetC.z).project(this.camera);
-          const onScreen = proj.z >= -1 && proj.z <= 1 && Math.abs(proj.x) <= 0.94 && Math.abs(proj.y) <= 0.9;
-          nextContractMarker = {
-            missionId: cm.id,
-            codename: cm.codename,
-            name: cm.name,
-            district: cm.location,
-            dist,
-            dirAngle,
-            screenX: (proj.x * 0.5 + 0.5),
-            screenY: (-proj.y * 0.5 + 0.5),
-            onScreen,
-            accent: cm.accent,
-          };
-        }
+        const dx = targetC.x - r.root.position.x;
+        const dz = targetC.z - r.root.position.z;
+        const dist = Math.round(Math.hypot(dx, dz));
+        const dotFwd = dx * Math.sin(this.camYaw) + dz * Math.cos(this.camYaw);
+        const dotRgt = dx * -Math.cos(this.camYaw) + dz * Math.sin(this.camYaw);
+        const dirAngle = Math.atan2(dotRgt, dotFwd);
+        const groundY = this.level.groundHeightAt(targetC.x, targetC.z, 20);
+        const proj = new THREE.Vector3(targetC.x, groundY + 4.8, targetC.z).project(this.camera);
+        const onScreen = proj.z >= -1 && proj.z <= 1 && Math.abs(proj.x) <= 0.94 && Math.abs(proj.y) <= 0.9;
+        nextContractMarker = {
+          missionId: targetC.missionId,
+          surveillanceId: targetC.surveillanceId,
+          letter: targetC.letter,
+          codename: targetC.codename,
+          name: targetC.codename,
+          district: targetC.codename,
+          dist,
+          dirAngle,
+          screenX: (proj.x * 0.5 + 0.5),
+          screenY: (-proj.y * 0.5 + 0.5),
+          onScreen,
+          accent: targetC.accent,
+        };
       }
     }
     const hasOpenWorldReturn = (!isOpenWorld && this.openWorldReturnSpot !== null) || (isOpenWorld && this.phase === "complete");

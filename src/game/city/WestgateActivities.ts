@@ -1,10 +1,14 @@
 import * as THREE from "three";
 import {
+  getMissionLetter,
   getNextStoryChapter,
   getStoryChapterForMission,
+  getStoryChapterForSurveillance,
+  isStoryChapterCompleted,
   isStoryChapterUnlocked,
+  MISSION_LETTERS,
   MISSIONS,
-  STORYLINE_CHAPTERS,
+  SURVEILLANCE_START_SPOTS,
 } from "../story";
 import { loadSave, recordSpeedTrapBest } from "../progression";
 import type { WorldHeightSystem } from "./HeightSystem";
@@ -133,6 +137,11 @@ import { OPEN_WORLD_MISSION_SITES } from "./OpenWorldMissions";
 
 export interface ContractSpotDef {
   missionId: number;
+  surveillanceId?: string;
+  letter: string;
+  accent: string;
+  codename: string;
+  title: string;
   x: number;
   z: number;
   yawDeg: number;
@@ -140,17 +149,45 @@ export interface ContractSpotDef {
 }
 
 export const WESTGATE_CONTRACT_SPOTS: ContractSpotDef[] = [
-  { missionId: 0, x: -238, z: 295, yawDeg: 120, districtLabel: "Old Quarter Safehouse" },
+  {
+    missionId: 0,
+    letter: "V",
+    accent: MISSION_LETTERS[0].accent,
+    codename: "RANGE CALIBRATION",
+    title: "Safehouse Range",
+    x: -238,
+    z: 295,
+    yawDeg: 120,
+    districtLabel: "Old Quarter Safehouse",
+  },
   ...[1, 2, 3, 4, 5, 6].map((id) => {
     const s = OPEN_WORLD_MISSION_SITES[id];
+    const m = MISSIONS.find((mi) => mi.id === id);
+    const meta = MISSION_LETTERS[id] ?? { letter: "M", accent: m?.accent ?? "#ff3b30" };
     return {
       missionId: id,
+      letter: meta.letter,
+      accent: meta.accent,
+      codename: m?.codename ?? `CONTRACT ${id}`,
+      title: m?.name ?? s.districtLabel,
       x: s.approachX,
       z: s.approachZ,
       yawDeg: id === 4 ? 0 : 180,
       districtLabel: s.districtLabel,
     };
   }),
+  ...SURVEILLANCE_START_SPOTS.map((sv) => ({
+    missionId: -1,
+    surveillanceId: sv.surveillanceId,
+    letter: sv.letter,
+    accent: sv.accent,
+    codename: sv.codename,
+    title: sv.title,
+    x: sv.x,
+    z: sv.z,
+    yawDeg: sv.yawDeg,
+    districtLabel: sv.districtLabel,
+  })),
 ];
 
 export const WESTGATE_SPEED_TRAPS: SpeedTrapDef[] = [
@@ -277,14 +314,14 @@ export class WestgateActivityManager {
       });
     }
 
-    // Mission Contract Launch Beacons linking Campaign Missions M0–M6 into Westgate Bay
-    const ringGeo = new THREE.RingGeometry(2.15, 2.75, 32);
+    // Mission Contract Launch Beacons linking Campaign Chapters Ch 00–09 into Westgate Bay
+    const ringGeo = new THREE.RingGeometry(2.6, 3.4, 36);
     ringGeo.rotateX(-Math.PI / 2);
-    const outerRingGeo = new THREE.RingGeometry(3.2, 3.65, 32);
+    const outerRingGeo = new THREE.RingGeometry(4.0, 4.7, 36);
     outerRingGeo.rotateX(-Math.PI / 2);
-    const tallBeamGeo = new THREE.CylinderGeometry(0.32, 1.35, 54, 14, 1, true);
-    const stdBeamGeo = new THREE.CylinderGeometry(0.22, 0.9, 26, 12, 1, true);
-    const crystalGeo = new THREE.OctahedronGeometry(0.7, 0);
+    const tallBeamGeo = new THREE.CylinderGeometry(0.45, 1.8, 78, 14, 1, true);
+    const stdBeamGeo = new THREE.CylinderGeometry(0.24, 0.95, 26, 12, 1, true);
+    const crystalGeo = new THREE.OctahedronGeometry(0.75, 0);
     const save = loadSave();
     for (const d of save.discoveredDistricts ?? []) {
       this.discoveredDistricts.add(d);
@@ -298,17 +335,20 @@ export class WestgateActivityManager {
     });
 
     const nextCh = getNextStoryChapter(save);
-    const nextActiveId = nextCh.kind === "mission" ? nextCh.missionId ?? -1 : -1;
+    const nextMissionId = nextCh.kind === "mission" ? nextCh.missionId ?? -99 : -99;
+    const nextSurvId = nextCh.kind === "surveillance" ? nextCh.surveillanceId ?? null : null;
 
     for (const spot of WESTGATE_CONTRACT_SPOTS) {
-      const m = MISSIONS.find((mi) => mi.id === spot.missionId);
-      if (!m) continue;
-      const ch = getStoryChapterForMission(spot.missionId);
+      const ch = spot.surveillanceId
+        ? getStoryChapterForSurveillance(spot.surveillanceId)
+        : getStoryChapterForMission(spot.missionId);
       const y = terrainAt(spot.x, spot.z);
       const unlocked = ch ? isStoryChapterUnlocked(ch, save) : spot.missionId === 0;
-      const completed = !!save.records[spot.missionId]?.completed;
-      const isNextActive = spot.missionId === nextActiveId;
-      const col = unlocked ? (completed ? 0xfbbf24 : new THREE.Color(m.accent).getHex()) : 0x64748b;
+      const completed = ch ? isStoryChapterCompleted(ch, save) : !!save.records[spot.missionId]?.completed;
+      const isNextActive = spot.surveillanceId
+        ? spot.surveillanceId === nextSurvId
+        : spot.missionId === nextMissionId;
+      const col = unlocked ? (completed ? 0xfbbf24 : new THREE.Color(spot.accent).getHex()) : 0x64748b;
 
       const g = new THREE.Group();
       g.position.set(spot.x, y, spot.z);
@@ -316,7 +356,7 @@ export class WestgateActivityManager {
       const ringMat = new THREE.MeshBasicMaterial({
         color: col,
         transparent: true,
-        opacity: isNextActive ? 0.96 : unlocked ? 0.85 : 0.32,
+        opacity: isNextActive ? 0.98 : unlocked ? 0.85 : 0.28,
         side: THREE.DoubleSide,
         polygonOffset: true,
         polygonOffsetFactor: -4,
@@ -328,7 +368,7 @@ export class WestgateActivityManager {
       const outerRingMat = new THREE.MeshBasicMaterial({
         color: col,
         transparent: true,
-        opacity: isNextActive ? 0.68 : unlocked ? 0.35 : 0.12,
+        opacity: isNextActive ? 0.78 : unlocked ? 0.35 : 0.1,
         side: THREE.DoubleSide,
         depthWrite: false,
         polygonOffset: true,
@@ -341,12 +381,12 @@ export class WestgateActivityManager {
       const beamMat = new THREE.MeshBasicMaterial({
         color: col,
         transparent: true,
-        opacity: isNextActive ? 0.34 : unlocked ? 0.2 : 0.06,
+        opacity: isNextActive ? 0.42 : unlocked ? 0.2 : 0.05,
         side: THREE.DoubleSide,
         depthWrite: false,
         blending: THREE.AdditiveBlending,
       });
-      const beamH = isNextActive ? 54 : 26;
+      const beamH = isNextActive ? 78 : 26;
       const beam = new THREE.Mesh(isNextActive ? tallBeamGeo : stdBeamGeo, beamMat);
       beam.position.y = beamH * 0.5;
 
@@ -356,23 +396,20 @@ export class WestgateActivityManager {
       );
       crystal.position.y = 2.25;
 
-      // Floating high-contrast overhead MISSION START billboard sprite
+      // Floating GTA V Mission Letter billboard sprite
       const sign = this.buildContractBillboardSprite(
-        spot.missionId,
-        m.codename,
-        m.name,
+        spot,
         unlocked,
         completed,
         isNextActive,
-        m.accent,
       );
       if (sign) {
-        sign.position.set(0, isNextActive ? 5.2 : 4.5, 0);
+        sign.position.set(0, isNextActive ? 5.6 : 4.6, 0);
         g.add(sign);
       }
 
       g.add(ring, outerRing, beam, crystal);
-      this.buildContractStagingSite(g, spot.missionId, col);
+      if (spot.missionId >= 0) this.buildContractStagingSite(g, spot.missionId, col);
       this.root.add(g);
       this.contracts.push({
         spot,
@@ -680,13 +717,10 @@ export class WestgateActivityManager {
   }
 
   private buildContractBillboardSprite(
-    missionId: number,
-    codename: string,
-    name: string,
+    spot: ContractSpotDef,
     unlocked: boolean,
     completed: boolean,
     isNextActive: boolean,
-    accent: string,
   ): THREE.Sprite | null {
     if (typeof document === "undefined") return null;
     const canvas = document.createElement("canvas");
@@ -695,50 +729,55 @@ export class WestgateActivityManager {
     const ctx = canvas.getContext("2d");
     if (!ctx || typeof ctx.fillText !== "function") return null;
 
-    const borderCol = unlocked ? (completed ? "#fbbf24" : accent) : "#64748b";
+    const borderCol = unlocked ? (completed ? "#fbbf24" : spot.accent) : "#64748b";
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
     // Dark tactical plate
-    ctx.fillStyle = "rgba(7, 9, 14, 0.92)";
-    ctx.fillRect(10, 10, 492, 136);
+    ctx.fillStyle = "rgba(7, 9, 14, 0.94)";
+    ctx.fillRect(10, 14, 492, 132);
     ctx.strokeStyle = borderCol;
     ctx.lineWidth = isNextActive ? 6 : 4;
-    ctx.strokeRect(10, 10, 492, 136);
+    ctx.strokeRect(10, 14, 492, 132);
 
-    // Header strip
+    // Big GTA V Mission Letter Circle on left
+    ctx.beginPath();
+    ctx.arc(76, 80, 44, 0, Math.PI * 2);
     ctx.fillStyle = borderCol;
-    ctx.fillRect(10, 10, 492, 42);
+    ctx.fill();
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = "#ffffff";
+    ctx.stroke();
+
     ctx.fillStyle = "#07090e";
-    ctx.font = "900 24px ui-monospace, monospace";
+    ctx.font = "900 54px sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    const ch = getStoryChapterForMission(missionId);
-    const prevCh = ch && ch.chapter > 1 ? STORYLINE_CHAPTERS[ch.chapter - 1] : undefined;
-    const chLabel = ch ? `CH ${ch.code}` : `C${missionId}`;
-    const tag = !unlocked
-      ? `LOCKED · ${chLabel}`
-      : isNextActive
-        ? `★ START STORY · ${chLabel}`
-        : completed
-          ? `REPLAY · ${chLabel}`
-          : `DEPLOY · ${chLabel}`;
-    ctx.fillText(tag, 256, 31);
+    ctx.fillText(spot.letter, 76, 82);
 
-    // Codename + location
+    // Right side: concise codename + status
+    const ch = spot.surveillanceId
+      ? getStoryChapterForSurveillance(spot.surveillanceId)
+      : getStoryChapterForMission(spot.missionId);
+    const chLabel = ch ? `CH ${ch.code}` : `OP`;
+    ctx.textAlign = "left";
+    ctx.fillStyle = borderCol;
+    ctx.font = "900 22px ui-monospace, monospace";
+    ctx.fillText(
+      !unlocked ? `LOCKED · ${chLabel}` : isNextActive ? `★ ACTIVE · ${chLabel}` : completed ? `CLEARED · ${chLabel}` : chLabel,
+      138,
+      46,
+    );
+
     ctx.fillStyle = "#f2efe9";
-    ctx.font = "800 34px sans-serif";
-    ctx.fillText(codename, 256, 82);
+    ctx.font = "800 30px sans-serif";
+    ctx.fillText(spot.codename, 138, 84);
 
     ctx.fillStyle = unlocked ? "#cbd5e1" : "#94a3b8";
-    ctx.font = "600 20px ui-monospace, monospace";
+    ctx.font = "700 20px ui-monospace, monospace";
     ctx.fillText(
-      unlocked
-        ? `${name} · PRESS [G]`
-        : prevCh
-          ? `CLEAR CH ${prevCh.code} (${prevCh.codename})`
-          : `CLEAR PREVIOUS CHAPTER`,
-      256,
-      120,
+      !unlocked ? "COMPLETE PRIOR OP" : completed ? "ENTER OR [G] REPLAY" : "WALK / DRIVE IN TO START",
+      138,
+      118,
     );
 
     // Downward pointer arrow beneath plate
@@ -754,7 +793,7 @@ export class WestgateActivityManager {
     tex.colorSpace = THREE.SRGBColorSpace;
     const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: true });
     const sp = new THREE.Sprite(mat);
-    sp.scale.set(isNextActive ? 6.2 : 5.0, isNextActive ? 2.15 : 1.75, 1);
+    sp.scale.set(isNextActive ? 6.4 : 5.0, isNextActive ? 2.2 : 1.75, 1);
     return sp;
   }
 
@@ -821,16 +860,42 @@ export class WestgateActivityManager {
     }));
   }
 
-  getContractSummaries(): { missionId: number; x: number; z: number; unlocked: boolean; completed: boolean }[] {
+  getContractSummaries(): {
+    missionId: number;
+    surveillanceId?: string;
+    letter: string;
+    accent: string;
+    codename: string;
+    x: number;
+    z: number;
+    unlocked: boolean;
+    completed: boolean;
+    isNextActive: boolean;
+  }[] {
     const save = loadSave();
+    const nextCh = getNextStoryChapter(save);
+    const nextMissionId = nextCh.kind === "mission" ? nextCh.missionId ?? -99 : -99;
+    const nextSurvId = nextCh.kind === "surveillance" ? nextCh.surveillanceId ?? null : null;
     return this.contracts.map((c) => {
-      const ch = getStoryChapterForMission(c.spot.missionId);
+      const ch = c.spot.surveillanceId
+        ? getStoryChapterForSurveillance(c.spot.surveillanceId)
+        : getStoryChapterForMission(c.spot.missionId);
+      const unlocked = ch ? isStoryChapterUnlocked(ch, save) : c.spot.missionId === 0;
+      const completed = ch ? isStoryChapterCompleted(ch, save) : !!save.records[c.spot.missionId]?.completed;
+      const isNextActive = c.spot.surveillanceId
+        ? c.spot.surveillanceId === nextSurvId
+        : c.spot.missionId === nextMissionId;
       return {
         missionId: c.spot.missionId,
+        surveillanceId: c.spot.surveillanceId,
+        letter: c.spot.letter || getMissionLetter(c.spot.missionId, c.spot.surveillanceId),
+        accent: c.spot.accent,
+        codename: c.spot.codename,
         x: c.spot.x,
         z: c.spot.z,
-        unlocked: ch ? isStoryChapterUnlocked(ch, save) : c.spot.missionId === 0,
-        completed: !!save.records[c.spot.missionId]?.completed,
+        unlocked,
+        completed,
+        isNextActive,
       };
     });
   }

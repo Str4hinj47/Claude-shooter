@@ -626,17 +626,16 @@ export function GameHud({
           >
             <div className="flex flex-col items-center">
               <div
-                className="flex items-center gap-1.5 border bg-[#07090f]/90 px-2.5 py-1 shadow-[0_4px_20px_rgba(0,0,0,0.85)]"
+                className="flex items-center gap-2 rounded-full border-2 bg-[#07090f]/95 px-2.5 py-1 shadow-[0_6px_22px_rgba(0,0,0,0.85)]"
                 style={{ borderColor: hud.nextContractMarker.accent }}
               >
                 <span
-                  className="inline-block size-2 rotate-45"
+                  className="flex size-6 items-center justify-center rounded-full font-display text-sm font-black text-[#07090e]"
                   style={{ background: hud.nextContractMarker.accent }}
-                />
-                <span className="font-mono text-[10px] font-black uppercase tracking-[0.16em] text-[#f2efe9]">
-                  MISSION C{hud.nextContractMarker.missionId} · {hud.nextContractMarker.codename}
+                >
+                  {hud.nextContractMarker.letter}
                 </span>
-                <span className="font-mono text-[10px] font-bold tabular-nums" style={{ color: hud.nextContractMarker.accent }}>
+                <span className="font-mono text-[11px] font-black tabular-nums text-[#f2efe9]">
                   {hud.nextContractMarker.dist}M
                 </span>
               </div>
@@ -658,9 +657,15 @@ export function GameHud({
         hud.nextContractMarker && (
           <div className="pointer-events-none absolute left-1/2 top-24 -translate-x-1/2">
             <div
-              className="flex items-center gap-2.5 border bg-[#080a0f]/92 px-4 py-1.5 shadow-lg"
-              style={{ borderColor: `${hud.nextContractMarker.accent}99` }}
+              className="flex items-center gap-2.5 rounded-full border bg-[#080a0f]/92 py-1 pl-1.5 pr-3.5 shadow-lg"
+              style={{ borderColor: `${hud.nextContractMarker.accent}bb` }}
             >
+              <span
+                className="flex size-6 items-center justify-center rounded-full font-display text-sm font-black text-[#07090e]"
+                style={{ background: hud.nextContractMarker.accent }}
+              >
+                {hud.nextContractMarker.letter}
+              </span>
               <span
                 className="inline-block text-sm font-black"
                 style={{
@@ -670,17 +675,14 @@ export function GameHud({
               >
                 ▲
               </span>
-              <span className="font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-[#f2efe9]">
-                NEXT MISSION: C{hud.nextContractMarker.missionId} {hud.nextContractMarker.codename}
+              <span className="font-display text-sm font-extrabold uppercase tracking-wider text-[#f2efe9]">
+                {hud.nextContractMarker.codename}
               </span>
               <span
-                className="font-mono text-[10px] font-black tabular-nums"
+                className="font-mono text-[11px] font-black tabular-nums"
                 style={{ color: hud.nextContractMarker.accent }}
               >
                 {hud.nextContractMarker.dist}M
-              </span>
-              <span className="hidden font-mono text-[9px] uppercase tracking-wider text-[#94a3b8] sm:inline">
-                · FOLLOW BEAM OR [M] MAP
               </span>
             </div>
           </div>
@@ -825,12 +827,30 @@ export function GameHud({
               style={{ borderColor: `${toneColor}66` }}
             >
               <div className="flex items-center gap-2.5">
-                {isVoss && (
+                {isVoss ? (
                   <img
                     src={characterPreview("business")}
                     alt="Julian Voss"
                     className="h-8 w-8 shrink-0 border border-[#38bdf8]/60 object-cover object-top"
                   />
+                ) : isBrick ? (
+                  <img
+                    src={characterPreview("military")}
+                    alt="Brick Horvat"
+                    className="h-8 w-8 shrink-0 border border-[#f59e0b]/60 object-cover object-top"
+                  />
+                ) : isBoss ? (
+                  <img
+                    src={characterPreview("security")}
+                    alt={sp}
+                    className="h-8 w-8 shrink-0 border border-[#ff3b30]/60 object-cover object-top"
+                  />
+                ) : (
+                  <span
+                    className="flex h-8 w-8 shrink-0 items-center justify-center border border-[#2dd4bf]/60 bg-[#2dd4bf]/15 font-display text-base font-black text-[#2dd4bf]"
+                  >
+                    M
+                  </span>
                 )}
                 <div className="flex min-w-0 flex-1 items-center gap-2 font-mono text-[10px] font-bold uppercase tracking-[0.26em]" style={{ color: toneColor }}>
                   <Radio className="size-3.5 shrink-0" />
@@ -1075,24 +1095,25 @@ export function GameHud({
         >
           <div
             data-augmented-ui="tl-clip br-clip border inlay"
-            className="voss-panel-sharp flex items-center gap-3 px-5 py-2.5"
+            className="voss-panel-sharp flex items-center gap-3 px-4 py-2"
             style={{ "--aug-border-bg": hud.nearbyContract.unlocked ? hud.nearbyContract.accent : "#64748b" } as React.CSSProperties}
           >
             <span
-              className="px-2 py-0.5 font-mono text-[11px] font-black uppercase text-[#07080b]"
+              className="flex size-8 items-center justify-center rounded-full font-display text-base font-black text-[#07090e]"
               style={{ background: hud.nearbyContract.unlocked ? hud.nearbyContract.accent : "#64748b" }}
             >
-              {hud.nearbyContract.unlocked ? "[G]" : "LOCKED"}
+              {hud.nearbyContract.letter}
             </span>
             <div className="text-left">
-              <div className="font-mono text-[10px] font-bold uppercase tracking-[0.22em]" style={{ color: hud.nearbyContract.accent }}>
-                MISSION START · CONTRACT C{hud.nearbyContract.missionId} · {hud.nearbyContract.codename}
-                {hud.nearbyContract.completed ? " · Cleared" : ""}
+              <div className="font-display text-base font-extrabold uppercase leading-none tracking-wide text-[#f2efe9]">
+                {hud.nearbyContract.codename}
               </div>
-              <div className="font-display text-lg font-extrabold uppercase leading-none tracking-wide text-[#f2efe9]">
-                {hud.nearbyContract.unlocked
-                  ? `PRESS [G] TO START ${hud.nearbyContract.name}`
-                  : `Clear Contract C${hud.nearbyContract.missionId - 1} First`}
+              <div className="mt-0.5 font-mono text-[10px] font-bold uppercase tracking-[0.2em]" style={{ color: hud.nearbyContract.unlocked ? hud.nearbyContract.accent : "#94a3b8" }}>
+                {!hud.nearbyContract.unlocked
+                  ? "LOCKED"
+                  : hud.nearbyContract.completed
+                    ? "[G] REPLAY"
+                    : "STEP INSIDE TO START"}
               </div>
             </div>
           </div>
