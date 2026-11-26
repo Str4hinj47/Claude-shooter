@@ -8,7 +8,7 @@ namespace westgate {
 void PlayerController::init(PhysicsWorld* physics, const glm::vec3& startPos, float startYawDeg) {
   physics_ = physics;
   yaw_ = glm::radians(startYawDeg);
-  pitch_ = 0.16f;
+  pitch_ = -0.18f;
   currentSpeed_ = 0.0f;
   stepAccum_ = 0.0f;
   if (physics_) {
@@ -41,7 +41,7 @@ void PlayerController::update(float dt, const PlayerInputState& input) {
   stepIntensity_ = 0.0f;
 
   yaw_ -= input.lookDeltaX * 0.0024f;
-  pitch_ = std::clamp(pitch_ + input.lookDeltaY * 0.0021f, -0.65f, 1.05f);
+  pitch_ = std::clamp(pitch_ - input.lookDeltaY * 0.0021f, -0.85f, 0.55f);
 
   const glm::vec3 fwd(std::sin(yaw_), 0.0f, std::cos(yaw_));
   const glm::vec3 right(-std::cos(yaw_), 0.0f, std::sin(yaw_));
@@ -75,13 +75,13 @@ void PlayerController::update(float dt, const PlayerInputState& input) {
 
   // Third-person over-shoulder camera with Jolt physics wall-clipping raycast
   const glm::vec3 pos = position();
-  const glm::vec3 pivot = pos + glm::vec3(0.0f, input.crouch ? 1.15f : 1.55f, 0.0f);
+  const glm::vec3 pivot = pos + glm::vec3(0.0f, input.crouch ? 1.05f : 1.38f, 0.0f);
   const glm::vec3 camDir(
     std::sin(yaw_) * std::cos(pitch_),
     std::sin(pitch_),
     std::cos(yaw_) * std::cos(pitch_)
   );
-  const glm::vec3 shoulderOffset = right * 0.55f;
+  const glm::vec3 shoulderOffset = right * 0.42f;
   const glm::vec3 camTarget = pivot + shoulderOffset;
 
   float dist = camDist_;

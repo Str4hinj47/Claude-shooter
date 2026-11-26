@@ -7,6 +7,7 @@
 #include "westgate/GltfAssetLoader.hpp"
 #include <algorithm>
 #include <cmath>
+#include <glm/gtc/type_ptr.hpp>
 #include <limits>
 #include <vector>
 
@@ -57,8 +58,6 @@ bool decodeMeshoptBufferViews(
       }
     }
 
-    // Redirect buffer_view to point at decoded buffer in memory so cgltf_accessor_unpack_* works seamlessly.
-    // Must clear bv->data before cgltf_free(data) because cgltf_free calls free() on non-null bv->data!
     bv->data = decodedViews[i].data();
     bv->offset = 0;
     bv->size = dstSize;
@@ -74,6 +73,134 @@ const uint8_t* getBufferViewData(const cgltf_buffer_view* bv) {
     return static_cast<const uint8_t*>(bv->buffer->data) + bv->offset;
   }
   return nullptr;
+}
+
+glm::mat4 nodeWorldMatrix(const cgltf_node* node) {
+  float m[16]{};
+  cgltf_node_transform_world(node, m);
+  return glm::make_mat4(m);
+}
+
+std::vector<glm::mat4> computeRestNodeWorlds(const std::vector<GltfNodeInfo>& nodes) {
+  std::vector<glm::mat4> world(nodes.size(), glm::mat4(1.0f));
+  std::vector<bool> done(nodes.size(), false);
+  auto eval = [&](auto& self, size_t idx) -> glm::mat4 {
+    if (done[idx]) return world[idx];
+    const auto& n = nodes[idx];
+    const glm::mat4 local =
+      glm::translate(glm::mat4(1.0f), n.restT) *
+      glm::mat4_cast(n.restR) *
+      glm::scale(glm::mat4(1.0f), n.restS);
+    world[idx] = (n.parent >= 0) ? (self(self, static_cast<size_t>(n.parent)) * local) : local;
+    done[idx] = true;
+    return world[idx];
+  };
+  for (size_t i = 0; i < nodes.size(); ++i) eval(eval, i);
+  return world;
+}
+
+void extractPrimitive(
+  const cgltf_data* data,
+  const cgltf_primitive& prim,
+  bool isSkinned,
+  const glm::mat4& worldMat,
+  const glm::mat3& normalMat,
+  GltfPrimitive& outPrim
+) {
+  const cgltf_accessor* posAcc = nullptr;
+  const cgltf_accessor* normAcc = nullptr;
+  const cgltf_accessor* uvAcc = nullptr;
+  const cgltf_accessor* colAcc = nullptr;
+  const cgltf_accessor* jntAcc = nullptr;
+  const cgltf_accessor* wgtAcc = nullptr;
+
+  for (cgltf_size ai = 0; ai < prim.attributes_count; ++ai) {
+    const auto& attr = prim.attributes[ai];
+    if (attr.type == cgltf_attribute_type_position) posAcc = attr.data;
+    else if (attr.type == cgltf_attribute_type_normal) normAcc = attr.data;
+    else if (attr.type == cgltf_attribute_type_texcoord && attr.index == 0) uvAcc = attr.data;
+    else if (attr.type == cgltf_attribute_type_color && attr.index == 0) colAcc = attr.data;
+    else if (attr.type == cgltf_attribute_type_joints && attr.index == 0) jntAcc = attr.data;
+    else if (attr.type == cgltf_attribute_type_weights && attr.index == 0) wgtAcc = attr.data;
+  }
+  if (!posAcc || posAcc->count == 0) return;
+
+  outPrim.materialIndex = prim.material ? static_cast<int32_t>(prim.material - data->materials) : -1;
+  outPrim.hasSkin = isSkinned && jntAcc && wgtAcc;
+  outPrim.vertices.resize(posAcc->count);
+
+  std::vector<float> posBuf(posAcc->count * 3, 0.0f);
+  cgltf_accessor_unpack_floats(posAcc, posBuf.data(), posBuf.size());
+
+  std::vector<float> normBuf;
+  if (normAcc && normAcc->count == posAcc->count) {
+    normBuf.resize(posAcc->count * 3, 0.0f);
+    cgltf_accessor_unpack_floats(normAcc, normBuf.data(), normBuf.size());
+  }
+
+  std::vector<float> uvBuf;
+  if (uvAcc && uvAcc->count == posAcc->count) {
+    uvBuf.resize(posAcc->count * 2, 0.0f);
+    cgltf_accessor_unpack_floats(uvAcc, uvBuf.data(), uvBuf.size());
+  }
+
+  const cgltf_size colComps = colAcc ? cgltf_num_components(colAcc->type) : 0;
+  std::vector<float> colBuf;
+  if (colAcc && colAcc->count == posAcc->count && (colComps == 3 || colComps == 4)) {
+    colBuf.resize(posAcc->count * colComps, 1.0f);
+    cgltf_accessor_unpack_floats(colAcc, colBuf.data(), colBuf.size());
+  }
+
+  std::vector<float> wgtBuf;
+  if (outPrim.hasSkin) {
+    wgtBuf.resize(posAcc->count * 4, 0.0f);
+    cgltf_accessor_unpack_floats(wgtAcc, wgtBuf.data(), wgtBuf.size());
+  }
+
+  for (cgltf_size vi = 0; vi < posAcc->count; ++vi) {
+    GltfVertex v;
+    glm::vec3 p(posBuf[vi * 3 + 0], posBuf[vi * 3 + 1], posBuf[vi * 3 + 2]);
+    if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) p = glm::vec3(0.0f);
+
+    if (!isSkinned) {
+      p = glm::vec3(worldMat * glm::vec4(p, 1.0f));
+    }
+    v.position = p;
+
+    if (!normBuf.empty()) {
+      glm::vec3 n(normBuf[vi * 3 + 0], normBuf[vi * 3 + 1], normBuf[vi * 3 + 2]);
+      if (!isSkinned) n = normalMat * n;
+      const float len = glm::length(n);
+      v.normal = len > 1e-5f ? n / len : glm::vec3(0.0f, 1.0f, 0.0f);
+    }
+    if (!uvBuf.empty()) {
+      v.uv = glm::vec2(uvBuf[vi * 2 + 0], uvBuf[vi * 2 + 1]);
+    }
+    if (!colBuf.empty()) {
+      if (colComps == 4) {
+        v.color = glm::vec4(colBuf[vi * 4 + 0], colBuf[vi * 4 + 1], colBuf[vi * 4 + 2], colBuf[vi * 4 + 3]);
+      } else {
+        v.color = glm::vec4(colBuf[vi * 3 + 0], colBuf[vi * 3 + 1], colBuf[vi * 3 + 2], 1.0f);
+      }
+    }
+    if (outPrim.hasSkin) {
+      cgltf_uint j4[4]{0, 0, 0, 0};
+      cgltf_accessor_read_uint(jntAcc, vi, j4, 4);
+      v.joints = glm::uvec4(j4[0], j4[1], j4[2], j4[3]);
+      glm::vec4 w(wgtBuf[vi * 4 + 0], wgtBuf[vi * 4 + 1], wgtBuf[vi * 4 + 2], wgtBuf[vi * 4 + 3]);
+      const float sum = w.x + w.y + w.z + w.w;
+      v.weights = sum > 1e-5f ? (w / sum) : glm::vec4(1.0f, 0.0f, 0.0f, 0.0f);
+    }
+    outPrim.vertices[vi] = v;
+  }
+
+  if (prim.indices && prim.indices->count > 0) {
+    outPrim.indices.resize(prim.indices->count);
+    cgltf_accessor_unpack_indices(prim.indices, outPrim.indices.data(), sizeof(uint32_t), prim.indices->count);
+  } else {
+    outPrim.indices.resize(posAcc->count);
+    for (cgltf_size i = 0; i < posAcc->count; ++i) outPrim.indices[i] = static_cast<uint32_t>(i);
+  }
 }
 
 } // namespace
@@ -108,13 +235,80 @@ bool GltfAssetLoader::loadGlb(const std::string& path, GltfModel& outModel, bool
     return false;
   }
 
-  // Note: redirect cgltf_buffer_view::data requires cgltf_accessor_read_float to check bv->data;
-  // cgltf_accessor_unpack_floats reads via cgltf_buffer_view_data(bv) which prefers bv->data over bv->buffer->data!
   outModel = GltfModel{};
   outModel.sourcePath = path;
   outModel.animationCount = static_cast<uint32_t>(data->animations_count);
   for (cgltf_size si = 0; si < data->skins_count; ++si) {
     outModel.boneCount += static_cast<uint32_t>(data->skins[si].joints_count);
+  }
+
+  // Node hierarchy
+  outModel.nodes.resize(data->nodes_count);
+  for (cgltf_size ni = 0; ni < data->nodes_count; ++ni) {
+    const cgltf_node& cn = data->nodes[ni];
+    GltfNodeInfo& dst = outModel.nodes[ni];
+    dst.name = cn.name ? cn.name : "";
+    dst.parent = cn.parent ? static_cast<int32_t>(cn.parent - data->nodes) : -1;
+    if (cn.has_translation) dst.restT = glm::vec3(cn.translation[0], cn.translation[1], cn.translation[2]);
+    if (cn.has_rotation) dst.restR = glm::normalize(glm::quat(cn.rotation[3], cn.rotation[0], cn.rotation[1], cn.rotation[2]));
+    if (cn.has_scale) dst.restS = glm::vec3(cn.scale[0], cn.scale[1], cn.scale[2]);
+  }
+
+  // Skin (first skin if present)
+  if (data->skins_count > 0) {
+    const cgltf_skin& cs = data->skins[0];
+    outModel.skin.valid = cs.joints_count > 0;
+    outModel.skin.jointNodeIndices.resize(cs.joints_count, -1);
+    for (cgltf_size ji = 0; ji < cs.joints_count; ++ji) {
+      if (cs.joints[ji]) {
+        outModel.skin.jointNodeIndices[ji] = static_cast<int32_t>(cs.joints[ji] - data->nodes);
+      }
+    }
+    outModel.skin.inverseBindMatrices.resize(cs.joints_count, glm::mat4(1.0f));
+    if (cs.inverse_bind_matrices && cs.inverse_bind_matrices->count >= cs.joints_count) {
+      std::vector<float> ibmFloats(cs.joints_count * 16, 0.0f);
+      cgltf_accessor_unpack_floats(cs.inverse_bind_matrices, ibmFloats.data(), ibmFloats.size());
+      for (cgltf_size ji = 0; ji < cs.joints_count; ++ji) {
+        outModel.skin.inverseBindMatrices[ji] = glm::make_mat4(&ibmFloats[ji * 16]);
+      }
+    }
+  }
+
+  // Animations
+  outModel.animations.reserve(data->animations_count);
+  for (cgltf_size ai = 0; ai < data->animations_count; ++ai) {
+    const cgltf_animation& ca = data->animations[ai];
+    GltfAnimationClip clip;
+    clip.name = ca.name ? ca.name : ("anim_" + std::to_string(ai));
+    for (cgltf_size ci = 0; ci < ca.channels_count; ++ci) {
+      const cgltf_animation_channel& ch = ca.channels[ci];
+      if (!ch.target_node || !ch.sampler || !ch.sampler->input || !ch.sampler->output) continue;
+      if (ch.target_path != cgltf_animation_path_type_translation &&
+          ch.target_path != cgltf_animation_path_type_rotation &&
+          ch.target_path != cgltf_animation_path_type_scale) {
+        continue;
+      }
+      GltfAnimChannel dst;
+      dst.targetNode = static_cast<int32_t>(ch.target_node - data->nodes);
+      dst.targetBoneName = ch.target_node->name ? ch.target_node->name : "";
+      if (ch.target_path == cgltf_animation_path_type_translation) dst.path = GltfAnimPath::Translation;
+      else if (ch.target_path == cgltf_animation_path_type_rotation) dst.path = GltfAnimPath::Rotation;
+      else dst.path = GltfAnimPath::Scale;
+
+      const cgltf_size keyCount = ch.sampler->input->count;
+      if (keyCount == 0) continue;
+      dst.times.resize(keyCount);
+      cgltf_accessor_unpack_floats(ch.sampler->input, dst.times.data(), keyCount);
+      clip.duration = std::max(clip.duration, dst.times.back());
+
+      const size_t comps = (dst.path == GltfAnimPath::Rotation) ? 4 : 3;
+      dst.values.resize(keyCount * comps);
+      cgltf_accessor_unpack_floats(ch.sampler->output, dst.values.data(), dst.values.size());
+      clip.channels.push_back(std::move(dst));
+    }
+    if (!clip.channels.empty()) {
+      outModel.animations.push_back(std::move(clip));
+    }
   }
 
   // Materials
@@ -154,84 +348,82 @@ bool GltfAssetLoader::loadGlb(const std::string& path, GltfModel& outModel, bool
     }
   }
 
-  glm::vec3 bMin(std::numeric_limits<float>::max());
-  glm::vec3 bMax(std::numeric_limits<float>::lowest());
-
-  for (cgltf_size mi = 0; mi < data->meshes_count; ++mi) {
-    const cgltf_mesh& mesh = data->meshes[mi];
-    for (cgltf_size pi = 0; pi < mesh.primitives_count; ++pi) {
-      const cgltf_primitive& prim = mesh.primitives[pi];
+  // Traverse nodes with meshes so static node scales/rotations (e.g. 100x Z-up -> Y-up) are baked cleanly!
+  bool anyNodeMesh = false;
+  for (cgltf_size ni = 0; ni < data->nodes_count; ++ni) {
+    const cgltf_node& node = data->nodes[ni];
+    if (!node.mesh) continue;
+    anyNodeMesh = true;
+    const bool isSkinned = (node.skin != nullptr) && outModel.skin.valid;
+    const glm::mat4 worldMat = nodeWorldMatrix(&node);
+    const glm::mat3 normalMat = glm::transpose(glm::inverse(glm::mat3(worldMat)));
+    for (cgltf_size pi = 0; pi < node.mesh->primitives_count; ++pi) {
+      const cgltf_primitive& prim = node.mesh->primitives[pi];
       if (prim.type != cgltf_primitive_type_triangles) continue;
-
-      const cgltf_accessor* posAcc = nullptr;
-      const cgltf_accessor* normAcc = nullptr;
-      const cgltf_accessor* uvAcc = nullptr;
-      for (cgltf_size ai = 0; ai < prim.attributes_count; ++ai) {
-        const auto& attr = prim.attributes[ai];
-        if (attr.type == cgltf_attribute_type_position) posAcc = attr.data;
-        else if (attr.type == cgltf_attribute_type_normal) normAcc = attr.data;
-        else if (attr.type == cgltf_attribute_type_texcoord && attr.index == 0) uvAcc = attr.data;
-      }
-      if (!posAcc || posAcc->count == 0) continue;
-
       GltfPrimitive outPrim;
-      outPrim.materialIndex = prim.material ? static_cast<int32_t>(prim.material - data->materials) : -1;
-      outPrim.vertices.resize(posAcc->count);
-
-      std::vector<float> posBuf(posAcc->count * 3, 0.0f);
-      cgltf_accessor_unpack_floats(posAcc, posBuf.data(), posBuf.size());
-
-      std::vector<float> normBuf;
-      if (normAcc && normAcc->count == posAcc->count) {
-        normBuf.resize(posAcc->count * 3, 0.0f);
-        cgltf_accessor_unpack_floats(normAcc, normBuf.data(), normBuf.size());
+      extractPrimitive(data, prim, isSkinned, worldMat, normalMat, outPrim);
+      if (!outPrim.vertices.empty()) {
+        outModel.primitives.push_back(std::move(outPrim));
       }
-
-      std::vector<float> uvBuf;
-      if (uvAcc && uvAcc->count == posAcc->count) {
-        uvBuf.resize(posAcc->count * 2, 0.0f);
-        cgltf_accessor_unpack_floats(uvAcc, uvBuf.data(), uvBuf.size());
-      }
-
-      for (cgltf_size vi = 0; vi < posAcc->count; ++vi) {
-        GltfVertex v;
-        v.position = glm::vec3(posBuf[vi * 3 + 0], posBuf[vi * 3 + 1], posBuf[vi * 3 + 2]);
-        if (!std::isfinite(v.position.x) || !std::isfinite(v.position.y) || !std::isfinite(v.position.z)) {
-          v.position = glm::vec3(0.0f);
-        }
-        bMin = glm::min(bMin, v.position);
-        bMax = glm::max(bMax, v.position);
-
-        if (!normBuf.empty()) {
-          v.normal = glm::vec3(normBuf[vi * 3 + 0], normBuf[vi * 3 + 1], normBuf[vi * 3 + 2]);
-          const float len = glm::length(v.normal);
-          v.normal = len > 1e-5f ? v.normal / len : glm::vec3(0.0f, 1.0f, 0.0f);
-        }
-        if (!uvBuf.empty()) {
-          v.uv = glm::vec2(uvBuf[vi * 2 + 0], uvBuf[vi * 2 + 1]);
-        }
-        outPrim.vertices[vi] = v;
-      }
-
-      if (prim.indices && prim.indices->count > 0) {
-        outPrim.indices.resize(prim.indices->count);
-        cgltf_accessor_unpack_indices(prim.indices, outPrim.indices.data(), sizeof(uint32_t), prim.indices->count);
-      } else {
-        outPrim.indices.resize(posAcc->count);
-        for (cgltf_size i = 0; i < posAcc->count; ++i) outPrim.indices[i] = static_cast<uint32_t>(i);
-      }
-
-      outModel.primitives.push_back(std::move(outPrim));
     }
   }
 
+  // Animation-only GLBs have nodes without meshes; static mesh GLBs without scene nodes fall back to data->meshes
+  if (!anyNodeMesh && data->meshes_count > 0) {
+    for (cgltf_size mi = 0; mi < data->meshes_count; ++mi) {
+      const cgltf_mesh& mesh = data->meshes[mi];
+      for (cgltf_size pi = 0; pi < mesh.primitives_count; ++pi) {
+        const cgltf_primitive& prim = mesh.primitives[pi];
+        if (prim.type != cgltf_primitive_type_triangles) continue;
+        GltfPrimitive outPrim;
+        extractPrimitive(data, prim, false, glm::mat4(1.0f), glm::mat3(1.0f), outPrim);
+        if (!outPrim.vertices.empty()) {
+          outModel.primitives.push_back(std::move(outPrim));
+        }
+      }
+    }
+  }
+
+  // Compute rest-pose bounds (using skinning matrices for skinned meshes so bounds are in meters)
   if (!outModel.primitives.empty()) {
+    glm::vec3 bMin(std::numeric_limits<float>::max());
+    glm::vec3 bMax(std::numeric_limits<float>::lowest());
+    std::vector<glm::mat4> skinRestMats;
+    if (outModel.skin.valid) {
+      const auto nodeWorlds = computeRestNodeWorlds(outModel.nodes);
+      skinRestMats.resize(outModel.skin.jointNodeIndices.size(), glm::mat4(1.0f));
+      for (size_t ji = 0; ji < skinRestMats.size(); ++ji) {
+        const int32_t jn = outModel.skin.jointNodeIndices[ji];
+        if (jn >= 0 && static_cast<size_t>(jn) < nodeWorlds.size()) {
+          skinRestMats[ji] = nodeWorlds[jn] * outModel.skin.inverseBindMatrices[ji];
+        }
+      }
+    }
+    for (const auto& prim : outModel.primitives) {
+      for (const auto& v : prim.vertices) {
+        glm::vec3 p = v.position;
+        if (prim.hasSkin && !skinRestMats.empty()) {
+          glm::mat4 m(0.0f);
+          for (int k = 0; k < 4; ++k) {
+            const float w = v.weights[k];
+            const uint32_t ji = v.joints[k];
+            if (w > 0.0f && ji < skinRestMats.size()) {
+              m += skinRestMats[ji] * w;
+            }
+          }
+          p = glm::vec3(m * glm::vec4(p, 1.0f));
+        }
+        bMin = glm::min(bMin, p);
+        bMax = glm::max(bMax, p);
+      }
+    }
     outModel.boundsMin = bMin;
     outModel.boundsMax = bMax;
   }
 
   cleanup();
-  return !outModel.primitives.empty();
+  // Animation-only GLBs (like public/animations/combat/*.glb) legitimately have 0 primitives!
+  return !outModel.primitives.empty() || !outModel.animations.empty();
 }
 
 } // namespace westgate

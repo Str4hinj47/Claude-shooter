@@ -140,6 +140,22 @@ void AudioEngine::playFootstep(float intensity, bool isWater) {
   v.rng = 0x9E3779B9u ^ (impl_->nextVoice * 2654435761u);
 }
 
+void AudioEngine::playImpact(float strength) {
+  if (!impl_->initialized || muted_.load(std::memory_order_relaxed)) return;
+  std::lock_guard<std::mutex> lock(impl_->voiceMutex);
+  StepVoice& v = impl_->voices[impl_->nextVoice++ % impl_->voices.size()];
+  v.active = true;
+  v.isWater = false;
+  v.time = 0.0f;
+  v.duration = 0.11f;
+  v.intensity = std::clamp(strength, 0.35f, 1.35f);
+  v.freqStart = 175.0f;
+  v.freqEnd = 36.0f;
+  v.phase = 0.0f;
+  v.lpState = 0.0f;
+  v.rng = 0xA5A5A5A5u ^ (impl_->nextVoice * 2654435761u);
+}
+
 void AudioEngine::setMuted(bool muted) {
   muted_.store(muted, std::memory_order_relaxed);
 }

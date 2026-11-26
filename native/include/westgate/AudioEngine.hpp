@@ -22,6 +22,7 @@ class AudioEngine {
   void shutdown();
 
   void playFootstep(float intensity, bool isWater = false);
+  void playImpact(float strength = 0.85f);
   void setMuted(bool muted);
   bool isMuted() const { return muted_.load(std::memory_order_relaxed); }
 

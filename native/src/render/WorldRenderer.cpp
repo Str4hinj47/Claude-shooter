@@ -4,9 +4,11 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <glm/gtc/matrix_transform.hpp>
 #include <sstream>
+#include <unordered_map>
 
 namespace westgate {
 
@@ -32,13 +34,104 @@ WGPUBuffer createBufferWithData(WGPUDevice dev, WGPUQueue queue, WGPUBufferUsage
   return buf;
 }
 
+void appendBox(
+  std::vector<glm::vec3>& outPos,
+  std::vector<glm::vec3>& outNorm,
+  std::vector<glm::vec3>& outCol,
+  std::vector<uint32_t>& outIdx,
+  const glm::vec3& center,
+  const glm::vec3& size,
+  const glm::vec3& color
+) {
+  const glm::vec3 hs = size * 0.5f;
+  const uint32_t base = static_cast<uint32_t>(outPos.size());
+  const glm::vec3 verts[24] = {
+    {-hs.x, -hs.y,  hs.z}, { hs.x, -hs.y,  hs.z}, { hs.x,  hs.y,  hs.z}, {-hs.x,  hs.y,  hs.z},
+    { hs.x, -hs.y, -hs.z}, {-hs.x, -hs.y, -hs.z}, {-hs.x,  hs.y, -hs.z}, { hs.x,  hs.y, -hs.z},
+    { hs.x, -hs.y,  hs.z}, { hs.x, -hs.y, -hs.z}, { hs.x,  hs.y, -hs.z}, { hs.x,  hs.y,  hs.z},
+    {-hs.x, -hs.y, -hs.z}, {-hs.x, -hs.y,  hs.z}, {-hs.x,  hs.y,  hs.z}, {-hs.x,  hs.y, -hs.z},
+    {-hs.x,  hs.y,  hs.z}, { hs.x,  hs.y,  hs.z}, { hs.x,  hs.y, -hs.z}, {-hs.x,  hs.y, -hs.z},
+    {-hs.x, -hs.y, -hs.z}, { hs.x, -hs.y, -hs.z}, { hs.x, -hs.y,  hs.z}, {-hs.x, -hs.y,  hs.z},
+  };
+  const glm::vec3 norms[6] = {
+    {0, 0, 1}, {0, 0, -1}, {1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}
+  };
+  for (int f = 0; f < 6; ++f) {
+    for (int k = 0; k < 4; ++k) {
+      outPos.push_back(center + verts[f * 4 + k]);
+      outNorm.push_back(norms[f]);
+      outCol.push_back(color);
+    }
+    const uint32_t fb = base + static_cast<uint32_t>(f * 4);
+    outIdx.push_back(fb + 0);
+    outIdx.push_back(fb + 1);
+    outIdx.push_back(fb + 2);
+    outIdx.push_back(fb + 0);
+    outIdx.push_back(fb + 2);
+    outIdx.push_back(fb + 3);
+  }
+}
+
 } // namespace
+
+WorldRenderer::GpuTextureBinding WorldRenderer::createRgbaTexture(
+  WgpuContext& ctx,
+  uint32_t w,
+  uint32_t h,
+  const uint8_t* rgba8
+) {
+  GpuTextureBinding out{};
+  WGPUTextureDescriptor td = WGPU_TEXTURE_DESCRIPTOR_INIT;
+  td.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+  td.dimension = WGPUTextureDimension_2D;
+  td.size = {w, h, 1};
+  td.format = WGPUTextureFormat_RGBA8Unorm;
+  td.mipLevelCount = 1;
+  td.sampleCount = 1;
+  out.texture = wgpuDeviceCreateTexture(ctx.device(), &td);
+
+  WGPUTexelCopyTextureInfo dst{};
+  dst.texture = out.texture;
+  dst.mipLevel = 0;
+  dst.origin = {0, 0, 0};
+  dst.aspect = WGPUTextureAspect_All;
+
+  WGPUTexelCopyBufferLayout layout{};
+  layout.offset = 0;
+  layout.bytesPerRow = w * 4;
+  layout.rowsPerImage = h;
+  WGPUExtent3D ext{w, h, 1};
+  wgpuQueueWriteTexture(ctx.queue(), &dst, rgba8, static_cast<size_t>(w) * h * 4, &layout, &ext);
+
+  WGPUTextureViewDescriptor tvd = WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
+  tvd.format = WGPUTextureFormat_RGBA8Unorm;
+  tvd.dimension = WGPUTextureViewDimension_2D;
+  tvd.mipLevelCount = 1;
+  tvd.arrayLayerCount = 1;
+  tvd.aspect = WGPUTextureAspect_All;
+  out.view = wgpuTextureCreateView(out.texture, &tvd);
+
+  WGPUBindGroupEntry entries[2]{};
+  entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
+  entries[0].binding = 0;
+  entries[0].textureView = out.view;
+  entries[1] = WGPU_BIND_GROUP_ENTRY_INIT;
+  entries[1].binding = 1;
+  entries[1].sampler = linearSampler_;
+
+  WGPUBindGroupDescriptor bgd = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+  bgd.layout = matBgl_;
+  bgd.entryCount = 2;
+  bgd.entries = entries;
+  out.bindGroup = wgpuDeviceCreateBindGroup(ctx.device(), &bgd);
+  return out;
+}
 
 bool WorldRenderer::init(
   WgpuContext& ctx,
   const WorldData& world,
   const std::string& shaderPath,
-  const GltfModel* playerModel,
+  const WorldRenderAssets& assets,
   std::string* err
 ) {
   const std::string wgsl = loadTextFile(shaderPath);
@@ -57,35 +150,179 @@ bool WorldRenderer::init(
     return false;
   }
 
+  // Samplers & Shadow Map Texture
+  {
+    WGPUTextureDescriptor std = WGPU_TEXTURE_DESCRIPTOR_INIT;
+    std.usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding;
+    std.dimension = WGPUTextureDimension_2D;
+    std.size = {kShadowMapSize, kShadowMapSize, 1};
+    std.format = WGPUTextureFormat_Depth32Float;
+    std.mipLevelCount = 1;
+    std.sampleCount = 1;
+    shadowTex_ = wgpuDeviceCreateTexture(ctx.device(), &std);
+
+    WGPUTextureViewDescriptor svd = WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
+    svd.format = WGPUTextureFormat_Depth32Float;
+    svd.dimension = WGPUTextureViewDimension_2D;
+    svd.mipLevelCount = 1;
+    svd.arrayLayerCount = 1;
+    svd.aspect = WGPUTextureAspect_DepthOnly;
+    shadowView_ = wgpuTextureCreateView(shadowTex_, &svd);
+
+    WGPUSamplerDescriptor ssd = WGPU_SAMPLER_DESCRIPTOR_INIT;
+    ssd.addressModeU = WGPUAddressMode_ClampToEdge;
+    ssd.addressModeV = WGPUAddressMode_ClampToEdge;
+    ssd.addressModeW = WGPUAddressMode_ClampToEdge;
+    ssd.magFilter = WGPUFilterMode_Linear;
+    ssd.minFilter = WGPUFilterMode_Linear;
+    ssd.mipmapFilter = WGPUMipmapFilterMode_Nearest;
+    ssd.compare = WGPUCompareFunction_LessEqual;
+    shadowSampler_ = wgpuDeviceCreateSampler(ctx.device(), &ssd);
+
+    WGPUSamplerDescriptor lsd = WGPU_SAMPLER_DESCRIPTOR_INIT;
+    lsd.addressModeU = WGPUAddressMode_Repeat;
+    lsd.addressModeV = WGPUAddressMode_Repeat;
+    lsd.addressModeW = WGPUAddressMode_Repeat;
+    lsd.magFilter = WGPUFilterMode_Linear;
+    lsd.minFilter = WGPUFilterMode_Linear;
+    lsd.mipmapFilter = WGPUMipmapFilterMode_Linear;
+    linearSampler_ = wgpuDeviceCreateSampler(ctx.device(), &lsd);
+  }
+
   frameUbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Uniform, nullptr, sizeof(FrameUniforms));
 
-  WGPUBindGroupLayoutEntry bglEntry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-  bglEntry.binding = 0;
-  bglEntry.visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
-  bglEntry.buffer.type = WGPUBufferBindingType_Uniform;
-  bglEntry.buffer.minBindingSize = sizeof(FrameUniforms);
+  // @group(0): FrameUniforms only (shared safely between Shadow Pass & Forward Pass)
+  {
+    WGPUBindGroupLayoutEntry entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+    entry.binding = 0;
+    entry.visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
+    entry.buffer.type = WGPUBufferBindingType_Uniform;
+    entry.buffer.minBindingSize = sizeof(FrameUniforms);
 
-  WGPUBindGroupLayoutDescriptor bglDesc = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-  bglDesc.entryCount = 1;
-  bglDesc.entries = &bglEntry;
-  frameBgl_ = wgpuDeviceCreateBindGroupLayout(ctx.device(), &bglDesc);
+    WGPUBindGroupLayoutDescriptor bglDesc = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+    bglDesc.entryCount = 1;
+    bglDesc.entries = &entry;
+    frameBgl_ = wgpuDeviceCreateBindGroupLayout(ctx.device(), &bglDesc);
 
-  WGPUBindGroupEntry bgEntry = WGPU_BIND_GROUP_ENTRY_INIT;
-  bgEntry.binding = 0;
-  bgEntry.buffer = frameUbo_;
-  bgEntry.offset = 0;
-  bgEntry.size = sizeof(FrameUniforms);
+    WGPUBindGroupEntry bgEntry = WGPU_BIND_GROUP_ENTRY_INIT;
+    bgEntry.binding = 0;
+    bgEntry.buffer = frameUbo_;
+    bgEntry.offset = 0;
+    bgEntry.size = sizeof(FrameUniforms);
 
-  WGPUBindGroupDescriptor bgDesc = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-  bgDesc.layout = frameBgl_;
-  bgDesc.entryCount = 1;
-  bgDesc.entries = &bgEntry;
-  frameBg_ = wgpuDeviceCreateBindGroup(ctx.device(), &bgDesc);
+    WGPUBindGroupDescriptor bgDesc = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+    bgDesc.layout = frameBgl_;
+    bgDesc.entryCount = 1;
+    bgDesc.entries = &bgEntry;
+    frameBg_ = wgpuDeviceCreateBindGroup(ctx.device(), &bgDesc);
+  }
 
-  WGPUPipelineLayoutDescriptor plDesc = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
-  plDesc.bindGroupLayoutCount = 1;
-  plDesc.bindGroupLayouts = &frameBgl_;
-  pipeLayout_ = wgpuDeviceCreatePipelineLayout(ctx.device(), &plDesc);
+  // @group(3): shadowMap + shadowSampler (Forward Pass only — never bound during Shadow Pass!)
+  {
+    WGPUBindGroupLayoutEntry entries[2]{};
+    entries[0] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+    entries[0].binding = 0;
+    entries[0].visibility = WGPUShaderStage_Fragment;
+    entries[0].texture.sampleType = WGPUTextureSampleType_Depth;
+    entries[0].texture.viewDimension = WGPUTextureViewDimension_2D;
+
+    entries[1] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+    entries[1].binding = 1;
+    entries[1].visibility = WGPUShaderStage_Fragment;
+    entries[1].sampler.type = WGPUSamplerBindingType_Comparison;
+
+    WGPUBindGroupLayoutDescriptor bglDesc = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+    bglDesc.entryCount = 2;
+    bglDesc.entries = entries;
+    shadowReadBgl_ = wgpuDeviceCreateBindGroupLayout(ctx.device(), &bglDesc);
+
+    WGPUBindGroupEntry bgEntries[2]{};
+    bgEntries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
+    bgEntries[0].binding = 0;
+    bgEntries[0].textureView = shadowView_;
+    bgEntries[1] = WGPU_BIND_GROUP_ENTRY_INIT;
+    bgEntries[1].binding = 1;
+    bgEntries[1].sampler = shadowSampler_;
+
+    WGPUBindGroupDescriptor bgDesc = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+    bgDesc.layout = shadowReadBgl_;
+    bgDesc.entryCount = 2;
+    bgDesc.entries = bgEntries;
+    shadowReadBg_ = wgpuDeviceCreateBindGroup(ctx.device(), &bgDesc);
+  }
+
+  // @group(1): SkinUniforms
+  {
+    WGPUBindGroupLayoutEntry entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+    entry.binding = 0;
+    entry.visibility = WGPUShaderStage_Vertex;
+    entry.buffer.type = WGPUBufferBindingType_Uniform;
+    entry.buffer.minBindingSize = sizeof(SkinUniforms);
+
+    WGPUBindGroupLayoutDescriptor bglDesc = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+    bglDesc.entryCount = 1;
+    bglDesc.entries = &entry;
+    skinBgl_ = wgpuDeviceCreateBindGroupLayout(ctx.device(), &bglDesc);
+
+    SkinUniforms defaultSkin{};
+    defaultSkin.model = glm::mat4(1.0f);
+    defaultSkin.tint = glm::vec4(1.0f);
+    defaultSkin.bones.fill(glm::mat4(1.0f));
+    for (uint32_t i = 0; i < kMaxSkinSlots; ++i) {
+      skinSlots_[i].ubo = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Uniform, &defaultSkin, sizeof(SkinUniforms));
+      WGPUBindGroupEntry bgEntry = WGPU_BIND_GROUP_ENTRY_INIT;
+      bgEntry.binding = 0;
+      bgEntry.buffer = skinSlots_[i].ubo;
+      bgEntry.offset = 0;
+      bgEntry.size = sizeof(SkinUniforms);
+      WGPUBindGroupDescriptor bgDesc = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+      bgDesc.layout = skinBgl_;
+      bgDesc.entryCount = 1;
+      bgDesc.entries = &bgEntry;
+      skinSlots_[i].bindGroup = wgpuDeviceCreateBindGroup(ctx.device(), &bgDesc);
+    }
+  }
+
+  // @group(2): Albedo texture + sampler
+  {
+    WGPUBindGroupLayoutEntry entries[2]{};
+    entries[0] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+    entries[0].binding = 0;
+    entries[0].visibility = WGPUShaderStage_Fragment;
+    entries[0].texture.sampleType = WGPUTextureSampleType_Float;
+    entries[0].texture.viewDimension = WGPUTextureViewDimension_2D;
+
+    entries[1] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+    entries[1].binding = 1;
+    entries[1].visibility = WGPUShaderStage_Fragment;
+    entries[1].sampler.type = WGPUSamplerBindingType_Filtering;
+
+    WGPUBindGroupLayoutDescriptor bglDesc = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+    bglDesc.entryCount = 2;
+    bglDesc.entries = entries;
+    matBgl_ = wgpuDeviceCreateBindGroupLayout(ctx.device(), &bglDesc);
+
+    const uint8_t white[4] = {255, 255, 255, 255};
+    defaultWhiteTex_ = createRgbaTexture(ctx, 1, 1, white);
+  }
+
+  // Pipeline layouts
+  {
+    WGPUPipelineLayoutDescriptor pld = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
+    pld.bindGroupLayoutCount = 1;
+    pld.bindGroupLayouts = &frameBgl_;
+    shadowStaticPipeLayout_ = wgpuDeviceCreatePipelineLayout(ctx.device(), &pld);
+
+    WGPUBindGroupLayout bgls2[2] = {frameBgl_, skinBgl_};
+    pld.bindGroupLayoutCount = 2;
+    pld.bindGroupLayouts = bgls2;
+    shadowSkinnedPipeLayout_ = wgpuDeviceCreatePipelineLayout(ctx.device(), &pld);
+
+    WGPUBindGroupLayout bgls4[4] = {frameBgl_, skinBgl_, matBgl_, shadowReadBgl_};
+    pld.bindGroupLayoutCount = 4;
+    pld.bindGroupLayouts = bgls4;
+    scenePipeLayout_ = wgpuDeviceCreatePipelineLayout(ctx.device(), &pld);
+  }
 
   WGPUColorTargetState colorTarget = WGPU_COLOR_TARGET_STATE_INIT;
   colorTarget.format = ctx.surfaceFormat();
@@ -102,31 +339,95 @@ bool WorldRenderer::init(
   depthState.depthWriteEnabled = WGPUOptionalBool_True;
   depthState.depthCompare = WGPUCompareFunction_Less;
 
-  // 1. Terrain & Road pipeline
+  WGPUDepthStencilState shadowDepthState = WGPU_DEPTH_STENCIL_STATE_INIT;
+  shadowDepthState.format = WGPUTextureFormat_Depth32Float;
+  shadowDepthState.depthWriteEnabled = WGPUOptionalBool_True;
+  shadowDepthState.depthCompare = WGPUCompareFunction_Less;
+
+  // Vertex buffer layout definitions
+  WGPUVertexAttribute terrainAttrs[4]{};
+  terrainAttrs[0] = {nullptr, WGPUVertexFormat_Float32x3, offsetof(StaticVertex, px), 0};
+  terrainAttrs[1] = {nullptr, WGPUVertexFormat_Float32x3, offsetof(StaticVertex, nx), 1};
+  terrainAttrs[2] = {nullptr, WGPUVertexFormat_Float32x3, offsetof(StaticVertex, r), 2};
+  terrainAttrs[3] = {nullptr, WGPUVertexFormat_Float32x3, offsetof(StaticVertex, u), 3};
+  WGPUVertexBufferLayout terrainVbl = WGPU_VERTEX_BUFFER_LAYOUT_INIT;
+  terrainVbl.stepMode = WGPUVertexStepMode_Vertex;
+  terrainVbl.arrayStride = sizeof(StaticVertex);
+  terrainVbl.attributeCount = 4;
+  terrainVbl.attributes = terrainAttrs;
+
+  WGPUVertexAttribute modelAttrs[4]{};
+  modelAttrs[0] = {nullptr, WGPUVertexFormat_Float32x3, offsetof(ModelVertex, px), 0};
+  modelAttrs[1] = {nullptr, WGPUVertexFormat_Float32x3, offsetof(ModelVertex, nx), 1};
+  modelAttrs[2] = {nullptr, WGPUVertexFormat_Float32x2, offsetof(ModelVertex, u), 2};
+  modelAttrs[3] = {nullptr, WGPUVertexFormat_Float32x3, offsetof(ModelVertex, r), 3};
+  WGPUVertexAttribute instAttrs[4]{};
+  instAttrs[0] = {nullptr, WGPUVertexFormat_Float32x3, offsetof(InstanceAttrib, px), 4};
+  instAttrs[1] = {nullptr, WGPUVertexFormat_Float32x3, offsetof(InstanceAttrib, sx), 5};
+  instAttrs[2] = {nullptr, WGPUVertexFormat_Float32, offsetof(InstanceAttrib, rotY), 6};
+  instAttrs[3] = {nullptr, WGPUVertexFormat_Float32x3, offsetof(InstanceAttrib, r), 7};
+  WGPUVertexBufferLayout instVbls[2]{};
+  instVbls[0] = WGPU_VERTEX_BUFFER_LAYOUT_INIT;
+  instVbls[0].stepMode = WGPUVertexStepMode_Vertex;
+  instVbls[0].arrayStride = sizeof(ModelVertex);
+  instVbls[0].attributeCount = 4;
+  instVbls[0].attributes = modelAttrs;
+  instVbls[1] = WGPU_VERTEX_BUFFER_LAYOUT_INIT;
+  instVbls[1].stepMode = WGPUVertexStepMode_Instance;
+  instVbls[1].arrayStride = sizeof(InstanceAttrib);
+  instVbls[1].attributeCount = 4;
+  instVbls[1].attributes = instAttrs;
+
+  WGPUVertexAttribute skinAttrs[6]{};
+  skinAttrs[0] = {nullptr, WGPUVertexFormat_Float32x3, offsetof(SkinnedVertex, px), 0};
+  skinAttrs[1] = {nullptr, WGPUVertexFormat_Float32x3, offsetof(SkinnedVertex, nx), 1};
+  skinAttrs[2] = {nullptr, WGPUVertexFormat_Float32x2, offsetof(SkinnedVertex, u), 2};
+  skinAttrs[3] = {nullptr, WGPUVertexFormat_Float32x3, offsetof(SkinnedVertex, r), 3};
+  skinAttrs[4] = {nullptr, WGPUVertexFormat_Uint32x4, offsetof(SkinnedVertex, j0), 4};
+  skinAttrs[5] = {nullptr, WGPUVertexFormat_Float32x4, offsetof(SkinnedVertex, w0), 5};
+  WGPUVertexBufferLayout skinVbl = WGPU_VERTEX_BUFFER_LAYOUT_INIT;
+  skinVbl.stepMode = WGPUVertexStepMode_Vertex;
+  skinVbl.arrayStride = sizeof(SkinnedVertex);
+  skinVbl.attributeCount = 6;
+  skinVbl.attributes = skinAttrs;
+
+  // Shadow pipelines (depth-only, fragment = nullptr)
   {
-    WGPUVertexAttribute attrs[3]{};
-    attrs[0].format = WGPUVertexFormat_Float32x3;
-    attrs[0].offset = offsetof(StaticVertex, px);
-    attrs[0].shaderLocation = 0;
-    attrs[1].format = WGPUVertexFormat_Float32x3;
-    attrs[1].offset = offsetof(StaticVertex, nx);
-    attrs[1].shaderLocation = 1;
-    attrs[2].format = WGPUVertexFormat_Float32x3;
-    attrs[2].offset = offsetof(StaticVertex, r);
-    attrs[2].shaderLocation = 2;
-
-    WGPUVertexBufferLayout vbl = WGPU_VERTEX_BUFFER_LAYOUT_INIT;
-    vbl.stepMode = WGPUVertexStepMode_Vertex;
-    vbl.arrayStride = sizeof(StaticVertex);
-    vbl.attributeCount = 3;
-    vbl.attributes = attrs;
-
     WGPURenderPipelineDescriptor rp = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
-    rp.layout = pipeLayout_;
+    rp.layout = shadowStaticPipeLayout_;
+    rp.vertex.module = shader_;
+    rp.vertex.entryPoint = {"vsShadowTerrain", 15};
+    rp.vertex.bufferCount = 1;
+    rp.vertex.buffers = &terrainVbl;
+    rp.fragment = nullptr;
+    rp.depthStencil = &shadowDepthState;
+    rp.primitive.topology = WGPUPrimitiveTopology_TriangleList;
+    rp.primitive.cullMode = WGPUCullMode_Back;
+    rp.primitive.frontFace = WGPUFrontFace_CCW;
+    rp.multisample.count = 1;
+    rp.multisample.mask = 0xFFFFFFFFu;
+    shadowTerrainPipeline_ = wgpuDeviceCreateRenderPipeline(ctx.device(), &rp);
+
+    rp.vertex.entryPoint = {"vsShadowInstanced", 17};
+    rp.vertex.bufferCount = 2;
+    rp.vertex.buffers = instVbls;
+    shadowInstancedPipeline_ = wgpuDeviceCreateRenderPipeline(ctx.device(), &rp);
+
+    rp.layout = shadowSkinnedPipeLayout_;
+    rp.vertex.entryPoint = {"vsShadowSkinned", 15};
+    rp.vertex.bufferCount = 1;
+    rp.vertex.buffers = &skinVbl;
+    shadowSkinnedPipeline_ = wgpuDeviceCreateRenderPipeline(ctx.device(), &rp);
+  }
+
+  // Forward pipelines
+  {
+    WGPURenderPipelineDescriptor rp = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
+    rp.layout = scenePipeLayout_;
     rp.vertex.module = shader_;
     rp.vertex.entryPoint = {"vsTerrain", 9};
     rp.vertex.bufferCount = 1;
-    rp.vertex.buffers = &vbl;
+    rp.vertex.buffers = &terrainVbl;
     rp.fragment = &fragState;
     rp.depthStencil = &depthState;
     rp.primitive.topology = WGPUPrimitiveTopology_TriangleList;
@@ -135,65 +436,29 @@ bool WorldRenderer::init(
     rp.multisample.count = 1;
     rp.multisample.mask = 0xFFFFFFFFu;
     terrainPipeline_ = wgpuDeviceCreateRenderPipeline(ctx.device(), &rp);
-  }
 
-  // 2. Instanced Buildings / Props / Character pipeline
-  {
-    WGPUVertexAttribute vAttrs[2]{};
-    vAttrs[0].format = WGPUVertexFormat_Float32x3;
-    vAttrs[0].offset = offsetof(UnitBoxVertex, px);
-    vAttrs[0].shaderLocation = 0;
-    vAttrs[1].format = WGPUVertexFormat_Float32x3;
-    vAttrs[1].offset = offsetof(UnitBoxVertex, nx);
-    vAttrs[1].shaderLocation = 1;
-
-    WGPUVertexAttribute iAttrs[4]{};
-    iAttrs[0].format = WGPUVertexFormat_Float32x3;
-    iAttrs[0].offset = offsetof(InstanceAttrib, px);
-    iAttrs[0].shaderLocation = 2;
-    iAttrs[1].format = WGPUVertexFormat_Float32x3;
-    iAttrs[1].offset = offsetof(InstanceAttrib, sx);
-    iAttrs[1].shaderLocation = 3;
-    iAttrs[2].format = WGPUVertexFormat_Float32;
-    iAttrs[2].offset = offsetof(InstanceAttrib, rotY);
-    iAttrs[2].shaderLocation = 4;
-    iAttrs[3].format = WGPUVertexFormat_Float32x3;
-    iAttrs[3].offset = offsetof(InstanceAttrib, r);
-    iAttrs[3].shaderLocation = 5;
-
-    WGPUVertexBufferLayout vbls[2]{};
-    vbls[0] = WGPU_VERTEX_BUFFER_LAYOUT_INIT;
-    vbls[0].stepMode = WGPUVertexStepMode_Vertex;
-    vbls[0].arrayStride = sizeof(UnitBoxVertex);
-    vbls[0].attributeCount = 2;
-    vbls[0].attributes = vAttrs;
-
-    vbls[1] = WGPU_VERTEX_BUFFER_LAYOUT_INIT;
-    vbls[1].stepMode = WGPUVertexStepMode_Instance;
-    vbls[1].arrayStride = sizeof(InstanceAttrib);
-    vbls[1].attributeCount = 4;
-    vbls[1].attributes = iAttrs;
-
-    WGPURenderPipelineDescriptor rp = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
-    rp.layout = pipeLayout_;
-    rp.vertex.module = shader_;
     rp.vertex.entryPoint = {"vsInstanced", 11};
     rp.vertex.bufferCount = 2;
-    rp.vertex.buffers = vbls;
-    rp.fragment = &fragState;
-    rp.depthStencil = &depthState;
-    rp.primitive.topology = WGPUPrimitiveTopology_TriangleList;
-    rp.primitive.cullMode = WGPUCullMode_Back;
-    rp.primitive.frontFace = WGPUFrontFace_CCW;
-    rp.multisample.count = 1;
-    rp.multisample.mask = 0xFFFFFFFFu;
+    rp.vertex.buffers = instVbls;
     instancedPipeline_ = wgpuDeviceCreateRenderPipeline(ctx.device(), &rp);
+
+    rp.vertex.entryPoint = {"vsSkinned", 9};
+    rp.vertex.bufferCount = 1;
+    rp.vertex.buffers = &skinVbl;
+    rp.primitive.cullMode = WGPUCullMode_None;
+    skinnedPipeline_ = wgpuDeviceCreateRenderPipeline(ctx.device(), &rp);
   }
 
   buildTerrainAndOceanBuffers(ctx, world);
-  buildRoadBuffers(ctx, world);
-  buildUnitBoxAndProps(ctx, world, playerModel);
-  return terrainPipeline_ != nullptr && instancedPipeline_ != nullptr;
+  buildRoadAndArenaBuffers(ctx, world);
+  buildPropAndVehicleBatches(ctx, world, assets.assetsRoot);
+
+  if (assets.playerBody) buildSkinnedMesh(ctx, *assets.playerBody, playerBodyGpu_);
+  if (assets.playerShorts) buildSkinnedMesh(ctx, *assets.playerShorts, playerShortsGpu_);
+  if (assets.playerHair) buildSkinnedMesh(ctx, *assets.playerHair, playerHairGpu_);
+  if (assets.opponentModel) buildSkinnedMesh(ctx, *assets.opponentModel, opponentGpu_);
+
+  return terrainPipeline_ != nullptr && instancedPipeline_ != nullptr && skinnedPipeline_ != nullptr;
 }
 
 void WorldRenderer::buildTerrainAndOceanBuffers(WgpuContext& ctx, const WorldData& world) {
@@ -212,12 +477,12 @@ void WorldRenderer::buildTerrainAndOceanBuffers(WgpuContext& ctx, const WorldDat
       const float y = world.heightfield.sampleHeight(x, z);
       const glm::vec3 n = world.heightfield.sampleNormal(x, z);
 
-      glm::vec3 col(0.24f, 0.34f, 0.21f);
-      if (y < 0.8f) col = glm::vec3(0.68f, 0.62f, 0.48f);
+      glm::vec3 col(0.22f, 0.35f, 0.19f);
+      if (y < 0.8f) col = glm::vec3(0.68f, 0.62f, 0.46f);
       else if (n.y < 0.78f || y > 38.0f) col = glm::vec3(0.42f, 0.41f, 0.39f);
-      else if (x > -420.0f && x < 340.0f && z > -420.0f && z < 480.0f) col = glm::vec3(0.32f, 0.34f, 0.36f);
+      else if (x > -420.0f && x < 340.0f && z > -420.0f && z < 480.0f) col = glm::vec3(0.28f, 0.30f, 0.32f);
 
-      verts.push_back(StaticVertex{x, y, z, n.x, n.y, n.z, col.r, col.g, col.b});
+      verts.push_back(StaticVertex{x, y, z, n.x, n.y, n.z, col.r, col.g, col.b, x * 0.05f, z * 0.05f, 0.0f});
     }
   }
 
@@ -236,13 +501,13 @@ void WorldRenderer::buildTerrainAndOceanBuffers(WgpuContext& ctx, const WorldDat
     }
   }
 
-  // Ocean water plane at y = 0
+  // Ocean water plane at y = 0 (kind = 1.0)
   const uint32_t wBase = static_cast<uint32_t>(verts.size());
   const float wExt = 1800.0f;
-  verts.push_back(StaticVertex{-wExt, 0.0f, -wExt, 0.0f, 1.0f, 0.0f, 0.06f, 0.22f, 0.34f});
-  verts.push_back(StaticVertex{wExt, 0.0f, -wExt, 0.0f, 1.0f, 0.0f, 0.06f, 0.22f, 0.34f});
-  verts.push_back(StaticVertex{-wExt, 0.0f, wExt, 0.0f, 1.0f, 0.0f, 0.06f, 0.22f, 0.34f});
-  verts.push_back(StaticVertex{wExt, 0.0f, wExt, 0.0f, 1.0f, 0.0f, 0.06f, 0.22f, 0.34f});
+  verts.push_back(StaticVertex{-wExt, 0.0f, -wExt, 0.0f, 1.0f, 0.0f, 0.06f, 0.22f, 0.34f, 0.0f, 0.0f, 1.0f});
+  verts.push_back(StaticVertex{wExt, 0.0f, -wExt, 0.0f, 1.0f, 0.0f, 0.06f, 0.22f, 0.34f, 1.0f, 0.0f, 1.0f});
+  verts.push_back(StaticVertex{-wExt, 0.0f, wExt, 0.0f, 1.0f, 0.0f, 0.06f, 0.22f, 0.34f, 0.0f, 1.0f, 1.0f});
+  verts.push_back(StaticVertex{wExt, 0.0f, wExt, 0.0f, 1.0f, 0.0f, 0.06f, 0.22f, 0.34f, 1.0f, 1.0f, 1.0f});
   indices.push_back(wBase + 0);
   indices.push_back(wBase + 2);
   indices.push_back(wBase + 1);
@@ -256,26 +521,28 @@ void WorldRenderer::buildTerrainAndOceanBuffers(WgpuContext& ctx, const WorldDat
   terrainIbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Index, indices.data(), indices.size() * sizeof(uint32_t));
 }
 
-void WorldRenderer::buildRoadBuffers(WgpuContext& ctx, const WorldData& world) {
+void WorldRenderer::buildRoadAndArenaBuffers(WgpuContext& ctx, const WorldData& world) {
   std::vector<StaticVertex> verts;
   std::vector<uint32_t> indices;
 
+  // 1. Exported roads with distance UVs for yellow center lines & lane dashes (kind = 2.0)
   for (const auto& seg : world.roads) {
     if (seg.samples.size() < 2) continue;
     const float hw = seg.width * 0.5f;
     const uint32_t base = static_cast<uint32_t>(verts.size());
-    const glm::vec3 col = seg.isBridge ? glm::vec3(0.24f, 0.26f, 0.29f) : glm::vec3(0.14f, 0.15f, 0.17f);
+    const glm::vec3 col = seg.isBridge ? glm::vec3(0.24f, 0.26f, 0.29f) : glm::vec3(0.11f, 0.12f, 0.14f);
+    float distAlong = 0.0f;
 
     for (size_t i = 0; i < seg.samples.size(); ++i) {
       const auto& sp = seg.samples[i];
+      if (i > 0) distAlong += glm::distance(seg.samples[i - 1].pos, sp.pos);
       const glm::vec3 left = sp.pos - glm::vec3(sp.rx * hw, 0.0f, sp.rz * hw);
       const glm::vec3 right = sp.pos + glm::vec3(sp.rx * hw, 0.0f, sp.rz * hw);
-      verts.push_back(StaticVertex{left.x, left.y + 0.05f, left.z, 0.0f, 1.0f, 0.0f, col.r, col.g, col.b});
-      verts.push_back(StaticVertex{right.x, right.y + 0.05f, right.z, 0.0f, 1.0f, 0.0f, col.r, col.g, col.b});
+      verts.push_back(StaticVertex{left.x, left.y + 0.06f, left.z, 0.0f, 1.0f, 0.0f, col.r, col.g, col.b, 0.0f, distAlong, 2.0f});
+      verts.push_back(StaticVertex{right.x, right.y + 0.06f, right.z, 0.0f, 1.0f, 0.0f, col.r, col.g, col.b, 1.0f, distAlong, 2.0f});
       if (i > 0) {
         const uint32_t r0 = base + static_cast<uint32_t>((i - 1) * 2);
         const uint32_t r1 = base + static_cast<uint32_t>(i * 2);
-        // Right vector (rx, rz) = (-tz, tx) is left-normal in XZ, so (r0, r0+1, r1) is CCW facing +Y
         indices.push_back(r0);
         indices.push_back(r0 + 1);
         indices.push_back(r1);
@@ -286,6 +553,43 @@ void WorldRenderer::buildRoadBuffers(WgpuContext& ctx, const WorldData& world) {
     }
   }
 
+  // 2. Westgate Iron Pit Boxing Ring at fightPitPos (kind = 3.0)
+  {
+    const float groundY = world.heightfield.sampleHeight(world.fightPitPos.x, world.fightPitPos.z);
+    const glm::vec3 center(world.fightPitPos.x, groundY, world.fightPitPos.z);
+    std::vector<glm::vec3> bPos, bNorm, bCol;
+    std::vector<uint32_t> bIdx;
+
+    // Concrete apron + canvas mat
+    appendBox(bPos, bNorm, bCol, bIdx, center + glm::vec3(0.0f, 0.25f, 0.0f), glm::vec3(13.0f, 0.5f, 13.0f), glm::vec3(0.20f, 0.21f, 0.24f));
+    appendBox(bPos, bNorm, bCol, bIdx, center + glm::vec3(0.0f, 0.55f, 0.0f), glm::vec3(10.6f, 0.14f, 10.6f), glm::vec3(0.68f, 0.18f, 0.18f));
+    appendBox(bPos, bNorm, bCol, bIdx, center + glm::vec3(0.0f, 0.63f, 0.0f), glm::vec3(9.4f, 0.04f, 9.4f), glm::vec3(0.24f, 0.26f, 0.30f));
+
+    // 4 Corner posts + 12 ring ropes
+    const float rHalf = 5.1f;
+    const glm::vec2 corners[4] = {{-rHalf, -rHalf}, {rHalf, -rHalf}, {rHalf, rHalf}, {-rHalf, rHalf}};
+    for (int c = 0; c < 4; ++c) {
+      const glm::vec3 postCol = (c == 0) ? glm::vec3(0.85f, 0.15f, 0.15f)
+                              : (c == 2) ? glm::vec3(0.15f, 0.42f, 0.88f)
+                                         : glm::vec3(0.82f, 0.82f, 0.84f);
+      appendBox(bPos, bNorm, bCol, bIdx, center + glm::vec3(corners[c].x, 1.35f, corners[c].y), glm::vec3(0.26f, 1.7f, 0.26f), postCol);
+    }
+    const float ropeHeights[3] = {1.05f, 1.48f, 1.92f};
+    for (float ry : ropeHeights) {
+      const glm::vec3 ropeCol = (ry > 1.7f) ? glm::vec3(0.88f, 0.18f, 0.18f) : glm::vec3(0.86f, 0.86f, 0.88f);
+      appendBox(bPos, bNorm, bCol, bIdx, center + glm::vec3(0.0f, ry, -rHalf), glm::vec3(rHalf * 2.0f, 0.06f, 0.06f), ropeCol);
+      appendBox(bPos, bNorm, bCol, bIdx, center + glm::vec3(0.0f, ry, rHalf), glm::vec3(rHalf * 2.0f, 0.06f, 0.06f), ropeCol);
+      appendBox(bPos, bNorm, bCol, bIdx, center + glm::vec3(-rHalf, ry, 0.0f), glm::vec3(0.06f, 0.06f, rHalf * 2.0f), ropeCol);
+      appendBox(bPos, bNorm, bCol, bIdx, center + glm::vec3(rHalf, ry, 0.0f), glm::vec3(0.06f, 0.06f, rHalf * 2.0f), ropeCol);
+    }
+
+    const uint32_t vBase = static_cast<uint32_t>(verts.size());
+    for (size_t i = 0; i < bPos.size(); ++i) {
+      verts.push_back(StaticVertex{bPos[i].x, bPos[i].y, bPos[i].z, bNorm[i].x, bNorm[i].y, bNorm[i].z, bCol[i].r, bCol[i].g, bCol[i].b, 0.0f, 0.0f, 3.0f});
+    }
+    for (uint32_t idx : bIdx) indices.push_back(vBase + idx);
+  }
+
   roadIndexCount_ = static_cast<uint32_t>(indices.size());
   if (roadIndexCount_ > 0) {
     roadVbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, verts.data(), verts.size() * sizeof(StaticVertex));
@@ -293,104 +597,197 @@ void WorldRenderer::buildRoadBuffers(WgpuContext& ctx, const WorldData& world) {
   }
 }
 
-void WorldRenderer::buildUnitBoxAndProps(WgpuContext& ctx, const WorldData& world, const GltfModel* playerModel) {
-  // Unit 1x1x1 cube centered at origin with outward face normals (CCW)
-  const UnitBoxVertex boxVerts[24] = {
-    // +Z
-    {-0.5f, -0.5f,  0.5f, 0, 0, 1}, { 0.5f, -0.5f,  0.5f, 0, 0, 1}, { 0.5f,  0.5f,  0.5f, 0, 0, 1}, {-0.5f,  0.5f,  0.5f, 0, 0, 1},
-    // -Z
-    { 0.5f, -0.5f, -0.5f, 0, 0, -1}, {-0.5f, -0.5f, -0.5f, 0, 0, -1}, {-0.5f,  0.5f, -0.5f, 0, 0, -1}, { 0.5f,  0.5f, -0.5f, 0, 0, -1},
-    // +X
-    { 0.5f, -0.5f,  0.5f, 1, 0, 0}, { 0.5f, -0.5f, -0.5f, 1, 0, 0}, { 0.5f,  0.5f, -0.5f, 1, 0, 0}, { 0.5f,  0.5f,  0.5f, 1, 0, 0},
-    // -X
-    {-0.5f, -0.5f, -0.5f, -1, 0, 0}, {-0.5f, -0.5f,  0.5f, -1, 0, 0}, {-0.5f,  0.5f,  0.5f, -1, 0, 0}, {-0.5f,  0.5f, -0.5f, -1, 0, 0},
-    // +Y
-    {-0.5f,  0.5f,  0.5f, 0, 1, 0}, { 0.5f,  0.5f,  0.5f, 0, 1, 0}, { 0.5f,  0.5f, -0.5f, 0, 1, 0}, {-0.5f,  0.5f, -0.5f, 0, 1, 0},
-    // -Y
-    {-0.5f, -0.5f, -0.5f, 0, -1, 0}, { 0.5f, -0.5f, -0.5f, 0, -1, 0}, { 0.5f, -0.5f,  0.5f, 0, -1, 0}, {-0.5f, -0.5f,  0.5f, 0, -1, 0},
+bool WorldRenderer::loadGlbBatch(
+  WgpuContext& ctx,
+  const std::string& path,
+  const std::vector<InstanceAttrib>& instances,
+  InstancedGlbBatch& outBatch
+) {
+  if (!std::filesystem::exists(path)) return false;
+  GltfModel model;
+  if (!GltfAssetLoader::loadGlb(path, model, false, nullptr) || model.primitives.empty()) return false;
+
+  std::vector<ModelVertex> verts;
+  std::vector<uint32_t> indices;
+  const float groundOffset = -model.boundsMin.y;
+
+  for (const auto& prim : model.primitives) {
+    const uint32_t base = static_cast<uint32_t>(verts.size());
+    glm::vec3 matCol(1.0f);
+    if (prim.materialIndex >= 0 && static_cast<size_t>(prim.materialIndex) < model.materials.size()) {
+      matCol = glm::vec3(model.materials[prim.materialIndex].baseColor);
+    }
+    for (const auto& v : prim.vertices) {
+      const glm::vec3 col = glm::vec3(v.color) * matCol;
+      verts.push_back(ModelVertex{
+        v.position.x, v.position.y + groundOffset, v.position.z,
+        v.normal.x, v.normal.y, v.normal.z,
+        std::max(0.0f, v.uv.x), std::max(0.0f, v.uv.y),
+        col.r, col.g, col.b
+      });
+    }
+    for (uint32_t idx : prim.indices) {
+      indices.push_back(base + idx);
+    }
+  }
+  if (indices.empty()) return false;
+
+  outBatch.indexCount = static_cast<uint32_t>(indices.size());
+  outBatch.vbo = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, verts.data(), verts.size() * sizeof(ModelVertex));
+  outBatch.ibo = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Index, indices.data(), indices.size() * sizeof(uint32_t));
+
+  outBatch.maxInstances = static_cast<uint32_t>(std::max<size_t>(32, instances.size()));
+  outBatch.instanceCount = static_cast<uint32_t>(instances.size());
+  outBatch.instVbo = createBufferWithData(
+    ctx.device(),
+    ctx.queue(),
+    WGPUBufferUsage_Vertex,
+    instances.empty() ? nullptr : instances.data(),
+    outBatch.maxInstances * sizeof(InstanceAttrib)
+  );
+  return true;
+}
+
+void WorldRenderer::buildPropAndVehicleBatches(WgpuContext& ctx, const WorldData& world, const std::string& assetsRoot) {
+  // Unit 1x1x1 cube for buildings & fallback props (uv = (-1, -1) flags building window grid in WGSL)
+  const ModelVertex boxVerts[24] = {
+    {-0.5f, -0.5f,  0.5f, 0, 0, 1, -1, -1, 1, 1, 1}, { 0.5f, -0.5f,  0.5f, 0, 0, 1, -1, -1, 1, 1, 1}, { 0.5f,  0.5f,  0.5f, 0, 0, 1, -1, -1, 1, 1, 1}, {-0.5f,  0.5f,  0.5f, 0, 0, 1, -1, -1, 1, 1, 1},
+    { 0.5f, -0.5f, -0.5f, 0, 0, -1, -1, -1, 1, 1, 1}, {-0.5f, -0.5f, -0.5f, 0, 0, -1, -1, -1, 1, 1, 1}, {-0.5f,  0.5f, -0.5f, 0, 0, -1, -1, -1, 1, 1, 1}, { 0.5f,  0.5f, -0.5f, 0, 0, -1, -1, -1, 1, 1, 1},
+    { 0.5f, -0.5f,  0.5f, 1, 0, 0, -1, -1, 1, 1, 1}, { 0.5f, -0.5f, -0.5f, 1, 0, 0, -1, -1, 1, 1, 1}, { 0.5f,  0.5f, -0.5f, 1, 0, 0, -1, -1, 1, 1, 1}, { 0.5f,  0.5f,  0.5f, 1, 0, 0, -1, -1, 1, 1, 1},
+    {-0.5f, -0.5f, -0.5f, -1, 0, 0, -1, -1, 1, 1, 1}, {-0.5f, -0.5f,  0.5f, -1, 0, 0, -1, -1, 1, 1, 1}, {-0.5f,  0.5f,  0.5f, -1, 0, 0, -1, -1, 1, 1, 1}, {-0.5f,  0.5f, -0.5f, -1, 0, 0, -1, -1, 1, 1, 1},
+    {-0.5f,  0.5f,  0.5f, 0, 1, 0, -1, -1, 1, 1, 1}, { 0.5f,  0.5f,  0.5f, 0, 1, 0, -1, -1, 1, 1, 1}, { 0.5f,  0.5f, -0.5f, 0, 1, 0, -1, -1, 1, 1, 1}, {-0.5f,  0.5f, -0.5f, 0, 1, 0, -1, -1, 1, 1, 1},
+    {-0.5f, -0.5f, -0.5f, 0, -1, 0, -1, -1, 1, 1, 1}, { 0.5f, -0.5f, -0.5f, 0, -1, 0, -1, -1, 1, 1, 1}, { 0.5f, -0.5f,  0.5f, 0, -1, 0, -1, -1, 1, 1, 1}, {-0.5f, -0.5f,  0.5f, 0, -1, 0, -1, -1, 1, 1, 1},
   };
   const uint32_t boxIdx[36] = {
-     0,  1,  2,  0,  2,  3,
-     4,  5,  6,  4,  6,  7,
-     8,  9, 10,  8, 10, 11,
-    12, 13, 14, 12, 14, 15,
-    16, 17, 18, 16, 18, 19,
-    20, 21, 22, 20, 22, 23,
+     0,  1,  2,  0,  2,  3,  4,  5,  6,  4,  6,  7,
+     8,  9, 10,  8, 10, 11, 12, 13, 14, 12, 14, 15,
+    16, 17, 18, 16, 18, 19, 20, 21, 22, 20, 22, 23,
   };
   unitBoxIndexCount_ = 36;
   unitBoxVbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, boxVerts, sizeof(boxVerts));
   unitBoxIbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Index, boxIdx, sizeof(boxIdx));
 
-  // Dynamic building instance buffer sized for all world buildings
   size_t totalB = 0;
   for (const auto& c : world.chunks) totalB += c.buildings.size();
   maxBuildingInstances_ = static_cast<uint32_t>(std::max<size_t>(64, totalB));
   buildingInstVbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, nullptr, maxBuildingInstances_ * sizeof(InstanceAttrib));
   buildingStaging_.reserve(maxBuildingInstances_);
 
-  // Static instanced city props (trees, poles, hydrants)
-  std::vector<InstanceAttrib> propInst;
-  propInst.reserve(world.props.size());
+  static const std::unordered_map<std::string, std::pair<std::string, float>> protoGlbMap = {
+    {"palm_tree", {"tree_palm.glb", 1.75f}},
+    {"oak_tree", {"tree_oak.glb", 1.95f}},
+    {"pine_tree", {"tree_pine.glb", 1.95f}},
+    {"bush", {"bush.glb", 1.15f}},
+    {"rock", {"rock.glb", 1.15f}},
+    {"dumpster", {"dumpster_bin.glb", 1.0f}},
+    {"park_bench", {"park_bench.glb", 1.0f}},
+    {"stop_sign", {"sign_stop.glb", 1.0f}},
+    {"trashcan", {"trash_bin.glb", 1.0f}},
+  };
+
+  std::unordered_map<std::string, std::vector<InstanceAttrib>> grouped;
+  std::vector<InstanceAttrib> fallbackInst;
+
   for (const auto& p : world.props) {
-    InstanceAttrib a{};
-    a.rotY = p.ry;
-    if (p.proto == "palm_tree" || p.proto == "oak_tree" || p.proto == "pine_tree") {
-      const float h = (p.proto == "palm_tree" ? 8.5f : 6.2f) * p.scale;
-      a.px = p.pos.x;
-      a.py = p.pos.y + h * 0.5f;
-      a.pz = p.pos.z;
-      a.sx = 1.6f * p.scale;
-      a.sy = h;
-      a.sz = 1.6f * p.scale;
-      a.r = 0.22f;
-      a.g = 0.48f;
-      a.b = 0.20f;
+    auto it = protoGlbMap.find(p.proto);
+    if (it != protoGlbMap.end()) {
+      const float s = p.scale * it->second.second;
+      grouped[p.proto].push_back(InstanceAttrib{p.pos.x, p.pos.y, p.pos.z, s, s, s, p.ry, 1.0f, 1.0f, 1.0f});
     } else if (p.proto == "streetlight") {
-      a.px = p.pos.x;
-      a.py = p.pos.y + 3.8f;
-      a.pz = p.pos.z;
-      a.sx = 0.28f;
-      a.sy = 7.6f;
-      a.sz = 0.28f;
-      a.r = 0.35f;
-      a.g = 0.38f;
-      a.b = 0.42f;
+      fallbackInst.push_back(InstanceAttrib{p.pos.x, p.pos.y + 3.6f, p.pos.z, 0.24f, 7.2f, 0.24f, p.ry, 0.34f, 0.37f, 0.42f});
+      fallbackInst.push_back(InstanceAttrib{p.pos.x, p.pos.y + 7.25f, p.pos.z, 0.85f, 0.22f, 0.35f, p.ry, 0.98f, 0.86f, 0.58f});
+    } else if (p.proto == "traffic_light") {
+      fallbackInst.push_back(InstanceAttrib{p.pos.x, p.pos.y + 3.1f, p.pos.z, 0.28f, 6.2f, 0.28f, p.ry, 0.18f, 0.20f, 0.22f});
+      fallbackInst.push_back(InstanceAttrib{p.pos.x, p.pos.y + 5.9f, p.pos.z, 0.45f, 0.95f, 0.45f, p.ry, 0.95f, 0.22f, 0.18f});
     } else {
-      a.px = p.pos.x;
-      a.py = p.pos.y + 0.6f;
-      a.pz = p.pos.z;
-      a.sx = 0.7f * p.scale;
-      a.sy = 1.2f * p.scale;
-      a.sz = 0.7f * p.scale;
-      a.r = 0.55f;
-      a.g = 0.52f;
-      a.b = 0.46f;
+      fallbackInst.push_back(InstanceAttrib{p.pos.x, p.pos.y + 0.48f, p.pos.z, 0.34f, 0.96f, 0.34f, p.ry, 0.82f, 0.18f, 0.14f});
     }
-    propInst.push_back(a);
-  }
-  propInstanceCount_ = static_cast<uint32_t>(propInst.size());
-  if (propInstanceCount_ > 0) {
-    propInstVbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, propInst.data(), propInst.size() * sizeof(InstanceAttrib));
   }
 
-  // Player glTF mesh (or capsule-box fallback if GLB omitted)
-  if (playerModel && !playerModel->primitives.empty()) {
-    std::vector<UnitBoxVertex> pVerts;
-    std::vector<uint32_t> pIdx;
-    for (const auto& prim : playerModel->primitives) {
-      const uint32_t base = static_cast<uint32_t>(pVerts.size());
-      for (const auto& v : prim.vertices) {
-        pVerts.push_back(UnitBoxVertex{v.position.x, v.position.y, v.position.z, v.normal.x, v.normal.y, v.normal.z});
-      }
-      for (uint32_t idx : prim.indices) {
-        pIdx.push_back(base + idx);
+  telemetry_.glbPropTypesLoaded = 0;
+  for (auto& [proto, instList] : grouped) {
+    const auto& info = protoGlbMap.at(proto);
+    const std::string glbPath = (std::filesystem::path(assetsRoot) / "models" / info.first).string();
+    InstancedGlbBatch batch;
+    if (loadGlbBatch(ctx, glbPath, instList, batch)) {
+      glbPropBatches_.push_back(batch);
+      ++telemetry_.glbPropTypesLoaded;
+    } else {
+      for (const auto& inst : instList) {
+        fallbackInst.push_back(InstanceAttrib{inst.px, inst.py + 2.5f, inst.pz, 1.2f, 5.0f, 1.2f, inst.rotY, 0.25f, 0.48f, 0.22f});
       }
     }
-    playerIndexCount_ = static_cast<uint32_t>(pIdx.size());
-    playerVbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, pVerts.data(), pVerts.size() * sizeof(UnitBoxVertex));
-    playerIbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Index, pIdx.data(), pIdx.size() * sizeof(uint32_t));
   }
-  playerInstVbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, nullptr, sizeof(InstanceAttrib));
+
+  fallbackPropCount_ = static_cast<uint32_t>(fallbackInst.size());
+  if (fallbackPropCount_ > 0) {
+    fallbackPropInstVbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, fallbackInst.data(), fallbackInst.size() * sizeof(InstanceAttrib));
+  }
+
+  // Real GLB vehicles for ambient Westgate traffic
+  std::vector<InstanceAttrib> dummyVeh(24);
+  loadGlbBatch(ctx, (std::filesystem::path(assetsRoot) / "models" / "police_cruiser.glb").string(), dummyVeh, policeBatch_);
+  loadGlbBatch(ctx, (std::filesystem::path(assetsRoot) / "models" / "taxi.glb").string(), dummyVeh, taxiBatch_);
+}
+
+void WorldRenderer::buildSkinnedMesh(WgpuContext& ctx, const GltfModel& model, SkinnedMeshGpu& outMesh) {
+  std::vector<SkinnedVertex> verts;
+  std::vector<uint32_t> indices;
+
+  // Create GPU textures for referenced material images
+  std::unordered_map<int32_t, WGPUBindGroup> texBgCache;
+  for (const auto& prim : model.primitives) {
+    const uint32_t vBase = static_cast<uint32_t>(verts.size());
+    const uint32_t iStart = static_cast<uint32_t>(indices.size());
+
+    glm::vec3 matCol(1.0f);
+    WGPUBindGroup texBg = defaultWhiteTex_.bindGroup;
+    if (prim.materialIndex >= 0 && static_cast<size_t>(prim.materialIndex) < model.materials.size()) {
+      const auto& mat = model.materials[prim.materialIndex];
+      matCol = glm::vec3(mat.baseColor);
+      if (mat.baseColorTexIndex >= 0 && static_cast<size_t>(mat.baseColorTexIndex) < model.textures.size()) {
+        auto it = texBgCache.find(mat.baseColorTexIndex);
+        if (it != texBgCache.end()) {
+          texBg = it->second;
+        } else {
+          const auto& td = model.textures[mat.baseColorTexIndex];
+          if (td.width > 0 && td.height > 0 && !td.rgba8.empty()) {
+            GpuTextureBinding gtb = createRgbaTexture(ctx, td.width, td.height, td.rgba8.data());
+            texBg = gtb.bindGroup;
+            texBgCache[mat.baseColorTexIndex] = texBg;
+            outMesh.ownedTextures.push_back(gtb);
+            // When textured, avoid double-darkening via scalar baseColor if material uses albedo map
+            matCol = glm::vec3(1.0f);
+          }
+        }
+      }
+    }
+
+    for (const auto& v : prim.vertices) {
+      verts.push_back(SkinnedVertex{
+        v.position.x, v.position.y, v.position.z,
+        v.normal.x, v.normal.y, v.normal.z,
+        v.uv.x, v.uv.y,
+        v.color.r * matCol.r, v.color.g * matCol.g, v.color.b * matCol.b,
+        v.joints.x, v.joints.y, v.joints.z, v.joints.w,
+        v.weights.x, v.weights.y, v.weights.z, v.weights.w
+      });
+    }
+    for (uint32_t idx : prim.indices) {
+      indices.push_back(vBase + idx);
+    }
+
+    SkinnedSubmesh sub;
+    sub.indexOffset = iStart;
+    sub.indexCount = static_cast<uint32_t>(indices.size()) - iStart;
+    sub.texBindGroup = texBg;
+    outMesh.submeshes.push_back(sub);
+  }
+
+  if (!verts.empty() && !indices.empty()) {
+    outMesh.vbo = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, verts.data(), verts.size() * sizeof(SkinnedVertex));
+    outMesh.ibo = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Index, indices.data(), indices.size() * sizeof(uint32_t));
+  }
 }
 
 void WorldRenderer::render(
@@ -399,8 +796,11 @@ void WorldRenderer::render(
   ChunkStreamer& streamer,
   const glm::vec3& camPos,
   const glm::vec3& camTarget,
-  const glm::vec3& playerPos,
-  float playerYawRad,
+  const glm::vec3& focusPos,
+  float timeSec,
+  const std::vector<SkinnedRenderCharacter>& characters,
+  const std::vector<InstanceAttrib>& policeVehicles,
+  const std::vector<InstanceAttrib>& taxiVehicles,
   bool drawUiCallback
 ) {
   const float aspect = static_cast<float>(ctx.width()) / static_cast<float>(std::max(1u, ctx.height()));
@@ -409,9 +809,9 @@ void WorldRenderer::render(
   const glm::mat4 vp = proj * view;
 
   const Frustum frustum = Frustum::fromViewProj(vp);
-  streamer.update(playerPos, frustum);
+  streamer.update(focusPos, frustum);
 
-  // Gather frustum-visible streamed buildings into one contiguous GPU instance batch
+  // Gather streamed buildings
   buildingStaging_.clear();
   for (const auto& v : streamer.views()) {
     if (!v.visibleInFrustum) continue;
@@ -431,37 +831,60 @@ void WorldRenderer::render(
     wgpuQueueWriteBuffer(ctx.queue(), buildingInstVbo_, 0, buildingStaging_.data(), buildingStaging_.size() * sizeof(InstanceAttrib));
   }
 
-  // Player instance transform
-  InstanceAttrib playerInst{};
-  if (playerIndexCount_ > 0) {
-    playerInst = {playerPos.x, playerPos.y, playerPos.z, 1.0f, 1.0f, 1.0f, playerYawRad, 0.78f, 0.62f, 0.52f};
-  } else {
-    playerInst = {playerPos.x, playerPos.y + 0.9f, playerPos.z, 0.65f, 1.8f, 0.45f, playerYawRad, 0.85f, 0.68f, 0.24f};
+  // Upload dynamic traffic vehicle instances
+  const uint32_t policeDrawCount = static_cast<uint32_t>(std::min<size_t>(policeVehicles.size(), policeBatch_.maxInstances));
+  if (policeDrawCount > 0 && policeBatch_.instVbo) {
+    wgpuQueueWriteBuffer(ctx.queue(), policeBatch_.instVbo, 0, policeVehicles.data(), policeDrawCount * sizeof(InstanceAttrib));
   }
-  wgpuQueueWriteBuffer(ctx.queue(), playerInstVbo_, 0, &playerInst, sizeof(playerInst));
+  const uint32_t taxiDrawCount = static_cast<uint32_t>(std::min<size_t>(taxiVehicles.size(), taxiBatch_.maxInstances));
+  if (taxiDrawCount > 0 && taxiBatch_.instVbo) {
+    wgpuQueueWriteBuffer(ctx.queue(), taxiBatch_.instVbo, 0, taxiVehicles.data(), taxiDrawCount * sizeof(InstanceAttrib));
+  }
+
+  // Texel-snapped directional sun shadow camera centered on focusPos
+  const glm::vec3 sunDir = glm::normalize(glm::vec3(0.55f, 0.72f, 0.42f));
+  const float shadowExtent = 160.0f;
+  const float texelWorld = (shadowExtent * 2.0f) / static_cast<float>(kShadowMapSize);
+  const glm::vec3 snappedCenter(
+    std::floor(focusPos.x / texelWorld) * texelWorld,
+    focusPos.y,
+    std::floor(focusPos.z / texelWorld) * texelWorld
+  );
+  const glm::mat4 lightProj = glm::orthoZO(-shadowExtent, shadowExtent, -shadowExtent, shadowExtent, 1.0f, 450.0f);
+  const glm::mat4 lightView = glm::lookAt(snappedCenter + sunDir * 210.0f, snappedCenter, glm::vec3(0.0f, 1.0f, 0.0f));
 
   FrameUniforms ubo{};
   ubo.viewProj = vp;
-  ubo.camPos = glm::vec4(camPos, 1.0f);
-  ubo.sunDir = glm::vec4(glm::normalize(glm::vec3(0.55f, 0.72f, 0.42f)), 0.0f);
-  ubo.sunColor = glm::vec4(1.35f, 1.24f, 1.08f, 1.0f);
+  ubo.lightViewProj = lightProj * lightView;
+  ubo.camPos = glm::vec4(camPos, timeSec);
+  ubo.sunDir = glm::vec4(sunDir, 0.0f);
+  ubo.sunColor = glm::vec4(1.38f, 1.26f, 1.10f, 1.0f);
   ubo.fogColor = glm::vec4(0.65f, 0.78f, 0.90f, 1.0f);
   wgpuQueueWriteBuffer(ctx.queue(), frameUbo_, 0, &ubo, sizeof(ubo));
+
+  // Upload skinned character uniform slots (each character gets its own slot UBO)
+  const uint32_t charCount = static_cast<uint32_t>(std::min<size_t>(characters.size(), kMaxSkinSlots));
+  for (uint32_t ci = 0; ci < charCount; ++ci) {
+    const auto& ch = characters[ci];
+    SkinUniforms su{};
+    su.model = glm::translate(glm::mat4(1.0f), ch.position) *
+               glm::rotate(glm::mat4(1.0f), ch.yawRad, glm::vec3(0.0f, 1.0f, 0.0f));
+    su.tint = ch.tint;
+    if (ch.palette) su.bones = *ch.palette;
+    else su.bones.fill(glm::mat4(1.0f));
+    wgpuQueueWriteBuffer(ctx.queue(), skinSlots_[ci].ubo, 0, &su, sizeof(su));
+  }
 
   telemetry_.visibleChunks = streamer.visibleCount();
   telemetry_.nearChunks = streamer.nearCount();
   telemetry_.lodChunks = streamer.lodCount();
   telemetry_.drawnBuildings = static_cast<uint32_t>(buildingStaging_.size());
-  telemetry_.drawnProps = propInstanceCount_;
+  telemetry_.drawnProps = static_cast<uint32_t>(world.props.size());
+  telemetry_.drawnVehicles = policeDrawCount + taxiDrawCount;
 
   WGPUSurfaceTexture surfTex{};
   wgpuSurfaceGetCurrentTexture(ctx.surface(), &surfTex);
-  if (ImGui_ImplWGPU_IsSurfaceStatusError(surfTex.status)) {
-    if (surfTex.texture) wgpuTextureRelease(surfTex.texture);
-    ctx.reconfigureSurface();
-    return;
-  }
-  if (ImGui_ImplWGPU_IsSurfaceStatusSubOptimal(surfTex.status)) {
+  if (ImGui_ImplWGPU_IsSurfaceStatusError(surfTex.status) || ImGui_ImplWGPU_IsSurfaceStatusSubOptimal(surfTex.status)) {
     if (surfTex.texture) wgpuTextureRelease(surfTex.texture);
     ctx.reconfigureSurface();
     return;
@@ -478,70 +901,182 @@ void WorldRenderer::render(
   WGPUCommandEncoderDescriptor encDesc = {};
   WGPUCommandEncoder enc = wgpuDeviceCreateCommandEncoder(ctx.device(), &encDesc);
 
-  WGPURenderPassColorAttachment colorAtt = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
-  colorAtt.view = backView;
-  colorAtt.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
-  colorAtt.loadOp = WGPULoadOp_Clear;
-  colorAtt.storeOp = WGPUStoreOp_Store;
-  colorAtt.clearValue = {0.42, 0.65, 0.85, 1.0};
+  // -------------------------------------------------------------------------
+  // Pass 1: 2048x2048 Directional Sun Shadow Pass
+  // -------------------------------------------------------------------------
+  {
+    WGPURenderPassDepthStencilAttachment sDepth = WGPU_RENDER_PASS_DEPTH_STENCIL_ATTACHMENT_INIT;
+    sDepth.view = shadowView_;
+    sDepth.depthLoadOp = WGPULoadOp_Clear;
+    sDepth.depthStoreOp = WGPUStoreOp_Store;
+    sDepth.depthClearValue = 1.0f;
 
-  WGPURenderPassDepthStencilAttachment depthAtt = WGPU_RENDER_PASS_DEPTH_STENCIL_ATTACHMENT_INIT;
-  depthAtt.view = ctx.depthView();
-  depthAtt.depthLoadOp = WGPULoadOp_Clear;
-  depthAtt.depthStoreOp = WGPUStoreOp_Store;
-  depthAtt.depthClearValue = 1.0f;
+    WGPURenderPassDescriptor srp = {};
+    srp.colorAttachmentCount = 0;
+    srp.depthStencilAttachment = &sDepth;
 
-  WGPURenderPassDescriptor rpDesc = {};
-  rpDesc.colorAttachmentCount = 1;
-  rpDesc.colorAttachments = &colorAtt;
-  rpDesc.depthStencilAttachment = &depthAtt;
+    WGPURenderPassEncoder spass = wgpuCommandEncoderBeginRenderPass(enc, &srp);
+    wgpuRenderPassEncoderSetPipeline(spass, shadowInstancedPipeline_);
+    wgpuRenderPassEncoderSetBindGroup(spass, 0, frameBg_, 0, nullptr);
 
-  WGPURenderPassEncoder pass = wgpuCommandEncoderBeginRenderPass(enc, &rpDesc);
+    if (!buildingStaging_.empty()) {
+      wgpuRenderPassEncoderSetVertexBuffer(spass, 0, unitBoxVbo_, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderSetVertexBuffer(spass, 1, buildingInstVbo_, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderSetIndexBuffer(spass, unitBoxIbo_, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderDrawIndexed(spass, unitBoxIndexCount_, static_cast<uint32_t>(buildingStaging_.size()), 0, 0, 0);
+    }
+    for (const auto& batch : glbPropBatches_) {
+      if (batch.instanceCount == 0) continue;
+      wgpuRenderPassEncoderSetVertexBuffer(spass, 0, batch.vbo, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderSetVertexBuffer(spass, 1, batch.instVbo, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderSetIndexBuffer(spass, batch.ibo, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderDrawIndexed(spass, batch.indexCount, batch.instanceCount, 0, 0, 0);
+    }
+    if (policeDrawCount > 0 && policeBatch_.vbo) {
+      wgpuRenderPassEncoderSetVertexBuffer(spass, 0, policeBatch_.vbo, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderSetVertexBuffer(spass, 1, policeBatch_.instVbo, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderSetIndexBuffer(spass, policeBatch_.ibo, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderDrawIndexed(spass, policeBatch_.indexCount, policeDrawCount, 0, 0, 0);
+    }
+    if (taxiDrawCount > 0 && taxiBatch_.vbo) {
+      wgpuRenderPassEncoderSetVertexBuffer(spass, 0, taxiBatch_.vbo, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderSetVertexBuffer(spass, 1, taxiBatch_.instVbo, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderSetIndexBuffer(spass, taxiBatch_.ibo, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderDrawIndexed(spass, taxiBatch_.indexCount, taxiDrawCount, 0, 0, 0);
+    }
 
-  // 1. Terrain + Ocean
-  wgpuRenderPassEncoderSetPipeline(pass, terrainPipeline_);
-  wgpuRenderPassEncoderSetBindGroup(pass, 0, frameBg_, 0, nullptr);
-  wgpuRenderPassEncoderSetVertexBuffer(pass, 0, terrainVbo_, 0, WGPU_WHOLE_SIZE);
-  wgpuRenderPassEncoderSetIndexBuffer(pass, terrainIbo_, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
-  wgpuRenderPassEncoderDrawIndexed(pass, terrainIndexCount_, 1, 0, 0, 0);
+    if (charCount > 0) {
+      wgpuRenderPassEncoderSetPipeline(spass, shadowSkinnedPipeline_);
+      wgpuRenderPassEncoderSetBindGroup(spass, 0, frameBg_, 0, nullptr);
+      for (uint32_t ci = 0; ci < charCount; ++ci) {
+        wgpuRenderPassEncoderSetBindGroup(spass, 1, skinSlots_[ci].bindGroup, 0, nullptr);
+        const auto drawSkinShadow = [&](const SkinnedMeshGpu& mesh) {
+          if (!mesh.vbo || !mesh.ibo) return;
+          wgpuRenderPassEncoderSetVertexBuffer(spass, 0, mesh.vbo, 0, WGPU_WHOLE_SIZE);
+          wgpuRenderPassEncoderSetIndexBuffer(spass, mesh.ibo, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
+          for (const auto& sub : mesh.submeshes) {
+            wgpuRenderPassEncoderDrawIndexed(spass, sub.indexCount, 1, sub.indexOffset, 0, 0);
+          }
+        };
+        switch (characters[ci].part) {
+          case SkinnedPartKind::PlayerBody: drawSkinShadow(playerBodyGpu_); break;
+          case SkinnedPartKind::PlayerShorts: drawSkinShadow(playerShortsGpu_); break;
+          case SkinnedPartKind::PlayerHair: drawSkinShadow(playerHairGpu_); break;
+          case SkinnedPartKind::Opponent: drawSkinShadow(opponentGpu_); break;
+        }
+      }
+    }
 
-  // 2. Road ribbons
-  if (roadIndexCount_ > 0) {
-    wgpuRenderPassEncoderSetVertexBuffer(pass, 0, roadVbo_, 0, WGPU_WHOLE_SIZE);
-    wgpuRenderPassEncoderSetIndexBuffer(pass, roadIbo_, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
-    wgpuRenderPassEncoderDrawIndexed(pass, roadIndexCount_, 1, 0, 0, 0);
+    wgpuRenderPassEncoderEnd(spass);
+    wgpuRenderPassEncoderRelease(spass);
   }
 
-  // 3. Instanced Buildings + Props + Player GLB
-  wgpuRenderPassEncoderSetPipeline(pass, instancedPipeline_);
-  wgpuRenderPassEncoderSetBindGroup(pass, 0, frameBg_, 0, nullptr);
-  if (!buildingStaging_.empty()) {
-    wgpuRenderPassEncoderSetVertexBuffer(pass, 0, unitBoxVbo_, 0, WGPU_WHOLE_SIZE);
-    wgpuRenderPassEncoderSetVertexBuffer(pass, 1, buildingInstVbo_, 0, WGPU_WHOLE_SIZE);
-    wgpuRenderPassEncoderSetIndexBuffer(pass, unitBoxIbo_, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
-    wgpuRenderPassEncoderDrawIndexed(pass, unitBoxIndexCount_, static_cast<uint32_t>(buildingStaging_.size()), 0, 0, 0);
-  }
-  if (propInstanceCount_ > 0) {
-    wgpuRenderPassEncoderSetVertexBuffer(pass, 0, unitBoxVbo_, 0, WGPU_WHOLE_SIZE);
-    wgpuRenderPassEncoderSetVertexBuffer(pass, 1, propInstVbo_, 0, WGPU_WHOLE_SIZE);
-    wgpuRenderPassEncoderSetIndexBuffer(pass, unitBoxIbo_, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
-    wgpuRenderPassEncoderDrawIndexed(pass, unitBoxIndexCount_, propInstanceCount_, 0, 0, 0);
-  }
-  if (playerIndexCount_ > 0) {
-    wgpuRenderPassEncoderSetVertexBuffer(pass, 0, playerVbo_, 0, WGPU_WHOLE_SIZE);
-    wgpuRenderPassEncoderSetVertexBuffer(pass, 1, playerInstVbo_, 0, WGPU_WHOLE_SIZE);
-    wgpuRenderPassEncoderSetIndexBuffer(pass, playerIbo_, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
-    wgpuRenderPassEncoderDrawIndexed(pass, playerIndexCount_, 1, 0, 0, 0);
-  } else {
-    wgpuRenderPassEncoderSetVertexBuffer(pass, 0, unitBoxVbo_, 0, WGPU_WHOLE_SIZE);
-    wgpuRenderPassEncoderSetVertexBuffer(pass, 1, playerInstVbo_, 0, WGPU_WHOLE_SIZE);
-    wgpuRenderPassEncoderSetIndexBuffer(pass, unitBoxIbo_, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
-    wgpuRenderPassEncoderDrawIndexed(pass, unitBoxIndexCount_, 1, 0, 0, 0);
-  }
-  wgpuRenderPassEncoderEnd(pass);
-  wgpuRenderPassEncoderRelease(pass);
+  // -------------------------------------------------------------------------
+  // Pass 2: Main Forward PBR + Shadows Scene Pass
+  // -------------------------------------------------------------------------
+  {
+    WGPURenderPassColorAttachment colorAtt = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
+    colorAtt.view = backView;
+    colorAtt.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
+    colorAtt.loadOp = WGPULoadOp_Clear;
+    colorAtt.storeOp = WGPUStoreOp_Store;
+    colorAtt.clearValue = {0.42, 0.65, 0.85, 1.0};
 
-  // 4. Dear ImGui Native HUD Pass
+    WGPURenderPassDepthStencilAttachment depthAtt = WGPU_RENDER_PASS_DEPTH_STENCIL_ATTACHMENT_INIT;
+    depthAtt.view = ctx.depthView();
+    depthAtt.depthLoadOp = WGPULoadOp_Clear;
+    depthAtt.depthStoreOp = WGPUStoreOp_Store;
+    depthAtt.depthClearValue = 1.0f;
+
+    WGPURenderPassDescriptor rpDesc = {};
+    rpDesc.colorAttachmentCount = 1;
+    rpDesc.colorAttachments = &colorAtt;
+    rpDesc.depthStencilAttachment = &depthAtt;
+
+    WGPURenderPassEncoder pass = wgpuCommandEncoderBeginRenderPass(enc, &rpDesc);
+
+    wgpuRenderPassEncoderSetBindGroup(pass, 0, frameBg_, 0, nullptr);
+    wgpuRenderPassEncoderSetBindGroup(pass, 1, skinSlots_[0].bindGroup, 0, nullptr);
+    wgpuRenderPassEncoderSetBindGroup(pass, 2, defaultWhiteTex_.bindGroup, 0, nullptr);
+    wgpuRenderPassEncoderSetBindGroup(pass, 3, shadowReadBg_, 0, nullptr);
+
+    // Terrain + Ocean
+    wgpuRenderPassEncoderSetPipeline(pass, terrainPipeline_);
+    wgpuRenderPassEncoderSetVertexBuffer(pass, 0, terrainVbo_, 0, WGPU_WHOLE_SIZE);
+    wgpuRenderPassEncoderSetIndexBuffer(pass, terrainIbo_, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
+    wgpuRenderPassEncoderDrawIndexed(pass, terrainIndexCount_, 1, 0, 0, 0);
+
+    // Roads + Iron Pit Ring
+    if (roadIndexCount_ > 0) {
+      wgpuRenderPassEncoderSetVertexBuffer(pass, 0, roadVbo_, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderSetIndexBuffer(pass, roadIbo_, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderDrawIndexed(pass, roadIndexCount_, 1, 0, 0, 0);
+    }
+
+    // Instanced Buildings, GLB Props, Fallback Street Props, and Traffic Vehicles
+    wgpuRenderPassEncoderSetPipeline(pass, instancedPipeline_);
+    if (!buildingStaging_.empty()) {
+      wgpuRenderPassEncoderSetVertexBuffer(pass, 0, unitBoxVbo_, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderSetVertexBuffer(pass, 1, buildingInstVbo_, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderSetIndexBuffer(pass, unitBoxIbo_, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderDrawIndexed(pass, unitBoxIndexCount_, static_cast<uint32_t>(buildingStaging_.size()), 0, 0, 0);
+    }
+    if (fallbackPropCount_ > 0 && fallbackPropInstVbo_) {
+      wgpuRenderPassEncoderSetVertexBuffer(pass, 0, unitBoxVbo_, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderSetVertexBuffer(pass, 1, fallbackPropInstVbo_, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderSetIndexBuffer(pass, unitBoxIbo_, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderDrawIndexed(pass, unitBoxIndexCount_, fallbackPropCount_, 0, 0, 0);
+    }
+    for (const auto& batch : glbPropBatches_) {
+      if (batch.instanceCount == 0) continue;
+      wgpuRenderPassEncoderSetVertexBuffer(pass, 0, batch.vbo, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderSetVertexBuffer(pass, 1, batch.instVbo, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderSetIndexBuffer(pass, batch.ibo, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderDrawIndexed(pass, batch.indexCount, batch.instanceCount, 0, 0, 0);
+    }
+    if (policeDrawCount > 0 && policeBatch_.vbo) {
+      wgpuRenderPassEncoderSetVertexBuffer(pass, 0, policeBatch_.vbo, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderSetVertexBuffer(pass, 1, policeBatch_.instVbo, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderSetIndexBuffer(pass, policeBatch_.ibo, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderDrawIndexed(pass, policeBatch_.indexCount, policeDrawCount, 0, 0, 0);
+    }
+    if (taxiDrawCount > 0 && taxiBatch_.vbo) {
+      wgpuRenderPassEncoderSetVertexBuffer(pass, 0, taxiBatch_.vbo, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderSetVertexBuffer(pass, 1, taxiBatch_.instVbo, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderSetIndexBuffer(pass, taxiBatch_.ibo, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderDrawIndexed(pass, taxiBatch_.indexCount, taxiDrawCount, 0, 0, 0);
+    }
+
+    // Skinned Textured Characters (Player shirtless fighter + Iron Pit Opponents)
+    if (charCount > 0) {
+      wgpuRenderPassEncoderSetPipeline(pass, skinnedPipeline_);
+      for (uint32_t ci = 0; ci < charCount; ++ci) {
+        wgpuRenderPassEncoderSetBindGroup(pass, 1, skinSlots_[ci].bindGroup, 0, nullptr);
+        const auto drawSkinFwd = [&](const SkinnedMeshGpu& mesh) {
+          if (!mesh.vbo || !mesh.ibo) return;
+          wgpuRenderPassEncoderSetVertexBuffer(pass, 0, mesh.vbo, 0, WGPU_WHOLE_SIZE);
+          wgpuRenderPassEncoderSetIndexBuffer(pass, mesh.ibo, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
+          for (const auto& sub : mesh.submeshes) {
+            wgpuRenderPassEncoderSetBindGroup(pass, 2, sub.texBindGroup ? sub.texBindGroup : defaultWhiteTex_.bindGroup, 0, nullptr);
+            wgpuRenderPassEncoderDrawIndexed(pass, sub.indexCount, 1, sub.indexOffset, 0, 0);
+          }
+        };
+        switch (characters[ci].part) {
+          case SkinnedPartKind::PlayerBody: drawSkinFwd(playerBodyGpu_); break;
+          case SkinnedPartKind::PlayerShorts: drawSkinFwd(playerShortsGpu_); break;
+          case SkinnedPartKind::PlayerHair: drawSkinFwd(playerHairGpu_); break;
+          case SkinnedPartKind::Opponent: drawSkinFwd(opponentGpu_); break;
+        }
+      }
+    }
+
+    wgpuRenderPassEncoderEnd(pass);
+    wgpuRenderPassEncoderRelease(pass);
+  }
+
+  // -------------------------------------------------------------------------
+  // Pass 3: Dear ImGui Native HUD Pass
+  // -------------------------------------------------------------------------
   if (drawUiCallback) {
     WGPURenderPassColorAttachment uiAtt = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
     uiAtt.view = backView;
@@ -572,11 +1107,28 @@ void WorldRenderer::render(
 
 void WorldRenderer::shutdown() {
   auto relBuf = [](WGPUBuffer& b) {
-    if (b) {
-      wgpuBufferRelease(b);
-      b = nullptr;
-    }
+    if (b) { wgpuBufferRelease(b); b = nullptr; }
   };
+  auto relTex = [](GpuTextureBinding& t) {
+    if (t.bindGroup) { wgpuBindGroupRelease(t.bindGroup); t.bindGroup = nullptr; }
+    if (t.view) { wgpuTextureViewRelease(t.view); t.view = nullptr; }
+    if (t.texture) { wgpuTextureRelease(t.texture); t.texture = nullptr; }
+  };
+  auto relBatch = [&](InstancedGlbBatch& b) {
+    relBuf(b.vbo);
+    relBuf(b.ibo);
+    relBuf(b.instVbo);
+    b.indexCount = 0;
+    b.instanceCount = 0;
+  };
+  auto relSkin = [&](SkinnedMeshGpu& m) {
+    relBuf(m.vbo);
+    relBuf(m.ibo);
+    for (auto& t : m.ownedTextures) relTex(t);
+    m.ownedTextures.clear();
+    m.submeshes.clear();
+  };
+
   relBuf(terrainVbo_);
   relBuf(terrainIbo_);
   relBuf(roadVbo_);
@@ -584,17 +1136,43 @@ void WorldRenderer::shutdown() {
   relBuf(unitBoxVbo_);
   relBuf(unitBoxIbo_);
   relBuf(buildingInstVbo_);
-  relBuf(propInstVbo_);
-  relBuf(playerVbo_);
-  relBuf(playerIbo_);
-  relBuf(playerInstVbo_);
+  relBuf(fallbackPropInstVbo_);
   relBuf(frameUbo_);
+  for (auto& s : skinSlots_) {
+    relBuf(s.ubo);
+    if (s.bindGroup) { wgpuBindGroupRelease(s.bindGroup); s.bindGroup = nullptr; }
+  }
+  for (auto& b : glbPropBatches_) relBatch(b);
+  glbPropBatches_.clear();
+  relBatch(policeBatch_);
+  relBatch(taxiBatch_);
+  relSkin(playerBodyGpu_);
+  relSkin(playerShortsGpu_);
+  relSkin(playerHairGpu_);
+  relSkin(opponentGpu_);
+  relTex(defaultWhiteTex_);
 
+  if (shadowView_) { wgpuTextureViewRelease(shadowView_); shadowView_ = nullptr; }
+  if (shadowTex_) { wgpuTextureRelease(shadowTex_); shadowTex_ = nullptr; }
+  if (shadowSampler_) { wgpuSamplerRelease(shadowSampler_); shadowSampler_ = nullptr; }
+  if (linearSampler_) { wgpuSamplerRelease(linearSampler_); linearSampler_ = nullptr; }
+
+  if (shadowTerrainPipeline_) { wgpuRenderPipelineRelease(shadowTerrainPipeline_); shadowTerrainPipeline_ = nullptr; }
+  if (shadowInstancedPipeline_) { wgpuRenderPipelineRelease(shadowInstancedPipeline_); shadowInstancedPipeline_ = nullptr; }
+  if (shadowSkinnedPipeline_) { wgpuRenderPipelineRelease(shadowSkinnedPipeline_); shadowSkinnedPipeline_ = nullptr; }
   if (terrainPipeline_) { wgpuRenderPipelineRelease(terrainPipeline_); terrainPipeline_ = nullptr; }
   if (instancedPipeline_) { wgpuRenderPipelineRelease(instancedPipeline_); instancedPipeline_ = nullptr; }
-  if (pipeLayout_) { wgpuPipelineLayoutRelease(pipeLayout_); pipeLayout_ = nullptr; }
+  if (skinnedPipeline_) { wgpuRenderPipelineRelease(skinnedPipeline_); skinnedPipeline_ = nullptr; }
+
+  if (shadowStaticPipeLayout_) { wgpuPipelineLayoutRelease(shadowStaticPipeLayout_); shadowStaticPipeLayout_ = nullptr; }
+  if (shadowSkinnedPipeLayout_) { wgpuPipelineLayoutRelease(shadowSkinnedPipeLayout_); shadowSkinnedPipeLayout_ = nullptr; }
+  if (scenePipeLayout_) { wgpuPipelineLayoutRelease(scenePipeLayout_); scenePipeLayout_ = nullptr; }
+  if (shadowReadBg_) { wgpuBindGroupRelease(shadowReadBg_); shadowReadBg_ = nullptr; }
   if (frameBg_) { wgpuBindGroupRelease(frameBg_); frameBg_ = nullptr; }
+  if (shadowReadBgl_) { wgpuBindGroupLayoutRelease(shadowReadBgl_); shadowReadBgl_ = nullptr; }
   if (frameBgl_) { wgpuBindGroupLayoutRelease(frameBgl_); frameBgl_ = nullptr; }
+  if (skinBgl_) { wgpuBindGroupLayoutRelease(skinBgl_); skinBgl_ = nullptr; }
+  if (matBgl_) { wgpuBindGroupLayoutRelease(matBgl_); matBgl_ = nullptr; }
   if (shader_) { wgpuShaderModuleRelease(shader_); shader_ = nullptr; }
 }
 

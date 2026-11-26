@@ -36,8 +36,8 @@ class PlayerController {
  private:
   PhysicsWorld* physics_ = nullptr;
   float yaw_ = 0.0f;
-  float pitch_ = 0.16f;
-  float camDist_ = 4.2f;
+  float pitch_ = -0.18f;
+  float camDist_ = 3.8f;
   float currentSpeed_ = 0.0f;
   float stepAccum_ = 0.0f;
   bool sprinting_ = false;

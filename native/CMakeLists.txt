@@ -82,6 +82,7 @@ FetchContent_MakeAvailable(JoltPhysics meshoptimizer cgltf glm nlohmann_json stb
 add_library(westgate_core STATIC
   src/core/WorldData.cpp
   src/core/GltfAssetLoader.cpp
+  src/core/CharacterAnimator.cpp
   src/core/PhysicsWorld.cpp
   src/core/PlayerController.cpp
 )
@@ -247,9 +248,34 @@ if(WESTGATE_BUILD_DESKTOP)
     add_custom_command(TARGET westgate_engine POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E make_directory
         "$<TARGET_FILE_DIR:westgate_engine>/assets/characters/fighter"
+      COMMAND ${CMAKE_COMMAND} -E make_directory
+        "$<TARGET_FILE_DIR:westgate_engine>/assets/animations/combat"
+      COMMAND ${CMAKE_COMMAND} -E make_directory
+        "$<TARGET_FILE_DIR:westgate_engine>/assets/models"
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/fighter/base_body.glb"
-        "$<TARGET_FILE_DIR:westgate_engine>/assets/characters/fighter/base_body.glb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/fighter/clothing_shorts.glb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/fighter/hair_short02.glb"
+        "$<TARGET_FILE_DIR:westgate_engine>/assets/characters/fighter/"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/business.glb"
+        "$<TARGET_FILE_DIR:westgate_engine>/assets/characters/business.glb"
+      COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/animations/combat"
+        "$<TARGET_FILE_DIR:westgate_engine>/assets/animations/combat"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/tree_palm.glb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/tree_oak.glb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/tree_pine.glb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/bush.glb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/rock.glb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/dumpster_bin.glb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/park_bench.glb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/sign_stop.glb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/trash_bin.glb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/police_cruiser.glb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/taxi.glb"
+        "$<TARGET_FILE_DIR:westgate_engine>/assets/models/"
     )
   endif()
 endif()
