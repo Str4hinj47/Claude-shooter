@@ -784,8 +784,8 @@ export class Game {
   ) {
     installBvhPatches();
     (this.raycaster as THREE.Raycaster & { firstHitOnly?: boolean }).firstHitOnly = true;
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance", preserveDrawingBuffer: false });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2.5));
+    this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance", preserveDrawingBuffer: false });
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.0;
@@ -1642,7 +1642,14 @@ export class Game {
     }
 
     try {
-      this.renderer.compile(this.scene, this.camera);
+      const r = this.renderer as THREE.WebGLRenderer & {
+        compileAsync?: (scene: THREE.Object3D, camera: THREE.Camera) => Promise<void>;
+      };
+      if (typeof r.compileAsync === "function") {
+        await r.compileAsync(this.scene, this.camera);
+      } else {
+        this.renderer.compile(this.scene, this.camera);
+      }
     } catch {}
     this.phase = "ready";
     if (pendingContractId !== null) {
@@ -2160,25 +2167,24 @@ export class Game {
     try {
       const w = Math.max(2, this.container.clientWidth || window.innerWidth);
       const h = Math.max(2, this.container.clientHeight || window.innerHeight);
-      const msaaSamples = this.renderer.capabilities.isWebGL2 ? 4 : 0;
       const composer = new EffectComposer(this.renderer, {
         frameBufferType: THREE.HalfFloatType,
-        multisampling: msaaSamples,
+        multisampling: 0,
       });
       composer.setSize(w, h, false);
       composer.addPass(new RenderPass(this.scene, this.camera));
 
-      // Full-resolution screen-space ambient occlusion (N8AO) — zero half-res stipple pixels
+      // Half-res bilateral-upsampled N8AO avoids full-res fragment stalls while preserving contact AO
       const n8ao = new N8AOPostPass(this.scene, this.camera, w, h);
-      n8ao.configuration.halfRes = false;
-      n8ao.configuration.aoSamples = 16;
-      n8ao.configuration.denoiseSamples = 8;
+      n8ao.configuration.halfRes = true;
+      n8ao.configuration.aoSamples = 8;
+      n8ao.configuration.denoiseSamples = 4;
       n8ao.configuration.aoRadius = 2.4;
       n8ao.configuration.distanceFalloff = 1.0;
-      n8ao.configuration.intensity = 2.2;
+      n8ao.configuration.intensity = 2.0;
       composer.addPass(n8ao);
 
-      const smaa = new SMAAEffect({ preset: SMAAPreset.ULTRA });
+      const smaa = new SMAAEffect({ preset: SMAAPreset.HIGH });
       const bloom = new BloomEffect({
         mipmapBlur: true,
         luminanceThreshold: 1.04,
@@ -2213,7 +2219,7 @@ export class Game {
 
   private applyPerfTier() {
     const nativeDpr = window.devicePixelRatio || 1;
-    const cap = this.perfTier === 0 ? 2.5 : this.perfTier === 1 ? 2.0 : 1.5;
+    const cap = this.perfTier === 0 ? 1.5 : this.perfTier === 1 ? 1.25 : 1.0;
     const nextDpr = Math.min(nativeDpr, cap);
     if (Math.abs(this.renderer.getPixelRatio() - nextDpr) > 0.02) {
       this.renderer.setPixelRatio(nextDpr);

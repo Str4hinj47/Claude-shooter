@@ -128,7 +128,7 @@ export function buildWestgateWorld(
   const iblSky = createRealisticSky(initialSkyState);
   skyScene.add(iblSky.mesh);
 
-  const cubeRT = new THREE.WebGLCubeRenderTarget(256, { type: THREE.HalfFloatType });
+  const cubeRT = new THREE.WebGLCubeRenderTarget(128, { type: THREE.HalfFloatType });
   const cubeCam = new THREE.CubeCamera(1, 10000, cubeRT);
   const pmrem = new THREE.PMREMGenerator(renderer);
   const envCache = new Map<string, THREE.WebGLRenderTarget>();
@@ -159,7 +159,7 @@ export function buildWestgateWorld(
   // 2. Dual-Cascade Directional Sun Rig (2.5cm/texel crisp near cascade + 175m far skyline/mountain cascade)
   const sun = new THREE.DirectionalLight(0xfff1dc, 1.74);
   sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.mapSize.set(1536, 1536);
   const sc = sun.shadow.camera;
   sc.left = -26;
   sc.right = 26;
@@ -174,7 +174,7 @@ export function buildWestgateWorld(
 
   const sunFar = new THREE.DirectionalLight(0xfff1dc, 0.61);
   sunFar.castShadow = true;
-  sunFar.shadow.mapSize.set(2048, 2048);
+  sunFar.shadow.mapSize.set(1024, 1024);
   const scFar = sunFar.shadow.camera;
   scFar.left = -175;
   scFar.right = 175;

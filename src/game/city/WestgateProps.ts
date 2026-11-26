@@ -743,9 +743,19 @@ export function upgradeWestgatePropsWithGlbs(batcher: PropBatcher): void {
     { proto: "traffic_cone", file: "traffic_cone.glb", axis: "y", meters: 0.68 },
   ];
 
-  for (const sp of specs) {
-    void loadInstancedPartsFromGlb(sp.file, sp.axis, sp.meters, 0).then((parts) => {
-      if (parts) batcher.upgradePrototypeMeshes(sp.proto, parts);
-    });
-  }
+  void (async () => {
+    for (let i = 0; i < specs.length; i += 2) {
+      const batch = specs.slice(i, i + 2);
+      await Promise.all(
+        batch.map((sp) =>
+          loadInstancedPartsFromGlb(sp.file, sp.axis, sp.meters, 0).then((parts) => {
+            if (parts) batcher.upgradePrototypeMeshes(sp.proto, parts);
+          }),
+        ),
+      );
+      if (typeof requestAnimationFrame === "function") {
+        await new Promise<void>((r) => requestAnimationFrame(() => r()));
+      }
+    }
+  })();
 }
