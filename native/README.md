@@ -10,15 +10,22 @@ True native desktop C++20 engine for **Westgate Bay** using:
 
 ## Quick Start (Windows 10 / 11 with Visual Studio 2022 + CMake)
 
+If `cmake` or Visual Studio's C++ compiler (`MSVC`) is not installed yet, run these in PowerShell first (then open a new PowerShell window):
+```powershell
+winget install Kitware.CMake
+winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+```
+
 1. *(Optional, if world data changed)* Export Westgate Bay world data from the repo root:
    ```bat
    npm run export:native
    ```
 2. Build and launch:
-   ```bat
+   ```powershell
    cd native
-   build-windows.bat
+   .\build-windows.bat
    ```
+   (`build-windows.bat` automatically searches `PATH`, `Program Files\CMake`, and Visual Studio's bundled CMake via `vswhere.exe`.)
    Or manually:
    ```bat
    cmake -B build -G "Visual Studio 17 2022" -A x64 -DWESTGATE_BUILD_DESKTOP=ON
