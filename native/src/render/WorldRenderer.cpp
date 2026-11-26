@@ -14,6 +14,32 @@ namespace westgate {
 
 namespace {
 
+constexpr uint32_t kShadowMapSize = 2048;
+
+struct StaticVertex {
+  float px, py, pz;
+  float nx, ny, nz;
+  float r, g, b;
+  float u, v;
+  float kind;
+};
+
+struct ModelVertex {
+  float px, py, pz;
+  float nx, ny, nz;
+  float u, v;
+  float r, g, b;
+};
+
+struct SkinnedVertex {
+  float px, py, pz;
+  float nx, ny, nz;
+  float u, v;
+  float r, g, b;
+  uint32_t j0, j1, j2, j3;
+  float w0, w1, w2, w3;
+};
+
 std::string loadTextFile(const std::string& path) {
   std::ifstream f(path);
   if (!f) return {};
@@ -362,7 +388,7 @@ bool WorldRenderer::init(
   modelAttrs[2] = {nullptr, WGPUVertexFormat_Float32x2, offsetof(ModelVertex, u), 2};
   modelAttrs[3] = {nullptr, WGPUVertexFormat_Float32x3, offsetof(ModelVertex, r), 3};
   WGPUVertexAttribute instAttrs[4]{};
-  instAttrs[0] = {nullptr, WGPUVertexFormat_Float32x3, offsetof(InstanceAttrib, px), 4};
+  instAttrs[0] = {nullptr, WGPUVertexFormat_Float32x3, offsetof(InstanceAttrib, x), 4};
   instAttrs[1] = {nullptr, WGPUVertexFormat_Float32x3, offsetof(InstanceAttrib, sx), 5};
   instAttrs[2] = {nullptr, WGPUVertexFormat_Float32, offsetof(InstanceAttrib, rotY), 6};
   instAttrs[3] = {nullptr, WGPUVertexFormat_Float32x3, offsetof(InstanceAttrib, r), 7};
@@ -456,7 +482,10 @@ bool WorldRenderer::init(
   if (assets.playerBody) buildSkinnedMesh(ctx, *assets.playerBody, playerBodyGpu_);
   if (assets.playerShorts) buildSkinnedMesh(ctx, *assets.playerShorts, playerShortsGpu_);
   if (assets.playerHair) buildSkinnedMesh(ctx, *assets.playerHair, playerHairGpu_);
-  if (assets.opponentModel) buildSkinnedMesh(ctx, *assets.opponentModel, opponentGpu_);
+  if (assets.businessModel) buildSkinnedMesh(ctx, *assets.businessModel, businessGpu_);
+  if (assets.civilianModel) buildSkinnedMesh(ctx, *assets.civilianModel, civilianGpu_);
+  if (assets.policeModel) buildSkinnedMesh(ctx, *assets.policeModel, policeGpu_);
+  if (assets.securityModel) buildSkinnedMesh(ctx, *assets.securityModel, securityGpu_);
 
   return terrainPipeline_ != nullptr && instancedPipeline_ != nullptr && skinnedPipeline_ != nullptr;
 }
@@ -601,7 +630,8 @@ bool WorldRenderer::loadGlbBatch(
   WgpuContext& ctx,
   const std::string& path,
   const std::vector<InstanceAttrib>& instances,
-  InstancedGlbBatch& outBatch
+  InstancedGlbBatch& outBatch,
+  float normalizeTargetLength
 ) {
   if (!std::filesystem::exists(path)) return false;
   GltfModel model;
@@ -609,7 +639,12 @@ bool WorldRenderer::loadGlbBatch(
 
   std::vector<ModelVertex> verts;
   std::vector<uint32_t> indices;
-  const float groundOffset = -model.boundsMin.y;
+  const glm::vec3 size = model.boundsMax - model.boundsMin;
+  const float maxHoriz = std::max(size.x, size.z);
+  const float scale = (normalizeTargetLength > 0.0f && maxHoriz > 1e-4f) ? (normalizeTargetLength / maxHoriz) : 1.0f;
+  const float cx = (normalizeTargetLength > 0.0f) ? (model.boundsMin.x + model.boundsMax.x) * 0.5f : 0.0f;
+  const float cz = (normalizeTargetLength > 0.0f) ? (model.boundsMin.z + model.boundsMax.z) * 0.5f : 0.0f;
+  const float minY = model.boundsMin.y;
 
   for (const auto& prim : model.primitives) {
     const uint32_t base = static_cast<uint32_t>(verts.size());
@@ -620,7 +655,7 @@ bool WorldRenderer::loadGlbBatch(
     for (const auto& v : prim.vertices) {
       const glm::vec3 col = glm::vec3(v.color) * matCol;
       verts.push_back(ModelVertex{
-        v.position.x, v.position.y + groundOffset, v.position.z,
+        (v.position.x - cx) * scale, (v.position.y - minY) * scale, (v.position.z - cz) * scale,
         v.normal.x, v.normal.y, v.normal.z,
         std::max(0.0f, v.uv.x), std::max(0.0f, v.uv.y),
         col.r, col.g, col.b
@@ -669,9 +704,13 @@ void WorldRenderer::buildPropAndVehicleBatches(WgpuContext& ctx, const WorldData
 
   size_t totalB = 0;
   for (const auto& c : world.chunks) totalB += c.buildings.size();
-  maxBuildingInstances_ = static_cast<uint32_t>(std::max<size_t>(64, totalB));
-  buildingInstVbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, nullptr, maxBuildingInstances_ * sizeof(InstanceAttrib));
-  buildingStaging_.reserve(maxBuildingInstances_);
+  buildingCapacity_ = static_cast<uint32_t>(std::max<size_t>(64, totalB));
+  buildingInstVbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, nullptr, buildingCapacity_ * sizeof(InstanceAttrib));
+  buildingStaging_.reserve(buildingCapacity_);
+
+  markerCapacity_ = 256;
+  markerInstVbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, nullptr, markerCapacity_ * sizeof(InstanceAttrib));
+  markerStaging_.reserve(markerCapacity_);
 
   static const std::unordered_map<std::string, std::pair<std::string, float>> protoGlbMap = {
     {"palm_tree", {"tree_palm.glb", 1.75f}},
@@ -714,7 +753,7 @@ void WorldRenderer::buildPropAndVehicleBatches(WgpuContext& ctx, const WorldData
       ++telemetry_.glbPropTypesLoaded;
     } else {
       for (const auto& inst : instList) {
-        fallbackInst.push_back(InstanceAttrib{inst.px, inst.py + 2.5f, inst.pz, 1.2f, 5.0f, 1.2f, inst.rotY, 0.25f, 0.48f, 0.22f});
+        fallbackInst.push_back(InstanceAttrib{inst.x, inst.y + 2.5f, inst.z, 1.2f, 5.0f, 1.2f, inst.rotY, 0.25f, 0.48f, 0.22f});
       }
     }
   }
@@ -724,10 +763,19 @@ void WorldRenderer::buildPropAndVehicleBatches(WgpuContext& ctx, const WorldData
     fallbackPropInstVbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, fallbackInst.data(), fallbackInst.size() * sizeof(InstanceAttrib));
   }
 
-  // Real GLB vehicles for ambient Westgate traffic
-  std::vector<InstanceAttrib> dummyVeh(24);
-  loadGlbBatch(ctx, (std::filesystem::path(assetsRoot) / "models" / "police_cruiser.glb").string(), dummyVeh, policeBatch_);
-  loadGlbBatch(ctx, (std::filesystem::path(assetsRoot) / "models" / "taxi.glb").string(), dummyVeh, taxiBatch_);
+  // Real GLB vehicles normalized to real-world ~4.4m car lengths & ground minY = 0
+  const char* vehicleFiles[6] = {
+    "police_cruiser.glb",
+    "taxi.glb",
+    "sedan.glb",
+    "mustang.glb",
+    "ferrari.glb",
+    "rangerover.glb",
+  };
+  std::vector<InstanceAttrib> dummyVeh(48);
+  for (size_t vi = 0; vi < 6; ++vi) {
+    loadGlbBatch(ctx, (std::filesystem::path(assetsRoot) / "models" / vehicleFiles[vi]).string(), dummyVeh, vehicleBatches_[vi], 4.45f);
+  }
 }
 
 void WorldRenderer::buildSkinnedMesh(WgpuContext& ctx, const GltfModel& model, SkinnedMeshGpu& outMesh) {
@@ -797,14 +845,16 @@ void WorldRenderer::render(
   const glm::vec3& camPos,
   const glm::vec3& camTarget,
   const glm::vec3& focusPos,
+  float fovDeg,
   float timeSec,
+  const SkyLightingState& sky,
   const std::vector<SkinnedRenderCharacter>& characters,
-  const std::vector<InstanceAttrib>& policeVehicles,
-  const std::vector<InstanceAttrib>& taxiVehicles,
+  const std::vector<VehicleEntity>& vehicles,
+  const std::vector<WorldMarkerBox>& markers,
   bool drawUiCallback
 ) {
   const float aspect = static_cast<float>(ctx.width()) / static_cast<float>(std::max(1u, ctx.height()));
-  const glm::mat4 proj = glm::perspectiveZO(glm::radians(60.0f), aspect, 0.25f, 2800.0f);
+  const glm::mat4 proj = glm::perspectiveZO(glm::radians(fovDeg), aspect, 0.25f, 2800.0f);
   const glm::mat4 view = glm::lookAt(camPos, camTarget, glm::vec3(0.0f, 1.0f, 0.0f));
   const glm::mat4 vp = proj * view;
 
@@ -818,7 +868,7 @@ void WorldRenderer::render(
     const auto& ch = world.chunks[v.chunkIndex];
     for (const auto& b : ch.buildings) {
       if (v.state == ChunkLodState::Lod && b.size.y < 8.0f) continue;
-      if (buildingStaging_.size() >= maxBuildingInstances_) break;
+      if (buildingStaging_.size() >= buildingCapacity_) break;
       buildingStaging_.push_back(InstanceAttrib{
         b.center.x, b.center.y, b.center.z,
         b.size.x, b.size.y, b.size.z,
@@ -831,18 +881,35 @@ void WorldRenderer::render(
     wgpuQueueWriteBuffer(ctx.queue(), buildingInstVbo_, 0, buildingStaging_.data(), buildingStaging_.size() * sizeof(InstanceAttrib));
   }
 
-  // Upload dynamic traffic vehicle instances
-  const uint32_t policeDrawCount = static_cast<uint32_t>(std::min<size_t>(policeVehicles.size(), policeBatch_.maxInstances));
-  if (policeDrawCount > 0 && policeBatch_.instVbo) {
-    wgpuQueueWriteBuffer(ctx.queue(), policeBatch_.instVbo, 0, policeVehicles.data(), policeDrawCount * sizeof(InstanceAttrib));
+  // Upload dynamic markers & tracers
+  markerStaging_.clear();
+  for (const auto& m : markers) {
+    if (markerStaging_.size() >= markerCapacity_) break;
+    markerStaging_.push_back(InstanceAttrib{m.pos.x, m.pos.y, m.pos.z, m.scale.x, m.scale.y, m.scale.z, m.yawRad, m.color.r, m.color.g, m.color.b});
   }
-  const uint32_t taxiDrawCount = static_cast<uint32_t>(std::min<size_t>(taxiVehicles.size(), taxiBatch_.maxInstances));
-  if (taxiDrawCount > 0 && taxiBatch_.instVbo) {
-    wgpuQueueWriteBuffer(ctx.queue(), taxiBatch_.instVbo, 0, taxiVehicles.data(), taxiDrawCount * sizeof(InstanceAttrib));
+  if (!markerStaging_.empty()) {
+    wgpuQueueWriteBuffer(ctx.queue(), markerInstVbo_, 0, markerStaging_.data(), markerStaging_.size() * sizeof(InstanceAttrib));
+  }
+
+  // Upload dynamic vehicles across all 6 models
+  uint32_t totalVehiclesDrawn = 0;
+  for (auto& vs : vehicleStaging_) vs.clear();
+  for (const auto& v : vehicles) {
+    const size_t k = static_cast<size_t>(v.kind);
+    if (k < 6 && vehicleStaging_[k].size() < vehicleBatches_[k].maxInstances) {
+      vehicleStaging_[k].push_back(InstanceAttrib{v.pos.x, v.pos.y, v.pos.z, 1.0f, 1.0f, 1.0f, v.yawRad, v.colorTint.r, v.colorTint.g, v.colorTint.b});
+    }
+  }
+  for (size_t k = 0; k < 6; ++k) {
+    const uint32_t cnt = static_cast<uint32_t>(vehicleStaging_[k].size());
+    if (cnt > 0 && vehicleBatches_[k].instVbo) {
+      wgpuQueueWriteBuffer(ctx.queue(), vehicleBatches_[k].instVbo, 0, vehicleStaging_[k].data(), cnt * sizeof(InstanceAttrib));
+      totalVehiclesDrawn += cnt;
+    }
   }
 
   // Texel-snapped directional sun shadow camera centered on focusPos
-  const glm::vec3 sunDir = glm::normalize(glm::vec3(0.55f, 0.72f, 0.42f));
+  const glm::vec3 sunDir = glm::normalize(sky.sunDir);
   const float shadowExtent = 160.0f;
   const float texelWorld = (shadowExtent * 2.0f) / static_cast<float>(kShadowMapSize);
   const glm::vec3 snappedCenter(
@@ -858,11 +925,11 @@ void WorldRenderer::render(
   ubo.lightViewProj = lightProj * lightView;
   ubo.camPos = glm::vec4(camPos, timeSec);
   ubo.sunDir = glm::vec4(sunDir, 0.0f);
-  ubo.sunColor = glm::vec4(1.38f, 1.26f, 1.10f, 1.0f);
-  ubo.fogColor = glm::vec4(0.65f, 0.78f, 0.90f, 1.0f);
+  ubo.sunColor = glm::vec4(sky.sunColor * 1.32f, 1.0f);
+  ubo.fogColor = glm::vec4(sky.fogColor, sky.nightFactor);
   wgpuQueueWriteBuffer(ctx.queue(), frameUbo_, 0, &ubo, sizeof(ubo));
 
-  // Upload skinned character uniform slots (each character gets its own slot UBO)
+  // Upload skinned character uniform slots
   const uint32_t charCount = static_cast<uint32_t>(std::min<size_t>(characters.size(), kMaxSkinSlots));
   for (uint32_t ci = 0; ci < charCount; ++ci) {
     const auto& ch = characters[ci];
@@ -880,7 +947,8 @@ void WorldRenderer::render(
   telemetry_.lodChunks = streamer.lodCount();
   telemetry_.drawnBuildings = static_cast<uint32_t>(buildingStaging_.size());
   telemetry_.drawnProps = static_cast<uint32_t>(world.props.size());
-  telemetry_.drawnVehicles = policeDrawCount + taxiDrawCount;
+  telemetry_.drawnVehicles = totalVehiclesDrawn;
+  telemetry_.drawnCharacters = charCount;
 
   WGPUSurfaceTexture surfTex{};
   wgpuSurfaceGetCurrentTexture(ctx.surface(), &surfTex);
@@ -932,17 +1000,14 @@ void WorldRenderer::render(
       wgpuRenderPassEncoderSetIndexBuffer(spass, batch.ibo, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
       wgpuRenderPassEncoderDrawIndexed(spass, batch.indexCount, batch.instanceCount, 0, 0, 0);
     }
-    if (policeDrawCount > 0 && policeBatch_.vbo) {
-      wgpuRenderPassEncoderSetVertexBuffer(spass, 0, policeBatch_.vbo, 0, WGPU_WHOLE_SIZE);
-      wgpuRenderPassEncoderSetVertexBuffer(spass, 1, policeBatch_.instVbo, 0, WGPU_WHOLE_SIZE);
-      wgpuRenderPassEncoderSetIndexBuffer(spass, policeBatch_.ibo, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
-      wgpuRenderPassEncoderDrawIndexed(spass, policeBatch_.indexCount, policeDrawCount, 0, 0, 0);
-    }
-    if (taxiDrawCount > 0 && taxiBatch_.vbo) {
-      wgpuRenderPassEncoderSetVertexBuffer(spass, 0, taxiBatch_.vbo, 0, WGPU_WHOLE_SIZE);
-      wgpuRenderPassEncoderSetVertexBuffer(spass, 1, taxiBatch_.instVbo, 0, WGPU_WHOLE_SIZE);
-      wgpuRenderPassEncoderSetIndexBuffer(spass, taxiBatch_.ibo, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
-      wgpuRenderPassEncoderDrawIndexed(spass, taxiBatch_.indexCount, taxiDrawCount, 0, 0, 0);
+    for (size_t k = 0; k < 6; ++k) {
+      const uint32_t cnt = static_cast<uint32_t>(vehicleStaging_[k].size());
+      if (cnt > 0 && vehicleBatches_[k].vbo) {
+        wgpuRenderPassEncoderSetVertexBuffer(spass, 0, vehicleBatches_[k].vbo, 0, WGPU_WHOLE_SIZE);
+        wgpuRenderPassEncoderSetVertexBuffer(spass, 1, vehicleBatches_[k].instVbo, 0, WGPU_WHOLE_SIZE);
+        wgpuRenderPassEncoderSetIndexBuffer(spass, vehicleBatches_[k].ibo, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
+        wgpuRenderPassEncoderDrawIndexed(spass, vehicleBatches_[k].indexCount, cnt, 0, 0, 0);
+      }
     }
 
     if (charCount > 0) {
@@ -962,7 +1027,10 @@ void WorldRenderer::render(
           case SkinnedPartKind::PlayerBody: drawSkinShadow(playerBodyGpu_); break;
           case SkinnedPartKind::PlayerShorts: drawSkinShadow(playerShortsGpu_); break;
           case SkinnedPartKind::PlayerHair: drawSkinShadow(playerHairGpu_); break;
-          case SkinnedPartKind::Opponent: drawSkinShadow(opponentGpu_); break;
+          case SkinnedPartKind::Business: drawSkinShadow(businessGpu_); break;
+          case SkinnedPartKind::Civilian: drawSkinShadow(civilianGpu_); break;
+          case SkinnedPartKind::Police: drawSkinShadow(policeGpu_); break;
+          case SkinnedPartKind::Security: drawSkinShadow(securityGpu_); break;
         }
       }
     }
@@ -980,7 +1048,7 @@ void WorldRenderer::render(
     colorAtt.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
     colorAtt.loadOp = WGPULoadOp_Clear;
     colorAtt.storeOp = WGPUStoreOp_Store;
-    colorAtt.clearValue = {0.42, 0.65, 0.85, 1.0};
+    colorAtt.clearValue = {sky.clearColor.r, sky.clearColor.g, sky.clearColor.b, 1.0};
 
     WGPURenderPassDepthStencilAttachment depthAtt = WGPU_RENDER_PASS_DEPTH_STENCIL_ATTACHMENT_INIT;
     depthAtt.view = ctx.depthView();
@@ -1034,20 +1102,23 @@ void WorldRenderer::render(
       wgpuRenderPassEncoderSetIndexBuffer(pass, batch.ibo, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
       wgpuRenderPassEncoderDrawIndexed(pass, batch.indexCount, batch.instanceCount, 0, 0, 0);
     }
-    if (policeDrawCount > 0 && policeBatch_.vbo) {
-      wgpuRenderPassEncoderSetVertexBuffer(pass, 0, policeBatch_.vbo, 0, WGPU_WHOLE_SIZE);
-      wgpuRenderPassEncoderSetVertexBuffer(pass, 1, policeBatch_.instVbo, 0, WGPU_WHOLE_SIZE);
-      wgpuRenderPassEncoderSetIndexBuffer(pass, policeBatch_.ibo, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
-      wgpuRenderPassEncoderDrawIndexed(pass, policeBatch_.indexCount, policeDrawCount, 0, 0, 0);
+    if (!markerStaging_.empty() && markerInstVbo_) {
+      wgpuRenderPassEncoderSetVertexBuffer(pass, 0, unitBoxVbo_, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderSetVertexBuffer(pass, 1, markerInstVbo_, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderSetIndexBuffer(pass, unitBoxIbo_, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderDrawIndexed(pass, unitBoxIndexCount_, static_cast<uint32_t>(markerStaging_.size()), 0, 0, 0);
     }
-    if (taxiDrawCount > 0 && taxiBatch_.vbo) {
-      wgpuRenderPassEncoderSetVertexBuffer(pass, 0, taxiBatch_.vbo, 0, WGPU_WHOLE_SIZE);
-      wgpuRenderPassEncoderSetVertexBuffer(pass, 1, taxiBatch_.instVbo, 0, WGPU_WHOLE_SIZE);
-      wgpuRenderPassEncoderSetIndexBuffer(pass, taxiBatch_.ibo, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
-      wgpuRenderPassEncoderDrawIndexed(pass, taxiBatch_.indexCount, taxiDrawCount, 0, 0, 0);
+    for (size_t k = 0; k < 6; ++k) {
+      const uint32_t cnt = static_cast<uint32_t>(vehicleStaging_[k].size());
+      if (cnt > 0 && vehicleBatches_[k].vbo) {
+        wgpuRenderPassEncoderSetVertexBuffer(pass, 0, vehicleBatches_[k].vbo, 0, WGPU_WHOLE_SIZE);
+        wgpuRenderPassEncoderSetVertexBuffer(pass, 1, vehicleBatches_[k].instVbo, 0, WGPU_WHOLE_SIZE);
+        wgpuRenderPassEncoderSetIndexBuffer(pass, vehicleBatches_[k].ibo, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
+        wgpuRenderPassEncoderDrawIndexed(pass, vehicleBatches_[k].indexCount, cnt, 0, 0, 0);
+      }
     }
 
-    // Skinned Textured Characters (Player shirtless fighter + Iron Pit Opponents)
+    // Skinned Textured Characters (Player + City Pedestrians + Police + Contract Targets + Iron Pit)
     if (charCount > 0) {
       wgpuRenderPassEncoderSetPipeline(pass, skinnedPipeline_);
       for (uint32_t ci = 0; ci < charCount; ++ci) {
@@ -1065,7 +1136,10 @@ void WorldRenderer::render(
           case SkinnedPartKind::PlayerBody: drawSkinFwd(playerBodyGpu_); break;
           case SkinnedPartKind::PlayerShorts: drawSkinFwd(playerShortsGpu_); break;
           case SkinnedPartKind::PlayerHair: drawSkinFwd(playerHairGpu_); break;
-          case SkinnedPartKind::Opponent: drawSkinFwd(opponentGpu_); break;
+          case SkinnedPartKind::Business: drawSkinFwd(businessGpu_); break;
+          case SkinnedPartKind::Civilian: drawSkinFwd(civilianGpu_); break;
+          case SkinnedPartKind::Police: drawSkinFwd(policeGpu_); break;
+          case SkinnedPartKind::Security: drawSkinFwd(securityGpu_); break;
         }
       }
     }
@@ -1137,6 +1211,7 @@ void WorldRenderer::shutdown() {
   relBuf(unitBoxIbo_);
   relBuf(buildingInstVbo_);
   relBuf(fallbackPropInstVbo_);
+  relBuf(markerInstVbo_);
   relBuf(frameUbo_);
   for (auto& s : skinSlots_) {
     relBuf(s.ubo);
@@ -1144,12 +1219,14 @@ void WorldRenderer::shutdown() {
   }
   for (auto& b : glbPropBatches_) relBatch(b);
   glbPropBatches_.clear();
-  relBatch(policeBatch_);
-  relBatch(taxiBatch_);
+  for (auto& vb : vehicleBatches_) relBatch(vb);
   relSkin(playerBodyGpu_);
   relSkin(playerShortsGpu_);
   relSkin(playerHairGpu_);
-  relSkin(opponentGpu_);
+  relSkin(businessGpu_);
+  relSkin(civilianGpu_);
+  relSkin(policeGpu_);
+  relSkin(securityGpu_);
   relTex(defaultWhiteTex_);
 
   if (shadowView_) { wgpuTextureViewRelease(shadowView_); shadowView_ = nullptr; }

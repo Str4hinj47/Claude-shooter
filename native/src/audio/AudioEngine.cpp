@@ -1,163 +1,173 @@
 #ifndef NOMINMAX
-#define NOMINMAX 1
+#define NOMINMAX
 #endif
 #ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN 1
+#define WIN32_LEAN_AND_MEAN
 #endif
-#define MINIAUDIO_IMPLEMENTATION
-#include <miniaudio.h>
 
 #include "westgate/AudioEngine.hpp"
 #include <algorithm>
-#include <array>
 #include <cmath>
-#include <mutex>
+#include <cstring>
+
+#if defined(__has_include)
+#if __has_include("miniaudio.h")
+#define WESTGATE_HAS_MINIAUDIO 1
+#define MINIAUDIO_IMPLEMENTATION
+#include "miniaudio.h"
+#endif
+#endif
 
 namespace westgate {
 
-namespace {
-
-struct StepVoice {
-  bool active = false;
-  bool isWater = false;
-  float time = 0.0f;
-  float duration = 0.085f;
-  float intensity = 0.6f;
-  float freqStart = 115.0f;
-  float freqEnd = 44.0f;
-  float phase = 0.0f;
-  float lpState = 0.0f;
-  uint32_t rng = 0x12345678u;
+struct AudioEngine::Impl {
+#ifdef WESTGATE_HAS_MINIAUDIO
+  ma_device device{};
+#endif
+  bool deviceStarted = false;
 };
 
-float nextRand(uint32_t& s) {
-  s ^= s << 13;
-  s ^= s >> 17;
-  s ^= s << 5;
-  return (static_cast<float>(s & 0xFFFFu) / 32767.5f) - 1.0f;
+AudioEngine::~AudioEngine() {
+  shutdown();
 }
 
-} // namespace
-
-struct AudioEngine::Impl {
-  ma_device device{};
-  bool initialized = false;
-  uint32_t sampleRate = 48000;
-  std::mutex voiceMutex;
-  std::array<StepVoice, 8> voices{};
-  uint32_t nextVoice = 0;
-
-  static void dataCallback(ma_device* dev, void* output, const void* /*input*/, ma_uint32 frameCount) {
-    auto* self = static_cast<AudioEngine*>(dev->pUserData);
-    float* out = static_cast<float*>(output);
-    const ma_uint32 ch = dev->playback.channels;
-    std::fill(out, out + static_cast<size_t>(frameCount) * ch, 0.0f);
-    if (!self || self->muted_.load(std::memory_order_relaxed)) return;
-
-    auto* impl = self->impl_.get();
-    std::lock_guard<std::mutex> lock(impl->voiceMutex);
-    const float dt = 1.0f / static_cast<float>(impl->sampleRate);
-    constexpr float kTwoPi = 6.283185307f;
-    constexpr float kPi = 3.141592653f;
-
-    for (auto& v : impl->voices) {
-      if (!v.active) continue;
-      for (ma_uint32 f = 0; f < frameCount; ++f) {
-        if (v.time >= v.duration) {
-          v.active = false;
-          break;
-        }
-        const float u = v.time / v.duration;
-        // Smooth raised-cosine attack (first 18%) + exponential tail: guarantees zero click!
-        const float attack = u < 0.18f ? 0.5f * (1.0f - std::cos(kPi * (u / 0.18f))) : 1.0f;
-        const float decay = std::exp(-u * 4.8f);
-        const float env = attack * decay;
-
-        const float freq = v.freqStart + (v.freqEnd - v.freqStart) * std::min(1.0f, u * 1.4f);
-        v.phase += kTwoPi * freq * dt;
-        if (v.phase > kTwoPi) v.phase -= kTwoPi;
-
-        const float heel = std::sin(v.phase) * 0.45f;
-        const float rawNoise = nextRand(v.rng);
-        const float cutoff = v.isWater ? 0.28f : 0.11f;
-        v.lpState += cutoff * (rawNoise - v.lpState);
-
-        const float sample = (heel * (v.isWater ? 0.25f : 0.7f) + v.lpState * 0.65f) * env * (0.22f * v.intensity);
-        for (ma_uint32 c = 0; c < ch; ++c) {
-          out[f * ch + c] += sample;
-        }
-        v.time += dt;
-      }
-    }
-  }
-};
-
-AudioEngine::AudioEngine() : impl_(std::make_unique<Impl>()) {}
-
-AudioEngine::~AudioEngine() { shutdown(); }
+void AudioEngine::dataCallback(void* rawDevice, void* output, const void* /*input*/, uint32_t frameCount) {
+#ifdef WESTGATE_HAS_MINIAUDIO
+  auto* dev = static_cast<ma_device*>(rawDevice);
+  auto* self = static_cast<AudioEngine*>(dev->pUserData);
+  if (self) self->mixSamples(static_cast<float*>(output), frameCount);
+#else
+  (void)rawDevice;
+  std::memset(output, 0, frameCount * 2 * sizeof(float));
+#endif
+}
 
 bool AudioEngine::init() {
-  if (impl_->initialized) return true;
+  if (initialized_) return true;
+  grains_.resize(24);
+  for (auto& g : grains_) g.phase = g.duration + 1.0;
+
+  impl_ = new Impl();
+#ifdef WESTGATE_HAS_MINIAUDIO
   ma_device_config cfg = ma_device_config_init(ma_device_type_playback);
   cfg.playback.format = ma_format_f32;
   cfg.playback.channels = 2;
   cfg.sampleRate = 48000;
-  cfg.dataCallback = &Impl::dataCallback;
+  cfg.dataCallback = reinterpret_cast<ma_device_data_proc>(&AudioEngine::dataCallback);
   cfg.pUserData = this;
 
-  if (ma_device_init(nullptr, &cfg, &impl_->device) != MA_SUCCESS) {
-    return false;
+  if (ma_device_init(nullptr, &cfg, &impl_->device) == MA_SUCCESS) {
+    sampleRate_ = static_cast<double>(impl_->device.sampleRate);
+    if (ma_device_start(&impl_->device) == MA_SUCCESS) {
+      impl_->deviceStarted = true;
+    } else {
+      ma_device_uninit(&impl_->device);
+    }
   }
-  impl_->sampleRate = impl_->device.sampleRate;
-  if (ma_device_start(&impl_->device) != MA_SUCCESS) {
-    ma_device_uninit(&impl_->device);
-    return false;
-  }
-  impl_->initialized = true;
+#endif
+  initialized_ = true;
   return true;
 }
 
 void AudioEngine::shutdown() {
-  if (!impl_->initialized) return;
-  ma_device_uninit(&impl_->device);
-  impl_->initialized = false;
+  if (!impl_) return;
+#ifdef WESTGATE_HAS_MINIAUDIO
+  if (impl_->deviceStarted) {
+    ma_device_uninit(&impl_->device);
+    impl_->deviceStarted = false;
+  }
+#endif
+  delete impl_;
+  impl_ = nullptr;
+  initialized_ = false;
 }
 
-void AudioEngine::playFootstep(float intensity, bool isWater) {
-  if (!impl_->initialized || muted_.load(std::memory_order_relaxed)) return;
-  std::lock_guard<std::mutex> lock(impl_->voiceMutex);
-  StepVoice& v = impl_->voices[impl_->nextVoice++ % impl_->voices.size()];
-  v.active = true;
-  v.isWater = isWater;
-  v.time = 0.0f;
-  v.duration = isWater ? 0.14f : 0.085f;
-  v.intensity = std::clamp(intensity, 0.2f, 1.15f);
-  const float jitter = 0.94f + 0.12f * (static_cast<float>((impl_->nextVoice * 37u) % 100u) / 100.0f);
-  v.freqStart = (isWater ? 140.0f : 114.0f) * jitter;
-  v.freqEnd = (isWater ? 52.0f : 44.0f) * jitter;
-  v.phase = 0.0f;
-  v.lpState = 0.0f;
-  v.rng = 0x9E3779B9u ^ (impl_->nextVoice * 2654435761u);
+void AudioEngine::pushGrain(const ActiveGrain& g) {
+  if (!initialized_ || grains_.empty()) return;
+  const uint32_t idx = writeIdx_.fetch_add(1, std::memory_order_relaxed) % static_cast<uint32_t>(grains_.size());
+  grains_[idx] = g;
+}
+
+void AudioEngine::playFootstep(float intensity, bool inWater) {
+  ActiveGrain g;
+  g.phase = 0.0;
+  g.duration = inWater ? 0.14 : 0.085;
+  g.freq = inWater ? 260.0 : 145.0;
+  g.endFreq = inWater ? 110.0 : 58.0;
+  g.gain = std::clamp(intensity, 0.2f, 1.0f) * (inWater ? 0.18f : 0.22f);
+  g.noiseMix = inWater ? 0.65f : 0.28f;
+  g.rng = static_cast<uint32_t>(writeIdx_.load(std::memory_order_relaxed) * 2654435761u + 17u);
+  pushGrain(g);
 }
 
 void AudioEngine::playImpact(float strength) {
-  if (!impl_->initialized || muted_.load(std::memory_order_relaxed)) return;
-  std::lock_guard<std::mutex> lock(impl_->voiceMutex);
-  StepVoice& v = impl_->voices[impl_->nextVoice++ % impl_->voices.size()];
-  v.active = true;
-  v.isWater = false;
-  v.time = 0.0f;
-  v.duration = 0.11f;
-  v.intensity = std::clamp(strength, 0.35f, 1.35f);
-  v.freqStart = 175.0f;
-  v.freqEnd = 36.0f;
-  v.phase = 0.0f;
-  v.lpState = 0.0f;
-  v.rng = 0xA5A5A5A5u ^ (impl_->nextVoice * 2654435761u);
+  ActiveGrain g;
+  g.phase = 0.0;
+  g.duration = 0.125;
+  g.freq = 185.0;
+  g.endFreq = 46.0;
+  g.gain = std::clamp(strength, 0.25f, 1.3f) * 0.34f;
+  g.noiseMix = 0.42f;
+  g.rng = static_cast<uint32_t>(writeIdx_.load(std::memory_order_relaxed) * 2246822519u + 91u);
+  pushGrain(g);
 }
 
-void AudioEngine::setMuted(bool muted) {
-  muted_.store(muted, std::memory_order_relaxed);
+void AudioEngine::playGunshot(bool suppressed, float pitch) {
+  ActiveGrain g;
+  g.phase = 0.0;
+  g.duration = suppressed ? 0.075 : 0.165;
+  g.freq = (suppressed ? 420.0 : 280.0) * static_cast<double>(pitch);
+  g.endFreq = suppressed ? 95.0 : 48.0;
+  g.gain = suppressed ? 0.22f : 0.40f;
+  g.noiseMix = suppressed ? 0.52f : 0.72f;
+  g.rng = static_cast<uint32_t>(writeIdx_.load(std::memory_order_relaxed) * 3266489917u + 37u);
+  pushGrain(g);
+}
+
+void AudioEngine::playCashChime() {
+  ActiveGrain g1;
+  g1.phase = 0.0;
+  g1.duration = 0.18;
+  g1.freq = 880.0;
+  g1.endFreq = 1320.0;
+  g1.gain = 0.18f;
+  g1.noiseMix = 0.0f;
+  pushGrain(g1);
+}
+
+void AudioEngine::playSirenPulse() {
+  ActiveGrain g;
+  g.phase = 0.0;
+  g.duration = 0.24;
+  g.freq = 640.0;
+  g.endFreq = 920.0;
+  g.gain = 0.10f;
+  g.noiseMix = 0.02f;
+  pushGrain(g);
+}
+
+void AudioEngine::mixSamples(float* output, uint32_t frameCount) {
+  const double dt = 1.0 / std::max(8000.0, sampleRate_);
+  for (uint32_t i = 0; i < frameCount; ++i) {
+    float sample = 0.0f;
+    for (auto& g : grains_) {
+      if (g.phase >= g.duration) continue;
+      const double u = g.phase / g.duration;
+      const double env = 0.5 * (1.0 - std::cos(2.0 * 3.14159265358979 * u)) * std::exp(-u * 3.2);
+      const double freq = g.freq + (g.endFreq - g.freq) * u;
+      const double tone = std::sin(2.0 * 3.14159265358979 * freq * g.phase);
+
+      g.rng = g.rng * 1664525u + 1013904223u;
+      const float white = (static_cast<float>((g.rng >> 8) & 0xFFFF) / 32768.0f) - 1.0f;
+      const float mixed = static_cast<float>(tone) * (1.0f - g.noiseMix) + white * g.noiseMix;
+
+      sample += mixed * static_cast<float>(env) * g.gain;
+      g.phase += dt;
+    }
+    sample = std::tanh(sample);
+    output[i * 2 + 0] = sample;
+    output[i * 2 + 1] = sample;
+  }
 }
 
 } // namespace westgate

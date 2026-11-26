@@ -34,8 +34,18 @@ winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --passi
    build\Release\westgate_engine.exe
    ```
 
-## Controls
-- `TAB` or `ESC`: Toggle relative mouse-look camera
-- `W A S D`: Move (`Shift` sprint, `C` / `Ctrl` crouch, `Space` jump)
-- `F1`: Teleport to Westgate Iron Pit (`722, 115`)
-- `F9`: Toggle Engine Telemetry & District Teleport Window
+## Controls & Gameplay
+- `TAB` or `ESC`: Toggle mouse-look camera (or close Tactical Phone)
+- `W A S D`: Move / Drive (`Shift` sprint, `C` / `Ctrl` crouch, `Space` jump or vehicle handbrake)
+- `G`: Enter / Exit nearest vehicle (`Mustang`, `Ferrari`, `Range Rover`, `Sedan`, `Taxi`, `Police Cruiser`)
+- `1`–`6` or Mouse Wheel: Switch weapons (`1: Boxing`, `2: Apex P226-SD`, `3: Vanguard M4A1-S`, `4: MP5-SD`, `5: Breacher 870`, `6: MK14 EBR`)
+- `Left Click` / `F`: Fire firearm or throw Jab → Cross → Hook combo
+- `Right Click` / `V`: Aim down sights (firearms) or Block (boxing)
+- `Q` / `E`: Uppercut / Kick (boxing)
+- `R`: Reload firearm or start next Iron Pit opponent tier
+- `B`: Buy Medkit + Armor at 24/7 Westgate Marts, or Repair & Respray at Westgate Customs Garages
+- `H`: Horn / Siren while driving, or Rob 24/7 Mart register
+- `P`: Open Tactical Phone (`Contracts`, `Street Races`, `Iron Pit`, `Gun Runner`, `GPS & Save`)
+- `T`: Cycle Sky Time of Day (`Afternoon`, `Sunset`, `Night`, `Dawn`)
+- `F1`: Quick teleport to Westgate Iron Pit (`722, 115`)
+- `F9`: Toggle Engine Telemetry overlay

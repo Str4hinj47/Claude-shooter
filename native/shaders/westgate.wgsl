@@ -214,6 +214,8 @@ fn fsMain(in : VSOut) -> @location(0) vec4<f32> {
   var albedo = in.color;
   var specPower = 32.0;
   var specStrength = 0.16;
+  var emissive = vec3<f32>(0.0);
+  let nightFactor = clamp(uFrame.fogColor.w, 0.0, 1.0);
 
   if (in.surfaceKind > 4.5) {
     // Textured skinned character
@@ -223,12 +225,19 @@ fn fsMain(in : VSOut) -> @location(0) vec4<f32> {
   } else if (in.surfaceKind > 3.5) {
     // Instanced buildings & GLB props: window facade grid ONLY on architectural box faces (uv < -0.5)
     if (abs(N.y) < 0.35 && in.worldPos.y > 4.5 && in.uv.x < -0.5) {
+      let cellX = floor(in.worldPos.x * 0.28 + in.worldPos.z * 0.28);
+      let cellY = floor(in.worldPos.y * 0.26);
       let gridX = fract(in.worldPos.x * 0.28 + in.worldPos.z * 0.28);
       let gridY = fract(in.worldPos.y * 0.26);
       if (gridX > 0.16 && gridX < 0.84 && gridY > 0.22 && gridY < 0.82) {
         albedo = mix(albedo, vec3<f32>(0.12, 0.22, 0.32), 0.62);
         specPower = 64.0;
         specStrength = 0.45;
+        let winHash = fract(sin(dot(vec2<f32>(cellX, cellY), vec2<f32>(12.9898, 78.233))) * 43758.5453);
+        if (winHash > 0.52 && nightFactor > 0.05) {
+          let warm = mix(vec3<f32>(0.45, 0.78, 0.96), vec3<f32>(1.0, 0.78, 0.40), step(0.68, winHash));
+          emissive = warm * (nightFactor * 0.85);
+        }
       }
     }
   } else if (in.surfaceKind > 1.5 && in.surfaceKind < 2.5) {
@@ -269,10 +278,12 @@ fn fsMain(in : VSOut) -> @location(0) vec4<f32> {
   let shadow = sampleShadowPCF(in.shadowPos, ndotl);
   let H = normalize(L + V);
   let hemi = 0.5 + 0.5 * N.y;
-  let skyAmbient = mix(vec3<f32>(0.22, 0.21, 0.20), vec3<f32>(0.42, 0.58, 0.78), hemi) * 0.62;
+  let dayAmb = mix(vec3<f32>(0.22, 0.21, 0.20), vec3<f32>(0.42, 0.58, 0.78), hemi) * 0.62;
+  let nightAmb = mix(vec3<f32>(0.05, 0.07, 0.12), vec3<f32>(0.12, 0.16, 0.26), hemi) * 0.55;
+  let skyAmbient = mix(dayAmb, nightAmb, nightFactor);
   let spec = pow(max(dot(N, H), 0.0), specPower) * specStrength * shadow;
 
-  var lit = albedo * (skyAmbient + uFrame.sunColor.rgb * ndotl * shadow) + uFrame.sunColor.rgb * spec;
+  var lit = albedo * (skyAmbient + uFrame.sunColor.rgb * ndotl * shadow) + uFrame.sunColor.rgb * spec + emissive;
 
   // Atmospheric distance haze
   let dist = length(uFrame.camPos.xyz - in.worldPos);

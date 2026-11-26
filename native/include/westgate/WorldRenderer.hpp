@@ -1,9 +1,10 @@
 #pragma once
-
-#include "CharacterAnimator.hpp"
-#include "GltfAssetLoader.hpp"
-#include "WgpuContext.hpp"
-#include "WorldData.hpp"
+#include "westgate/CharacterAnimator.hpp"
+#include "westgate/EngineTypes.hpp"
+#include "westgate/GameSession.hpp"
+#include "westgate/GltfAssetLoader.hpp"
+#include "westgate/WgpuContext.hpp"
+#include "westgate/WorldData.hpp"
 #include <array>
 #include <cstdint>
 #include <glm/glm.hpp>
@@ -12,19 +13,22 @@
 
 namespace westgate {
 
-struct RendererTelemetry {
+constexpr size_t kMaxSkinSlots = 48;
+
+struct RenderTelemetry {
   uint32_t visibleChunks = 0;
   uint32_t nearChunks = 0;
   uint32_t lodChunks = 0;
   uint32_t drawnBuildings = 0;
   uint32_t drawnProps = 0;
   uint32_t drawnVehicles = 0;
-  uint32_t terrainTriangles = 0;
+  uint32_t drawnCharacters = 0;
   uint32_t glbPropTypesLoaded = 0;
+  uint32_t terrainTriangles = 0;
 };
 
-struct alignas(16) InstanceAttrib {
-  float px, py, pz;
+struct InstanceAttrib {
+  float x, y, z;
   float sx, sy, sz;
   float rotY;
   float r, g, b;
@@ -34,7 +38,10 @@ enum class SkinnedPartKind : uint8_t {
   PlayerBody = 0,
   PlayerShorts = 1,
   PlayerHair = 2,
-  Opponent = 3,
+  Business = 3,
+  Civilian = 4,
+  Police = 5,
+  Security = 6,
 };
 
 struct SkinnedRenderCharacter {
@@ -50,18 +57,22 @@ struct WorldRenderAssets {
   const GltfModel* playerBody = nullptr;
   const GltfModel* playerShorts = nullptr;
   const GltfModel* playerHair = nullptr;
-  const GltfModel* opponentModel = nullptr;
+  const GltfModel* businessModel = nullptr;
+  const GltfModel* civilianModel = nullptr;
+  const GltfModel* policeModel = nullptr;
+  const GltfModel* securityModel = nullptr;
 };
 
 class WorldRenderer {
- public:
+public:
   bool init(
     WgpuContext& ctx,
     const WorldData& world,
     const std::string& shaderPath,
     const WorldRenderAssets& assets,
-    std::string* err = nullptr
+    std::string* outError = nullptr
   );
+  void shutdown();
 
   void render(
     WgpuContext& ctx,
@@ -69,49 +80,26 @@ class WorldRenderer {
     ChunkStreamer& streamer,
     const glm::vec3& camPos,
     const glm::vec3& camTarget,
-    const glm::vec3& focusPos,
-    float timeSec,
+    const glm::vec3& playerPos,
+    float fovDeg,
+    float elapsedSec,
+    const SkyLightingState& sky,
     const std::vector<SkinnedRenderCharacter>& characters,
-    const std::vector<InstanceAttrib>& policeVehicles,
-    const std::vector<InstanceAttrib>& taxiVehicles,
-    bool drawUiCallback = true
+    const std::vector<VehicleEntity>& vehicles,
+    const std::vector<WorldMarkerBox>& markers,
+    bool drawUiCallback
   );
 
-  void shutdown();
+  const RenderTelemetry& telemetry() const { return telemetry_; }
 
-  const RendererTelemetry& telemetry() const { return telemetry_; }
-
- private:
-  struct StaticVertex {
-    float px, py, pz;
-    float nx, ny, nz;
-    float r, g, b;
-    float u, v, kind; // kind: 0=terrain, 1=ocean, 2=road, 3=arena
-  };
-
-  struct ModelVertex {
-    float px, py, pz;
-    float nx, ny, nz;
-    float u, v;
-    float r, g, b;
-  };
-
-  struct SkinnedVertex {
-    float px, py, pz;
-    float nx, ny, nz;
-    float u, v;
-    float r, g, b;
-    uint32_t j0, j1, j2, j3;
-    float w0, w1, w2, w3;
-  };
-
+private:
   struct alignas(16) FrameUniforms {
     glm::mat4 viewProj;
     glm::mat4 lightViewProj;
-    glm::vec4 camPos;   // xyz = camPos, w = timeSec
+    glm::vec4 camPos;
     glm::vec4 sunDir;
     glm::vec4 sunColor;
-    glm::vec4 fogColor;
+    glm::vec4 fogColor; // w = nightFactor
   };
 
   struct alignas(16) SkinUniforms {
@@ -127,6 +115,7 @@ class WorldRenderer {
   };
 
   struct InstancedGlbBatch {
+    std::string protoId;
     WGPUBuffer vbo = nullptr;
     WGPUBuffer ibo = nullptr;
     WGPUBuffer instVbo = nullptr;
@@ -148,20 +137,17 @@ class WorldRenderer {
     std::vector<GpuTextureBinding> ownedTextures;
   };
 
-  struct SkinSlotGpu {
+  struct SkinSlot {
     WGPUBuffer ubo = nullptr;
     WGPUBindGroup bindGroup = nullptr;
   };
 
-  static constexpr uint32_t kShadowMapSize = 2048;
-  static constexpr uint32_t kMaxSkinSlots = 12;
-
   void buildTerrainAndOceanBuffers(WgpuContext& ctx, const WorldData& world);
   void buildRoadAndArenaBuffers(WgpuContext& ctx, const WorldData& world);
   void buildPropAndVehicleBatches(WgpuContext& ctx, const WorldData& world, const std::string& assetsRoot);
+  bool loadGlbBatch(WgpuContext& ctx, const std::string& glbPath, const std::vector<InstanceAttrib>& instances, InstancedGlbBatch& outBatch, float normalizeTargetLength = 0.0f);
   void buildSkinnedMesh(WgpuContext& ctx, const GltfModel& model, SkinnedMeshGpu& outMesh);
   GpuTextureBinding createRgbaTexture(WgpuContext& ctx, uint32_t w, uint32_t h, const uint8_t* rgba8);
-  bool loadGlbBatch(WgpuContext& ctx, const std::string& path, const std::vector<InstanceAttrib>& instances, InstancedGlbBatch& outBatch);
 
   WGPUShaderModule shader_ = nullptr;
   WGPUBindGroupLayout frameBgl_ = nullptr;
@@ -182,7 +168,6 @@ class WorldRenderer {
   WGPURenderPipeline instancedPipeline_ = nullptr;
   WGPURenderPipeline skinnedPipeline_ = nullptr;
 
-  // Shadow map resources
   WGPUTexture shadowTex_ = nullptr;
   WGPUTextureView shadowView_ = nullptr;
   WGPUSampler shadowSampler_ = nullptr;
@@ -190,7 +175,7 @@ class WorldRenderer {
   GpuTextureBinding defaultWhiteTex_{};
 
   WGPUBuffer frameUbo_ = nullptr;
-  std::array<SkinSlotGpu, kMaxSkinSlots> skinSlots_{};
+  std::array<SkinSlot, kMaxSkinSlots> skinSlots_{};
 
   WGPUBuffer terrainVbo_ = nullptr;
   WGPUBuffer terrainIbo_ = nullptr;
@@ -203,24 +188,30 @@ class WorldRenderer {
   WGPUBuffer unitBoxVbo_ = nullptr;
   WGPUBuffer unitBoxIbo_ = nullptr;
   uint32_t unitBoxIndexCount_ = 0;
-
   WGPUBuffer buildingInstVbo_ = nullptr;
-  uint32_t maxBuildingInstances_ = 0;
+  uint32_t buildingCapacity_ = 0;
   std::vector<InstanceAttrib> buildingStaging_;
 
   WGPUBuffer fallbackPropInstVbo_ = nullptr;
   uint32_t fallbackPropCount_ = 0;
 
+  WGPUBuffer markerInstVbo_ = nullptr;
+  uint32_t markerCapacity_ = 0;
+  std::vector<InstanceAttrib> markerStaging_;
+
   std::vector<InstancedGlbBatch> glbPropBatches_;
-  InstancedGlbBatch policeBatch_{};
-  InstancedGlbBatch taxiBatch_{};
+  std::array<InstancedGlbBatch, 6> vehicleBatches_{};
+  std::array<std::vector<InstanceAttrib>, 6> vehicleStaging_{};
 
-  SkinnedMeshGpu playerBodyGpu_{};
-  SkinnedMeshGpu playerShortsGpu_{};
-  SkinnedMeshGpu playerHairGpu_{};
-  SkinnedMeshGpu opponentGpu_{};
+  SkinnedMeshGpu playerBodyGpu_;
+  SkinnedMeshGpu playerShortsGpu_;
+  SkinnedMeshGpu playerHairGpu_;
+  SkinnedMeshGpu businessGpu_;
+  SkinnedMeshGpu civilianGpu_;
+  SkinnedMeshGpu policeGpu_;
+  SkinnedMeshGpu securityGpu_;
 
-  RendererTelemetry telemetry_{};
+  RenderTelemetry telemetry_;
 };
 
 } // namespace westgate

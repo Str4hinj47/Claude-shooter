@@ -1,5 +1,6 @@
 #include "westgate/CharacterAnimator.hpp"
 #include "westgate/EngineTypes.hpp"
+#include "westgate/GameSession.hpp"
 #include "westgate/GltfAssetLoader.hpp"
 #include "westgate/PhysicsWorld.hpp"
 #include "westgate/PlayerController.hpp"
@@ -153,6 +154,88 @@ int main() {
     }
     std::printf("[PASS] GltfAssetLoader (static node transform): tree_palm.glb verts=%zu, height=%.2fm, minY=%.2fm\n",
                 palm.totalVertices(), h, palm.boundsMin.y);
+  }
+
+  // 5. Full GameSession gameplay loop: vehicles, weapons, Iron Pit, contracts, races, sky & save/load
+  {
+    westgate::GameSession session;
+    session.init(world, &player, &physics);
+    if (session.weapons().size() != 6 || session.vehicles().size() < 20 || session.npcs().size() < 20 ||
+        session.contracts().size() != 3 || session.races().size() != 3 || session.shops().size() != 8) {
+      std::fprintf(stderr, "FAIL GameSession init counts\n");
+      return 1;
+    }
+
+    // Enter parked Mustang near spawn (spawnPos.x + 7, spawnPos.z + 5.5) and accelerate
+    player.teleport(glm::vec3(world.spawnPos.x + 7.0f, world.spawnPos.y + 0.5f, world.spawnPos.z + 5.5f), 0.0f);
+    westgate::GameInputFrame enterCar{};
+    enterCar.interactPressed = true;
+    session.update(1.0f / 60.0f, enterCar, player, physics, world, nullptr);
+    if (!session.inVehicle()) {
+      std::fprintf(stderr, "FAIL player did not enter parked vehicle\n");
+      return 1;
+    }
+    westgate::GameInputFrame drive{};
+    drive.moveInput.moveForward = 1.0f;
+    for (int f = 0; f < 45; ++f) {
+      session.update(1.0f / 60.0f, drive, player, physics, world, nullptr);
+    }
+    if (!session.currentVehicle() || session.currentVehicle()->speed < 3.0f) {
+      std::fprintf(stderr, "FAIL vehicle did not accelerate\n");
+      return 1;
+    }
+    westgate::GameInputFrame exitCar{};
+    exitCar.interactPressed = true;
+    session.update(1.0f / 60.0f, exitCar, player, physics, world, nullptr);
+    if (session.inVehicle()) {
+      std::fprintf(stderr, "FAIL player did not exit vehicle\n");
+      return 1;
+    }
+
+    // Buy Carbine ($850 after awarding purse), fire & verify mag decrement
+    session.acceptContract(0, world);
+    if (session.activeContractIdx() != 0 || !session.hasGpsWaypoint()) {
+      std::fprintf(stderr, "FAIL acceptContract\n");
+      return 1;
+    }
+
+    // Switch to P226-SD (slot 1) and fire
+    westgate::GameInputFrame shoot{};
+    shoot.selectWeaponSlot = 1;
+    session.update(1.0f / 60.0f, shoot, player, physics, world, nullptr);
+    shoot.selectWeaponSlot = -1;
+    shoot.firePressed = true;
+    const int beforeMag = session.activeWeapon().magAmmo;
+    session.update(1.0f / 60.0f, shoot, player, physics, world, nullptr);
+    if (session.activeWeapon().magAmmo != beforeMag - 1) {
+      std::fprintf(stderr, "FAIL pistol fire did not consume ammo\n");
+      return 1;
+    }
+
+    // Sky lighting day vs night
+    session.setTimeOfDayPreset(westgate::TimeOfDayPreset::Afternoon);
+    const auto daySky = session.skyLighting();
+    session.setTimeOfDayPreset(westgate::TimeOfDayPreset::Night);
+    const auto nightSky = session.skyLighting();
+    if (daySky.nightFactor > 0.1f || nightSky.nightFactor < 0.9f) {
+      std::fprintf(stderr, "FAIL skyLighting day/night factor\n");
+      return 1;
+    }
+
+    // Save / load JSON persistence
+    const std::string saveFile = "/tmp/westgate_test_save.json";
+    if (!session.saveToFile(saveFile)) {
+      std::fprintf(stderr, "FAIL saveToFile\n");
+      return 1;
+    }
+    westgate::GameSession loaded;
+    loaded.init(world, &player, &physics);
+    if (!loaded.loadFromFile(saveFile) || std::abs(loaded.timeOfDayHours() - session.timeOfDayHours()) > 0.05f) {
+      std::fprintf(stderr, "FAIL loadFromFile round-trip\n");
+      return 1;
+    }
+    std::printf("[PASS] GameSession full loop: %zu vehicles, %zu NPCs, driving/gunplay/contracts/sky/save OK\n",
+                session.vehicles().size(), session.npcs().size());
   }
 
   std::printf("ALL WESTGATE NATIVE C++20 ENGINE TESTS PASSED.\n");

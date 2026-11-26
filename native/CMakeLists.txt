@@ -85,6 +85,7 @@ add_library(westgate_core STATIC
   src/core/CharacterAnimator.cpp
   src/core/PhysicsWorld.cpp
   src/core/PlayerController.cpp
+  src/core/GameSession.cpp
 )
 
 target_include_directories(westgate_core PUBLIC
@@ -217,6 +218,7 @@ if(WESTGATE_BUILD_DESKTOP)
     src/audio/AudioEngine.cpp
     src/render/WgpuContext.cpp
     src/render/WorldRenderer.cpp
+    src/app/GameHud.cpp
     src/app/main.cpp
   )
   target_include_directories(westgate_engine PRIVATE "${miniaudio_SOURCE_DIR}")
@@ -259,7 +261,10 @@ if(WESTGATE_BUILD_DESKTOP)
         "$<TARGET_FILE_DIR:westgate_engine>/assets/characters/fighter/"
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/business.glb"
-        "$<TARGET_FILE_DIR:westgate_engine>/assets/characters/business.glb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/civilian.glb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/police.glb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/security.glb"
+        "$<TARGET_FILE_DIR:westgate_engine>/assets/characters/"
       COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_CURRENT_SOURCE_DIR}/../public/animations/combat"
         "$<TARGET_FILE_DIR:westgate_engine>/assets/animations/combat"
@@ -275,6 +280,10 @@ if(WESTGATE_BUILD_DESKTOP)
         "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/trash_bin.glb"
         "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/police_cruiser.glb"
         "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/taxi.glb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/sedan.glb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/mustang.glb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/ferrari.glb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/rangerover.glb"
         "$<TARGET_FILE_DIR:westgate_engine>/assets/models/"
     )
   endif()
