@@ -822,6 +822,11 @@ export class SoldierRig {
   fireInterval = FIRE_INTERVAL;
   recoilMult = 1.0;
   crouchSpeedMult = 1.0;
+  walkSpeedMult = 1.0;
+  sprintSpeedMult = 1.0;
+  dodgeBurstMult = 1.0;
+  reloadSpeedMult = 1.0;
+  sprintAllowed = true;
   isPlayer = false;
   /** optional terrain height sampler (x, z, refY) -> groundY for dual-foot slope & stair IK */
   groundSampler?: (x: number, z: number, refY: number) => number;
@@ -1059,8 +1064,8 @@ export class SoldierRig {
     if (this.dead || this.carryingBody) return false;
     const ok = this.combat.triggerDodge(dirX, dirZ);
     if (ok) {
-      this.vel.x = this.combat.dodgeDirX * 7.2;
-      this.vel.z = this.combat.dodgeDirZ * 7.2;
+      this.vel.x = this.combat.dodgeDirX * 7.2 * this.dodgeBurstMult;
+      this.vel.z = this.combat.dodgeDirZ * 7.2 * this.dodgeBurstMult;
     }
     return ok;
   }
@@ -1477,6 +1482,9 @@ export class SoldierRig {
   get isReloading() {
     return this.reloadT >= 0;
   }
+  get isSprinting() {
+    return this.sprinting;
+  }
   get reloadProgress() {
     return this.reloadT < 0 ? 0 : this.reloadT / RELOAD_TIME;
   }
@@ -1621,11 +1629,11 @@ export class SoldierRig {
   }
 
   private getEffectiveWalkSpeed(): number {
-    return this.isPlayer ? Math.max(this.walkN * 2.1, 3.2) : this.walkN;
+    return (this.isPlayer ? Math.max(this.walkN * 2.1, 3.2) : this.walkN) * this.walkSpeedMult;
   }
 
   private getEffectiveRunSpeed(): number {
-    return this.isPlayer ? Math.max(this.runN * 1.65, 7.6) : this.runN;
+    return (this.isPlayer ? Math.max(this.runN * 1.65, 7.6) : this.runN) * this.sprintSpeedMult;
   }
 
   private updateLocomotion(dt: number) {
@@ -1648,6 +1656,7 @@ export class SoldierRig {
       rel = wrapAngle(psi - this.aimYaw);
       const sprintOK =
         inp.sprint &&
+        this.sprintAllowed &&
         this.sprintSuppressT <= 0 &&
         !inp.crouch &&
         !inp.ads &&
@@ -1702,7 +1711,7 @@ export class SoldierRig {
 
     const desired = dir.multiplyScalar(target);
     if (this.combat.state === "dodge") {
-      const dodgeSpd = 6.8 * (1 - clamp(this.combat.stateTime / Math.max(0.1, this.combat.stateDuration), 0, 1) * 0.55);
+      const dodgeSpd = 6.8 * this.dodgeBurstMult * (1 - clamp(this.combat.stateTime / Math.max(0.1, this.combat.stateDuration), 0, 1) * 0.55);
       desired.set(this.combat.dodgeDirX * dodgeSpd, 0, this.combat.dodgeDirZ * dodgeSpd);
     } else if (this.combat.state === "attack" && this.combat.currentMove) {
       const m = this.combat.currentMove;
@@ -3153,7 +3162,7 @@ export class SoldierRig {
   /** advance reload clock with real dt (called from update via wrapper) */
   tickReload(dt: number) {
     if (this.reloadT >= 0) {
-      this.reloadT += dt * (RELOAD_TIME / Math.max(0.4, this.reloadDuration));
+      this.reloadT += dt * this.reloadSpeedMult * (RELOAD_TIME / Math.max(0.4, this.reloadDuration));
       if (this.reloadT >= RELOAD_TIME) {
         this.reloadT = -1;
         this.rifle.mag.position.copy(RIFLE.magRest);

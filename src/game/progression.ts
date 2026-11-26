@@ -1,6 +1,12 @@
 import { CARS, isCarId, type CarId } from "./vehicles/catalog";
 import { getStoryChapterForMission, getStoryChapterForSurveillance, STORYLINE_CHAPTERS } from "./story";
 import type { SuitPresetId } from "./characters";
+import {
+  DEFAULT_BODY_STATS,
+  getBodyStatEffects,
+  sanitizeBodyStats,
+  type BodyStatsProgress,
+} from "./bodyStats";
 
 export type CurrencyKey = "credits" | "intel" | "salvage";
 
@@ -383,6 +389,7 @@ export interface SaveData {
   ownedApartments?: ApartmentId[];
   discoveredDistricts?: string[];
   speedTrapBests?: Record<string, number>;
+  bodyStats?: BodyStatsProgress;
 }
 
 export const SAVE_KEY = "vanguard_blackout_save_v1";
@@ -550,6 +557,18 @@ export interface PlayerStats {
   enemyVisionRangeMult: number;
   recoilMult: number;
   spreadMult: number;
+  sprintSpeedMult: number;
+  walkSpeedMult: number;
+  maxStamina: number;
+  staminaRegenMult: number;
+  staminaDrainMult: number;
+  meleeDamageMult: number;
+  meleeKnockbackMult: number;
+  dodgeBurstMult: number;
+  dodgeCostMult: number;
+  reloadSpeedMult: number;
+  swimSpeedMult: number;
+  swimDrainMult: number;
 }
 
 const DEFAULT_SAVE = (): SaveData => ({
@@ -581,6 +600,7 @@ const DEFAULT_SAVE = (): SaveData => ({
   ownedApartments: [],
   discoveredDistricts: [],
   speedTrapBests: {},
+  bodyStats: DEFAULT_BODY_STATS(),
 });
 
 function isApartmentId(id: string): id is ApartmentId {
@@ -736,6 +756,7 @@ export function loadSave(): SaveData {
       ownedApartments,
       discoveredDistricts,
       speedTrapBests,
+      bodyStats: sanitizeBodyStats(p.bodyStats),
     };
   } catch {
     return DEFAULT_SAVE();
@@ -1045,8 +1066,15 @@ export function recordSpeedTrapBest(trapId: string, kmh: number): void {
   }
 }
 
+export function saveBodyStats(bodyStats: BodyStatsProgress): void {
+  const save = loadSave();
+  save.bodyStats = sanitizeBodyStats(bodyStats);
+  writeSave(save);
+}
+
 export function getPlayerStats(save = loadSave()): PlayerStats {
   const lv = (id: string) => getUpgradeLevel(save, id);
+  const body = getBodyStatEffects(sanitizeBodyStats(save.bodyStats).values);
   const dmgT = [1, 1.12, 1.24, 1.38, 1.55];
   const shotNT = [1, 0.84, 0.7, 0.58, 0.46];
   const magT = [1, 1.15, 1.3, 1.45, 1.6];
@@ -1064,14 +1092,26 @@ export function getPlayerStats(save = loadSave()): PlayerStats {
     shotNoiseMult: shotNT[lv("silencer_baffle")],
     magMult: magT[lv("extended_mags")],
     rpmMult: rpmT[lv("bolt_cycling")],
-    maxHp: hpT[lv("ballistic_plates")],
-    damageTakenMult: defT[lv("kevlar_weave")],
-    footstepNoiseMult: footT[lv("stealth_boots")],
-    crouchSpeedMult: crSpdT[lv("stealth_boots")],
-    enemyDetectSpeedMult: detSpdT[lv("shadow_cloak")],
+    maxHp: hpT[lv("ballistic_plates")] + body.bonusMaxHp,
+    damageTakenMult: defT[lv("kevlar_weave")] * body.damageTakenMult,
+    footstepNoiseMult: footT[lv("stealth_boots")] * body.footstepNoiseMult,
+    crouchSpeedMult: crSpdT[lv("stealth_boots")] * body.crouchSpeedMult,
+    enemyDetectSpeedMult: detSpdT[lv("shadow_cloak")] * body.detectSpeedMult,
     enemyVisionRangeMult: visRngT[lv("shadow_cloak")],
-    recoilMult: recT[lv("recoil_comp")],
-    spreadMult: sprT[lv("optic_calib")],
+    recoilMult: recT[lv("recoil_comp")] * body.recoilMult,
+    spreadMult: sprT[lv("optic_calib")] * body.spreadMult,
+    sprintSpeedMult: body.sprintSpeedMult,
+    walkSpeedMult: body.walkSpeedMult,
+    maxStamina: body.maxStamina,
+    staminaRegenMult: body.staminaRegenMult,
+    staminaDrainMult: body.staminaDrainMult,
+    meleeDamageMult: body.meleeDamageMult,
+    meleeKnockbackMult: body.meleeKnockbackMult,
+    dodgeBurstMult: body.dodgeBurstMult,
+    dodgeCostMult: body.dodgeCostMult,
+    reloadSpeedMult: body.reloadSpeedMult,
+    swimSpeedMult: body.swimSpeedMult,
+    swimDrainMult: body.swimDrainMult,
   };
 }
 

@@ -48,6 +48,7 @@ import { STARTER_BOAT_DOCK } from "../game/vehicles/water/BoatSystem";
 import { TIME_OF_DAY_LABELS, TIME_OF_DAY_MODES, WESTGATE_TELEPORTS, type TimeOfDayMode } from "../game/city/WestgateMeta";
 import { WEATHER_MODES, type WeatherMode } from "../game/vehicles/weather";
 import { APARTMENTS, type ApartmentId, type SaveData } from "../game/progression";
+import { BODY_STAT_DEFS, xpForNextBodyLevel } from "../game/bodyStats";
 import { getStorySmsFeed } from "../game/missionCalls";
 import type { GpsWaypoint } from "../game/city/GpsWaypoint";
 
@@ -1123,17 +1124,51 @@ export function TacticalPhone({
                       </div>
                     </div>
                     <div className="rounded-xl bg-black/35 p-2">
+                      <div className="text-white/50">STAMINA</div>
+                      <div className="text-sm font-bold text-emerald-300">
+                        {Math.round(hud.stamina)}/{Math.round(hud.maxStamina)}
+                      </div>
+                    </div>
+                    <div className="rounded-xl bg-black/35 p-2">
                       <div className="text-white/50">CREDITS</div>
                       <div className="text-sm font-bold text-amber-300">{hud.credits}</div>
                     </div>
-                    <div className="rounded-xl bg-black/35 p-2">
-                      <div className="text-white/50">STEALTH</div>
-                      <div className="text-sm font-bold text-white">{hud.stealthKills}</div>
-                    </div>
-                    <div className="rounded-xl bg-black/35 p-2">
-                      <div className="text-white/50">ALERTS</div>
-                      <div className="text-sm font-bold text-rose-400">{hud.alerts}</div>
-                    </div>
+                  </div>
+                </div>
+
+                {/* Live Organic Body Stats */}
+                <div className="rounded-2xl border border-white/12 bg-white/[0.03] p-2.5">
+                  <div className="mb-2 flex items-center justify-between font-mono text-[9px] font-bold uppercase tracking-widest text-white/60">
+                    <span>PHYSICAL CONDITIONING</span>
+                    <span className="text-teal-300">TRAIN BY DOING</span>
+                  </div>
+                  <div className="space-y-2">
+                    {BODY_STAT_DEFS.map((def) => {
+                      const val = hud.bodyStats?.values?.[def.id] ?? 10;
+                      const xp = hud.bodyStats?.xp?.[def.id] ?? 0;
+                      const need = xpForNextBodyLevel(val);
+                      const pct = val >= 100 ? 100 : Math.min(100, Math.round((xp / Math.max(1, need)) * 100));
+                      return (
+                        <div key={def.id} className="space-y-0.5">
+                          <div className="flex items-center justify-between text-[10px]">
+                            <span className="font-semibold text-white">{def.name}</span>
+                            <span className="font-mono font-bold" style={{ color: def.accent }}>
+                              {val}/100 · <span className="text-white/60">{def.bonusLabel(val)}</span>
+                            </span>
+                          </div>
+                          <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
+                            <div
+                              className="h-full transition-all duration-300"
+                              style={{ width: `${val}%`, backgroundColor: def.accent }}
+                            />
+                          </div>
+                          <div className="flex items-center justify-between font-mono text-[8px] text-white/45">
+                            <span>{def.trainHint}</span>
+                            <span>{val >= 100 ? "MAX" : `XP ${pct}%`}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
 

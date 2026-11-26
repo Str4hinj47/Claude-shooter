@@ -1092,6 +1092,10 @@ export class Sfx {
     this.tone(185, 58, 0.12, 0.45, "sine");
     this.burst({ dur: 0.09, freq: 3400, sweepTo: 1100, q: 1.8, type: "bandpass", gain: 0.48 });
   }
+  statUp() {
+    this.tone(523.25, 523.25, 0.08, 0.14, "sine");
+    this.tone(783.99, 783.99, 0.18, 0.16, "triangle", 0.065);
+  }
   dry() {
     this.burst({ dur: 0.018, freq: 3600, q: 3.0, type: "bandpass", gain: 0.36 });
     this.tone(720, 440, 0.018, 0.14, "triangle");

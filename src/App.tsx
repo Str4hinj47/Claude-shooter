@@ -46,6 +46,7 @@ import {
 } from "./game/progression";
 import type { CarId } from "./game/vehicles/catalog";
 import type { GpsWaypoint } from "./game/city/GpsWaypoint";
+import { DEFAULT_BODY_STATS } from "./game/bodyStats";
 import { WEAPONS } from "./character/rifle";
 import { MenuShell, type Screen } from "./components/MenuShell";
 import { GameHud } from "./components/GameHud";
@@ -70,6 +71,11 @@ const initial: HudState = {
   maxHealth: 100,
   armor: 0,
   maxArmor: 100,
+  stamina: 112,
+  maxStamina: 112,
+  staminaExhausted: false,
+  bodyStats: DEFAULT_BODY_STATS(),
+  statUpToast: null,
   status: "Idle",
   speed: 0,
   reloading: false,

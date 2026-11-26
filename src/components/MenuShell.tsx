@@ -60,6 +60,7 @@ import {
   type WeaponSlotId,
 } from "../game/progression";
 import { CARS, PAINT_COLORS, type CarId } from "../game/vehicles/catalog";
+import { BODY_STAT_DEFS, sanitizeBodyStats, xpForNextBodyLevel } from "../game/bodyStats";
 import {
   WEAPONS,
   WEAPON_MAG_OPTS,
@@ -265,8 +266,9 @@ export function MenuShell({
       ? MISSIONS.find((m) => m.id === selectedChapter.missionId) ?? selectedMission
       : selectedMission;
   const stats = getPlayerStats(save);
+  const bodyStats = sanitizeBodyStats(save.bodyStats);
   const [garageCarId, setGarageCarId] = useState<CarId>(save.selectedCar);
-  const [armoryMode, setArmoryMode] = useState<"bench" | "upgrades">("bench");
+  const [armoryMode, setArmoryMode] = useState<"bench" | "upgrades" | "body">("bench");
   const featuredCar = CARS.find((c) => c.id === garageCarId) ?? CARS[0];
   const featuredOwned = save.ownedCars.includes(featuredCar.id);
   const featuredActive = save.selectedCar === featuredCar.id;
@@ -990,8 +992,8 @@ export function MenuShell({
               </div>
             </div>
 
-            {/* Armory Mode Toggle: Modular Gunsmith Bench vs Field Upgrades */}
-            <div className="grid grid-cols-2 gap-2">
+            {/* Armory Mode Toggle: Modular Gunsmith Bench vs Field Upgrades vs Body Stats */}
+            <div className="grid grid-cols-3 gap-2">
               <TacticalButton
                 shape="tab"
                 tone={armoryMode === "bench" ? "signal" : "ghost"}
@@ -1001,7 +1003,7 @@ export function MenuShell({
                 }}
                 className="text-[11px]"
               >
-                Modular Gunsmith Bench
+                Gunsmith Bench
               </TacticalButton>
               <TacticalButton
                 shape="tab"
@@ -1012,7 +1014,18 @@ export function MenuShell({
                 }}
                 className="text-[11px]"
               >
-                Ballistic &amp; Rig Upgrades
+                Field Gear
+              </TacticalButton>
+              <TacticalButton
+                shape="tab"
+                tone={armoryMode === "body" ? "gold" : "ghost"}
+                onClick={() => {
+                  setArmoryMode("body");
+                  onFocusWeaponBench(false);
+                }}
+                className="text-[11px]"
+              >
+                Body Stats
               </TacticalButton>
             </div>
 
@@ -1313,6 +1326,52 @@ export function MenuShell({
                   })}
                 </div>
               </>
+            )}
+
+            {armoryMode === "body" && (
+              <div className="space-y-2.5">
+                <div data-augmented-ui="tr-clip bl-clip border inlay" className="voss-panel p-4">
+                  <div className="mb-1 flex items-center justify-between">
+                    <span className="font-mono text-[10px] font-bold uppercase tracking-[0.22em] text-[#2dd4bf]">
+                      PHYSICAL CONDITIONING // ORGANIC PROGRESSION
+                    </span>
+                    <span className="font-mono text-[10px] text-[#8a909e]">
+                      LVL UP BY SPRINTING, CQC, SWIMMING & SHOOTING
+                    </span>
+                  </div>
+                  <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                    {BODY_STAT_DEFS.map((def) => {
+                      const val = bodyStats.values[def.id];
+                      const xp = bodyStats.xp[def.id];
+                      const need = xpForNextBodyLevel(val);
+                      const xpPct = val >= 100 ? 100 : Math.min(100, Math.round((xp / Math.max(1, need)) * 100));
+                      return (
+                        <div key={def.id} className="border border-white/10 bg-black/35 p-3">
+                          <div className="flex items-center justify-between">
+                            <span className="font-display text-sm font-extrabold uppercase tracking-wide text-[#f2efe9]">
+                              {def.name}
+                            </span>
+                            <span className="font-mono text-xs font-bold" style={{ color: def.accent }}>
+                              {val}/100
+                            </span>
+                          </div>
+                          <div className="mt-1.5 h-2 w-full bg-white/10">
+                            <div
+                              className="h-full transition-all duration-300"
+                              style={{ width: `${val}%`, backgroundColor: def.accent }}
+                            />
+                          </div>
+                          <div className="mt-1.5 flex items-center justify-between font-mono text-[10px]">
+                            <span className="text-[#2dd4bf]">{def.bonusLabel(val)}</span>
+                            <span className="text-white/45">{val >= 100 ? "MAXED" : `NEXT +1 · ${xpPct}%`}</span>
+                          </div>
+                          <div className="mt-1 font-mono text-[9px] text-[#8a909e]">{def.trainHint}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
             )}
           </div>
         </div>

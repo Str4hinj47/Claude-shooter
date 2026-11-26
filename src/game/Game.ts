@@ -51,6 +51,7 @@ import {
   loadSave,
   recordDiscoveredDistrict,
   SAVE_KEY,
+  saveBodyStats,
   writeSave,
   type ApartmentId,
   type DifficultyMode,
@@ -59,6 +60,13 @@ import {
   type SoldierAppearance,
   type WeaponCustomConfig,
 } from "./progression";
+import {
+  DEFAULT_BODY_STATS,
+  grantBodyStatXp,
+  sanitizeBodyStats,
+  type BodyStatId,
+  type BodyStatsProgress,
+} from "./bodyStats";
 import { type CarId } from "./vehicles/catalog";
 import { WEATHER_MODES, type WeatherMode } from "./vehicles/weather";
 import { VehicleAudio, type EngineHud } from "./vehicles/audio/VehicleAudio";
@@ -151,6 +159,11 @@ export interface HudState {
   maxHealth: number;
   armor: number;
   maxArmor: number;
+  stamina: number;
+  maxStamina: number;
+  staminaExhausted: boolean;
+  bodyStats: BodyStatsProgress;
+  statUpToast: { statId: BodyStatId; label: string; value: number; accent: string; bonus: string } | null;
   status: RigStatus;
   speed: number;
   reloading: boolean;
@@ -483,9 +496,9 @@ function tryVaultObstacle(
   rig: SoldierRig,
   aabbs: THREE.Box3[] | SpatialAABBGrid,
   dt: number,
-): void {
-  if (rig.grounded || rig.dead || rig.vy < -3.6) return;
-  if (rig.input.move.lengthSq() < 0.04) return;
+): boolean {
+  if (rig.grounded || rig.dead || rig.vy < -3.6) return false;
+  if (rig.input.move.lengthSq() < 0.04) return false;
   const pos = rig.root.position;
   const mx = rig.input.move.x;
   const mz = rig.input.move.z;
@@ -508,7 +521,7 @@ function tryVaultObstacle(
     if (d2 > 0.32) continue;
     if (b.max.y > targetTop) targetTop = b.max.y;
   }
-  if (targetTop === -Infinity) return;
+  if (targetTop === -Infinity) return false;
 
   // Verify headroom above the fence/wall top so we never vault into a low ceiling
   for (let i = 0; i < list.length; i++) {
@@ -516,12 +529,13 @@ function tryVaultObstacle(
     if (b.max.y <= targetTop + 0.08) continue;
     if (b.min.y >= targetTop + 1.68) continue;
     if (probeX >= b.min.x - 0.3 && probeX <= b.max.x + 0.3 && probeZ >= b.min.z - 0.3 && probeZ <= b.max.z + 0.3) {
-      return;
+      return false;
     }
   }
 
   pos.y = Math.min(targetTop + 0.04, pos.y + Math.max(4.5, rig.vy + 5.0) * dt);
   rig.vy = Math.max(rig.vy, 3.2);
+  return true;
 }
 
 export class Game {
@@ -572,6 +586,15 @@ export class Game {
   private maxHealth = 100;
   private armor = 0;
   private maxArmor = 100;
+  private stamina = 112;
+  private maxStamina = 112;
+  private staminaExhausted = false;
+  private staminaRegenDelay = 0;
+  private bodyStats: BodyStatsProgress = DEFAULT_BODY_STATS();
+  private bodyStatsDirty = false;
+  private bodyStatsSaveTimer = 0;
+  private statUpToast: { statId: BodyStatId; label: string; value: number; accent: string; bonus: string } | null = null;
+  private statUpToastTimer = 0;
   private lastWantedStars = 0;
   private stats: PlayerStats = getPlayerStats();
   private menuHangar = false;
@@ -889,6 +912,54 @@ export class Game {
     this.startLoop();
   }
 
+  private applyStatsToRig(save = loadSave()) {
+    this.bodyStats = sanitizeBodyStats(save.bodyStats);
+    this.stats = getPlayerStats(save);
+    this.maxHealth = this.stats.maxHp;
+    this.maxStamina = this.stats.maxStamina;
+    this.stamina = Math.min(this.stamina, this.maxStamina);
+    if (this.rig) {
+      this.rig.crouchSpeedMult = this.stats.crouchSpeedMult;
+      this.rig.walkSpeedMult = this.stats.walkSpeedMult;
+      this.rig.sprintSpeedMult = this.swimming ? this.stats.swimSpeedMult : this.stats.sprintSpeedMult;
+      this.rig.dodgeBurstMult = this.stats.dodgeBurstMult;
+      this.rig.reloadSpeedMult = this.stats.reloadSpeedMult;
+      this.rig.sprintAllowed = !this.staminaExhausted;
+    }
+  }
+
+  private trainBodyStat(id: BodyStatId, xpAmount: number) {
+    if (xpAmount <= 0 || this.phase !== "ready" || this.rig?.dead) return;
+    const res = grantBodyStatXp(this.bodyStats, id, xpAmount);
+    this.bodyStatsDirty = true;
+    if (res?.leveledUp) {
+      this.bodyStatsDirty = false;
+      saveBodyStats(this.bodyStats);
+      this.applyStatsToRig();
+      this.sfx.statUp();
+      this.statUpToast = {
+        statId: id,
+        label: res.def.name,
+        value: res.newValue,
+        accent: res.def.accent,
+        bonus: res.def.bonusLabel(res.newValue),
+      };
+      this.statUpToastTimer = 3.2;
+      this.emitHud();
+    }
+  }
+
+  private consumeStamina(amount: number, delaySec = 0.55) {
+    const scaled = amount * this.stats.staminaDrainMult;
+    this.stamina = Math.max(0, this.stamina - scaled);
+    this.staminaRegenDelay = Math.max(this.staminaRegenDelay, delaySec);
+    if (this.stamina <= 0.5) {
+      this.stamina = 0;
+      this.staminaExhausted = true;
+      if (this.rig) this.rig.sprintAllowed = false;
+    }
+  }
+
   private async ensurePlayerRig(wantUrl: string) {
     if (this.rig && this.rigUrl !== wantUrl) {
       this.rig.dispose();
@@ -1202,8 +1273,9 @@ export class Game {
     this.vehAudio.setActive(false);
     this.engineHud = null;
     this.phase = "loading";
-    this.stats = getPlayerStats();
-    this.maxHealth = this.stats.maxHp;
+    this.applyStatsToRig();
+    this.stamina = this.maxStamina;
+    this.staminaExhausted = false;
     this.emitHud();
     const pendingContractId = isCampaignContract ? id : null;
     const mission =
@@ -1324,12 +1396,14 @@ export class Game {
     this.rig.setWeaponConfigs(save.weaponConfigs);
     this.weaponConfigs = save.weaponConfigs ?? {};
     this.rig.setAppearance(save.appearance);
-    this.rig.crouchSpeedMult = this.stats.crouchSpeedMult;
+    this.applyStatsToRig(save);
     this.rig.aimYaw = THREE.MathUtils.degToRad(sp[2]);
     this.yaw = this.camYaw = this.rig.aimYaw;
     this.pitch = this.camPitch = 0.05;
     this.maxHealth = this.stats.maxHp;
     this.health = this.maxHealth;
+    this.stamina = this.maxStamina;
+    this.staminaExhausted = false;
     this.outOfCombatT = 0;
     this.hitKill = false;
     this.showcase = false;
@@ -2283,6 +2357,11 @@ export class Game {
         this.rig.reload();
         break;
       case "jump":
+        if (this.rig.grounded && !this.rig.dead) {
+          this.consumeStamina(9, 0.45);
+          this.trainBodyStat("agility", 2.4);
+          this.trainBodyStat("stamina", 1.8);
+        }
         this.rig.jump();
         break;
       case "hit":
@@ -2322,6 +2401,9 @@ export class Game {
     this.outOfCombatT = 0;
     this.damageDirRad = angle - this.camYaw;
     this.rig.hit(angle);
+    if (this.health > 0) {
+      this.trainBodyStat("toughness", 5.5);
+    }
     this.camTrauma = Math.min(1, this.camTrauma + 0.42);
     this.shakeX.kick((Math.random() - 0.5) * 8);
     this.shakeY.kick(-5);
@@ -2367,7 +2449,9 @@ export class Game {
       this.rig.setWeaponConfigs(sv.weaponConfigs);
       this.weaponConfigs = sv.weaponConfigs ?? {};
       this.rig.setAppearance(sv.appearance);
-      this.rig.crouchSpeedMult = this.stats.crouchSpeedMult;
+      this.applyStatsToRig(sv);
+      this.stamina = this.maxStamina;
+      this.staminaExhausted = false;
       this.resetWeapons();
       this.rig.aimYaw = THREE.MathUtils.degToRad(sp[2]);
       this.yaw = this.camYaw = this.rig.aimYaw;
@@ -3464,18 +3548,22 @@ export class Game {
         this.hitMarker = 0.28;
         this.hitKill = true;
         this.camKick.kick(0.9);
+        this.trainBodyStat("stealth", 18);
+        this.trainBodyStat("strength", 8);
         this.emitHud();
         return true;
       }
     }
     const target = this.findTakedownTarget();
     if (!target) return false;
-    this.rig?.triggerTakedown();
+    this.rig.triggerTakedown();
     this.sfx.takedown();
     this.hitMarker = 0.28;
     this.hitKill = true;
     this.camKick.kick(0.9);
     target.takeDamage(1000, true);
+    this.trainBodyStat("stealth", 16);
+    this.trainBodyStat("strength", 8);
     this.emitHud();
     return true;
   }
@@ -3498,7 +3586,10 @@ export class Game {
     ) {
       return false;
     }
-    this.rig.triggerMelee(heavy);
+    const started = this.rig.triggerMelee(heavy);
+    if (started) {
+      this.consumeStamina(heavy ? 12 : 5, 0.4);
+    }
     return true;
   }
 
@@ -3513,6 +3604,9 @@ export class Game {
       this.level?.boats?.activeBoat ||
       this.level?.bodyCarry?.isCarrying
     ) {
+      return false;
+    }
+    if (this.staminaExhausted || this.stamina < 10 * this.stats.dodgeCostMult) {
       return false;
     }
     const ay = this.camYaw;
@@ -3530,6 +3624,9 @@ export class Game {
     }
     const ok = this.rig.triggerDodge(dx, dz);
     if (ok) {
+      this.consumeStamina(16 * this.stats.dodgeCostMult, 0.5);
+      this.trainBodyStat("agility", 7.5);
+      this.trainBodyStat("stamina", 3.5);
       this.sfx.meleeWhoosh(false);
       this.meleeCallout = "SLIP";
       this.meleeCalloutTimer = 0.45;
@@ -3556,6 +3653,8 @@ export class Game {
       this.camKick.kick(0.75);
       attacker.rig.combat.inflictStagger(1.05, false);
       attacker.rig.applyKnockback(-nx * 4.5, -nz * 4.5);
+      this.trainBodyStat("agility", 14);
+      this.trainBodyStat("strength", 6);
       this.meleeCallout = "PERFECT PARRY!";
       this.meleeCalloutTimer = 0.95;
       this.emitHud();
@@ -3567,6 +3666,7 @@ export class Game {
       this.fx.meleeImpact(contactPt, false, false);
       this.rig.applyKnockback(nx * move.knockback * 0.3, nz * move.knockback * 0.3);
       this.damage(res.damageTaken, Math.atan2(ap.x - p.x, ap.z - p.z));
+      this.trainBodyStat("toughness", 6.5);
       this.meleeCallout = "BLOCKED";
       this.meleeCalloutTimer = 0.5;
       return;
@@ -3597,7 +3697,11 @@ export class Game {
     const p = rig.root.position;
     const fwdX = Math.sin(this.yaw);
     const fwdZ = Math.cos(this.yaw);
-    const dmg = Math.round(move.damage * this.stats.damageMult);
+    const dmg = Math.round(move.damage * this.stats.damageMult * this.stats.meleeDamageMult);
+    const scaledMove =
+      this.stats.meleeKnockbackMult !== 1
+        ? { ...move, knockback: move.knockback * this.stats.meleeKnockbackMult }
+        : move;
 
     // 1. Check mission & contract-compound enemies
     let bestEnemy: Enemy | null = null;
@@ -3630,13 +3734,18 @@ export class Game {
       const stealthRear = bestEnemy.isUnaware && eFwdX * nx + eFwdZ * nz > 0.25;
       const hitPt = new THREE.Vector3((p.x + ep.x) * 0.5, ep.y + 1.28, (p.z + ep.z) * 0.5);
 
-      const res = bestEnemy.takeMeleeHit(dmg, move, nx, nz, stealthRear, hitPt);
+      const res = bestEnemy.takeMeleeHit(dmg, scaledMove, nx, nz, stealthRear, hitPt);
       rig.combat.markHitConnected();
       this.sfx.meleeHit(move.heavy, res.blocked);
       this.hitstopTimer = res.blocked ? 0.025 : move.hitstopSec;
       this.hitMarker = 0.22;
       this.hitKill = res.killed;
       this.camKick.kick(move.heavy ? 0.72 : 0.38);
+      this.trainBodyStat("strength", res.killed ? 15 : move.heavy ? 10 : 6.5);
+      this.trainBodyStat("stamina", 2.0);
+      if (res.killed && stealthRear) {
+        this.trainBodyStat("stealth", 14);
+      }
       if (res.blocked) {
         this.meleeCallout = "GUARDED";
         this.meleeCalloutTimer = 0.45;
@@ -3665,6 +3774,7 @@ export class Game {
         this.hitstopTimer = move.hitstopSec;
         this.hitMarker = 0.24;
         this.camKick.kick(move.heavy ? 0.65 : 0.35);
+        this.trainBodyStat("strength", move.heavy ? 11 : 7);
         this.emitHud();
         return;
       }
@@ -3675,6 +3785,7 @@ export class Game {
         this.hitstopTimer = move.hitstopSec;
         this.hitMarker = 0.22;
         this.camKick.kick(move.heavy ? 0.65 : 0.35);
+        this.trainBodyStat("strength", move.heavy ? 11 : 7);
         this.emitHud();
         return;
       }
@@ -3687,6 +3798,7 @@ export class Game {
         this.hitMarker = 0.22;
         this.hitKill = ped.dead;
         this.camKick.kick(move.heavy ? 0.65 : 0.35);
+        this.trainBodyStat("strength", ped.dead ? 11 : 6);
         this.level?.wanted?.reportCrime("assault", p);
         this.emitHud();
         return;
@@ -3917,6 +4029,7 @@ export class Game {
     if (hitEnemy) {
       this.shotsHit++;
       if (hitHead) this.headshots++;
+      this.trainBodyStat("marksmanship", hitHead ? 8.5 : 3.2);
       this.sfx.hit();
     }
     this.fx.muzzleFlash(this.camera, isSuppressed ? 0.24 : 1.0);
@@ -4135,6 +4248,18 @@ export class Game {
     if (this.activityToastTimer > 0) {
       this.activityToastTimer = Math.max(0, this.activityToastTimer - rawDt);
       if (this.activityToastTimer === 0) this.activityToast = null;
+    }
+    if (this.statUpToastTimer > 0) {
+      this.statUpToastTimer = Math.max(0, this.statUpToastTimer - rawDt);
+      if (this.statUpToastTimer === 0) this.statUpToast = null;
+    }
+    if (this.bodyStatsDirty) {
+      this.bodyStatsSaveTimer += rawDt;
+      if (this.bodyStatsSaveTimer >= 5.0) {
+        this.bodyStatsSaveTimer = 0;
+        this.bodyStatsDirty = false;
+        saveBodyStats(this.bodyStats);
+      }
     }
     this.updateMissionCall(rawDt);
     this.updateCinematic(rawDt);
@@ -4386,11 +4511,59 @@ export class Game {
         } else {
           this.swimming = false;
         }
+        rig.sprintAllowed = !this.staminaExhausted;
+        rig.sprintSpeedMult = this.swimming ? this.stats.swimSpeedMult : this.stats.sprintSpeedMult;
 
         const preMoveX = rig.root.position.x;
         const preMoveZ = rig.root.position.z;
         rig.update(dt, gy);
-        tryVaultObstacle(rig, this.level!.spatial ?? this.level!.aabbs, dt);
+        const vaulted = tryVaultObstacle(rig, this.level!.spatial ?? this.level!.aabbs, dt);
+        if (vaulted) {
+          this.consumeStamina(10 * dt * 6, 0.35);
+          this.trainBodyStat("agility", 12 * dt);
+        }
+
+        // Stamina drain / recovery & organic physical conditioning XP
+        if (!rig.dead && this.phase === "ready") {
+          const moving = rig.input.move.lengthSq() > 0.04;
+          if (this.swimming && moving) {
+            const swimRate = rig.isSprinting ? 14.5 : 6.2;
+            this.consumeStamina(swimRate * this.stats.swimDrainMult * dt, 0.55);
+            this.trainBodyStat("lung", (rig.isSprinting ? 4.4 : 2.8) * dt);
+            this.trainBodyStat("stamina", 2.0 * dt);
+          } else if (rig.isSprinting && moving) {
+            this.consumeStamina(13.5 * dt, 0.65);
+            this.trainBodyStat("speed", 2.4 * dt);
+            this.trainBodyStat("stamina", 2.6 * dt);
+          } else {
+            if (this.staminaRegenDelay > 0) {
+              this.staminaRegenDelay = Math.max(0, this.staminaRegenDelay - dt);
+            } else {
+              const regenRate = (moving ? 14.5 : 23.0) * this.stats.staminaRegenMult;
+              this.stamina = Math.min(this.maxStamina, this.stamina + regenRate * dt);
+              if (this.staminaExhausted && this.stamina >= this.maxStamina * 0.25) {
+                this.staminaExhausted = false;
+                rig.sprintAllowed = true;
+              }
+            }
+          }
+          if (rig.input.crouch && moving) {
+            let nearHostile = false;
+            const px = rig.root.position.x;
+            const pz = rig.root.position.z;
+            for (let i = 0; i < this.enemies.length; i++) {
+              const e = this.enemies[i];
+              if (e.isDead) continue;
+              const dx = e.rig.root.position.x - px;
+              const dz = e.rig.root.position.z - pz;
+              if (dx * dx + dz * dz < 28 * 28) {
+                nearHostile = true;
+                break;
+              }
+            }
+            this.trainBodyStat("stealth", (nearHostile ? 3.4 : 1.0) * dt);
+          }
+        }
 
         const onHitByCar = (v: VehicleBoxCollider, nx: number, nz: number, impactSpd: number) => {
           const knock = Math.min(11, impactSpd * 0.72);
@@ -4980,13 +5153,11 @@ export class Game {
 
   refreshSavedLoadoutAndCar() {
     const save = loadSave();
-    this.stats = getPlayerStats(save);
-    this.maxHealth = this.stats.maxHp;
+    this.applyStatsToRig(save);
     this.health = Math.min(this.health, this.maxHealth);
     if (this.rig) {
       this.rig.setAppearance(save.appearance);
       this.rig.setWeaponConfigs(save.weaponConfigs);
-      this.rig.crouchSpeedMult = this.stats.crouchSpeedMult;
     }
     this.weaponConfigs = save.weaponConfigs ?? {};
     this.level?.apartments?.syncOwnership(save.ownedApartments ?? []);
@@ -6959,6 +7130,14 @@ export class Game {
       maxHealth: this.maxHealth,
       armor: this.armor,
       maxArmor: this.maxArmor,
+      stamina: this.stamina,
+      maxStamina: this.maxStamina,
+      staminaExhausted: this.staminaExhausted,
+      bodyStats: {
+        values: { ...this.bodyStats.values },
+        xp: { ...this.bodyStats.xp },
+      },
+      statUpToast: this.statUpToast,
       status: r?.status ?? "Idle",
       speed: r?.speed ?? 0,
       reloading: r?.isReloading ?? false,

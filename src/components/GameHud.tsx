@@ -1462,6 +1462,57 @@ export function GameHud({
               {Math.round(hud.health)}
             </span>
           </div>
+          <div className="flex items-center justify-end gap-2.5">
+            <span
+              className={`font-mono text-[10px] font-bold uppercase tracking-[0.24em] drop-shadow-[0_1px_4px_rgba(0,0,0,0.9)] ${
+                hud.staminaExhausted ? "animate-pulse text-[#fb7185]" : "text-[#a7f3d0]"
+              }`}
+            >
+              STAMINA
+            </span>
+            <div className="h-1.5 w-48 border border-white/20 bg-[#080a0f]/90">
+              <div
+                className={`h-full transition-all duration-100 ${
+                  hud.staminaExhausted
+                    ? "bg-[#fb7185]"
+                    : hud.stamina / Math.max(1, hud.maxStamina) < 0.25
+                      ? "bg-[#f59e0b]"
+                      : "bg-[#34d399]"
+                }`}
+                style={{ width: `${Math.min(100, Math.max(0, Math.round((hud.stamina / Math.max(1, hud.maxStamina)) * 100)))}%` }}
+              />
+            </div>
+            <span className="w-8 font-mono text-[11px] font-bold tabular-nums text-[#d1fae5] drop-shadow-[0_1px_4px_rgba(0,0,0,0.9)]">
+              {Math.round(hud.stamina)}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* GTA-STYLE BODY STAT LEVEL-UP BANNER */}
+      {hud.phase === "ready" && hud.statUpToast && !hud.dead && (
+        <div
+          className="pointer-events-none fixed left-6 top-28 z-20 flex items-center gap-3 border-l-4 bg-[#070a10]/92 px-3.5 py-2 shadow-xl backdrop-blur-sm"
+          style={{ borderColor: hud.statUpToast.accent }}
+        >
+          <div
+            className="flex size-8 items-center justify-center border border-white/15 font-mono text-xs font-extrabold"
+            style={{ color: hud.statUpToast.accent, backgroundColor: `${hud.statUpToast.accent}1f` }}
+          >
+            +1
+          </div>
+          <div>
+            <div className="flex items-center gap-2 font-mono text-[10px] font-bold uppercase tracking-[0.22em] text-white/60">
+              <span>BODY STAT INCREASED</span>
+              <span style={{ color: hud.statUpToast.accent }}>{hud.statUpToast.value}/100</span>
+            </div>
+            <div className="font-display text-sm font-extrabold uppercase tracking-wider text-white">
+              {hud.statUpToast.label}
+              <span className="ml-2 font-mono text-[11px] font-semibold text-teal-300">
+                {hud.statUpToast.bonus}
+              </span>
+            </div>
+          </div>
         </div>
       )}
 
