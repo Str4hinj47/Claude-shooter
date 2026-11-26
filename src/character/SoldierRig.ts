@@ -55,13 +55,13 @@ function getCharDetailMaps(): CharDetailMaps {
     return tex;
   };
 
-  // High-resolution smooth woven twill/ripstop micro-weave for uniforms & jackets (512px)
+  // High-resolution matte woven wool/twill micro-weave for uniforms & jackets (512px)
   const fabricRoughness = makeNoiseTex(512, 12, (x, y) => {
     const u = (x / 512) * Math.PI * 2;
     const v = (y / 512) * Math.PI * 2;
-    const weave = Math.sin(u * 28 + Math.cos(v * 28) * 0.6) * 0.03 + Math.sin(v * 28) * 0.026;
-    const soft = Math.sin(u * 4 + v * 3) * 0.016 + Math.cos(u * 7 - v * 5) * 0.012;
-    return 0.84 + weave + soft;
+    const weave = Math.sin(u * 28 + Math.cos(v * 28) * 0.6) * 0.025 + Math.sin(v * 28) * 0.02;
+    const soft = Math.sin(u * 4 + v * 3) * 0.015 + Math.cos(u * 7 - v * 5) * 0.01;
+    return 0.94 + weave + soft;
   });
 
   // High-resolution smooth organic skin specular micro-variation (512px)
@@ -191,19 +191,18 @@ export function upgradeCharacterMaterial(orig: THREE.Material): THREE.MeshPhysic
     p.envMapIntensity = 0.85;
     if (p.normalMap) p.normalScale.set(1.35, 1.35);
   } else {
-    // Clothing / uniforms (_body, which also maps bare hands on Rocketbox characters)
-    p.metalness = 0.01;
-    p.roughness = 0.86;
+    // Clothing / uniforms (_body, which also maps bare hands on Rocketbox characters) — strict matte cloth
+    p.metalness = 0.0;
+    p.roughness = 0.94;
     p.roughnessMap = maps.fabricRoughness;
-    p.sheen = 0.08;
-    p.sheenRoughness = 0.65;
-    p.sheenColor = new THREE.Color(0x8a94a6);
-    p.specularIntensity = 0.12;
-    p.envMapIntensity = 0.38;
-    if (p.normalMap) p.normalScale.set(1.25, 1.25);
+    p.sheen = 0.0;
+    p.clearcoat = 0.0;
+    p.specularIntensity = 0.04;
+    p.envMapIntensity = 0.14;
+    if (p.normalMap) p.normalScale.set(1.15, 1.15);
     else {
       p.bumpMap = maps.fabricRoughness;
-      p.bumpScale = 0.0018;
+      p.bumpScale = 0.0022;
     }
   }
   return p;
@@ -789,7 +788,7 @@ export class SoldierRig {
           if (m.bumpMap && !m.bumpMap.userData?.sharedPresetTex && m.bumpMap !== cachedDetailMaps?.fabricRoughness && m.bumpMap !== cachedDetailMaps?.skinRoughness) {
             m.bumpMap.dispose();
           }
-          m.normalMap?.dispose();
+          if (m.normalMap && !m.normalMap.userData?.sharedPresetTex) m.normalMap.dispose();
           m.dispose();
         }
       });
@@ -2296,24 +2295,110 @@ export class SoldierRig {
 
   private static businessSuitCache = new Map<
     string,
-    { map: THREE.CanvasTexture; roughnessMap: THREE.CanvasTexture }
+    { map: THREE.CanvasTexture; roughnessMap: THREE.CanvasTexture; normalMap: THREE.CanvasTexture; fromPack: boolean }
   >();
 
-  /** Recolor the m005 businessman suit, shirt, tie, shoes & convert bare hands into calfskin leather assassin gloves. */
+  private static clothesPackBuffers = new Map<
+    "suit_wool" | "suit_twill" | "suit_linen" | "shirt_cotton",
+    {
+      size: number;
+      color: Uint8ClampedArray;
+      rough: Uint8ClampedArray;
+      normal: Uint8ClampedArray;
+    }
+  >();
+  private static clothesPackPromise: Promise<void> | null = null;
+  private static clothesPackWaiters = new Set<() => void>();
+
+  private static preloadClothesPacks() {
+    if (typeof document === "undefined" || SoldierRig.clothesPackPromise) return;
+    const packs: ("suit_wool" | "suit_twill" | "suit_linen" | "shirt_cotton")[] = [
+      "suit_wool",
+      "suit_twill",
+      "suit_linen",
+      "shirt_cotton",
+    ];
+    const SIZE = 256;
+    const loadImgBytes = (url: string): Promise<Uint8ClampedArray | null> =>
+      new Promise((resolve) => {
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+        img.onload = () => {
+          const c = document.createElement("canvas");
+          c.width = SIZE;
+          c.height = SIZE;
+          const ctx = c.getContext("2d");
+          if (!ctx) return resolve(null);
+          ctx.drawImage(img, 0, 0, SIZE, SIZE);
+          resolve(ctx.getImageData(0, 0, SIZE, SIZE).data);
+        };
+        img.onerror = () => resolve(null);
+        img.src = url;
+      });
+
+    SoldierRig.clothesPackPromise = Promise.all(
+      packs.map(async (id) => {
+        const [color, rough, normal] = await Promise.all([
+          loadImgBytes(`/textures/clothes/${id}/color.jpg`),
+          loadImgBytes(`/textures/clothes/${id}/rough.jpg`),
+          loadImgBytes(`/textures/clothes/${id}/normal.jpg`),
+        ]);
+        if (color && rough && normal) {
+          SoldierRig.clothesPackBuffers.set(id, { size: SIZE, color, rough, normal });
+        }
+      }),
+    ).then(() => {
+      if (SoldierRig.clothesPackBuffers.size > 0) {
+        for (const [k, v] of SoldierRig.businessSuitCache.entries()) {
+          if (!v.fromPack) {
+            v.map.dispose();
+            v.roughnessMap.dispose();
+            v.normalMap.dispose();
+            SoldierRig.businessSuitCache.delete(k);
+          }
+        }
+        const waiters = Array.from(SoldierRig.clothesPackWaiters);
+        SoldierRig.clothesPackWaiters.clear();
+        waiters.forEach((cb) => cb());
+      }
+    });
+  }
+
+  private lastSuitPreset: SuitPresetDef | null = null;
+
+  /** Recolor the m005 businessman suit, shirt, tie, shoes & convert bare hands into matte kidskin gloves using real CC0 cloth PBR maps. */
   private applyBusinessSuitPreset(preset: SuitPresetDef) {
     if (!this.model || typeof document === "undefined") return;
+    this.lastSuitPreset = preset;
+    SoldierRig.preloadClothesPacks();
 
-    const hexToRgb = (hex: string) => {
-      const c = new THREE.Color(hex);
-      return { r: Math.round(c.r * 255), g: Math.round(c.g * 255), b: Math.round(c.b * 255) };
-    };
+    const suitPackId: "suit_wool" | "suit_twill" | "suit_linen" =
+      preset.id === "ivory"
+        ? "suit_linen"
+        : preset.id === "charcoal" ||
+            preset.id === "midnight_navy" ||
+            preset.id === "burgundy" ||
+            preset.id === "emerald"
+          ? "suit_twill"
+          : "suit_wool";
+
+    const suitPack = SoldierRig.clothesPackBuffers.get(suitPackId);
+    const shirtPack = SoldierRig.clothesPackBuffers.get("shirt_cotton");
+    const hasPack = Boolean(suitPack && shirtPack);
+    if (!hasPack) {
+      SoldierRig.clothesPackWaiters.add(() => {
+        if (this.model && this.lastSuitPreset) {
+          this.applyBusinessSuitPreset(this.lastSuitPreset);
+        }
+      });
+    }
+
     const hexToSrgbBytes = (hex: string) => {
       const clean = hex.replace("#", "").trim();
       const n = parseInt(clean.length === 3 ? clean.replace(/(.)/g, "$1$1") : clean, 16);
       if (Number.isNaN(n)) return { r: 24, g: 24, b: 28 };
       return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
     };
-    void hexToRgb;
 
     this.model.traverse((o) => {
       const m = o as THREE.Mesh;
@@ -2329,9 +2414,10 @@ export class SoldierRig {
           (s.userData.origBodyMap as THREE.Texture | undefined) ?? s.map ?? undefined;
         if (!origTex || !origTex.image) return;
         if (!s.userData.origBodyMap) s.userData.origBodyMap = origTex;
+        if (!s.userData.origNormalMap && s.normalMap) s.userData.origNormalMap = s.normalMap;
 
         let pair = SoldierRig.businessSuitCache.get(preset.id);
-        if (!pair) {
+        if (!pair || (!pair.fromPack && hasPack)) {
           const img = origTex.image as CanvasImageSource & {
             width?: number;
             height?: number;
@@ -2360,11 +2446,26 @@ export class SoldierRig {
           const roughData = rCtx ? rCtx.createImageData(w, h) : null;
           const rd = roughData?.data;
 
+          const normCanvas = document.createElement("canvas");
+          normCanvas.width = w;
+          normCanvas.height = h;
+          const nCtx = normCanvas.getContext("2d");
+          let origNormData: Uint8ClampedArray | null = null;
+          const origNorm = s.userData.origNormalMap as THREE.Texture | undefined;
+          if (nCtx && origNorm && origNorm.image) {
+            nCtx.drawImage(origNorm.image as CanvasImageSource, 0, 0, w, h);
+            origNormData = nCtx.getImageData(0, 0, w, h).data;
+          }
+          const normOutData = nCtx ? nCtx.createImageData(w, h) : null;
+          const nd = normOutData?.data;
+
           const suitRgb = hexToSrgbBytes(preset.suitColor);
           const shirtRgb = hexToSrgbBytes(preset.shirtColor);
           const tieRgb = hexToSrgbBytes(preset.tieColor);
           const gloveRgb = hexToSrgbBytes(preset.gloveColor);
           const shoeRgb = hexToSrgbBytes(preset.shoeColor);
+
+          const CLOTH_TILE = 7; // High-frequency woven cloth threads across jacket & pants
 
           for (let y = 0; y < h; y++) {
             const v = y / h;
@@ -2380,7 +2481,10 @@ export class SoldierRig {
               let outR = r;
               let outG = g;
               let outB = b;
-              let roughByte = 210; // ~0.82 worsted wool
+              let roughByte = 242; // ~0.95 ultra-matte tailored wool
+              let nR = origNormData ? origNormData[i] : 128;
+              let nG = origNormData ? origNormData[i + 1] : 128;
+              let nB = origNormData ? origNormData[i + 2] : 255;
 
               const inHandBox = v >= 0.808 && (u <= 0.242 || u >= 0.758);
               const isHandSkin = inHandBox && r > 62 && r - g >= 4 && r - b >= 8;
@@ -2403,8 +2507,8 @@ export class SoldierRig {
                   ((u <= 0.14 || u >= 0.86) && v >= 0.72 && v <= 0.80));
 
               if (isHandSkin) {
-                // Fitted calfskin assassin leather gloves preserving knuckle creases + wrist seam
-                const shade = clamp((luma - 0.24) / 0.54, 0.30, 1.24);
+                // Matte kidskin leather assassin gloves preserving knuckle creases + wrist seam
+                const shade = clamp((luma - 0.24) / 0.54, 0.30, 1.20);
                 const grain =
                   (Math.abs(Math.sin(x * 12.9898 + y * 78.233) * 43758.5453) % 1 - 0.5) * 0.08;
                 const wristSeam = v >= 0.820 && v <= 0.831 ? 0.78 : 1.0;
@@ -2412,39 +2516,65 @@ export class SoldierRig {
                 outR = clamp(Math.round(gloveRgb.r * mul), 0, 255);
                 outG = clamp(Math.round(gloveRgb.g * mul), 0, 255);
                 outB = clamp(Math.round(gloveRgb.b * mul), 0, 255);
-                roughByte = 86; // ~0.34 supple calfskin leather sheen
+                roughByte = 178; // ~0.70 matte kidskin leather
               } else if (isTie) {
-                const tieShade = clamp(r / 152, 0.24, 1.28);
+                const tieShade = clamp(r / 152, 0.24, 1.22);
                 outR = clamp(Math.round(tieRgb.r * tieShade), 0, 255);
                 outG = clamp(Math.round(tieRgb.g * tieShade), 0, 255);
                 outB = clamp(Math.round(tieRgb.b * tieShade), 0, 255);
-                roughByte = 108; // ~0.42 woven silk tie
+                roughByte = 185; // ~0.72 matte woven tie
               } else if (isShoe) {
-                const shoeShade = clamp(luma / 0.15, 0.22, 1.38);
+                const shoeShade = clamp(luma / 0.15, 0.22, 1.32);
                 outR = clamp(Math.round(shoeRgb.r * shoeShade), 0, 255);
                 outG = clamp(Math.round(shoeRgb.g * shoeShade), 0, 255);
                 outB = clamp(Math.round(shoeRgb.b * shoeShade), 0, 255);
-                roughByte = 62; // ~0.24 polished dress leather
+                roughByte = 132; // ~0.52 satin dress leather
               } else if (isShirt) {
                 const shirtShade = clamp(luma / 0.76, 0.38, 1.12);
-                outR = clamp(Math.round(shirtRgb.r * shirtShade), 0, 255);
-                outG = clamp(Math.round(shirtRgb.g * shirtShade), 0, 255);
-                outB = clamp(Math.round(shirtRgb.b * shirtShade), 0, 255);
-                roughByte = 194; // ~0.76 crisp dress cotton
+                let weaveMul = 1.0;
+                let clothRough = 242;
+                if (shirtPack) {
+                  const sz = shirtPack.size;
+                  const tx = Math.floor(u * CLOTH_TILE * sz) % sz;
+                  const ty = Math.floor(v * CLOTH_TILE * sz) % sz;
+                  const ti = (ty * sz + tx) * 4;
+                  const cl = (shirtPack.color[ti] + shirtPack.color[ti + 1] + shirtPack.color[ti + 2]) / (3 * 255);
+                  weaveMul = clamp(0.86 + cl * 0.28, 0.84, 1.12);
+                  clothRough = clamp(Math.round(234 + (shirtPack.rough[ti] / 255) * 20), 234, 254);
+                  nR = clamp(Math.round(nR + (shirtPack.normal[ti] - 128) * 0.45), 0, 255);
+                  nG = clamp(Math.round(nG + (shirtPack.normal[ti + 1] - 128) * 0.45), 0, 255);
+                }
+                const mul = shirtShade * weaveMul;
+                outR = clamp(Math.round(shirtRgb.r * mul), 0, 255);
+                outG = clamp(Math.round(shirtRgb.g * mul), 0, 255);
+                outB = clamp(Math.round(shirtRgb.b * mul), 0, 255);
+                roughByte = clothRough;
               } else if (isButton) {
-                outR = 30;
-                outG = 32;
-                outB = 38;
-                roughByte = 74;
+                outR = 26;
+                outG = 28;
+                outB = 34;
+                roughByte = 140;
               } else if (luma > 0.012) {
-                // Tailored wool suit jacket & slacks preserving folds, lapels & subtle twill weave
-                const suitShade = clamp(Math.pow(luma / 0.115, 0.76), 0.25, 1.32);
-                const twill = ((x + y) & 1) === 0 ? 1.022 : 0.978;
-                const mul = suitShade * twill;
+                // Tailored matte wool suit jacket & slacks using CC0 ambientCG fabric Color + Roughness + NormalGL
+                const suitShade = clamp(Math.pow(luma / 0.115, 0.76), 0.26, 1.28);
+                let weaveMul = ((x + y) & 1) === 0 ? 1.02 : 0.98;
+                let clothRough = 244; // ~0.96 matte wool
+                if (suitPack) {
+                  const sz = suitPack.size;
+                  const tx = Math.floor(u * CLOTH_TILE * sz) % sz;
+                  const ty = Math.floor(v * CLOTH_TILE * sz) % sz;
+                  const ti = (ty * sz + tx) * 4;
+                  const cl = (suitPack.color[ti] + suitPack.color[ti + 1] + suitPack.color[ti + 2]) / (3 * 255);
+                  weaveMul = clamp(0.82 + cl * 0.36, 0.80, 1.18);
+                  clothRough = clamp(Math.round(238 + (suitPack.rough[ti] / 255) * 16), 238, 254); // 0.93–0.996 strictly matte
+                  nR = clamp(Math.round(nR + (suitPack.normal[ti] - 128) * 0.55), 0, 255);
+                  nG = clamp(Math.round(nG + (suitPack.normal[ti + 1] - 128) * 0.55), 0, 255);
+                }
+                const mul = suitShade * weaveMul;
                 outR = clamp(Math.round(suitRgb.r * mul), 0, 255);
                 outG = clamp(Math.round(suitRgb.g * mul), 0, 255);
                 outB = clamp(Math.round(suitRgb.b * mul), 0, 255);
-                roughByte = 208; // ~0.82 tailored wool
+                roughByte = clothRough;
               }
 
               d[i] = outR;
@@ -2456,6 +2586,12 @@ export class SoldierRig {
                 rd[i + 1] = roughByte;
                 rd[i + 2] = roughByte;
                 rd[i + 3] = 255;
+              }
+              if (nd) {
+                nd[i] = nR;
+                nd[i + 1] = nG;
+                nd[i + 2] = nB;
+                nd[i + 3] = 255;
               }
             }
           }
@@ -2484,7 +2620,22 @@ export class SoldierRig {
           roughTex.userData = { sharedPresetTex: true };
           roughTex.needsUpdate = true;
 
-          pair = { map: mapTex, roughnessMap: roughTex };
+          let normTex: THREE.CanvasTexture;
+          if (nCtx && normOutData) {
+            nCtx.putImageData(normOutData, 0, 0);
+            normTex = new THREE.CanvasTexture(normCanvas);
+          } else {
+            normTex = new THREE.CanvasTexture(diffCanvas);
+          }
+          normTex.flipY = origTex.flipY;
+          normTex.colorSpace = THREE.NoColorSpace;
+          normTex.wrapS = origTex.wrapS;
+          normTex.wrapT = origTex.wrapT;
+          normTex.anisotropy = 8;
+          normTex.userData = { sharedPresetTex: true };
+          normTex.needsUpdate = true;
+
+          pair = { map: mapTex, roughnessMap: roughTex, normalMap: normTex, fromPack: hasPack };
           SoldierRig.businessSuitCache.set(preset.id, pair);
         }
 
@@ -2492,14 +2643,17 @@ export class SoldierRig {
         s.color.setHex(0xffffff);
         s.map = pair.map;
         s.roughnessMap = pair.roughnessMap;
+        s.normalMap = pair.normalMap;
+        s.normalScale.set(0.95, 0.95);
         s.roughness = 1.0;
-        s.metalness = 0.02;
+        s.metalness = 0.0;
         if ("sheen" in s) {
           const phys = s as THREE.MeshPhysicalMaterial;
-          phys.sheen = 0.22;
-          phys.sheenRoughness = 0.56;
+          phys.sheen = 0.0;
+          phys.clearcoat = 0.0;
+          phys.specularIntensity = 0.04;
         }
-        s.envMapIntensity = 0.72;
+        s.envMapIntensity = 0.14;
         s.needsUpdate = true;
       });
     });
