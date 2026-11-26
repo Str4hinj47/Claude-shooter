@@ -9,6 +9,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Force consistent /MD (/MDd in Debug) across all targets on Windows MSVC (prevents LNK2038 with Jolt)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+if(WIN32)
+  add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
 
 option(WESTGATE_BUILD_DESKTOP "Build SDL3 + wgpu-native windowed desktop executable" ON)
 option(WESTGATE_BUILD_TESTS "Build native engine unit/integration tests" ON)
