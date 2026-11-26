@@ -177,6 +177,10 @@ export class ChunkStreamer {
     return this.chunkMap.get(`${cx},${cz}`) ?? null;
   }
 
+  getChunks(): readonly CityChunk[] {
+    return this.chunks;
+  }
+
   /**
    * Pre-builds chunks within `radius` around `(x, z)`.
    * In browser runtime, only the immediate 140m spawn ring builds synchronously while outer chunks

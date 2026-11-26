@@ -67,6 +67,21 @@ export class PropBatcher {
     return this.prototypes.has(id);
   }
 
+  getPlacements(): Array<{ protoId: string; x: number; y: number; z: number; ry: number; sx: number; sy: number; sz: number }> {
+    const out: Array<{ protoId: string; x: number; y: number; z: number; ry: number; sx: number; sy: number; sz: number }> = [];
+    for (const [key, list] of this.buckets) {
+      const protoId = key.slice(0, key.indexOf("|"));
+      for (let i = 0; i < list.length; i++) {
+        const pl = list[i];
+        const sx = Array.isArray(pl.scale) ? pl.scale[0] : (pl.scale ?? 1);
+        const sy = Array.isArray(pl.scale) ? pl.scale[1] : (pl.scale ?? 1);
+        const sz = Array.isArray(pl.scale) ? pl.scale[2] : (pl.scale ?? 1);
+        out.push({ protoId, x: pl.x, y: pl.y, z: pl.z, ry: pl.ry ?? 0, sx, sy, sz });
+      }
+    }
+    return out;
+  }
+
   addInstance(protoId: string, placement: PropPlacement): void {
     if (!this.prototypes.has(protoId)) {
       throw new Error(`PropBatcher: unknown prototype "${protoId}"`);
