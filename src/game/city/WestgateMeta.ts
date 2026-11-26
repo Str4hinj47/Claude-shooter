@@ -31,6 +31,7 @@ export const WESTGATE_TELEPORTS: WestgateTeleportSpot[] = [
   { id: "observatory", label: "Observatory Foothills Summit", x: -120, z: -974, yawDeg: 180 },
   { id: "vinewood_crest", label: "Vinewood Crest Estates", x: -220, z: -820, yawDeg: 170 },
   { id: "east_industrial", label: "East Industrial Bascule Bridge", x: 370, z: 268, yawDeg: 86 },
+  { id: "fight_pit", label: "Iron Pit — Underground Fighting", x: 710, z: 115, yawDeg: 90 },
   { id: "seaport_docks", label: "Seaport Container Terminal", x: 635, z: 432, yawDeg: 0 },
   { id: "sports_arena", label: "Westgate Sports Arena", x: -415, z: 615, yawDeg: 0 },
   { id: "south_airport", label: "South Airport Terminal Loop", x: -120, z: 850, yawDeg: 0 },

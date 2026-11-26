@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Compass, Crosshair, Layers, MapPin, Navigation, RotateCcw, X, Zap } from "lucide-react";
 import { computeWestgateGpsRoute, type MinimapData } from "../game/city/MinimapData";
 import { WESTGATE_CONTRACT_SPOTS, WESTGATE_SPEED_TRAPS } from "../game/city/WestgateActivities";
+import { FIGHT_PIT_CENTER } from "../game/city/UndergroundFightPit";
 import { WESTGATE_TELEPORTS } from "../game/city/WestgateMeta";
 import { getDistrictAt, rawWestgateTerrainHeight } from "../game/city/WestgateTerrain";
 import { resolveGpsTarget, type GpsWaypoint } from "../game/city/GpsWaypoint";
@@ -680,6 +681,23 @@ export function WestgateFullMap({
           ctx.strokeStyle = "#07080b";
           ctx.stroke();
         }
+      }
+      {
+        const fx = FIGHT_PIT_CENTER.x;
+        const fz = FIGHT_PIT_CENTER.z;
+        const fr = 8.4 / zoom;
+        ctx.beginPath();
+        ctx.arc(fx, fz, fr, 0, TAU);
+        ctx.fillStyle = "#dc2626";
+        ctx.fill();
+        ctx.lineWidth = 2.0 / zoom;
+        ctx.strokeStyle = "#fbbf24";
+        ctx.stroke();
+        ctx.fillStyle = "#fef3c7";
+        ctx.font = `900 ${Math.max(8, 10 / zoom)}px system-ui, sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("P", fx, fz + 0.4 / zoom);
       }
       if (sample?.stunts) {
         for (const sj of sample.stunts) {

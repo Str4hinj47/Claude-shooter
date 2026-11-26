@@ -71,6 +71,69 @@ export const ALL_COMBAT_BONES = [
   ...COMBAT_LOWER_BONES,
 ] as const;
 
+const UE_TO_MIXAMO_BONE: Record<string, string> = {
+  pelvis: "Hips",
+  spine_01: "Spine",
+  spine_02: "Spine1",
+  spine_03: "Spine2",
+  neck_01: "Neck",
+  head: "Head",
+  clavicle_l: "LeftShoulder",
+  upperarm_l: "LeftArm",
+  lowerarm_l: "LeftForeArm",
+  hand_l: "LeftHand",
+  thumb_01_l: "LeftHandThumb1",
+  thumb_02_l: "LeftHandThumb2",
+  thumb_03_l: "LeftHandThumb3",
+  index_01_l: "LeftHandIndex1",
+  index_02_l: "LeftHandIndex2",
+  index_03_l: "LeftHandIndex3",
+  middle_01_l: "LeftHandMiddle1",
+  middle_02_l: "LeftHandMiddle2",
+  middle_03_l: "LeftHandMiddle3",
+  ring_01_l: "LeftHandRing1",
+  ring_02_l: "LeftHandRing2",
+  ring_03_l: "LeftHandRing3",
+  pinky_01_l: "LeftHandPinky1",
+  pinky_02_l: "LeftHandPinky2",
+  pinky_03_l: "LeftHandPinky3",
+  clavicle_r: "RightShoulder",
+  upperarm_r: "RightArm",
+  lowerarm_r: "RightForeArm",
+  hand_r: "RightHand",
+  thumb_01_r: "RightHandThumb1",
+  thumb_02_r: "RightHandThumb2",
+  thumb_03_r: "RightHandThumb3",
+  index_01_r: "RightHandIndex1",
+  index_02_r: "RightHandIndex2",
+  index_03_r: "RightHandIndex3",
+  middle_01_r: "RightHandMiddle1",
+  middle_02_r: "RightHandMiddle2",
+  middle_03_r: "RightHandMiddle3",
+  ring_01_r: "RightHandRing1",
+  ring_02_r: "RightHandRing2",
+  ring_03_r: "RightHandRing3",
+  pinky_01_r: "RightHandPinky1",
+  pinky_02_r: "RightHandPinky2",
+  pinky_03_r: "RightHandPinky3",
+  thigh_l: "LeftUpLeg",
+  calf_l: "LeftLeg",
+  foot_l: "LeftFoot",
+  ball_l: "LeftToeBase",
+  thigh_r: "RightUpLeg",
+  calf_r: "RightLeg",
+  foot_r: "RightFoot",
+  ball_r: "RightToeBase",
+};
+
+/** Normalize Mixamo (`mixamorig:Hips` / `mixamorigHips`) or MakeHuman/UE (`pelvis`, `upperarm_l`) bone names. */
+export function canonicalizeBoneName(rawName: string): string | null {
+  if (/^mixamorig/.test(rawName)) {
+    return rawName.replace(/^mixamorig:?/, "");
+  }
+  return UE_TO_MIXAMO_BONE[rawName] ?? null;
+}
+
 export type CombatBoneName = (typeof ALL_COMBAT_BONES)[number];
 
 export interface BakedCombatClip {
@@ -253,8 +316,9 @@ export function bakeClipForTargetSkeleton(
 
   const boneSet = new Set<string>(ALL_COMBAT_BONES);
   const applyRecursive = (node: THREE.Object3D, fIdx: number) => {
-    if (/^mixamorig/.test(node.name)) {
-      const k = node.name.replace(/^mixamorig:?/, "") as CombatBoneName;
+    const canon = canonicalizeBoneName(node.name);
+    if (canon) {
+      const k = canon as CombatBoneName;
       if (boneSet.has(k) && bonesOut[k] && node.parent) {
         const sb = src.bones[k];
         const sbW = src.bindWorldQuats[k];
@@ -301,6 +365,47 @@ export function bakeClipForTargetSkeleton(
     pingPong: !!def.pingPong,
     bones: bonesOut,
   };
+}
+
+/**
+ * Retarget a locomotion AnimationClip (e.g. Idle/Walk/Run from soldier.glb) onto any
+ * canonicalized target skeleton, returning a ready-to-play THREE.AnimationClip.
+ */
+export function retargetAnimationClipForSkeleton(
+  srcScene: THREE.Group,
+  srcClip: THREE.AnimationClip,
+  targetModel: THREE.Group,
+  targetBones: Record<string, THREE.Object3D>,
+): THREE.AnimationClip | null {
+  srcScene.updateMatrixWorld(true);
+  const srcBones: Record<string, THREE.Object3D> = {};
+  const srcBindW: Record<string, THREE.Quaternion> = {};
+  srcScene.traverse((o) => {
+    const k = canonicalizeBoneName(o.name);
+    if (k && !srcBones[k]) {
+      srcBones[k] = o;
+      srcBindW[k] = o.getWorldQuaternion(new THREE.Quaternion());
+    }
+  });
+  const baked = bakeClipForTargetSkeleton(
+    { scene: srcScene, clip: srcClip, bones: srcBones, bindWorldQuats: srcBindW },
+    { file: "", tStart: 0, tEnd: srcClip.duration, loop: true },
+    targetModel,
+    targetBones,
+  );
+  if (!baked) return null;
+
+  const times = new Float32Array(baked.frames);
+  for (let i = 0; i < baked.frames; i++) {
+    times[i] = baked.frames > 1 ? (i / (baked.frames - 1)) * baked.duration : 0;
+  }
+  const tracks: THREE.KeyframeTrack[] = [];
+  for (const [canon, arr] of Object.entries(baked.bones)) {
+    const tb = targetBones[canon];
+    if (!tb || !arr) continue;
+    tracks.push(new THREE.QuaternionKeyframeTrack(`${tb.name}.quaternion`, times, arr));
+  }
+  return new THREE.AnimationClip(srcClip.name, baked.duration, tracks);
 }
 
 /**

@@ -967,6 +967,41 @@ export function GameHud({
         </div>
       )}
 
+      {hud.fightPit && hud.fightPit.active && !hud.dead && (
+        <div className="pointer-events-none absolute top-14 left-1/2 z-20 -translate-x-1/2">
+          <div
+            data-augmented-ui="tl-clip br-clip border inlay"
+            className="voss-panel-sharp min-w-[330px] px-5 py-2.5 text-center"
+            style={{ "--aug-border-bg": "#f59e0b" } as React.CSSProperties}
+          >
+            <div className="flex items-center justify-between gap-4 font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-[#fde68a]">
+              <span>
+                IRON PIT · BOUT {hud.fightPit.tierIndex + 1}/{hud.fightPit.tierTotal}
+              </span>
+              <span className="text-[#22c55e]">PURSE ${hud.fightPit.purse.toLocaleString()}</span>
+            </div>
+            <div className="mt-1 font-display text-lg font-black uppercase tracking-wider text-[#fef3c7]">
+              {hud.fightPit.opponentName}
+            </div>
+            <div className="mt-1.5 h-2 w-full overflow-hidden rounded-sm bg-[#1c1917]">
+              <div
+                className="h-full transition-all duration-100"
+                style={{
+                  width: `${Math.max(0, Math.min(100, (hud.fightPit.opponentHp / Math.max(1, hud.fightPit.opponentMaxHp)) * 100))}%`,
+                  background: "linear-gradient(90deg, #dc2626 0%, #f59e0b 100%)",
+                }}
+              />
+            </div>
+            <div className="mt-1.5 flex items-center justify-between font-mono text-[10px] uppercase tracking-[0.15em] text-[#f59e0b]">
+              <span>{hud.fightPit.bannerText}</span>
+              {(hud.fightPit.phase === "fighting" || hud.fightPit.phase === "countdown") && (
+                <span className="text-[#94a3b8]">[F] Forfeit</span>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {hud.isOpenWorld && hud.nearbyPrompt && !hud.interact && !hud.dead && (
         <div
           className={`pointer-events-none absolute left-1/2 -translate-x-1/2 ${

@@ -390,6 +390,8 @@ export interface SaveData {
   discoveredDistricts?: string[];
   speedTrapBests?: Record<string, number>;
   bodyStats?: BodyStatsProgress;
+  pitRank?: number;
+  pitWins?: number;
 }
 
 export const SAVE_KEY = "vanguard_blackout_save_v1";
@@ -601,6 +603,8 @@ const DEFAULT_SAVE = (): SaveData => ({
   discoveredDistricts: [],
   speedTrapBests: {},
   bodyStats: DEFAULT_BODY_STATS(),
+  pitRank: 0,
+  pitWins: 0,
 });
 
 function isApartmentId(id: string): id is ApartmentId {
@@ -757,6 +761,8 @@ export function loadSave(): SaveData {
       discoveredDistricts,
       speedTrapBests,
       bodyStats: sanitizeBodyStats(p.bodyStats),
+      pitRank: Math.max(0, Math.floor(Number(p.pitRank ?? 0))),
+      pitWins: Math.max(0, Math.floor(Number(p.pitWins ?? 0))),
     };
   } catch {
     return DEFAULT_SAVE();
@@ -1251,6 +1257,15 @@ export function recordSurveillanceContract(
   if (chapter) {
     save.storyStep = Math.max(save.storyStep ?? 1, chapter.chapter + 1);
   }
+  writeSave(save);
+  return save;
+}
+
+export function recordFightPitWin(tierIndex: number, rewardCredits: number): SaveData {
+  const save = loadSave();
+  save.currencies.credits += Math.max(0, Math.floor(rewardCredits));
+  save.pitWins = (save.pitWins ?? 0) + 1;
+  save.pitRank = Math.max(save.pitRank ?? 0, tierIndex + 1);
   writeSave(save);
   return save;
 }

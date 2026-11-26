@@ -3915,6 +3915,7 @@ export interface LevelResult extends World {
   collectibles?: import("./city/CollectiblesSystem").CollectiblesSystem;
   bodyCarry?: import("./city/BodyCarrySystem").BodyCarrySystem;
   contracts?: import("./city/ContractSurveillance").ContractSurveillanceSystem;
+  fightPit?: import("./city/UndergroundFightPit").UndergroundFightPit;
   compoundDestroyables?: Map<number, THREE.Mesh[]>;
   minimapData?: MinimapData;
   getDistrictAt?: (x: number, z: number) => DistrictInfo;

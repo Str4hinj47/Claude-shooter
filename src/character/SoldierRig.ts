@@ -22,11 +22,18 @@ import {
   COMBAT_HIPS_BONE,
   COMBAT_LOWER_BONES,
   COMBAT_UPPER_BONES,
+  canonicalizeBoneName,
   getCombatBankForRig,
   preloadCombatAnimations,
+  retargetAnimationClipForSkeleton,
   sampleCombatBone,
 } from "./CombatAnimations";
 import { HandToHandController, type CombatVisualPose, type MeleeMoveDef } from "./HandToHandCombat";
+import {
+  assembleShirtlessFighter,
+  isFighterUrl,
+  parseFighterUrl,
+} from "./ShirtlessFighter";
 
 const BASE_URL = (import.meta as unknown as { env?: { BASE_URL?: string } }).env?.BASE_URL ?? "/";
 const soldierUrl = `${BASE_URL}characters/soldier.glb`;
@@ -131,7 +138,14 @@ export function upgradeCharacterMaterial(orig: THREE.Material): THREE.MeshPhysic
   configureCharacterTex(p.emissiveMap, true);
   configureCharacterTex(p.alphaMap, false);
 
-  if (/visor/i.test(name)) {
+  if (/cornea/i.test(name)) {
+    p.transparent = true;
+    p.opacity = 0.08;
+    p.metalness = 0.0;
+    p.roughness = 0.04;
+    p.clearcoat = 1.0;
+    p.depthWrite = false;
+  } else if (/visor/i.test(name)) {
     p.metalness = 0.92;
     p.roughness = 0.06;
     p.clearcoat = 1.0;
@@ -139,7 +153,7 @@ export function upgradeCharacterMaterial(orig: THREE.Material): THREE.MeshPhysic
     p.iridescence = 0.45;
     p.iridescenceIOR = 1.35;
     p.envMapIntensity = 1.85;
-  } else if (/opacity|hair/i.test(name)) {
+  } else if (/opacity|hair|eyebrow|eyelash/i.test(name)) {
     p.metalness = 0.0;
     p.roughness = 0.65;
     p.sheen = 0.15;
@@ -1156,6 +1170,17 @@ export class SoldierRig {
     if (url === "vanguard" || /\/vanguard\.glb$/i.test(url)) {
       url = soldierUrl;
     }
+    if (isFighterUrl(url)) {
+      const [fighterBuilt, donorGltf] = await Promise.all([
+        assembleShirtlessFighter(parseFighterUrl(url), onProgress),
+        loadCachedSoldierGltf(soldierUrl),
+      ]);
+      const rig = new SoldierRig(scene, false);
+      rig.modelTag = url;
+      rig.isCC0Fighter = true;
+      rig.setup(fighterBuilt, url, donorGltf);
+      return rig;
+    }
     let isRocketbox = !!url && url !== soldierUrl;
     let gltf: GLTF;
     try {
@@ -1172,11 +1197,17 @@ export class SoldierRig {
     return rig;
   }
 
-  private setup(gltf: { scene: THREE.Group; animations: THREE.AnimationClip[] }, cacheKey?: string) {
+  private isCC0Fighter = false;
+
+  private setup(
+    gltf: { scene: THREE.Group; animations: THREE.AnimationClip[] },
+    cacheKey?: string,
+    donorLocoGltf?: GLTF,
+  ) {
     const model = gltf.scene;
     this.model = model;
-    // the source asset faces -Z; the rig's convention is +Z forward
-    model.rotation.y = Math.PI;
+    // Standard Mixamo/Rocketbox assets face -Z; CC0 MakeHuman fighters already face +Z
+    model.rotation.y = this.isCC0Fighter ? 0 : Math.PI;
     this.fall.add(model);
 
     model.traverse((o) => {
@@ -1190,14 +1221,14 @@ export class SoldierRig {
         const clonedMats = origMats.map((mat) => upgradeCharacterMaterial(mat));
         m.material = Array.isArray(m.material) ? clonedMats : clonedMats[0];
       }
-      if (/^mixamorig/.test(o.name)) {
-        const key = o.name.replace(/^mixamorig:?/, "");
-        this.bones[key] = o;
+      const canon = canonicalizeBoneName(o.name);
+      if (canon && !this.bones[canon]) {
+        this.bones[canon] = o;
       }
     });
 
     if (this.isRocketbox) matchRocketboxHandSkinTone(model);
-    smoothSuitShoulderWeights(model);
+    if (!this.isCC0Fighter) smoothSuitShoulderWeights(model);
 
     // normalise height to ~1.82m
     model.updateMatrixWorld(true);
@@ -1213,17 +1244,34 @@ export class SoldierRig {
     this.captureBind();
 
     // attach the tactical loadout to the spine so it follows the animations;
-    // built in model-local units and scaled to match the normalised rig
-    this.buildEquipment();
+    // shirtless pit fighters skip military packs/chest rigs
+    if (!this.isCC0Fighter) {
+      this.buildEquipment();
+    }
+
+    let clips = gltf.animations;
+    if (clips.length === 0 && donorLocoGltf) {
+      const srcClone = SkeletonUtils.clone(donorLocoGltf.scene) as THREE.Group;
+      srcClone.rotation.y = Math.PI; // align donor -Z asset to +Z forward
+      srcClone.updateMatrixWorld(true);
+      const retargeted: THREE.AnimationClip[] = [];
+      for (const name of ["Idle", "Walk", "Run"]) {
+        const srcClip = donorLocoGltf.animations.find((a) => a.name === name);
+        if (!srcClip) continue;
+        const c = retargetAnimationClipForSkeleton(srcClone, srcClip, model, this.bones);
+        if (c) retargeted.push(c);
+      }
+      clips = retargeted;
+    }
 
     this.mixer = new THREE.AnimationMixer(model);
     const find = (n: string) => {
-      const exact = gltf.animations.find((a) => a.name === n);
+      const exact = clips.find((a) => a.name === n);
       if (exact) return exact;
-      const fuzzy = gltf.animations.find((a) => a.name.toLowerCase().includes(n.toLowerCase()));
+      const fuzzy = clips.find((a) => a.name.toLowerCase().includes(n.toLowerCase()));
       if (fuzzy) return fuzzy;
       // last resort: reuse the first clip so a swapped model never crashes the game
-      return gltf.animations[0];
+      return clips[0];
     };
     this.actions = {
       idle: this.mixer.clipAction(find("Idle")),
@@ -1238,10 +1286,10 @@ export class SoldierRig {
     this.actions.idle.setEffectiveWeight(1);
     // does any clip animate the hips position? (decides whether applyLegs
     // must restore the bind offset before lowering — see captureBind)
-    this.hipsPosAnimated = gltf.animations.some((c) =>
+    this.hipsPosAnimated = clips.some((c) =>
       c.tracks.some((t) => t.name.includes("Hips.position")),
     );
-    this.calibrate(cacheKey);
+    this.calibrate(this.isCC0Fighter ? "fighter://cc0" : cacheKey);
     this.mixer.update(0);
     model.updateMatrixWorld(true);
   }
@@ -2086,7 +2134,7 @@ export class SoldierRig {
 
   private applyCombatOverlay(pose: CombatVisualPose) {
     const B = this.bones;
-    const bank = getCombatBankForRig(this.modelTag || "default", this.model, B);
+    const bank = getCombatBankForRig(this.isCC0Fighter ? "fighter://cc0" : this.modelTag || "default", this.model, B);
     const clip = pose.clipId ? bank[pose.clipId] : undefined;
 
     if (clip) {
@@ -3066,6 +3114,7 @@ export class SoldierRig {
       if (cfg) applyWeaponCustomization(w, cfg);
       else tintWeapon(w, app.weaponFinish);
     }
+    if (this.isCC0Fighter) return;
     const gear = new THREE.Color(app.gearColor);
     const visor = new THREE.Color(app.visorColor);
     const armor = new THREE.Color(app.armorColor);

@@ -122,6 +122,7 @@ const initial: HudState = {
   stashesFound: 0,
   totalStashes: 15,
   nearbyPrompt: null,
+  fightPit: null,
   surveillance: null,
   incomingCall: null,
   gtaDirective: null,

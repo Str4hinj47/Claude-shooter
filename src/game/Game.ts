@@ -38,6 +38,7 @@ import {
   type ObjectiveDef,
 } from "./story";
 import type { ContractSpotDef } from "./city/WestgateActivities";
+import { FIGHT_PIT_CENTER, type FightPitHudState } from "./city/UndergroundFightPit";
 import { createInteractableProp, type InteractableInstance } from "./interactables";
 import {
   APARTMENTS,
@@ -316,6 +317,7 @@ export interface HudState {
   stashesFound: number;
   totalStashes: number;
   nearbyPrompt: { key: "F" | "G"; label: string; accent: string } | null;
+  fightPit: FightPitHudState | null;
   surveillance: SurveillanceHudState | null;
   incomingCall: {
     id: string;
@@ -731,6 +733,9 @@ export class Game {
   private nearbyContractSpot: ContractSpotDef | null = null;
   private autoContractCooldown = 0;
   private nearbyPrompt: { key: "F" | "G"; label: string; accent: string } | null = null;
+  private fightPitHud: FightPitHudState | null = null;
+  private fightPitHost: CombatHost | null = null;
+  private prePitHolstered = false;
   private openWorldReturnSpot: { x: number; z: number; yawDeg: number } | null = null;
   private activeContract: {
     def: MissionDef;
@@ -1052,6 +1057,15 @@ export class Game {
   }
 
   setHolstered(holstered: boolean) {
+    if (!holstered && this.level?.fightPit?.isBoutInProgress) {
+      this.activityToast = {
+        title: "IRON PIT RULES",
+        subtitle: "Bare-knuckle only — firearms locked until bout ends",
+        accent: "#f59e0b",
+      };
+      this.activityToastTimer = 2.2;
+      return;
+    }
     if (!holstered && this.level?.bodyCarry?.isCarrying) {
       this.activityToast = {
         title: "HANDS OCCUPIED",
@@ -1269,6 +1283,8 @@ export class Game {
     this.activeApartmentId = null;
     this.activeGarageId = null;
     this.nearbyHomeStation = null;
+    this.fightPitHost = null;
+    this.fightPitHud = null;
     this.stationAutoCooldown.clear();
     this.vehAudio.setActive(false);
     this.engineHud = null;
@@ -2393,10 +2409,13 @@ export class Game {
 
   damage(n: number, angle: number) {
     if (!this.rig || this.rig.dead || this.phase !== "ready") return;
+    const inPitBout = !!this.level?.fightPit?.isBoutInProgress;
     const scaled = n * this.stats.damageTakenMult;
-    const absorbed = this.armor > 0 ? Math.min(this.armor, scaled * 0.7) : 0;
+    const absorbed = !inPitBout && this.armor > 0 ? Math.min(this.armor, scaled * 0.7) : 0;
     this.armor = Math.max(0, this.armor - absorbed);
-    this.health = Math.max(0, this.health - (scaled - absorbed));
+    this.health = inPitBout
+      ? Math.max(1, this.health - (scaled - absorbed))
+      : Math.max(0, this.health - (scaled - absorbed));
     this.damageFlash = 1.0;
     this.outOfCombatT = 0;
     this.damageDirRad = angle - this.camYaw;
@@ -3703,10 +3722,13 @@ export class Game {
         ? { ...move, knockback: move.knockback * this.stats.meleeKnockbackMult }
         : move;
 
-    // 1. Check mission & contract-compound enemies
+    // 1. Check mission, contract-compound, and Underground Fight Pit enemies
+    const meleeTargets: Enemy[] = [...this.enemies];
+    const pitEnemy = this.level?.fightPit?.getActiveEnemy();
+    if (pitEnemy) meleeTargets.push(pitEnemy);
     let bestEnemy: Enemy | null = null;
     let bestScore = Infinity;
-    for (const e of this.enemies) {
+    for (const e of meleeTargets) {
       if (e.isDead || !e.rig) continue;
       const ep = e.rig.root.position;
       if (Math.abs(p.y - ep.y) > 1.45) continue;
@@ -6006,7 +6028,75 @@ export class Game {
 
     if (this.nearbyContractSpot) {
       this.launchNearbyContract();
+      return;
     }
+
+    if (!activeVeh && this.level.fightPit && this.rig && !this.rig.dead) {
+      if (this.level.fightPit.isBoutInProgress) {
+        this.level.fightPit.forfeit(this.rig);
+        this.holstered = this.prePitHolstered;
+        this.rig.setHolstered(this.holstered);
+        this.activityToast = {
+          title: "BOUT FORFEITED",
+          subtitle: "You stepped out of the Iron Pit",
+          accent: "#94a3b8",
+        };
+        this.activityToastTimer = 2.6;
+        this.emitHud();
+        return;
+      }
+      const prompt = this.level.fightPit.getPromptInfo(pos);
+      if (prompt.near && !this.level.fightPit.isActive) {
+        this.prePitHolstered = this.holstered;
+        this.setHolstered(true);
+        const host = this.ensureFightPitHost();
+        if (host) {
+          void this.level.fightPit.startBout(host, this.rig);
+          this.activityToast = {
+            title: `IRON PIT · BOUT ${prompt.tier.tier}`,
+            subtitle: `vs ${prompt.tier.alias} · Purse $${prompt.tier.purse.toLocaleString()}`,
+            accent: "#f59e0b",
+          };
+          this.activityToastTimer = 2.8;
+          this.emitHud();
+        }
+      }
+    }
+  }
+
+  private ensureFightPitHost(): CombatHost | null {
+    if (!this.level) return null;
+    if (this.fightPitHost) return this.fightPitHost;
+    const host: CombatHost = {
+      colliders: this.level.colliders,
+      aabbs: this.level.aabbs,
+      spatialAABBs: this.level.spatial,
+      rayQuery: this.level.spatialColliders
+        ? (origin, dir, maxDist) => this.level!.spatialColliders!.queryRay(origin, dir, maxDist, this.rayScratch)
+        : undefined,
+      groundHeightAt: (x, z, y) => (this.level ? this.level.groundHeightAt(x, z, y) : 0),
+      fx: this.fx,
+      sfx: this.sfx,
+      playerPos: (out: THREE.Vector3) => {
+        const r = this.rig?.root.position;
+        return r ? out.set(r.x, r.y + this.rig.eyeHeight, r.z) : out.set(0, 1.6, 0);
+      },
+      playerAlive: () => !this.rig?.dead,
+      playerCrouching: () => this.crouchToggle,
+      playerSprinting: () => this.rig?.isSprinting ?? false,
+      difficultyScale: () => DIFFICULTY_PROFILES[this.activeDifficulty],
+      onPlayerHit: (dmg) => this.damage(dmg, Math.random() * Math.PI * 2),
+      onPlayerMeleeHit: (dmg, move, attacker) => this.handleIncomingEnemyMelee(dmg, move, attacker),
+      onKilled: () => {},
+      onAlert: () => {},
+      enemies: () => {
+        const active = this.level?.fightPit?.getActiveEnemy();
+        return active ? [active] : [];
+      },
+      mission: OPEN_WORLD_MISSION,
+    };
+    this.fightPitHost = host;
+    return host;
   }
 
   private checkDistrictDiscovery(pos: THREE.Vector3) {
@@ -6078,6 +6168,54 @@ export class Game {
 
     if (this.level.contracts) {
       this.level.contracts.update(dt, pos, !driving && (this.mouseR || this.uiHeld.ads), this.binocularsOpen);
+    }
+    if (this.level.fightPit && this.rig) {
+      const pitHost = this.ensureFightPitHost();
+      if (pitHost) {
+        const wasActive = this.fightPitHud?.active ?? false;
+        this.fightPitHud = this.level.fightPit.update(
+          dt,
+          performance.now() * 0.001,
+          this.rig,
+          this.health,
+          pitHost,
+          {
+            onPurseWon: (def) => {
+              this.health = Math.min(this.maxHealth, this.health + 45);
+              for (const [stat, xp] of Object.entries(def.xpRewards)) {
+                if (xp && xp > 0) this.trainBodyStat(stat as BodyStatId, xp);
+              }
+              this.sfx.statUp();
+              this.activityToast = {
+                title: `IRON PIT KNOCKOUT · +$${def.purse.toLocaleString()}`,
+                subtitle: `Defeated ${def.alias} · Strength, Toughness & Agility XP Earned`,
+                accent: "#f59e0b",
+              };
+              this.activityToastTimer = 4.6;
+              this.emitHud();
+            },
+            onPlayerTko: () => {
+              this.health = Math.min(this.maxHealth, 40);
+              this.rig?.root.position.set(
+                FIGHT_PIT_CENTER.exitX,
+                this.level?.fightPit?.groundY ?? pos.y,
+                FIGHT_PIT_CENTER.exitZ,
+              );
+              this.activityToast = {
+                title: "TKO — REFEREE STOPPED BOUT",
+                subtitle: "Train Strength & Toughness, then step back into the Iron Pit",
+                accent: "#ef4444",
+              };
+              this.activityToastTimer = 4.0;
+              this.emitHud();
+            },
+          },
+        );
+        if (wasActive && !this.fightPitHud.active && !this.prePitHolstered) {
+          this.holstered = false;
+          this.rig.setHolstered(false);
+        }
+      }
     }
     const activeHydrants = this.level.openWorld?.props.getActiveHydrants(performance.now() * 0.001, pos.x, pos.z) ?? [];
     for (let i = 0; i < activeHydrants.length; i++) {
@@ -6249,6 +6387,16 @@ export class Game {
         nextPrompt = store.robbable
           ? { key: "G", label: `${store.def.name} · ${fLabel} / [G] Hold Up`, accent: "#22c55e" }
           : { key: "F", label: `${store.def.name} · ${fLabel}`, accent: "#22c55e" };
+      }
+    }
+    if (!nextPrompt && !driving && this.level.fightPit && !this.level.fightPit.isActive) {
+      const pitPrompt = this.level.fightPit.getPromptInfo(pos);
+      if (pitPrompt.near) {
+        nextPrompt = {
+          key: "F",
+          label: pitPrompt.text.replace(/^\[E\]\s*/, ""),
+          accent: "#f59e0b",
+        };
       }
     }
     if ((nextPrompt?.label ?? null) !== (this.nearbyPrompt?.label ?? null)) {
@@ -7259,6 +7407,7 @@ export class Game {
       stashesFound: this.level?.collectibles?.stashesFound ?? 0,
       totalStashes: this.level?.collectibles?.totalStashes ?? 15,
       nearbyPrompt: this.nearbyPrompt,
+      fightPit: this.fightPitHud,
       surveillance: this.rig ? this.level?.contracts?.getHudState(this.rig.root.position) ?? null : null,
       incomingCall: this.activeCall
         ? {

@@ -28,6 +28,7 @@ import { RandomEventsManager } from "./RandomEvents";
 import { CollectiblesSystem } from "./CollectiblesSystem";
 import { BodyCarrySystem } from "./BodyCarrySystem";
 import { ContractSurveillanceSystem } from "./ContractSurveillance";
+import { UndergroundFightPit } from "./UndergroundFightPit";
 import { AirVehicleSystem } from "../vehicles/air/AirVehicleSystem";
 import { BoatSystem } from "../vehicles/water/BoatSystem";
 import { buildWestgateApartments, type ApartmentSystem } from "./Apartments";
@@ -359,6 +360,15 @@ export function buildWestgateWorld(
     (x, z, y) => engine.groundHeightAt(x, z, y),
   );
   content.add(collectibles.group);
+  const initialSave = loadSave();
+  const fightPit = new UndergroundFightPit(terrainAt, initialSave.pitRank ?? 0, initialSave.pitWins ?? 0);
+  content.add(fightPit.group);
+  fightPit.group.updateMatrixWorld(true);
+  for (const col of fightPit.colliders) {
+    engine.spatialColliders.insert(col);
+    const box = new THREE.Box3().setFromObject(col);
+    if (!box.isEmpty()) engine.spatialAABBs.insert(box);
+  }
   const contracts = new ContractSurveillanceSystem(
     terrainAt,
     (x: number, z: number, y: number) => engine.groundHeightAt(x, z, y),
@@ -370,7 +380,6 @@ export function buildWestgateWorld(
   );
   content.add(contracts.group);
   const apartments = buildWestgateApartments(engine);
-  const initialSave = loadSave();
   apartments.syncOwnership(initialSave.ownedApartments ?? []);
   apartments.syncGarageCars(initialSave, vehicles.getModelLibrary());
   vehicles.onModelLoaded = () => {
@@ -749,6 +758,7 @@ export function buildWestgateWorld(
     collectibles,
     bodyCarry,
     contracts,
+    fightPit,
     compoundDestroyables,
     minimapData,
     getDistrictAt,

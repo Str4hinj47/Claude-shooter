@@ -1096,6 +1096,19 @@ export class Sfx {
     this.tone(523.25, 523.25, 0.08, 0.14, "sine");
     this.tone(783.99, 783.99, 0.18, 0.16, "triangle", 0.065);
   }
+  pitBell(doubleDing = false) {
+    const ring = (d: number) => {
+      this.tone(1180, 1172, 0.55, 0.24, "sine", d);
+      this.tone(2360, 2345, 0.42, 0.12, "triangle", d);
+      this.tone(3540, 3520, 0.25, 0.06, "sine", d);
+    };
+    ring(0);
+    if (doubleDing) ring(0.22);
+  }
+  crowdCheer() {
+    this.burst({ dur: 0.48, freq: 620, sweepTo: 1250, q: 0.7, type: "bandpass", gain: 0.28 });
+    this.burst({ dur: 0.55, freq: 920, sweepTo: 1650, q: 0.9, type: "bandpass", gain: 0.2, delay: 0.08 });
+  }
   dry() {
     this.burst({ dur: 0.018, freq: 3600, q: 3.0, type: "bandpass", gain: 0.36 });
     this.tone(720, 440, 0.018, 0.14, "triangle");

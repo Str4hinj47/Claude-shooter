@@ -171,6 +171,12 @@ export class Fighter {
   private flashlightLens: THREE.Mesh | null = null;
   private flashlightBeam: THREE.Mesh | null = null;
   private sniperLaser: THREE.Mesh | null = null;
+  customModelUrl?: string;
+  unarmedOnly = false;
+  meleeDamageScale = 1;
+  meleeAggroScale = 1;
+  private pitBlockTimer = 0;
+  private pitDodgeCooldown = 0;
 
   constructor(host: CombatHost, spawn: EnemySpawn, mission: MissionDef, hp: number, boss: boolean) {
     this.host = host;
@@ -194,7 +200,9 @@ export class Fighter {
   async build(scene: THREE.Object3D, tint: [number, number], heightScale = 1) {
     const canFetchChars = typeof window !== "undefined" && typeof fetch === "function";
     let modelUrl: string | undefined;
-    if (canFetchChars) {
+    if (this.customModelUrl) {
+      modelUrl = this.customModelUrl;
+    } else if (canFetchChars) {
       if (this instanceof Ally) {
         modelUrl = characterUrl("military");
       } else if (this.boss) {
@@ -216,14 +224,18 @@ export class Fighter {
     this.rig = await SoldierRig.load(scene, undefined, modelUrl);
     this.rig.groundSampler = (x, z, y) => this.host.groundHeightAt(x, z, y);
     if (!(this instanceof Ally)) {
-      const wId = this.boss
-        ? this.mission.bossWeapon
-        : this.role === "sniper"
-          ? "dmr"
-          : this.role === "heavy"
-            ? (this.mission.id >= 6 ? "carbine" : "shotgun")
-            : this.mission.enemyWeapon;
-      if (wId) this.rig.setWeaponModel(wId);
+      if (this.unarmedOnly) {
+        this.rig.setHolstered(true);
+      } else {
+        const wId = this.boss
+          ? this.mission.bossWeapon
+          : this.role === "sniper"
+            ? "dmr"
+            : this.role === "heavy"
+              ? (this.mission.id >= 6 ? "carbine" : "shotgun")
+              : this.mission.enemyWeapon;
+        if (wId) this.rig.setWeaponModel(wId);
+      }
       const app = this.boss ? this.mission.bossAppearance : this.mission.enemyAppearance;
       if (app) {
         this.rig.setAppearance(app);
@@ -233,7 +245,7 @@ export class Fighter {
       } else {
         this.rig.setTint(this.role === "heavy" ? 0x3b4454 : tint[0], tint[1]);
       }
-      if (this.role === "sniper") {
+      if (this.role === "sniper" && !this.unarmedOnly) {
         this.attachSniperLaser();
       }
     } else {
@@ -256,7 +268,7 @@ export class Fighter {
         this.rig.reload();
       }
     };
-    if (this.mission.night && !(this instanceof Ally)) {
+    if (this.mission.night && !(this instanceof Ally) && !this.unarmedOnly) {
       this.attachFlashlight();
     }
   }
@@ -1033,21 +1045,45 @@ export class Fighter {
       }
 
       // close-quarters hand-to-hand engagement when player closes within 2.3m
-      const inMeleeZone = sees && dist < 2.35 && Math.abs(p.y - my.y) < 1.35 && !(this instanceof Ally);
+      const inMeleeZone = sees && dist < (this.unarmedOnly ? 2.55 : 2.35) && Math.abs(p.y - my.y) < 1.35 && !(this instanceof Ally);
+      if (this.unarmedOnly) {
+        this.pitBlockTimer = Math.max(0, this.pitBlockTimer - dt);
+        this.pitDodgeCooldown = Math.max(0, this.pitDodgeCooldown - dt);
+        rig.setCombatBlock(this.pitBlockTimer > 0 && !rig.combat.isBusy);
+      }
       if (inMeleeZone && !rig.dead && rig.combat.canMoveFreely) {
-        if (this.meleeCooldown <= 0 && !rig.combat.isBusy) {
-          const heavy = Math.random() < 0.3;
+        if (this.meleeCooldown <= 0 && !rig.combat.isBusy && this.pitBlockTimer <= 0) {
+          const heavy = Math.random() < (this.unarmedOnly ? 0.34 : 0.3);
           const m = rig.triggerMelee(heavy);
           if (m) {
             this.host.sfx.meleeWhoosh(m.heavy);
-            this.meleeCooldown = 0.85 + Math.random() * 0.55;
+            const aggro = Math.max(0.6, this.meleeAggroScale || 1);
+            this.meleeCooldown = (0.72 + Math.random() * 0.45) / aggro;
+            if (this.unarmedOnly && this.meleeAggroScale >= 0.85 && Math.random() < 0.28) {
+              this.pitBlockTimer = 0.45 + Math.random() * 0.35;
+            }
+          }
+        } else if (
+          this.unarmedOnly &&
+          this.meleeAggroScale >= 0.9 &&
+          this.pitDodgeCooldown <= 0 &&
+          !rig.combat.isBusy &&
+          Math.random() < 0.018
+        ) {
+          const side = Math.random() < 0.5 ? 1 : -1;
+          if (rig.triggerDodge(perpX * side, perpZ * side)) {
+            this.pitDodgeCooldown = 2.6;
           }
         }
         const activeMove = rig.combat.activeHitWindow;
-        if (activeMove && dist <= activeMove.range + 0.3 && dot > 0.25) {
+        if (activeMove && dist <= activeMove.range + 0.35 && dot > 0.22) {
           rig.combat.markHitConnected();
           const diffDmg = this.host.difficultyScale?.().damage ?? 1;
-          const baseMeleeDmg = (activeMove.heavy ? 22 : 14) * diffDmg * (this.boss ? 1.35 : 1);
+          const baseMeleeDmg =
+            (activeMove.heavy ? 22 : 14) *
+            diffDmg *
+            (this.boss ? 1.35 : 1) *
+            (this.meleeDamageScale || 1);
           if (this.host.onPlayerMeleeHit) {
             this.host.onPlayerMeleeHit(baseMeleeDmg, activeMove, this);
           } else {
@@ -1137,12 +1173,15 @@ export class Fighter {
     mv.set(mvx, 0, mvz);
     if (mv.lengthSq() > 0.0004) mv.normalize();
     if (this.role === "heavy") mv.multiplyScalar(0.76);
-    rig.input.sprint = this.role !== "heavy" && (this.state === "attack" || this.state === "alert") && !sees && dist > 14 && !holdPerch;
+    rig.input.sprint = this.unarmedOnly
+      ? sees && dist > 3.6
+      : this.role !== "heavy" && (this.state === "attack" || this.state === "alert") && !sees && dist > 14 && !holdPerch;
     rig.input.crouch =
-      this.coverTimer > 0 ||
-      rig.isReloading ||
-      (this.state === "attack" && sees && dist < 24 && Math.hypot(mvx, mvz) < 0.35);
-    rig.input.ads = this.state === "attack" || this.state === "alert";
+      !this.unarmedOnly &&
+      (this.coverTimer > 0 ||
+        rig.isReloading ||
+        (this.state === "attack" && sees && dist < 24 && Math.hypot(mvx, mvz) < 0.35));
+    rig.input.ads = !this.unarmedOnly && (this.state === "attack" || this.state === "alert");
     const gy = host.groundHeightAt(my.x, my.z, my.y);
     rig.update(dt, gy);
     resolveCircleAABBs(my, 0.55, host.spatialAABBs ?? host.aabbs, rig.stepHeight);
@@ -1151,12 +1190,29 @@ export class Fighter {
 
 /* ------------------------------------------------------------------ */
 export class Enemy extends Fighter {
-  constructor(host: CombatHost, spawn: EnemySpawn, mission: MissionDef) {
+  constructor(
+    host: CombatHost,
+    spawn: EnemySpawn,
+    mission: MissionDef,
+    opts?: {
+      hpOverride?: number;
+      customModelUrl?: string;
+      unarmedOnly?: boolean;
+      meleeDamageScale?: number;
+      meleeAggroScale?: number;
+    },
+  ) {
     const boss = !!spawn.boss;
     const diffHp = host.difficultyScale?.().hp ?? 1;
     const roleHp = spawn.role === "heavy" ? 1.65 : spawn.role === "sniper" ? 0.85 : 1;
-    const baseHp = boss ? (spawn.name && BOSS_HP[spawn.name] ? BOSS_HP[spawn.name] : mission.enemyHp * 2) : mission.enemyHp;
+    const baseHp =
+      opts?.hpOverride ??
+      (boss ? (spawn.name && BOSS_HP[spawn.name] ? BOSS_HP[spawn.name] : mission.enemyHp * 2) : mission.enemyHp);
     super(host, spawn, mission, Math.round(baseHp * roleHp * diffHp), boss);
+    if (opts?.customModelUrl) this.customModelUrl = opts.customModelUrl;
+    if (opts?.unarmedOnly) this.unarmedOnly = opts.unarmedOnly;
+    if (opts?.meleeDamageScale) this.meleeDamageScale = opts.meleeDamageScale;
+    if (opts?.meleeAggroScale) this.meleeAggroScale = opts.meleeAggroScale;
   }
 
   update(dt: number) {
@@ -1167,9 +1223,17 @@ export class Enemy extends Fighter {
       return;
     }
     this.aiUpdate(dt, {
-      prefDist: this.boss ? 13 : this.role === "sniper" ? 22 : this.role === "heavy" ? 6.5 : 9,
+      prefDist: this.unarmedOnly
+        ? 1.45
+        : this.boss
+          ? 13
+          : this.role === "sniper"
+            ? 22
+            : this.role === "heavy"
+              ? 6.5
+              : 9,
       burstSize: this.boss ? 4 : this.role === "sniper" ? 1 : this.role === "heavy" ? 5 : 3,
-      canFire: true,
+      canFire: !this.unarmedOnly,
     });
   }
 }

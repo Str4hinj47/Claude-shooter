@@ -3,6 +3,8 @@
  * src/assets/NOTICE.md). GLBs live in public/characters/ so they are served
  * as separate files instead of being inlined into the single-file build.
  */
+import { buildFighterUrl } from "../character/ShirtlessFighter";
+
 export interface CharacterDef {
   id: string;
   name: string;
@@ -20,6 +22,7 @@ export const CHARACTERS: CharacterDef[] = [
   { id: "business", name: "Julian Voss", blurb: "Tailored suit & leather assassin gloves." },
   { id: "sports", name: "Sports", blurb: "Athletic kit." },
   { id: "delivery", name: "Delivery", blurb: "Courier uniform." },
+  { id: "brawler", name: "Underground Brawler", blurb: "Shirtless street fighter — fight shorts, bare knuckles & combat muscle." },
 ];
 
 export type SuitPresetId =
@@ -169,6 +172,19 @@ export const CHARACTER_KEY = "vanguard_character";
 const base = (import.meta as { env?: { BASE_URL?: string } }).env?.BASE_URL || "/";
 
 export function characterUrl(id: string): string {
+  if (id === "brawler") {
+    return buildFighterUrl({
+      outfit: "shorts",
+      boots: false,
+      hair: "short02",
+      skinHex: "#c98c68",
+      hairHex: "#1c1510",
+      shortsHex: "#1e293b",
+      muscle: 0.8,
+      weight: 0.08,
+      height: 0.16,
+    });
+  }
   return `${base}characters/${id}.glb`;
 }
 
