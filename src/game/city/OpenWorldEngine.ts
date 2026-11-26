@@ -112,8 +112,8 @@ export class OpenWorldEngine implements VehicleKitWorldBridge {
     this.staticPropsRoot.updateMatrix();
     this.staticPropsRoot.matrixAutoUpdate = false;
 
-    // Prewarm chunks around player spawn so frame 1 is complete
-    this.chunks.prewarm(spawnX, spawnZ);
+    // Prewarm near + mid skyline around player spawn; outer LOD ring streams smoothly
+    this.chunks.prewarm(spawnX, spawnZ, this.chunks.nearRadius + 160);
   }
 
   update(focus: THREE.Vector3): void {

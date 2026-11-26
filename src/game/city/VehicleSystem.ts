@@ -625,6 +625,8 @@ export class WestgateVehicleManager {
     }
   }
 
+  private pendingAttachIds = new Set<TrafficId>();
+
   private async streamModel(id: TrafficId): Promise<void> {
     if (this.disposed || this.streamingIds.has(id) || this.library.has(id)) return;
     this.streamingIds.add(id);
@@ -632,10 +634,11 @@ export class WestgateVehicleManager {
       const loaded = await this.library.loadModel(id);
       if (this.disposed || !loaded) return;
       for (const v of this.vehicles) {
-        if (v.modelId === id && !v.modelRoot) {
+        if (v.modelId === id && !v.modelRoot && !v.isNpcTraffic) {
           this.attachLoadedModel(v);
         }
       }
+      this.pendingAttachIds.add(id);
       this.onModelLoaded?.(id);
     } finally {
       this.streamingIds.delete(id);
@@ -1377,6 +1380,19 @@ export class WestgateVehicleManager {
     this.activeWheelSlip = 0;
     const safeDt = Math.min(Math.max(dt, 0), 0.05);
     this.npcSignalClock += safeDt;
+    if (this.pendingAttachIds.size > 0) {
+      let budget = 3;
+      for (let i = 0; i < this.vehicles.length && budget > 0; i++) {
+        const v = this.vehicles[i];
+        if (!v.modelRoot && this.pendingAttachIds.has(v.modelId) && this.library.has(v.modelId)) {
+          this.attachLoadedModel(v);
+          budget--;
+        }
+      }
+      if (budget > 0) {
+        this.pendingAttachIds.clear();
+      }
+    }
     if (this.activeVehicle && this.signal) {
       this.signalElapsed += safeDt;
     } else {

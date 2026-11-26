@@ -2134,7 +2134,12 @@ export class SoldierRig {
 
   private applyCombatOverlay(pose: CombatVisualPose) {
     const B = this.bones;
-    const bank = getCombatBankForRig(this.isCC0Fighter ? "fighter://cc0" : this.modelTag || "default", this.model, B);
+    const bank = getCombatBankForRig(
+      this.isCC0Fighter ? "fighter://cc0" : this.modelTag || "default",
+      this.model,
+      B,
+      pose.clipId ?? "fight_idle",
+    );
     const clip = pose.clipId ? bank[pose.clipId] : undefined;
 
     if (clip) {
@@ -2754,17 +2759,11 @@ export class SoldierRig {
       normal: Uint8ClampedArray;
     }
   >();
-  private static clothesPackPromise: Promise<void> | null = null;
+  private static clothesPackPromises = new Map<string, Promise<void>>();
   private static clothesPackWaiters = new Set<() => void>();
 
-  private static preloadClothesPacks() {
-    if (typeof document === "undefined" || SoldierRig.clothesPackPromise) return;
-    const packs: ("suit_wool" | "suit_twill" | "suit_linen" | "shirt_cotton")[] = [
-      "suit_wool",
-      "suit_twill",
-      "suit_linen",
-      "shirt_cotton",
-    ];
+  private static preloadClothesPacks(needed: ("suit_wool" | "suit_twill" | "suit_linen" | "shirt_cotton")[] = ["suit_wool", "shirt_cotton"]) {
+    if (typeof document === "undefined") return;
     const SIZE = 256;
     const loadImgBytes = (url: string): Promise<Uint8ClampedArray | null> =>
       new Promise((resolve) => {
@@ -2783,18 +2782,26 @@ export class SoldierRig {
         img.src = url;
       });
 
-    SoldierRig.clothesPackPromise = Promise.all(
-      packs.map(async (id) => {
-        const [color, rough, normal] = await Promise.all([
+    const missing = needed.filter((id) => !SoldierRig.clothesPackPromises.has(id));
+    if (missing.length === 0) return;
+
+    const batch = Promise.all(
+      missing.map((id) => {
+        const p = Promise.all([
           loadImgBytes(`/textures/clothes/${id}/color.jpg`),
           loadImgBytes(`/textures/clothes/${id}/rough.jpg`),
           loadImgBytes(`/textures/clothes/${id}/normal.jpg`),
-        ]);
-        if (color && rough && normal) {
-          SoldierRig.clothesPackBuffers.set(id, { size: SIZE, color, rough, normal });
-        }
+        ]).then(([color, rough, normal]) => {
+          if (color && rough && normal) {
+            SoldierRig.clothesPackBuffers.set(id, { size: SIZE, color, rough, normal });
+          }
+        });
+        SoldierRig.clothesPackPromises.set(id, p);
+        return p;
       }),
-    ).then(() => {
+    );
+
+    void batch.then(() => {
       if (SoldierRig.clothesPackBuffers.size > 0) {
         for (const [k, v] of SoldierRig.businessSuitCache.entries()) {
           if (!v.fromPack) {
@@ -2817,7 +2824,6 @@ export class SoldierRig {
   private applyBusinessSuitPreset(preset: SuitPresetDef) {
     if (!this.model || typeof document === "undefined") return;
     this.lastSuitPreset = preset;
-    SoldierRig.preloadClothesPacks();
 
     const suitPackId: "suit_wool" | "suit_twill" | "suit_linen" =
       preset.id === "ivory"
@@ -2828,6 +2834,8 @@ export class SoldierRig {
             preset.id === "emerald"
           ? "suit_twill"
           : "suit_wool";
+
+    SoldierRig.preloadClothesPacks([suitPackId, "shirt_cotton"]);
 
     const suitPack = SoldierRig.clothesPackBuffers.get(suitPackId);
     const shirtPack = SoldierRig.clothesPackBuffers.get("shirt_cotton");
@@ -2875,8 +2883,8 @@ export class SoldierRig {
           const ih = img.naturalHeight || img.height || 0;
           if (!iw || !ih) return;
 
-          const w = Math.min(1024, iw);
-          const h = Math.min(1024, ih);
+          const w = Math.min(512, iw);
+          const h = Math.min(512, ih);
           const diffCanvas = document.createElement("canvas");
           diffCanvas.width = w;
           diffCanvas.height = h;

@@ -293,13 +293,25 @@ export function bakeClipForTargetSkeleton(
   const tStart = Math.max(0, Math.min(def.tStart, src.clip.duration));
   const tEnd = Math.max(tStart + 0.05, Math.min(def.tEnd, src.clip.duration));
   const span = tEnd - tStart;
-  const sampleHz = 30;
+  const sampleHz = 20;
   const frames = Math.max(4, Math.ceil(span * sampleHz) + 1);
 
   const bonesOut: Partial<Record<CombatBoneName, Float32Array>> = {};
+  const activeBoneList: { key: CombatBoneName; target: THREE.Object3D; srcBone: THREE.Object3D; srcBindInv: THREE.Quaternion; tgtBindW: THREE.Quaternion }[] = [];
   for (const bName of ALL_COMBAT_BONES) {
-    if (targetBones[bName] && src.bones[bName] && tgtBindW[bName] && src.bindWorldQuats[bName]) {
+    const tb = targetBones[bName];
+    const sb = src.bones[bName];
+    const sbW = src.bindWorldQuats[bName];
+    const tbW = tgtBindW[bName];
+    if (tb && sb && sbW && tbW && tb.parent) {
       bonesOut[bName] = new Float32Array(frames * 4);
+      activeBoneList.push({
+        key: bName,
+        target: tb,
+        srcBone: sb,
+        srcBindInv: sbW.clone().invert(),
+        tgtBindW: tbW,
+      });
     }
   }
 
@@ -308,38 +320,30 @@ export function bakeClipForTargetSkeleton(
   action.play();
 
   const wSrcAnim = new THREE.Quaternion();
-  const srcBindInv = new THREE.Quaternion();
   const deltaW = new THREE.Quaternion();
   const wTgtAnim = new THREE.Quaternion();
   const pWorldInv = new THREE.Quaternion();
   const localQ = new THREE.Quaternion();
 
-  const boneSet = new Set<string>(ALL_COMBAT_BONES);
-  const applyRecursive = (node: THREE.Object3D, fIdx: number) => {
-    const canon = canonicalizeBoneName(node.name);
-    if (canon) {
-      const k = canon as CombatBoneName;
-      if (boneSet.has(k) && bonesOut[k] && node.parent) {
-        const sb = src.bones[k];
-        const sbW = src.bindWorldQuats[k];
-        const tbW = tgtBindW[k]!;
-        sb.getWorldQuaternion(wSrcAnim);
-        srcBindInv.copy(sbW).invert();
-        deltaW.copy(wSrcAnim).multiply(srcBindInv);
-        wTgtAnim.copy(deltaW).multiply(tbW);
-        node.parent.getWorldQuaternion(pWorldInv).invert();
-        localQ.copy(pWorldInv).multiply(wTgtAnim).normalize();
-        node.quaternion.copy(localQ);
-        node.updateMatrixWorld(true);
-        const arr = bonesOut[k]!;
-        const off = fIdx * 4;
-        arr[off] = localQ.x;
-        arr[off + 1] = localQ.y;
-        arr[off + 2] = localQ.z;
-        arr[off + 3] = localQ.w;
-      }
+  // Only update parent chain up to hips before iterating top-down through ALL_COMBAT_BONES
+  const updateTargetChain = (fIdx: number) => {
+    if (hips.parent) hips.parent.updateMatrixWorld(false);
+    for (let i = 0; i < activeBoneList.length; i++) {
+      const entry = activeBoneList[i];
+      entry.srcBone.getWorldQuaternion(wSrcAnim);
+      deltaW.copy(wSrcAnim).multiply(entry.srcBindInv);
+      wTgtAnim.copy(deltaW).multiply(entry.tgtBindW);
+      entry.target.parent!.getWorldQuaternion(pWorldInv).invert();
+      localQ.copy(pWorldInv).multiply(wTgtAnim).normalize();
+      entry.target.quaternion.copy(localQ);
+      entry.target.updateMatrixWorld(false);
+      const arr = bonesOut[entry.key]!;
+      const off = fIdx * 4;
+      arr[off] = localQ.x;
+      arr[off + 1] = localQ.y;
+      arr[off + 2] = localQ.z;
+      arr[off + 3] = localQ.w;
     }
-    for (const ch of node.children) applyRecursive(ch, fIdx);
   };
 
   for (let f = 0; f < frames; f++) {
@@ -347,7 +351,7 @@ export function bakeClipForTargetSkeleton(
     const t = tStart + u * span;
     mixer.setTime(t);
     src.scene.updateMatrixWorld(true);
-    applyRecursive(hips, f);
+    updateTargetChain(f);
   }
 
   mixer.stopAllAction();
@@ -416,18 +420,30 @@ export function getCombatBankForRig(
   cacheKey: string,
   targetModel: THREE.Group,
   targetBones: Record<string, THREE.Object3D>,
+  priorityClip?: CombatClipId,
 ): CombatClipBank {
   let bank = rigBankCache.get(cacheKey);
   if (!bank) {
     bank = {};
     rigBankCache.set(cacheKey, bank);
   }
+  // Bake the immediately needed clip first (if missing)
+  if (priorityClip && !bank[priorityClip]) {
+    const pSrc = sourceResolved.get(priorityClip);
+    if (pSrc) {
+      const baked = bakeClipForTargetSkeleton(pSrc, COMBAT_CLIP_DEFS[priorityClip], targetModel, targetBones);
+      if (baked) bank[priorityClip] = baked;
+      return bank;
+    }
+  }
+  // Otherwise bake at most 1 remaining clip per frame so spawn/first-frame never stalls
   for (const id of Object.keys(COMBAT_CLIP_DEFS) as CombatClipId[]) {
     if (bank[id]) continue;
     const src = sourceResolved.get(id);
     if (!src) continue;
     const baked = bakeClipForTargetSkeleton(src, COMBAT_CLIP_DEFS[id], targetModel, targetBones);
     if (baked) bank[id] = baked;
+    break;
   }
   return bank;
 }

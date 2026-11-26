@@ -253,13 +253,13 @@ export class UndergroundFightPit {
   private pitRank = 0;
   private pitWins = 0;
   private prevOpponentHp = 0;
+  private actorsLoaded = false;
 
   constructor(terrainAt: TerrainHeightFn, initialRank = 0, initialWins = 0) {
     this.pitRank = initialRank;
     this.pitWins = initialWins;
     this.groundY = terrainAt(FIGHT_PIT_CENTER.x, FIGHT_PIT_CENTER.z);
     this.buildArenaGeometry();
-    this.loadNpcActors();
   }
 
   private buildArenaGeometry() {
@@ -407,7 +407,8 @@ export class UndergroundFightPit {
   }
 
   private loadNpcActors() {
-    if (typeof window === "undefined" || typeof fetch !== "function") return;
+    if (this.actorsLoaded || typeof window === "undefined" || typeof fetch !== "function") return;
+    this.actorsLoaded = true;
     const { x, z, promoterX, promoterZ } = FIGHT_PIT_CENTER;
     const gy = this.groundY;
 
@@ -426,11 +427,11 @@ export class UndergroundFightPit {
     const specSpots: Array<[number, number, string]> = [
       [x + 1.8, z - 8.6, "civilian"],
       [x - 2.2, z + 8.6, "construction"],
-      [x + 6.4, z + 6.2, buildFighterUrl({ outfit: "jeans", boots: true, hair: "short02", skinHex: "#b87a56", muscle: 0.65, weight: 0.05 })],
+      [x + 6.4, z + 6.2, "security"],
       [x + 6.4, z - 6.2, "sports"],
     ];
     specSpots.forEach(([sx, sz, tag], i) => {
-      const url = tag.startsWith("fighter://") ? tag : characterUrl(tag);
+      const url = characterUrl(tag);
       void SoldierRig.load(this.group, undefined, url)
         .then((rig) => {
           rig.setHolstered(true);
@@ -578,34 +579,42 @@ export class UndergroundFightPit {
   ): FightPitHudState {
     const gy = this.groundY;
     const { x, z, radius } = FIGHT_PIT_CENTER;
+    const distSqToPlayer =
+      (playerRig.root.position.x - x) ** 2 + (playerRig.root.position.z - z) ** 2;
 
-    // Animate promoter & idle ring pulse
-    if (this.promptRing) {
-      const s = 1 + Math.sin(elapsed * 3.4) * 0.08;
-      this.promptRing.scale.set(s, s, 1);
-      this.promptRing.visible = this.phase === "idle";
+    if (!this.actorsLoaded && distSqToPlayer < 85 * 85) {
+      this.loadNpcActors();
     }
-    if (this.promoterRig) {
-      const dx = playerRig.root.position.x - this.promoterRig.root.position.x;
-      const dz = playerRig.root.position.z - this.promoterRig.root.position.z;
-      if (dx * dx + dz * dz < 144) {
-        this.promoterRig.aimYaw = Math.atan2(dx, dz);
+
+    // Animate promoter & idle ring pulse only when within visual range
+    if (distSqToPlayer < 105 * 105) {
+      if (this.promptRing) {
+        const s = 1 + Math.sin(elapsed * 3.4) * 0.08;
+        this.promptRing.scale.set(s, s, 1);
+        this.promptRing.visible = this.phase === "idle";
       }
-      this.promoterRig.update(dt, gy);
-    }
-
-    this.cheerPulse = Math.max(0, this.cheerPulse - dt * 1.4);
-    for (const sp of this.spectators) {
-      const excited = this.phase === "fighting" || this.phase === "victory";
-      if (excited && (this.cheerPulse > 0.25 || this.phase === "victory")) {
-        sp.rig.aimYaw = sp.baseYaw + Math.sin(elapsed * 7 + sp.phase) * 0.22;
-        if (!sp.rig.combat.isBusy && Math.sin(elapsed * 4.5 + sp.phase) > 0.92) {
-          sp.rig.triggerMelee(false);
+      if (this.promoterRig) {
+        const dx = playerRig.root.position.x - this.promoterRig.root.position.x;
+        const dz = playerRig.root.position.z - this.promoterRig.root.position.z;
+        if (dx * dx + dz * dz < 144) {
+          this.promoterRig.aimYaw = Math.atan2(dx, dz);
         }
-      } else {
-        sp.rig.aimYaw = sp.baseYaw + Math.sin(elapsed * 1.2 + sp.phase) * 0.09;
+        this.promoterRig.update(dt, gy);
       }
-      sp.rig.update(dt, gy);
+
+      this.cheerPulse = Math.max(0, this.cheerPulse - dt * 1.4);
+      for (const sp of this.spectators) {
+        const excited = this.phase === "fighting" || this.phase === "victory";
+        if (excited && (this.cheerPulse > 0.25 || this.phase === "victory")) {
+          sp.rig.aimYaw = sp.baseYaw + Math.sin(elapsed * 7 + sp.phase) * 0.22;
+          if (!sp.rig.combat.isBusy && Math.sin(elapsed * 4.5 + sp.phase) > 0.92) {
+            sp.rig.triggerMelee(false);
+          }
+        } else {
+          sp.rig.aimYaw = sp.baseYaw + Math.sin(elapsed * 1.2 + sp.phase) * 0.09;
+        }
+        sp.rig.update(dt, gy);
+      }
     }
 
     // Clamp player & opponent inside octagon while bout is live

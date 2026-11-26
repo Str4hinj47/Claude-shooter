@@ -722,6 +722,7 @@ export class PedestrianSystem {
     this.frameTick++;
     let latestLine: SpokenLine | null = null;
     this.ambientVoiceTimer -= cdt;
+    let modelRequestsThisFrame = 0;
 
     for (let i = 0; i < this.agents.length; i++) {
       const a = this.agents[i];
@@ -790,7 +791,8 @@ export class PedestrianSystem {
       }
 
       const nearVisual = dFocus2 < 125 * 125;
-      if (nearVisual && !a.modelRequested && dFocus2 < 105 * 105) {
+      if (nearVisual && !a.modelRequested && dFocus2 < 105 * 105 && modelRequestsThisFrame < 2) {
+        modelRequestsThisFrame++;
         this.ensureAgentModel(a);
       }
       a.root.visible = nearVisual;
