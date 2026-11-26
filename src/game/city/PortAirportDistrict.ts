@@ -15,9 +15,9 @@ import {
 import { buildGrammarFacadeShell } from "./FacadeGrammar";
 import { attachGlbToGroup } from "./PropModels";
 
-/** Eastgate Seaport Container Terminal, Gantry Cranes & Cargo Ship (`x=635, z=485`) */
+/** Eastgate Seaport Container Terminal, Gantry Cranes & Cargo Ship (`x=595, z=472`, clear of M4 at x=695) */
 function buildSeaportTerminal(chunk: CityChunk, groundY: number): void {
-  const x = 635;
+  const x = 595;
   const z = 472;
   const deckMat = materialFor(0x565c64, { roughness: 0.86, family: "concrete", seed: 850, repeat: 14 });
   const craneRed = materialFor(0xc83a2b, { roughness: 0.48, metalness: 0.4, family: "metal", seed: 851 });
@@ -31,16 +31,16 @@ function buildSeaportTerminal(chunk: CityChunk, groundY: number): void {
 
   // Concrete port quay apron extending cleanly above shoreline slope under stacked containers & harbor-edge cranes
   const quayTop = Math.max(groundY + 0.65, 3.65);
-  addSolidBox(chunk, x, quayTop - 1.4, z - 6, 150, 1.4, 68, deckMat, 0, "concrete", false, true);
+  addSolidBox(chunk, x, quayTop - 1.4, z - 6, 86, 1.4, 68, deckMat, 0, "concrete", false, true);
   groundY = quayTop;
   // Harbor edge yellow mooring bollards along quay apron
   const bollardMat = new THREE.MeshStandardMaterial({ color: 0xeab308, roughness: 0.45, metalness: 0.25 });
-  for (let bx = x - 62; bx <= x + 62; bx += 15.5) {
+  for (let bx = x - 36; bx <= x + 36; bx += 12) {
     addVisualBox(chunk.nearGroup, bx, groundY + 0.35, z + 26.8, 0.45, 0.7, 0.45, bollardMat, 0);
   }
 
   // Two Ship-to-Shore Gantry Cranes along harbor edge (`z = 486`)
-  for (const cx of [x - 36, x + 28]) {
+  for (const cx of [x - 22, x + 22]) {
     for (const dx of [-4.5, 4.5]) {
       for (const dz of [-4.5, 4.5]) {
         addSolidBox(chunk, cx + dx, groundY, z + 10 + dz, 0.9, 26, 0.9, craneRed, 0, "metal");
@@ -63,9 +63,9 @@ function buildSeaportTerminal(chunk: CityChunk, groundY: number): void {
 
   // Stacked shipping containers with corner posts & top stiffening ribs
   for (let row = 0; row < 3; row++) {
-    for (let col = 0; col < 5; col++) {
-      const mat = containerMats[(row * 5 + col) % containerMats.length];
-      const cx = x - 52 + col * 14;
+    for (let col = 0; col < 4; col++) {
+      const mat = containerMats[(row * 4 + col) % containerMats.length];
+      const cx = x - 24 + col * 14;
       const cz = z - 20 + row * 7.5;
       addSolidBox(chunk, cx, groundY, cz, 12, 2.7, 2.8, mat, 0, "metal");
       addVisualBox(chunk.nearGroup, cx, groundY + 2.7, cz, 11.8, 0.12, 2.88, steelMat, 0);
@@ -76,31 +76,31 @@ function buildSeaportTerminal(chunk: CityChunk, groundY: number): void {
   }
 
   // Moored Container Ship in Harbor Basin (`z = 526`) with tapered bow prow, bridge wings & lifeboats
-  addSolidBox(chunk, x - 4, 0.0, 526, 86, 6.2, 18, hullMat, 0, "metal");
+  addSolidBox(chunk, x - 4, 0.0, 526, 68, 6.2, 18, hullMat, 0, "metal");
   // Tapered ship bow prow (+X)
   const prow = new THREE.Mesh(new THREE.ConeGeometry(9.0, 16, 4), hullMat);
   prow.rotation.y = Math.PI * 0.25;
   prow.rotation.z = -Math.PI * 0.5;
   prow.scale.set(0.68, 1, 1.0);
-  prow.position.set(x + 47, 3.1, 526);
+  prow.position.set(x + 38, 3.1, 526);
   prow.castShadow = true;
   chunk.nearGroup.add(prow);
-  addSolidBox(chunk, x - 4, 6.2, 526, 84, 0.4, 16, deckShip, 0, "metal");
+  addSolidBox(chunk, x - 4, 6.2, 526, 66, 0.4, 16, deckShip, 0, "metal");
   // Superstructure bridge block + wide bridge wings + windows + radar mast + orange lifeboats
-  addSolidBox(chunk, x - 38, 6.6, 526, 12, 11.5, 14, whiteMat, 0, "metal");
-  addVisualBox(chunk.nearGroup, x - 36, 15.8, 526, 13.6, 1.6, 19.6, whiteMat, 0);
-  addVisualBox(chunk.nearGroup, x - 36, 16.0, 526, 13.8, 0.95, 19.8, hullMat, 0);
-  addVisualBox(chunk.nearGroup, x - 41, 18.2, 526, 3.2, 4.2, 3.2, craneRed, 0);
-  addVisualBox(chunk.nearGroup, x - 37, 19.6, 526, 0.35, 5.4, 0.35, steelMat, 0);
-  addVisualBox(chunk.nearGroup, x - 37, 23.2, 526, 0.4, 0.5, 3.4, whiteMat, 0);
+  addSolidBox(chunk, x - 29, 6.6, 526, 12, 11.5, 14, whiteMat, 0, "metal");
+  addVisualBox(chunk.nearGroup, x - 27, 15.8, 526, 13.6, 1.6, 19.6, whiteMat, 0);
+  addVisualBox(chunk.nearGroup, x - 27, 16.0, 526, 13.8, 0.95, 19.8, hullMat, 0);
+  addVisualBox(chunk.nearGroup, x - 32, 18.2, 526, 3.2, 4.2, 3.2, craneRed, 0);
+  addVisualBox(chunk.nearGroup, x - 28, 19.6, 526, 0.35, 5.4, 0.35, steelMat, 0);
+  addVisualBox(chunk.nearGroup, x - 28, 23.2, 526, 0.4, 0.5, 3.4, whiteMat, 0);
   for (const lz of [518.4, 533.6]) {
-    addVisualBox(chunk.nearGroup, x - 38, 9.2, lz, 3.8, 1.3, 1.4, craneRed, 0);
+    addVisualBox(chunk.nearGroup, x - 29, 9.2, lz, 3.8, 1.3, 1.4, craneRed, 0);
   }
-  for (let c = 0; c < 4; c++) {
-    addSolidBox(chunk, x - 12 + c * 14, 6.6, 526, 11.5, 5.2, 10, containerMats[c % containerMats.length], 0, "metal");
-    addSolidBox(chunk, x - 12 + c * 14, 11.8, 526, 11.5, 2.6, 7.2, containerMats[(c + 2) % containerMats.length], 0, "metal");
+  for (let c = 0; c < 3; c++) {
+    addSolidBox(chunk, x - 8 + c * 14, 6.6, 526, 11.5, 5.2, 10, containerMats[c % containerMats.length], 0, "metal");
+    addSolidBox(chunk, x - 8 + c * 14, 11.8, 526, 11.5, 2.6, 7.2, containerMats[(c + 2) % containerMats.length], 0, "metal");
   }
-  addLodBox(chunk, x - 4, 0, 526, 92, 16, 18, 0x334155);
+  addLodBox(chunk, x - 4, 0, 526, 74, 16, 18, 0x334155);
   attachGlbToGroup(chunk.nearGroup, "cruise_ship.glb", x - 4, 0, 566, {
     axis: "z",
     targetMeters: 62,
@@ -532,9 +532,9 @@ export function registerPortAirportDistrict(
   worldMin = -1200,
   chunkSize = 160,
 ): void {
-  // 1. Eastgate Seaport Container Terminal & Gantry Cranes
-  dispatcher.registerAtPoint(635, 472, worldMin, chunkSize, (chunk, terrainAt) => {
-    buildSeaportTerminal(chunk, terrainAt(635, 460));
+  // 1. Eastgate Seaport Container Terminal & Gantry Cranes (clear of M4 compound at x=695, z=465)
+  dispatcher.registerAtPoint(595, 472, worldMin, chunkSize, (chunk, terrainAt) => {
+    buildSeaportTerminal(chunk, terrainAt(595, 460));
   });
 
   // 2. Westgate Power Plant & Smokestacks
@@ -577,7 +577,7 @@ export function registerPortAirportDistrict(
 }
 
 export const PORT_AIRPORT_LANDMARKS = [
-  { id: "seaport_terminal", name: "Eastgate Seaport & Gantry Cranes", x: 635, z: 472 },
+  { id: "seaport_terminal", name: "Eastgate Seaport & Gantry Cranes", x: 595, z: 472 },
   { id: "power_plant", name: "Westgate Power Plant & Stacks", x: 645, z: -185 },
   { id: "tank_farm", name: "Industrial Warehouses & Tank Farm", x: 645, z: 115 },
   { id: "rail_yard", name: "Eastside Freight Rail Yard", x: 845, z: -195 },

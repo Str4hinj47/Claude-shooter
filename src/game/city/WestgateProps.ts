@@ -7,6 +7,7 @@ import type { TerrainHeightFn } from "./HeightSystem";
 import { getDistrictAt } from "./WestgateTerrain";
 import type { WestgateTeleportSpot } from "./WestgateWorld";
 import { loadInstancedPartsFromGlb } from "./PropModels";
+import { OPEN_WORLD_MISSION_SITES } from "./OpenWorldMissions";
 
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
@@ -466,10 +467,16 @@ export function populateWestgateProps(
   const rng = mulberry32(20261122);
   const streetlightPoints: StreetlightPoint[] = [];
 
+  const missionSites = Object.values(OPEN_WORLD_MISSION_SITES);
   const isNearTeleport = (x: number, z: number, minDist = 8.5): boolean => {
     for (let i = 0; i < teleports.length; i++) {
       const tp = teleports[i];
       if ((x - tp.x) * (x - tp.x) + (z - tp.z) * (z - tp.z) < minDist * minDist) return true;
+    }
+    for (let i = 0; i < missionSites.length; i++) {
+      const ms = missionSites[i];
+      const r = ms.clearRadius + 2;
+      if ((x - ms.x) * (x - ms.x) + (z - ms.z) * (z - ms.z) < r * r) return true;
     }
     return false;
   };

@@ -485,6 +485,178 @@ function upgradeQuantizedCharacterNormals(geo: THREE.BufferGeometry, creaseDeg =
   geo.setAttribute("normal", new THREE.BufferAttribute(outNormals, 3));
 }
 
+const smoothedShoulderGeos = new WeakSet<THREE.BufferGeometry>();
+
+/**
+ * Smooth harsh 1-bone skin-weight transitions across Spine2 <-> Shoulder <-> UpperArm
+ * so tailored suit jacket sleeves & shoulder pads bend naturally without pinching.
+ */
+function smoothSuitShoulderWeights(model: THREE.Group) {
+  model.traverse((o) => {
+    const sm = o as THREE.SkinnedMesh;
+    if (!sm.isSkinnedMesh || !sm.skeleton) return;
+    const mat = (Array.isArray(sm.material) ? sm.material[0] : sm.material) as THREE.MeshStandardMaterial | undefined;
+    if (mat && /head|face|skin|opacity|hair|knife|pistol|tools|visor/i.test(mat.name || "")) return;
+
+    const geo = sm.geometry;
+    if (smoothedShoulderGeos.has(geo)) return;
+    smoothedShoulderGeos.add(geo);
+
+    const pos = geo.getAttribute("position");
+    const jAttr = geo.getAttribute("skinIndex");
+    const wAttr = geo.getAttribute("skinWeight");
+    if (!pos || !jAttr || !wAttr) return;
+
+    const bones = sm.skeleton.bones;
+    const targetBones = new Set<number>();
+    bones.forEach((b, i) => {
+      if (/(Spine1|Spine2|LeftShoulder|RightShoulder|LeftArm|RightArm)$/i.test(b.name.replace(/^mixamorig:?/, ""))) {
+        targetBones.add(i);
+      }
+    });
+    if (targetBones.size < 3) return;
+
+    const vCount = pos.count;
+    const boneCount = bones.length;
+
+    // Weld vertices sharing identical object-space coordinates so UV seams smooth uniformly
+    const weldMap = new Map<string, number>();
+    const vertGroup = new Int32Array(vCount);
+    let groupCount = 0;
+    for (let i = 0; i < vCount; i++) {
+      const k = `${Math.round(pos.getX(i) * 2000)},${Math.round(pos.getY(i) * 2000)},${Math.round(pos.getZ(i) * 2000)}`;
+      let g = weldMap.get(k);
+      if (g === undefined) {
+        g = groupCount++;
+        weldMap.set(k, g);
+      }
+      vertGroup[i] = g;
+    }
+
+    // Build topological adjacency between welded vertex groups
+    const neighbors: Set<number>[] = Array.from({ length: groupCount }, () => new Set<number>());
+    const idx = geo.index;
+    const triCount = idx ? Math.floor(idx.count / 3) : Math.floor(vCount / 3);
+    for (let t = 0; t < triCount; t++) {
+      const a = idx ? idx.getX(t * 3) : t * 3;
+      const b = idx ? idx.getX(t * 3 + 1) : t * 3 + 1;
+      const c = idx ? idx.getX(t * 3 + 2) : t * 3 + 2;
+      const ga = vertGroup[a];
+      const gb = vertGroup[b];
+      const gc = vertGroup[c];
+      if (ga !== gb) {
+        neighbors[ga].add(gb);
+        neighbors[gb].add(ga);
+      }
+      if (gb !== gc) {
+        neighbors[gb].add(gc);
+        neighbors[gc].add(gb);
+      }
+      if (gc !== ga) {
+        neighbors[gc].add(ga);
+        neighbors[ga].add(gc);
+      }
+    }
+
+    // Identify vertex groups anchored in the torso-clavicle-upper-arm shoulder region
+    const activeGroup = new Uint8Array(groupCount);
+    let weights = new Float32Array(groupCount * boneCount);
+    const counts = new Float32Array(groupCount);
+    for (let i = 0; i < vCount; i++) {
+      const g = vertGroup[i];
+      counts[g] += 1;
+      let targetSum = 0;
+      for (let c = 0; c < 4; c++) {
+        const bi = jAttr.getComponent(i, c);
+        const w = wAttr.getComponent(i, c);
+        if (bi >= 0 && bi < boneCount && w > 0) {
+          weights[g * boneCount + bi] += w;
+          if (targetBones.has(bi)) targetSum += w;
+        }
+      }
+      if (targetSum > 0.72) activeGroup[g] = 1;
+    }
+    for (let g = 0; g < groupCount; g++) {
+      const c = Math.max(1, counts[g]);
+      for (let b = 0; b < boneCount; b++) weights[g * boneCount + b] /= c;
+    }
+
+    // 3 passes of gentle Laplacian weight diffusion restricted to the shoulder/sleeve band
+    const alpha = 0.34;
+    let nextWeights = new Float32Array(weights.length);
+    for (let pass = 0; pass < 3; pass++) {
+      nextWeights.set(weights);
+      for (let g = 0; g < groupCount; g++) {
+        if (!activeGroup[g]) continue;
+        const nb = neighbors[g];
+        if (nb.size === 0) continue;
+        let nonTarget = 0;
+        for (let b = 0; b < boneCount; b++) {
+          if (!targetBones.has(b)) nonTarget += weights[g * boneCount + b];
+        }
+        if (nonTarget > 0.25) continue;
+
+        const base = g * boneCount;
+        let nbValid = 0;
+        const avg = new Float32Array(boneCount);
+        for (const ng of nb) {
+          if (!activeGroup[ng]) continue;
+          nbValid++;
+          const nBase = ng * boneCount;
+          for (let b = 0; b < boneCount; b++) avg[b] += weights[nBase + b];
+        }
+        if (nbValid === 0) continue;
+        let sum = 0;
+        for (let b = 0; b < boneCount; b++) {
+          const blended = weights[base + b] * (1 - alpha) + (avg[b] / nbValid) * alpha;
+          nextWeights[base + b] = blended;
+          sum += blended;
+        }
+        if (sum > 1e-5) {
+          for (let b = 0; b < boneCount; b++) nextWeights[base + b] /= sum;
+        }
+      }
+      const tmp = weights;
+      weights = nextWeights;
+      nextWeights = tmp;
+    }
+
+    const outJ = new Uint16Array(vCount * 4);
+    const outW = new Float32Array(vCount * 4);
+    for (let i = 0; i < vCount; i++) {
+      const g = vertGroup[i];
+      if (!activeGroup[g]) {
+        let s = 0;
+        for (let c = 0; c < 4; c++) {
+          outJ[i * 4 + c] = jAttr.getComponent(i, c);
+          outW[i * 4 + c] = wAttr.getComponent(i, c);
+          s += outW[i * 4 + c];
+        }
+        if (s > 1e-5) {
+          for (let c = 0; c < 4; c++) outW[i * 4 + c] /= s;
+        }
+        continue;
+      }
+      const base = g * boneCount;
+      const top: [number, number][] = [];
+      for (let b = 0; b < boneCount; b++) {
+        const w = weights[base + b];
+        if (w > 0.005) top.push([b, w]);
+      }
+      top.sort((a, b) => b[1] - a[1]);
+      const pick = top.slice(0, 4);
+      let s = pick.reduce((acc, p) => acc + p[1], 0);
+      if (s <= 1e-5) s = 1;
+      for (let c = 0; c < 4; c++) {
+        outJ[i * 4 + c] = pick[c]?.[0] ?? 0;
+        outW[i * 4 + c] = pick[c] ? pick[c][1] / s : 0;
+      }
+    }
+    geo.setAttribute("skinIndex", new THREE.BufferAttribute(outJ, 4));
+    geo.setAttribute("skinWeight", new THREE.BufferAttribute(outW, 4));
+  });
+}
+
 export function loadCachedSoldierGltf(url: string, onProgress?: (p: number) => void): Promise<GLTF> {
   let promise = cachedGltfMap.get(url);
   if (!promise) {
@@ -962,6 +1134,7 @@ export class SoldierRig {
     });
 
     if (this.isRocketbox) matchRocketboxHandSkinTone(model);
+    smoothSuitShoulderWeights(model);
 
     // normalise height to ~1.82m
     model.updateMatrixWorld(true);
@@ -1754,12 +1927,30 @@ export class SoldierRig {
     if (!dead) {
       this.rotateChain(["Spine", "Spine1", "Spine2"], qTot, [0.3, 0.32, 0.32]);
       // Subtle simplex-driven clavicle breathing lift + stride shoulder sway
-      const clavLift = idleNoise.clavLift + Math.sin(this.phase * Math.PI * 2) * 0.02 * this.locoBlend;
+      const clavLift =
+        idleNoise.clavLift +
+        Math.sin(this.phase * Math.PI * 2) * (this.holstered ? 0.036 : 0.02) * this.locoBlend;
       if (B.LeftShoulder) this.rotateWorld(B.LeftShoulder, new THREE.Quaternion().setFromAxisAngle(fwdAxis, clavLift));
       if (B.RightShoulder) this.rotateWorld(B.RightShoulder, new THREE.Quaternion().setFromAxisAngle(fwdAxis, -clavLift));
-      // head: look toward aim point with organic simplex patrol look-around
+      if (this.holstered) {
+        // Subtle scapular counter-protraction & relaxed arm hang during open-world suit locomotion
+        const shrugYaw = Math.sin(this.phase * Math.PI * 2) * 0.045 * this.locoBlend;
+        if (B.LeftShoulder) this.rotateWorld(B.LeftShoulder, new THREE.Quaternion().setFromAxisAngle(AXIS_Y, shrugYaw));
+        if (B.RightShoulder) this.rotateWorld(B.RightShoulder, new THREE.Quaternion().setFromAxisAngle(AXIS_Y, shrugYaw));
+        const swingDrop = 0.045 * (1 - this.locoBlend * 0.5);
+        if (B.LeftArm) this.rotateWorld(B.LeftArm, new THREE.Quaternion().setFromAxisAngle(fwdAxis, -swingDrop));
+        if (B.RightArm) this.rotateWorld(B.RightArm, new THREE.Quaternion().setFromAxisAngle(fwdAxis, swingDrop));
+      }
+      // head: look toward aim point with organic simplex patrol look-around + natural ADS cheek-weld tilt
+      const cheekWeld = -0.068 * this.aimBlend * (1 - this.sprintBlend) * (this.holstered ? 0 : 1);
       const headQ = new THREE.Quaternion()
-        .setFromAxisAngle(rightAxis, -this.aimPitch * 0.42 + idleNoise.headScanPitch + headS * 0.1 + hP * 0.3)
+        .setFromAxisAngle(fwdAxis, cheekWeld)
+        .multiply(
+          new THREE.Quaternion().setFromAxisAngle(
+            rightAxis,
+            -this.aimPitch * 0.42 + idleNoise.headScanPitch + headS * 0.1 + hP * 0.3,
+          ),
+        )
         .multiply(new THREE.Quaternion().setFromAxisAngle(AXIS_Y, yawTot * 0.2 + idleNoise.headScanYaw));
       this.rotateChain(["Neck", "Head"], headQ, [0.45, 0.55]);
     } else {
@@ -1998,10 +2189,14 @@ export class SoldierRig {
     lWrist.add(wob);
     rWrist.add(new THREE.Vector3(0, s.armR * 0.002, 0));
 
-    // elbows hang down and slightly out
+    // Anatomical scapulohumeral rhythm: clavicles protract & elevate with wrist targets so suit shoulders bend naturally
+    this.applyClavicleRhythm("Right", rWrist, s.rPos * 0.055);
+    this.applyClavicleRhythm("Left", lWrist, 0);
+
+    // Dynamic anatomical elbow poles (relaxed low-ready -> tucked tactical ADS)
     const yawQ = new THREE.Quaternion().setFromAxisAngle(AXIS_Y, this.wYaw);
-    const poleR = V(-0.55, -1, -0.25).applyQuaternion(yawQ);
-    const poleL = V(0.6, -1, -0.3).applyQuaternion(yawQ);
+    const poleR = V(lerp(-0.62, -0.44, a), lerp(-1.0, -0.84, a), lerp(-0.18, -0.38, a)).applyQuaternion(yawQ);
+    const poleL = V(lerp(0.62, 0.46, a), -1.0, lerp(-0.2, -0.26, a)).applyQuaternion(yawQ);
     void lShoulder;
 
     this.solveArm("Right", rWrist, rf, rp, poleR);
@@ -2020,21 +2215,60 @@ export class SoldierRig {
     }
   }
 
+  /**
+   * Scapulohumeral rhythm: rotates LeftShoulder/RightShoulder (clavicle) ~25–32% toward arm elevation
+   * and forward/cross-chest reach before upper-arm IK so suit jacket shoulders follow smoothly.
+   */
+  private applyClavicleRhythm(side: Side, wristTarget: THREE.Vector3, recoilLift = 0) {
+    const B = this.bones;
+    const clav = B[`${side}Shoulder`];
+    const arm = B[`${side}Arm`];
+    const chest = B.Spine2 ?? B.Spine1 ?? B.Hips;
+    if (!clav || !arm || !chest) return;
+
+    const armP = arm.getWorldPosition(new THREE.Vector3());
+    const delta = wristTarget.clone().sub(armP);
+    const dist = delta.length();
+    if (dist < 1e-4) return;
+    const dir = delta.multiplyScalar(1 / dist);
+
+    const chestQ = chest.getWorldQuaternion(new THREE.Quaternion());
+    const chestFwd = new THREE.Vector3(0, 0, 1).applyQuaternion(chestQ);
+    chestFwd.y = 0;
+    if (chestFwd.lengthSq() < 1e-5) chestFwd.set(Math.sin(this.root.rotation.y), 0, Math.cos(this.root.rotation.y));
+    chestFwd.normalize();
+    const chestLeft = new THREE.Vector3(chestFwd.z, 0, -chestFwd.x); // +X in character frame
+
+    const fwdAmt = clamp(dir.dot(chestFwd), -0.35, 1.0);
+    const upAmt = clamp(dir.y + 0.45, -0.25, 1.0); // neutral arm hangs down (dir.y ~ -0.75), raising forward increases upAmt
+    const acrossAmt = side === "Left" ? clamp(-dir.dot(chestLeft), 0, 0.9) : clamp(dir.dot(chestLeft), 0, 0.9);
+
+    const protract = clamp(fwdAmt * 0.24 + acrossAmt * 0.18, -0.08, 0.34);
+    const elevate = clamp(upAmt * 0.22 + recoilLift, -0.08, 0.26);
+
+    const sgn = side === "Left" ? 1 : -1;
+    // Protraction: Left uses -Y, Right uses +Y; Elevation: Left uses +fwd, Right uses -fwd
+    const qProt = new THREE.Quaternion().setFromAxisAngle(AXIS_Y, -sgn * protract);
+    const qElev = new THREE.Quaternion().setFromAxisAngle(chestFwd, sgn * elevate);
+    this.rotateWorld(clav, qProt.multiply(qElev));
+  }
+
   private solveArm(side: Side, wrist: THREE.Vector3, f: THREE.Vector3, p: THREE.Vector3, pole: THREE.Vector3) {
     const B = this.bones;
     const up = B[`${side}Arm`];
     const fore = B[`${side}ForeArm`];
     const hand = B[`${side}Hand`];
     this.twoBoneIK(up, fore, hand, wrist, pole, 0.995);
-    // distribute wrist twist onto the forearm to avoid candy-wrapper skinning
+    // Distribute wrist twist gently across UpperArm (20%) + ForeArm (52%) to avoid sleeve/wrist candy-wrapper pinching
     const target = this.handTargetQuat(side, f, p);
     const cur = hand.getWorldQuaternion(new THREE.Quaternion());
     const delta = target.clone().multiply(cur.invert());
-    const ax = hand.getWorldPosition(new THREE.Vector3()).sub(fore.getWorldPosition(new THREE.Vector3())).normalize();
-    const proj = delta.x * ax.x + delta.y * ax.y + delta.z * ax.z;
-    const twist = 2 * Math.atan2(proj, delta.w);
-    const tw = wrapAngle(twist) * 0.55;
-    this.rotateWorld(fore, new THREE.Quaternion().setFromAxisAngle(ax, tw));
+    const upAx = fore.getWorldPosition(new THREE.Vector3()).sub(up.getWorldPosition(new THREE.Vector3())).normalize();
+    const foreAx = hand.getWorldPosition(new THREE.Vector3()).sub(fore.getWorldPosition(new THREE.Vector3())).normalize();
+    const proj = delta.x * foreAx.x + delta.y * foreAx.y + delta.z * foreAx.z;
+    const twist = wrapAngle(2 * Math.atan2(proj, delta.w));
+    this.rotateWorld(up, new THREE.Quaternion().setFromAxisAngle(upAx, clamp(twist * 0.20, -0.35, 0.35)));
+    this.rotateWorld(fore, new THREE.Quaternion().setFromAxisAngle(foreAx, twist * 0.52));
     // final hand orientation
     const pq = hand.parent!.getWorldQuaternion(new THREE.Quaternion()).invert();
     hand.quaternion.copy(pq.multiply(target));
@@ -2081,6 +2315,8 @@ export class SoldierRig {
     const lTarget = lSh.clone().addScaledVector(fwd, 0.22).addScaledVector(right, 0.24).add(new THREE.Vector3(0, 0.12, 0));
     const poleR = fwd.clone().multiplyScalar(-0.4).addScaledVector(right, 0.6).add(new THREE.Vector3(0, -0.6, 0));
     const poleL = fwd.clone().multiplyScalar(0.3).addScaledVector(right, -0.6).add(new THREE.Vector3(0, -0.7, 0));
+    this.applyClavicleRhythm("Right", rTarget, 0.05);
+    this.applyClavicleRhythm("Left", lTarget, 0.03);
     this.twoBoneIK(B.RightArm, B.RightForeArm, B.RightHand, rTarget, poleR, 0.96);
     this.twoBoneIK(B.LeftArm, B.LeftForeArm, B.LeftHand, lTarget, poleL, 0.96);
     this.curlHand("Right", { Thumb: 0.7, Index: 0.85, Middle: 0.9, Ring: 0.9, Pinky: 0.9 });

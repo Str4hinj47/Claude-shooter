@@ -2435,14 +2435,15 @@ class Kit {
     this.decor(m, false);
   }
 
-  /** dock fender: hanging rubber cylinder at the waterline edge */
+  /** dock fender: hanging rubber cylinder horizontally along the seawall edge */
   fender(x: number, z: number, ry = 0) {
     const rubber = new THREE.MeshStandardMaterial({ color: 0x1a1a1e, roughness: 0.95 });
-    const c = this.mesh(rubber, new THREE.CylinderGeometry(0.14, 0.14, 1.4, 14), x, 1.2, z, ry + Math.PI / 2);
+    const c = this.mesh(rubber, new THREE.CylinderGeometry(0.14, 0.14, 1.4, 14), x, -0.32, z, ry);
+    c.rotation.z = Math.PI / 2;
     this.decor(c);
     const chain = new THREE.MeshStandardMaterial({ color: 0x4a4a4e, roughness: 0.6, metalness: 0.8 });
     for (const sx of [-1, 1]) {
-      const ch = this.mesh(chain, new THREE.CylinderGeometry(0.02, 0.02, 0.5, 6), x + sx * 0.5, 0.85, z, ry);
+      const ch = this.mesh(chain, new THREE.CylinderGeometry(0.02, 0.02, 0.36, 6), x + sx * 0.5, -0.14, z, ry);
       this.decor(ch, false);
     }
   }
@@ -2681,14 +2682,16 @@ function populateVillageCompound(K: Kit, embedded = false): void {
   ] as const) {
     K.tree(tx, tz, sc);
   }
-  for (let i = 0; i < 28; i++) {
-    const a = (i / 28) * Math.PI * 2;
-    if (Math.abs(Math.sin(a)) < 0.12 && Math.cos(a) > 0) continue;
-    const r = 46 + (i % 3) * 8;
-    const px = Math.cos(a) * r;
-    const pz = Math.sin(a) * r;
-    if (Math.abs(px) < 14 && pz > 30) continue;
-    K.tree(px, pz, 1.05 + (i % 4) * 0.15);
+  if (!embedded) {
+    for (let i = 0; i < 28; i++) {
+      const a = (i / 28) * Math.PI * 2;
+      if (Math.abs(Math.sin(a)) < 0.12 && Math.cos(a) > 0) continue;
+      const r = 46 + (i % 3) * 8;
+      const px = Math.cos(a) * r;
+      const pz = Math.sin(a) * r;
+      if (Math.abs(px) < 14 && pz > 30) continue;
+      K.tree(px, pz, 1.05 + (i % 4) * 0.15);
+    }
   }
 
   K.fence(-18, -2, -23, 6);
@@ -2930,6 +2933,11 @@ function populateConstructionCompound(K: Kit, embedded = false): void {
   K.stairs({ x: 7.4, z: -29, steps: 8, rise: 0.3, run: 0.6, width: 1.3, alongZ: false, mat: new THREE.MeshStandardMaterial({ color: 0xb0a830, roughness: 0.7, metalness: 0.4 }) });
   const scafDeck = K.mesh(new THREE.MeshStandardMaterial({ color: 0x8a6d42, roughness: 0.88 }), bevelledBox(3.4, 0.28, 3.6, 0.03), 13.0, 2.4, -29.8);
   K.solid(scafDeck, "wood");
+  for (const px of [11.5, 14.5]) {
+    for (const pz of [-31.3, -28.3]) {
+      K.solid(K.mesh(scaffoldMat, new THREE.CylinderGeometry(0.06, 0.06, 2.3, 6), px, 1.15, pz), "metal");
+    }
+  }
 
   // stacked concrete barriers forming corner cover / lanes through the site
   const wedgeMat = new THREE.MeshStandardMaterial({ color: 0xc8b020, roughness: 0.7, metalness: 0.3 });
@@ -3016,7 +3024,14 @@ function populateConstructionCompound(K: Kit, embedded = false): void {
   K.puddle(15, 22, 1.1, 0.8);
   K.puddle(-6, 30, 1.0, 0.7);
   for (let i = 0; i < 5; i++) K.cracks(-20 + K.rng() * 40, -28 + K.rng() * 56, 2.4 + K.rng() * 1.8);
-  for (let i = 0; i < 7; i++) K.rock(-24 + K.rng() * 48, -34 + K.rng() * 68, 0.6 + K.rng() * 0.9);
+  for (let i = 0; i < 7; i++) {
+    const rx = -24 + K.rng() * 48;
+    const rz = -34 + K.rng() * 68;
+    const inTower = Math.abs(rx) < 10 && rz > -24 && rz < -8;
+    const inOffice = rx < -13 && rx > -23 && rz > -25 && rz < -15;
+    const inWarehouse = rx > 14 && rx < 23 && rz > 0 && rz < 12;
+    if (!inTower && !inOffice && !inWarehouse) K.rock(rx, rz, 0.6 + K.rng() * 0.9);
+  }
   K.rubble(14, 24, 5);
   K.rubble(-12, 16, 5);
   K.dirtMound(6, 12, 1.2);
@@ -3027,8 +3042,6 @@ function populateConstructionCompound(K: Kit, embedded = false): void {
   K.roadSign(-19, 30, 0.3, "SITE", "#d8a01c", "#1a1a1a");
   K.roadSign(19, -26, -0.3, "DANGER", "#d8302a", "#f0ece0");
   K.wireStrand(-6, -16, 8, -16, 18.5, 0.8);
-  K.wireStrand(-18, 2, 12, 18, 12.5, 1.0);
-  K.wallStreak(-18, 2.0, -16.86, 5, 3, 0, false);
   if (!embedded) {
     K.dustMotes(110, 120, 18, 110, 0xd0c0a0, 0.3);
   }
@@ -3189,8 +3202,8 @@ function populateDowntownCompound(K: Kit, embedded = false): void {
   K.trafficCone(7.2, 16.3, 0.4);
   K.roadSign(-12.6, 24, 0.2, "NO PARKING", "#d8302a", "#f0ece0");
   K.roadSign(12.6, -8, -0.2, "STREET", "#2a5a8a", "#f0ece0");
-  K.billboard(-10.5, 40, 12.5, 0.15);
-  K.billboard(10.5, 40, 12.5, -0.15);
+  K.billboard(-15, 36, 20.45, 0.15);
+  K.billboard(15, 36, 22.45, -0.15);
   // rooftop equipment
   K.acUnit(-13, -0.5, 26.4, 0.1);
   K.acUnit(-17, -0.5, 26.4, 0.6);
@@ -3209,16 +3222,14 @@ function populateDowntownCompound(K: Kit, embedded = false): void {
   K.wallStreak(15, 6, 24.17, 7, 6, 0, false);
   K.wallStreak(-8, 7, -22.83, 7, 7, 0, false);
   K.wallStreak(8, 6, -22.83, 7, 6, 0, true);
-  // overhead wires between streetlight poles
-  for (let z = -24; z <= 40; z += 12) {
+  // overhead wires between streetlight poles (poles are at z = -28, -16, -4, 8, 20, 32, 44)
+  for (let z = -28; z <= 32; z += 12) {
     K.wireStrand(-9.4, z, -9.4, z + 12, 5.2, 0.4);
     K.wireStrand(9.4, z, 9.4, z + 12, 5.2, 0.4);
   }
-  K.wireStrand(-9.4, 24, 9.4, 24, 5.4, 0.5);
-  K.rubble(-3, 30.5, 4);
+  K.wireStrand(-9.4, 20, 9.4, 20, 5.4, 0.5);
+  K.rubble(-5.5, 27.5, 4);
   K.rubble(2, -18, 4);
-  K.rock(-12, 26, 0.8);
-  K.rock(12, 22, 0.9);
 }
 
 function buildDowntown(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.WebGLRenderer): LevelResult {
@@ -3387,28 +3398,24 @@ function populatePortCompound(K: Kit, embedded = false): void {
   for (const [px, pz] of [[-10, 18], [6, 22], [-16, 8], [18, 6], [-2, 34], [4, 28]] as const) K.puddle(px, pz, 1.0 + K.rng() * 0.6, 0.7 + K.rng() * 0.5);
   for (let i = 0; i < 6; i++) K.cracks(-22 + K.rng() * 44, -14 + K.rng() * 60, 2.4 + K.rng() * 1.8);
   // waterline fenders along the dock edge
-  for (let x = -22; x <= 22; x += 7) K.fender(x, -12.8, 0.1);
-  for (let i = 0; i < 6; i++) K.rock(-26 + K.rng() * 52, 8 + K.rng() * 50, 0.6 + K.rng() * 0.9);
-  K.rubble(-14, 24, 5);
-  K.rubble(14, 24, 5);
-  K.trafficCone(-12.5, 22, 0.2);
-  K.trafficCone(-13, 22.7, 0.5);
-  K.trafficCone(-12, 22.2, -0.3);
-  K.trafficCone(13, 22, -0.2);
-  K.trafficCone(13.5, 22.7, 0.4);
+  for (let x = -22; x <= 22; x += 7) K.fender(x, -14.1, 0);
+  K.rubble(-21, 16, 4);
+  K.rubble(20, 16, 4);
+  K.trafficCone(-7.5, 22, 0.2);
+  K.trafficCone(-8.0, 22.7, 0.5);
+  K.trafficCone(-7.0, 22.2, -0.3);
+  K.trafficCone(7.5, 22, -0.2);
+  K.trafficCone(8.0, 22.7, 0.4);
   K.roadSign(-20, 30, 0.2, "DOCK", "#2a5a8a", "#f0ece0");
   K.roadSign(20, 30, -0.2, "NO ENTRY", "#d8302a", "#f0ece0");
   // rust + grime streaks on warehouses and containers
-  K.wallStreak(-14, 3.2, 28.17, 8, 3.4, 0, true);
-  K.wallStreak(14, 2.6, 27.17, 7, 3, 0, true);
-  K.wallStreak(-14, 4.5, 24.17, 6, 2.5, 0, false);
+  K.wallStreak(-14, 3.2, 28.52, 8, 3.4, 0, true);
+  K.wallStreak(14, 2.6, 27.52, 7, 3, 0, true);
   K.wallStreak(-12.98, 1.3, 2, 5, 2.4, Math.PI / 2, true);
   K.wallStreak(19.02, 1.3, 2, 5, 2.4, -Math.PI / 2, true);
   K.wallStreak(-15.02, 1.3, 10, 5, 2.4, Math.PI / 2, true);
   K.wallStreak(21.02, 1.3, 10, 5, 2.4, -Math.PI / 2, true);
   K.wireStrand(-13, -8.5, 13, -8.5, 17, 0.9);
-  K.wireStrand(-13, -8.5, -13, 8, 16, 0.8);
-  K.wireStrand(13, -8.5, 13, 8, 16, 0.8);
 }
 
 function buildPort(content: THREE.Object3D, main: THREE.Scene, renderer: THREE.WebGLRenderer): LevelResult {
@@ -3582,26 +3589,20 @@ function populateHQCompound(K: Kit, embedded = false): void {
   K.trafficCone(3.8, -22, -0.4);
   K.roadSign(-22, 14, 0.2, "NO ENTRY", "#d8302a", "#f0ece0");
   K.roadSign(22, 14, -0.2, "HQ", "#2a5a8a", "#f0ece0");
-  // wall grime/rust on tower + barracks + compound wall
+  // wall grime/rust on tower + barracks + solid compound wall sections (skipping open gate & breach)
   K.wallStreak(0, 12, -26.87, 10, 10, 0, false);
   K.wallStreak(0, 20, -26.87, 8, 8, 0, true);
-  K.wallStreak(-20, 3.2, 14.17, 8, 3.4, 0, false);
-  K.wallStreak(20, 3.2, 14.17, 8, 3.4, 0, true);
-  K.wallStreak(-15, 2.5, -19.42, 20, 3, 0, false);
-  K.wallStreak(15, 2.5, -19.42, 20, 3, 0, false);
-  // rooftop equipment
-  K.acUnit(-20, 12, 5.4, 0.2);
-  K.acUnit(20, 12, 5.4, -0.2);
-  K.acUnit(-20, 13, 5.4, 0.5);
-  K.acUnit(20, 13, 5.4, -0.5);
+  K.wallStreak(-22, 2.5, -19.55, 10, 3, 0, false);
+  K.wallStreak(-6.5, 2.5, -19.55, 7, 3, 0, false);
+  K.wallStreak(13, 2.5, -19.55, 18, 3, 0, false);
+  // rooftop equipment (barracks flat roof top = 4.2 + 0.45 = 4.65)
+  K.acUnit(-20, 12, 4.65, 0.2);
+  K.acUnit(20, 12, 4.65, -0.2);
+  K.acUnit(-20, 13, 4.65, 0.5);
+  K.acUnit(20, 13, 4.65, -0.5);
   K.antennaArray(0, -32, 42.4, 0.1);
-  // overhead wires along the compound wall top
-  for (let x = -24; x <= 20; x += 8) K.wireStrand(x, -19.7, x + 8, -19.7, 4.9, 0.3);
-  K.wireStrand(-20, 10, 20, 10, 5.6, 0.5);
   K.rubble(-6, -22, 4);
   K.rubble(6, -22, 4);
-  K.rock(-22, 12, 0.8);
-  K.rock(22, 12, 0.9);
 
   // helipad (extraction, north of tower)
   K.helipad(0, -44);

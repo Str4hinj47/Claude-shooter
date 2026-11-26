@@ -188,9 +188,9 @@ function trimMatHelper(): THREE.MeshStandardMaterial {
   return new THREE.MeshStandardMaterial({ color: 0xe5e7eb, roughness: 0.6 });
 }
 
-/** Old Quarter Historic Brick Townhouses & Corner Bistro (`x=-170, z=180`) */
+/** Old Quarter Historic Brick Townhouses & Corner Bistro (`x=-360, z=180`) */
 function buildOldQuarterTownhouses(chunk: CityChunk, groundY: number): void {
-  const x = -170;
+  const x = -360;
   const z = 180;
   const roofDark = materialFor(0x3b4048, { roughness: 0.76, family: "roof-tile", seed: 530 });
   const awningGreen = materialFor(0x166534, { roughness: 0.78, family: "fabric", seed: 531 });
@@ -385,9 +385,9 @@ export function registerOldQuarterDistrict(
     buildMirrorCentralPark(chunk, terrainAt(-115, 395));
   });
 
-  // 3. Old Quarter Brick Townhouses & Shops
-  dispatcher.registerAtPoint(-170, 180, worldMin, chunkSize, (chunk, terrainAt) => {
-    buildOldQuarterTownhouses(chunk, terrainAt(-170, 180));
+  // 3. Old Quarter Brick Townhouses & Shops (placed clear of M1 Old Quarter compound at x=-210, z=175)
+  dispatcher.registerAtPoint(-360, 180, worldMin, chunkSize, (chunk, terrainAt) => {
+    buildOldQuarterTownhouses(chunk, terrainAt(-360, 180));
   });
 
   // 4. Neighborhood Elementary School & Playground
@@ -407,7 +407,7 @@ export function registerOldQuarterDistrict(
 export const OLD_QUARTER_LANDMARKS = [
   { id: "player_safehouse", name: "Player Safehouse (420 Crescent)", x: SAFEHOUSE_ORIGIN.x, z: SAFEHOUSE_ORIGIN.z },
   { id: "mirror_park", name: "Mirror Central Park & Pond", x: -115, z: 395 },
-  { id: "old_townhouses", name: "Old Quarter Brick Townhouses", x: -170, z: 180 },
+  { id: "old_townhouses", name: "Old Quarter Brick Townhouses", x: -360, z: 180 },
   { id: "elem_school", name: "Mirror Park Elementary & Playground", x: -268, z: 415 },
   { id: "community_lib", name: "Old Quarter Community Library", x: -18, z: 305 },
   { id: "suburb_gas", name: "Crescent Service Station", x: -385, z: 255 },
