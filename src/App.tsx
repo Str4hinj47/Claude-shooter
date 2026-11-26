@@ -145,6 +145,7 @@ const initial: HudState = {
   muted: false,
   sfxVolume: 0.55,
   engineVolume: 0.72,
+  melee: { active: false, combo: 0, blocking: false, moveLabel: null, callout: null },
   vehicle: null,
   weapons: WEAPONS.map((w) => ({
     slot: w.slot,

@@ -463,6 +463,31 @@ export class CombatFX {
     this.water.setScale(s);
   }
 
+  /** Crisp shock-dust / parry spark burst at melee contact point */
+  meleeImpact(p: THREE.Vector3, parry = false, heavy = false) {
+    const count = parry ? 14 : heavy ? 10 : 6;
+    for (let i = 0; i < count; i++) {
+      const spd = (parry ? 4.5 : heavy ? 3.2 : 2.1) * (0.5 + Math.random() * 0.7);
+      const ang = Math.random() * Math.PI * 2;
+      const v = new THREE.Vector3(Math.cos(ang) * spd, 0.6 + Math.random() * 1.8, Math.sin(ang) * spd);
+      if (parry) {
+        this.sparks.emit(p, v, 0.22 + Math.random() * 0.14, 0.04, 0.015, new THREE.Color(0.65, 0.92, 1.0));
+      } else {
+        this.smoke.emit(p, v.multiplyScalar(0.55), 0.26 + Math.random() * 0.16, 0.08, 0.28, new THREE.Color(0.88, 0.86, 0.82));
+      }
+    }
+    if (parry || heavy) {
+      this.flashes.emit(
+        p,
+        new THREE.Vector3(),
+        parry ? 0.12 : 0.08,
+        parry ? 0.28 : 0.18,
+        parry ? 0.05 : 0.03,
+        parry ? new THREE.Color(0.5, 0.9, 1.0) : new THREE.Color(1.0, 0.78, 0.45),
+      );
+    }
+  }
+
   /** Arterial crimson splatter + mist on bullet/vehicle impact */
   bloodBurst(p: THREE.Vector3, dir?: THREE.Vector3, intensity = 1) {
     const count = Math.round(14 * intensity);
@@ -1029,6 +1054,43 @@ export class Sfx {
   takedown() {
     this.burst({ dur: 0.09, freq: 520, sweepTo: 180, type: "lowpass", gain: 0.55, pink: true });
     this.tone(95, 42, 0.11, 0.35, "sine");
+  }
+  meleeWhoosh(heavy = false) {
+    const pitch = heavy ? 0.82 : 1.0 + (Math.random() - 0.5) * 0.14;
+    this.burst({
+      dur: heavy ? 0.14 : 0.095,
+      freq: 980 * pitch,
+      sweepTo: 240 * pitch,
+      q: 0.9,
+      type: "bandpass",
+      gain: heavy ? 0.38 : 0.28,
+      pink: true,
+    });
+  }
+  meleeHit(heavy = false, blocked = false) {
+    if (blocked) {
+      this.tone(110, 48, 0.08, 0.42, "sine");
+      this.burst({ dur: 0.075, freq: 420, sweepTo: 140, type: "lowpass", gain: 0.46, pink: true });
+      return;
+    }
+    const p = heavy ? 0.86 : 1.0 + (Math.random() - 0.5) * 0.12;
+    // Heavy sub-bass chest thump + snappy leather/flesh transient
+    this.tone(138 * p, 34 * p, heavy ? 0.16 : 0.11, heavy ? 0.78 : 0.56, "sine");
+    this.tone(240 * p, 72 * p, 0.06, heavy ? 0.44 : 0.32, "triangle");
+    this.burst({
+      dur: heavy ? 0.11 : 0.075,
+      freq: (heavy ? 1450 : 1950) * p,
+      sweepTo: 240,
+      type: "lowpass",
+      gain: heavy ? 0.72 : 0.54,
+      drive: heavy,
+      pink: true,
+    });
+  }
+  meleeParry() {
+    this.tone(1320, 680, 0.12, 0.28, "triangle");
+    this.tone(185, 58, 0.12, 0.45, "sine");
+    this.burst({ dur: 0.09, freq: 3400, sweepTo: 1100, q: 1.8, type: "bandpass", gain: 0.48 });
   }
   dry() {
     this.burst({ dur: 0.018, freq: 3600, q: 3.0, type: "bandpass", gain: 0.36 });

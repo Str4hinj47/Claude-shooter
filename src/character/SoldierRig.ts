@@ -18,6 +18,15 @@ import {
   type FootPlacementState,
   type TakedownPose,
 } from "./AnimationMotion";
+import {
+  COMBAT_HIPS_BONE,
+  COMBAT_LOWER_BONES,
+  COMBAT_UPPER_BONES,
+  getCombatBankForRig,
+  preloadCombatAnimations,
+  sampleCombatBone,
+} from "./CombatAnimations";
+import { HandToHandController, type CombatVisualPose, type MeleeMoveDef } from "./HandToHandCombat";
 
 const BASE_URL = (import.meta as unknown as { env?: { BASE_URL?: string } }).env?.BASE_URL ?? "/";
 const soldierUrl = `${BASE_URL}characters/soldier.glb`;
@@ -694,6 +703,7 @@ export interface RigEvents {
   onHit?: () => void;
   onDeath?: () => void;
   onEject?: (pos: THREE.Vector3, dir: THREE.Vector3) => void;
+  onMeleeSwing?: (move: MeleeMoveDef) => void;
 }
 
 export interface RigInput {
@@ -819,6 +829,8 @@ export class SoldierRig {
   /** tactical loadout parented to the rig (adds detail on top of the .glb) */
   equipment: SoldierEquipment | null = null;
   events: RigEvents = {};
+  readonly combat = new HandToHandController();
+  private combatTmpQ = new THREE.Quaternion();
 
   // calibrated locomotion data
   walkN = 1.4;
@@ -1014,11 +1026,56 @@ export class SoldierRig {
       this.rifle.mag.position.copy(this.rifle.magRest);
       this.rifle.mag.visible = true;
       this.rifle.group.visible = false;
+      this.combat.combatStanceTimer = Math.max(this.combat.combatStanceTimer, 1.4);
     } else {
+      this.combat.setBlocking(false);
       this.rifle.group.visible = this.root.visible && !this.dead;
       this.aimTimer = Math.max(this.aimTimer, 1.5);
       if (wasHolstered) this.drawAnim.trigger();
     }
+  }
+
+  /** Trigger a hand-to-hand punch combo strike (`heavy=false`) or heavy kick (`heavy=true`). */
+  triggerMelee(heavy = false): MeleeMoveDef | null {
+    if (this.dead || this.carryingBody) return null;
+    this.reloadT = -1;
+    this.aimTimer = Math.max(this.aimTimer, 1.8);
+    const started = this.combat.requestAttack(heavy);
+    if (started) {
+      this.events.onMeleeSwing?.(started);
+      this.applyMeleeLunge(started);
+    }
+    return started;
+  }
+
+  /** Hold or release unarmed hand-to-hand boxing guard / timed parry. */
+  setCombatBlock(held: boolean) {
+    const active = held && this.holstered && !this.dead && !this.carryingBody;
+    this.combat.setBlocking(active);
+  }
+
+  /** Trigger an evasive combat slip/dodge with brief i-frames. */
+  triggerDodge(dirX: number, dirZ: number): boolean {
+    if (this.dead || this.carryingBody) return false;
+    const ok = this.combat.triggerDodge(dirX, dirZ);
+    if (ok) {
+      this.vel.x = this.combat.dodgeDirX * 7.2;
+      this.vel.z = this.combat.dodgeDirZ * 7.2;
+    }
+    return ok;
+  }
+
+  /** Apply physical knockback impulse from a melee impact. */
+  applyKnockback(vx: number, vz: number) {
+    if (this.dead) return;
+    this.vel.x += vx;
+    this.vel.z += vz;
+  }
+
+  private applyMeleeLunge(move: MeleeMoveDef) {
+    const spd = move.lungeSpeed * 0.55;
+    this.vel.x = Math.sin(this.aimYaw) * spd;
+    this.vel.z = Math.cos(this.aimYaw) * spd;
   }
 
   /** Apply per-weapon modular customization across all built weapon meshes. */
@@ -1089,6 +1146,7 @@ export class SoldierRig {
     onProgress?: (p: number) => void,
     modelUrl?: string,
   ): Promise<SoldierRig> {
+    void preloadCombatAnimations();
     let url = modelUrl ?? soldierUrl;
     if (url === "vanguard" || /\/vanguard\.glb$/i.test(url)) {
       url = soldierUrl;
@@ -1546,6 +1604,12 @@ export class SoldierRig {
     this.hitT = Math.max(0, this.hitT - dt);
     this.sprintSuppressT = Math.max(0, this.sprintSuppressT - dt);
 
+    const comboStarted = this.combat.update(dt, this.holstered && !this.carryingBody && !this.dead);
+    if (comboStarted) {
+      this.events.onMeleeSwing?.(comboStarted);
+      this.applyMeleeLunge(comboStarted);
+    }
+
     this.groundY = groundY;
     this.updateLocomotion(dt);
     this.updateAnimBase(dt);
@@ -1566,7 +1630,8 @@ export class SoldierRig {
 
   private updateLocomotion(dt: number) {
     const inp = this.input;
-    const wantMove = !this.dead && inp.move.lengthSq() > 0.0004;
+    const combatCanMove = this.combat.canMoveFreely;
+    const wantMove = !this.dead && combatCanMove && inp.move.lengthSq() > 0.0004;
     const walkSpd = this.getEffectiveWalkSpeed();
     const runSpd = this.getEffectiveRunSpeed();
     const adsWalkSpd = walkSpd * 0.72;
@@ -1587,6 +1652,8 @@ export class SoldierRig {
         !inp.crouch &&
         !inp.ads &&
         !this.carryingBody &&
+        !this.combat.isBusy &&
+        !this.combat.blocking &&
         Math.abs(rel) < (this.isPlayer ? 1.55 : 1.15) &&
         this.reloadT < 0;
       this.sprinting = sprintOK;
@@ -1595,17 +1662,21 @@ export class SoldierRig {
         ? runSpd
         : inp.crouch
           ? walkSpd * 0.62 * this.crouchSpeedMult
-          : adsSprintOK
-            ? adsSprintSpd
-            : inp.ads
-              ? adsWalkSpd
-              : walkSpd;
+          : this.combat.blocking
+            ? walkSpd * 0.58
+            : this.combat.state === "attack"
+              ? walkSpd * 0.48
+              : adsSprintOK
+                ? adsSprintSpd
+                : inp.ads
+                  ? adsWalkSpd
+                  : walkSpd;
       target = this.carryingBody ? baseSpd * this.carrySpeedMult : baseSpd;
     } else {
       this.sprinting = false;
     }
 
-    const freeRun = this.isPlayer && !inp.ads && this.aimBlend < 0.35 && !this.carryingBody;
+    const freeRun = this.isPlayer && !inp.ads && this.aimBlend < 0.35 && !this.carryingBody && !this.combat.isBusy && !this.combat.blocking;
     // facing + direction of the legs relative to aim (with hysteresis to prevent 1-frame stride flips)
     let legOffset = 0;
     if (wantMove) {
@@ -1630,20 +1701,36 @@ export class SoldierRig {
     this.moveSignSmooth = damp(this.moveSignSmooth, this.moveSign, this.isPlayer ? 24 : 13, dt);
 
     const desired = dir.multiplyScalar(target);
-    const rate = this.grounded
-      ? wantMove
-        ? this.isPlayer
-          ? 24
-          : 15
-        : this.isPlayer
-          ? 28
-          : 18
-      : this.isPlayer
-        ? 6.5
-        : 3.2;
+    if (this.combat.state === "dodge") {
+      const dodgeSpd = 6.8 * (1 - clamp(this.combat.stateTime / Math.max(0.1, this.combat.stateDuration), 0, 1) * 0.55);
+      desired.set(this.combat.dodgeDirX * dodgeSpd, 0, this.combat.dodgeDirZ * dodgeSpd);
+    } else if (this.combat.state === "attack" && this.combat.currentMove) {
+      const m = this.combat.currentMove;
+      if (this.combat.stateTime < m.startup + m.active * 0.6) {
+        const lunge = m.lungeSpeed * 0.45;
+        desired.x += Math.sin(this.aimYaw) * lunge;
+        desired.z += Math.cos(this.aimYaw) * lunge;
+      }
+    }
+    const rate =
+      this.combat.state === "dodge"
+        ? 22
+        : !combatCanMove
+          ? 7
+          : this.grounded
+            ? wantMove
+              ? this.isPlayer
+                ? 24
+                : 15
+              : this.isPlayer
+                ? 28
+                : 18
+            : this.isPlayer
+              ? 6.5
+              : 3.2;
     this.vel.x = damp(this.vel.x, desired.x, rate, dt);
     this.vel.z = damp(this.vel.z, desired.z, rate, dt);
-    if (!wantMove && !this.dead && this.grounded && Math.hypot(this.vel.x, this.vel.z) < 0.04) {
+    if (!wantMove && !this.dead && this.combat.state !== "dodge" && this.combat.state !== "attack" && this.grounded && Math.hypot(this.vel.x, this.vel.z) < 0.04) {
       this.vel.x = 0;
       this.vel.z = 0;
     }
@@ -1965,15 +2052,82 @@ export class SoldierRig {
 
     this.model.updateMatrixWorld(true);
 
+    const combatPose = !dead && !this.carryingBody
+      ? this.combat.getVisualPose(this.locoBlend, this.sprinting)
+      : null;
+    const quickMeleeArmed = !!(combatPose?.activeMove && !this.holstered);
+
     // ----- WEAPON + ARMS
     if (this.carryingBody && !this.dead) {
       this.updateCarryArms();
-    } else if (this.weaponAttached && !this.holstered) {
+    } else if (this.weaponAttached && !this.holstered && !quickMeleeArmed) {
+      if (this.root.visible && !this.rifle.group.visible) this.rifle.group.visible = true;
       this.updateWeaponAndArms(dt, { rRot, rPos, rYaw, armL, armR, idleNoise });
     } else if (!this.weaponAttached) {
       this.updateDeadArms(armL, armR);
     }
 
+    if (combatPose && combatPose.upperWeight > 0.01) {
+      if (quickMeleeArmed) this.rifle.group.visible = false;
+      this.applyCombatOverlay(combatPose);
+    }
+
+    this.model.updateMatrixWorld(true);
+  }
+
+  private applyCombatOverlay(pose: CombatVisualPose) {
+    const B = this.bones;
+    const bank = getCombatBankForRig(this.modelTag || "default", this.model, B);
+    const clip = pose.clipId ? bank[pose.clipId] : undefined;
+
+    if (clip) {
+      const q = this.combatTmpQ;
+      const hipsW = Math.max(pose.lowerWeight, pose.upperWeight * 0.42);
+      if (hipsW > 0.01 && B[COMBAT_HIPS_BONE] && sampleCombatBone(clip, COMBAT_HIPS_BONE, pose.clipTimeNorm, q)) {
+        B[COMBAT_HIPS_BONE].quaternion.slerp(q, hipsW);
+      }
+      if (pose.upperWeight > 0.01) {
+        for (const bName of COMBAT_UPPER_BONES) {
+          const b = B[bName];
+          if (b && sampleCombatBone(clip, bName, pose.clipTimeNorm, q)) {
+            b.quaternion.slerp(q, pose.upperWeight);
+          }
+        }
+      }
+      if (pose.lowerWeight > 0.01) {
+        for (const bName of COMBAT_LOWER_BONES) {
+          const b = B[bName];
+          if (b && sampleCombatBone(clip, bName, pose.clipTimeNorm, q)) {
+            b.quaternion.slerp(q, pose.lowerWeight);
+          }
+        }
+      }
+    } else {
+      // Crisp procedural combat fallback while Mixamo GLBs finish streaming
+      const yawNow = this.root.rotation.y;
+      const fwd = new THREE.Vector3(Math.sin(yawNow), 0, Math.cos(yawNow));
+      const rgt = new THREE.Vector3(-Math.cos(yawNow), 0, Math.sin(yawNow));
+      const lShoulder = B.LeftArm.getWorldPosition(new THREE.Vector3());
+      const rShoulder = B.RightArm.getWorldPosition(new THREE.Vector3());
+      const ext = pose.activeMove ? Math.sin(Math.min(1, pose.attackProgress * 2.1) * Math.PI) : 0;
+      const isLeft = pose.activeMove?.id === "jab" || pose.activeMove?.id === "uppercut";
+      const guardL = lShoulder.clone().addScaledVector(fwd, 0.34).addScaledVector(rgt, -0.06).add(new THREE.Vector3(0, -0.05, 0));
+      const guardR = rShoulder.clone().addScaledVector(fwd, 0.28).addScaledVector(rgt, 0.06).add(new THREE.Vector3(0, -0.03, 0));
+      if (pose.activeMove && ext > 0.05) {
+        if (isLeft) guardL.addScaledVector(fwd, ext * 0.45);
+        else guardR.addScaledVector(fwd, ext * 0.45);
+      }
+      const yawQ = new THREE.Quaternion().setFromAxisAngle(AXIS_Y, yawNow);
+      this.solveArm("Left", guardL, fwd, rgt, V(0.55, -0.9, -0.25).applyQuaternion(yawQ));
+      this.solveArm("Right", guardR, fwd, rgt.clone().negate(), V(-0.55, -0.9, -0.25).applyQuaternion(yawQ));
+    }
+
+    if (pose.fistWeight > 0.05) {
+      const f = pose.fistWeight;
+      const fist = { Thumb: 0.85 * f, Index: f, Middle: f, Ring: f, Pinky: f };
+      this.curlHand("Left", fist);
+      this.curlHand("Right", fist);
+    }
     this.model.updateMatrixWorld(true);
   }
 

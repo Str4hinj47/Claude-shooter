@@ -33,10 +33,8 @@ export const WeaponOutlineSvg: React.FC<WeaponOutlineSvgProps> = ({
 
   return (
     <div
-      className={`flex items-center justify-end transition-opacity duration-150 ${
-        holstered ? "opacity-55" : "opacity-100"
-      }`}
-      aria-label={holstered ? `${spec?.name ?? "Weapon"} (Holstered)` : spec?.name ?? "Equipped Weapon"}
+      className="flex items-center justify-end transition-opacity duration-150 opacity-100"
+      aria-label={holstered ? "Hand-to-Hand Fists" : spec?.name ?? "Equipped Weapon"}
     >
       <svg
         viewBox="0 0 220 68"
@@ -44,7 +42,29 @@ export const WeaponOutlineSvg: React.FC<WeaponOutlineSvgProps> = ({
         fill="none"
         xmlns="http://www.w3.org/2000/svg"
       >
-        {weaponId === "pistol" && (
+        {holstered && (
+          <g strokeLinecap="round" strokeLinejoin="round">
+            {/* Twin stylized closed-fist silhouettes for Hand-to-Hand / CQC mode */}
+            <path
+              d="M114 25 C114 19 120 17 125 19 C127 17 133 17 135 20 C138 18 143 19 144 23 C147 22 151 24 150 29 L148 41 C147 46 141 49 133 49 H122 C116 49 113 44 114 38 Z"
+              fill="rgba(56,189,248,0.12)"
+              stroke="#38bdf8"
+              strokeWidth="1.9"
+            />
+            <path
+              d="M123 20 V31 M132 19 V31 M141 21 V31 M116 32 H144 C147 32 148 37 143 38 H126"
+              stroke="#bae6fd"
+              strokeWidth="1.5"
+            />
+            <path
+              d="M158 29 C158 24 163 22 167 24 C169 22 174 22 176 25 C179 23 183 24 184 28 C186 27 189 29 188 34 L186 43 C185 48 180 50 173 50 H165 C160 50 157 46 158 40 Z"
+              fill="rgba(56,189,248,0.09)"
+              stroke="#7dd3fc"
+              strokeWidth="1.6"
+            />
+          </g>
+        )}
+        {!holstered && weaponId === "pistol" && (
           <g strokeLinecap="round" strokeLinejoin="round">
             {/* Slide + upper frame (Apex P226-SD) */}
             <path
@@ -82,7 +102,7 @@ export const WeaponOutlineSvg: React.FC<WeaponOutlineSvgProps> = ({
           </g>
         )}
 
-        {weaponId === "carbine" && (
+        {!holstered && weaponId === "carbine" && (
           <g strokeLinecap="round" strokeLinejoin="round">
             {/* Stock + buffer tube (Vanguard M4A1-S) */}
             <path
@@ -133,7 +153,7 @@ export const WeaponOutlineSvg: React.FC<WeaponOutlineSvgProps> = ({
           </g>
         )}
 
-        {weaponId === "smg" && (
+        {!holstered && weaponId === "smg" && (
           <g strokeLinecap="round" strokeLinejoin="round">
             {/* Folding wire / compact PDW stock (Kobra MP-9 SD) */}
             <path d="M36 25 H56 M36 25 L34 39 H39 L43 32 H56" stroke={strokeMain} strokeWidth="1.8" />
@@ -175,7 +195,7 @@ export const WeaponOutlineSvg: React.FC<WeaponOutlineSvgProps> = ({
           </g>
         )}
 
-        {weaponId === "shotgun" && (
+        {!holstered && weaponId === "shotgun" && (
           <g strokeLinecap="round" strokeLinejoin="round">
             {/* Classic tactical stock + pistol grip (Breacher M870-S) */}
             <path
@@ -229,7 +249,7 @@ export const WeaponOutlineSvg: React.FC<WeaponOutlineSvgProps> = ({
           </g>
         )}
 
-        {weaponId === "dmr" && (
+        {!holstered && weaponId === "dmr" && (
           <g strokeLinecap="round" strokeLinejoin="round">
             {/* Precision marksman stock with cheek riser (Falcon Mk14-SD) */}
             <path
@@ -283,18 +303,9 @@ export const WeaponOutlineSvg: React.FC<WeaponOutlineSvgProps> = ({
           </g>
         )}
 
-        {/* Diagonal tactical holster indicator slash when holstered */}
+        {/* Compact CQC strike dot when holstered / unarmed */}
         {holstered && (
-          <line
-            x1="28"
-            y1="56"
-            x2="192"
-            y2="12"
-            stroke="#38bdf8"
-            strokeWidth="1.6"
-            strokeDasharray="4 3"
-            opacity="0.75"
-          />
+          <circle cx="136" cy="34" r="24" stroke="#38bdf8" strokeWidth="1" strokeDasharray="3 4" opacity="0.4" />
         )}
       </svg>
     </div>

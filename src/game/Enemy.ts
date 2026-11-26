@@ -6,6 +6,7 @@
 /* ------------------------------------------------------------------ */
 import * as THREE from "three";
 import { SoldierRig } from "../character/SoldierRig";
+import type { MeleeMoveDef } from "../character/HandToHandCombat";
 import { CombatFX, Sfx } from "./fx";
 import { clamp } from "../character/math";
 import { characterUrl } from "./characters";
@@ -32,6 +33,7 @@ export interface CombatHost {
   playerVisionRangeMult?: () => number;
   difficultyScale?: () => { hp: number; damage: number; accuracy: number; vision: number };
   onPlayerHit: (dmg: number) => void;
+  onPlayerMeleeHit?: (dmg: number, move: MeleeMoveDef, attacker: Fighter) => void;
   onKilled: (e: Fighter, stealth?: boolean) => void;
   onAlert: (e: Fighter) => void;
   onBossEngage?: (e: Fighter) => void;
@@ -151,6 +153,7 @@ export class Fighter {
   private hearingCooldown = 0;
   private commsCooldown = 0;
   private shotCommsCooldown = 0;
+  private meleeCooldown = 0.4 + Math.random() * 0.5;
   private wasSeeing = false;
   get isSeeingPlayer() {
     return this.wasSeeing;
@@ -327,6 +330,48 @@ export class Fighter {
 
   get isUnaware() {
     return this.state === "idle" || this.state === "patrol";
+  }
+
+  takeMeleeHit(
+    dmg: number,
+    move: MeleeMoveDef,
+    dirX: number,
+    dirZ: number,
+    stealth = false,
+    hitPoint?: THREE.Vector3,
+  ): { killed: boolean; blocked: boolean; damageDealt: number } {
+    if (this.dead) return { killed: false, blocked: false, damageDealt: 0 };
+    const unaware = stealth || this.isUnaware || (this.state === "alert" && this.suspicion < 0.85);
+    const hitPt = hitPoint ?? this.rig.root.position.clone().add(new THREE.Vector3(0, 1.25, 0));
+
+    // Alerted guards in CQC occasionally raise a quick block unless hit from behind or guard-broken
+    if (!unaware && this.state === "attack" && this.role !== "sniper" && !this.rig.combat.isBusy && Math.random() < 0.24) {
+      this.rig.combat.setBlocking(true);
+    }
+
+    const willKill = unaware ? dmg * 2.5 >= this.hp : dmg >= this.hp;
+    const res = this.rig.combat.applyIncomingHit(
+      dmg,
+      move.hitstun,
+      move.guardBreak || unaware,
+      willKill && (move.heavy || move.id === "kick" || move.id === "uppercut"),
+    );
+    this.rig.combat.setBlocking(false);
+
+    if (res.blocked && !res.guardBroken) {
+      this.host.fx.meleeImpact(hitPt, false, false);
+      this.rig.applyKnockback(dirX * move.knockback * 0.35, dirZ * move.knockback * 0.35);
+      this.burstTimer = Math.max(this.burstTimer, 0.35);
+      this.hp = Math.max(1, this.hp - res.damageTaken);
+      return { killed: false, blocked: true, damageDealt: res.damageTaken };
+    }
+
+    this.burstTimer = Math.max(this.burstTimer, move.hitstun + 0.35);
+    this.meleeCooldown = Math.max(this.meleeCooldown, move.hitstun + 0.35);
+    this.rig.applyKnockback(dirX * move.knockback, dirZ * move.knockback);
+    this.host.fx.meleeImpact(hitPt, false, move.heavy);
+    this.takeDamage(res.damageTaken, unaware, hitPt);
+    return { killed: this.dead, blocked: false, damageDealt: res.damageTaken };
   }
 
   takeDamage(dmg: number, suppressed = false, hitPoint?: THREE.Vector3) {
@@ -788,6 +833,7 @@ export class Fighter {
     if (this.hearingCooldown > 0) this.hearingCooldown = Math.max(0, this.hearingCooldown - dt);
     if (this.commsCooldown > 0) this.commsCooldown = Math.max(0, this.commsCooldown - dt);
     if (this.shotCommsCooldown > 0) this.shotCommsCooldown = Math.max(0, this.shotCommsCooldown - dt);
+    if (this.meleeCooldown > 0) this.meleeCooldown = Math.max(0, this.meleeCooldown - dt);
 
     // ---- enhanced stealth vision: foveal + peripheral cones, multi-point head/chest LOS, flashlight & perch range
     const crouch = host.playerCrouching();
@@ -986,15 +1032,39 @@ export class Fighter {
         [mvx, mvz] = this.steerAroundWalls(my, perpX, perpZ);
       }
 
-      // burst fire (with controlled pacing & reload awareness)
+      // close-quarters hand-to-hand engagement when player closes within 2.3m
+      const inMeleeZone = sees && dist < 2.35 && Math.abs(p.y - my.y) < 1.35 && !(this instanceof Ally);
+      if (inMeleeZone && !rig.dead && rig.combat.canMoveFreely) {
+        if (this.meleeCooldown <= 0 && !rig.combat.isBusy) {
+          const heavy = Math.random() < 0.3;
+          const m = rig.triggerMelee(heavy);
+          if (m) {
+            this.host.sfx.meleeWhoosh(m.heavy);
+            this.meleeCooldown = 0.85 + Math.random() * 0.55;
+          }
+        }
+        const activeMove = rig.combat.activeHitWindow;
+        if (activeMove && dist <= activeMove.range + 0.3 && dot > 0.25) {
+          rig.combat.markHitConnected();
+          const diffDmg = this.host.difficultyScale?.().damage ?? 1;
+          const baseMeleeDmg = (activeMove.heavy ? 22 : 14) * diffDmg * (this.boss ? 1.35 : 1);
+          if (this.host.onPlayerMeleeHit) {
+            this.host.onPlayerMeleeHit(baseMeleeDmg, activeMove, this);
+          } else {
+            this.host.onPlayerHit(baseMeleeDmg);
+          }
+        }
+      }
+
+      // burst fire (with controlled pacing, reload awareness & melee hitstun interruption)
       const fireRange = this.role === "sniper" ? 64 : 42;
-      if (opts.canFire && sees && dist < fireRange && !rig.isReloading) {
+      if (opts.canFire && sees && !inMeleeZone && dist < fireRange && !rig.isReloading && !rig.combat.isBusy) {
         this.burstTimer -= dt;
         if (this.burstTimer <= 0 && !rig.dead) {
           rig.fire();
           this.burstShots++;
           if (this.burstShots >= opts.burstSize) {
-            this.burstTimer = 0.85 + (1 - this.mission.enemyAccuracy) * 1.1 + Math.random() * 0.6;
+            this.burstTimer = 0.85 + (1 - host.mission.enemyAccuracy) * 1.1 + Math.random() * 0.6;
             this.burstShots = 0;
           } else {
             this.burstTimer = 0.18;

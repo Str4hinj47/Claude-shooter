@@ -218,6 +218,37 @@ export function GameHud({
           );
         })()}
 
+      {/* Hand-to-Hand / CQC center reticle, guard ring & combo/parry callout */}
+      {hud.phase !== "loading" &&
+        !hud.dead &&
+        !hud.showcase &&
+        !hud.vehicle?.active &&
+        !hud.boat?.active &&
+        !hud.aircraft?.active &&
+        !hud.carryingBody &&
+        !hud.binoculars?.open &&
+        !hud.cinematic &&
+        !hud.weaponWheelOpen &&
+        !hud.mapOpen &&
+        (hud.melee?.active || hud.melee?.callout) && (
+          <div className="pointer-events-none fixed inset-0 flex flex-col items-center justify-center">
+            {hud.melee?.active && (
+              <div
+                className={`flex items-center justify-center rounded-full transition-all duration-100 ${
+                  hud.melee.blocking
+                    ? "h-12 w-12 border-2 border-[#38bdf8] bg-[#38bdf8]/10 shadow-[0_0_18px_rgba(56,189,248,0.45)]"
+                    : "h-2 w-2 border border-white/75 bg-white/40"
+                }`}
+              />
+            )}
+            {hud.melee?.callout && (
+              <div className="mt-10 border border-[#38bdf8]/50 bg-[#080a0f]/85 px-2.5 py-0.5 font-mono text-[11px] font-bold uppercase tracking-[0.22em] text-[#38bdf8] drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]">
+                {hud.melee.callout}
+              </div>
+            )}
+          </div>
+        )}
+
       {/* WEATHER SCREEN POLISH: Rain lens droplets & Snow frost corners */}
       {hud.isOpenWorld && hud.phase === "ready" && !hud.dead && (hud.weatherLabel === "Rain" || hud.weatherLabel === "Drizzle") && (
         <div
@@ -1325,13 +1356,23 @@ export function GameHud({
 
               <div className="flex items-center justify-end gap-2 font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-[#cfd4de]">
                 {hud.holstered ? (
-                  <span className="border border-[#38bdf8]/50 bg-[#38bdf8]/15 px-1.5 py-0.5 text-[9px] text-[#38bdf8]">
-                    WEAPON HIDDEN · [H] DRAW
-                  </span>
+                  <>
+                    <span className="border border-[#38bdf8]/50 bg-[#38bdf8]/15 px-1.5 py-0.5 text-[9px] text-[#38bdf8]">
+                      [H] DRAW WEAPON
+                    </span>
+                    {hud.melee?.blocking && (
+                      <span className="border border-[#38bdf8] bg-[#38bdf8]/25 px-1.5 py-0.5 text-[9px] text-[#e0f2fe]">
+                        GUARD UP
+                      </span>
+                    )}
+                    <span>
+                      <span className="text-[#38bdf8]">CQC</span> · HAND-TO-HAND
+                    </span>
+                  </>
                 ) : (
                   <>
                     <span className="border border-white/15 bg-white/5 px-1.5 py-0.5 text-[9px] text-[#94a3b8]">
-                      [H] HIDE
+                      [H] FISTS
                     </span>
                     {hud.suppressed ? (
                       <span className="border border-[#2dd4bf]/50 bg-[#2dd4bf]/10 px-1.5 py-0.5 text-[9px] text-[#2dd4bf]">
@@ -1342,31 +1383,49 @@ export function GameHud({
                         UNSUPPRESSED
                       </span>
                     )}
+                    <span>
+                      <span className="text-[#e5a93c]">{hud.weaponCategory}</span> · {hud.weaponName}
+                    </span>
                   </>
                 )}
-                <span>
-                  <span className="text-[#e5a93c]">{hud.weaponCategory}</span> · {hud.weaponName}
-                </span>
               </div>
 
-              {hud.reloading && (
+              {hud.reloading && !hud.holstered && (
                 <div className="ml-auto h-1 w-48 bg-white/15">
                   <div className="h-full bg-[#e5a93c]" style={{ width: `${hud.reloadProgress * 100}%` }} />
                 </div>
               )}
 
-              <div className="font-display leading-none drop-shadow-[0_3px_10px_rgba(0,0,0,0.85)]">
-                <span
-                  className={`text-6xl font-extrabold tabular-nums ${
-                    hud.ammo <= (hud.weaponIndex === 0 ? 4 : hud.weaponIndex === 3 ? 2 : hud.weaponIndex === 4 ? 3 : 8)
-                      ? "text-[#ff3b30]"
-                      : "text-[#f2efe9]"
-                  }`}
-                >
-                  {String(hud.ammo).padStart(2, "0")}
-                </span>
-                <span className="ml-1.5 font-mono text-xl font-bold text-[#8a909e]">/ {hud.reserve}</span>
-              </div>
+              {hud.holstered ? (
+                <div className="space-y-1 text-right">
+                  <div className="font-display leading-none drop-shadow-[0_3px_10px_rgba(0,0,0,0.85)]">
+                    <span className="text-4xl font-extrabold uppercase tracking-wider text-[#f2efe9]">
+                      {hud.melee?.moveLabel ?? (hud.melee?.blocking ? "BLOCKING" : "FISTS")}
+                    </span>
+                    {hud.melee && hud.melee.combo >= 2 && (
+                      <span className="ml-2 font-mono text-xl font-bold text-[#38bdf8]">
+                        {hud.melee.combo}×
+                      </span>
+                    )}
+                  </div>
+                  <div className="font-mono text-[9px] uppercase tracking-wider text-[#8a909e]">
+                    LMB STRIKE · RMB BLOCK/PARRY · [V] KICK · [ALT] SLIP
+                  </div>
+                </div>
+              ) : (
+                <div className="font-display leading-none drop-shadow-[0_3px_10px_rgba(0,0,0,0.85)]">
+                  <span
+                    className={`text-6xl font-extrabold tabular-nums ${
+                      hud.ammo <= (hud.weaponIndex === 0 ? 4 : hud.weaponIndex === 3 ? 2 : hud.weaponIndex === 4 ? 3 : 8)
+                        ? "text-[#ff3b30]"
+                        : "text-[#f2efe9]"
+                    }`}
+                  >
+                    {String(hud.ammo).padStart(2, "0")}
+                  </span>
+                  <span className="ml-1.5 font-mono text-xl font-bold text-[#8a909e]">/ {hud.reserve}</span>
+                </div>
+              )}
             </div>
           )}
 

@@ -96,8 +96,8 @@ export function WeaponWheel({
       kind: "holster",
       index: 5,
       angleDeg: 210,
-      label: "HOLSTER",
-      sub: "Hide Weapon · [H]",
+      label: "FISTS",
+      sub: "Hand-to-Hand · [H] / [0]",
     },
   ];
 
@@ -249,7 +249,7 @@ export function WeaponWheel({
                   fontWeight="700"
                   letterSpacing="2"
                 >
-                  {slot.kind === "holster" ? "STOW" : `0${slot.index + 1}`}
+                  {slot.kind === "holster" ? "CQC" : `0${slot.index + 1}`}
                 </text>
                 <text
                   x={lx}
@@ -270,7 +270,7 @@ export function WeaponWheel({
                   fontSize="10"
                   fontFamily="ui-monospace, monospace"
                 >
-                  {slot.kind === "weapon" ? `${slot.mag} / ${slot.reserve}` : "UNARMED"}
+                  {slot.kind === "weapon" ? `${slot.mag} / ${slot.reserve}` : "MELEE / PARRY"}
                 </text>
               </g>
             );

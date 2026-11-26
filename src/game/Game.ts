@@ -12,6 +12,7 @@ import {
 } from "postprocessing";
 import { N8AOPostPass } from "n8ao";
 import { SoldierRig, MAG_SIZE, type RigStatus } from "../character/SoldierRig";
+import type { MeleeMoveDef } from "../character/HandToHandCombat";
 import { WEAPONS, type WeaponId } from "../character/rifle";
 import { type World, type SurfaceKind } from "./world";
 import { buildLevelAsync, type LevelResult } from "./levels";
@@ -230,6 +231,13 @@ export interface HudState {
   aimSensitivity?: number;
   invertY?: boolean;
   holstered: boolean;
+  melee: {
+    active: boolean;
+    combo: number;
+    blocking: boolean;
+    moveLabel: string | null;
+    callout: string | null;
+  };
   weaponWheelOpen: boolean;
   mapOpen: boolean;
   phoneOpen: boolean;
@@ -571,6 +579,9 @@ export class Game {
   private menuFocusLerp = 0;
   private menuYaw = 0.25;
   private timeScale = 1;
+  private hitstopTimer = 0;
+  private meleeCallout: string | null = null;
+  private meleeCalloutTimer = 0;
   private holstered = false;
   private weaponWheelOpen = false;
   private mapOpen = false;
@@ -1130,6 +1141,12 @@ export class Game {
       },
       onHit: () => this.sfx.hit(),
       onDeath: () => this.sfx.fall(),
+      onMeleeSwing: (move) => {
+        this.sfx.meleeWhoosh(move.heavy);
+        if (this.phase === "ready" && !this.rig?.dead) {
+          this.emitNoise(this.rig.root.position, move.heavy ? 5.5 : 3.2, 0.28, "footstep");
+        }
+      },
     };
   }
 
@@ -1365,6 +1382,7 @@ export class Game {
       playerVisionRangeMult: () => this.stats.enemyVisionRangeMult * conseq.visionRangeMult,
       difficultyScale: () => DIFFICULTY_PROFILES[this.activeDifficulty],
       onPlayerHit: (dmg) => this.damage(dmg, Math.random() * Math.PI * 2),
+      onPlayerMeleeHit: (dmg, move, attacker) => this.handleIncomingEnemyMelee(dmg, move, attacker),
       onKilled: (e, stealth) => this.onEnemyKilled(e, stealth),
       onAlert: () => this.onFirstContact(),
       onBossEngage: (boss) => this.handleBossEngage(boss),
@@ -1596,8 +1614,16 @@ export class Game {
           if (this.cinematicState) {
             e.preventDefault();
             this.skipCinematic();
+          } else if (this.holstered && (this.mouseR || this.rig?.combat.blocking)) {
+            this.tryMeleeDodge();
           } else {
             this.trigger("jump");
+          }
+          break;
+        case "AltLeft":
+        case "AltRight":
+          if (this.phase === "ready" && !this.paused && !this.mapOpen && !this.phoneOpen && !this.weaponWheelOpen) {
+            this.tryMeleeDodge();
           }
           break;
         case "Enter":
@@ -1677,7 +1703,9 @@ export class Game {
           }
           break;
         case "KeyV":
-          this.tryTakedown();
+          if (!this.tryTakedown()) {
+            this.tryMeleeStrike(true);
+          }
           break;
         case "KeyB":
           if (
@@ -1765,6 +1793,11 @@ export class Game {
         case "KeyO":
           this.trigger("showcase");
           break;
+        case "Digit0":
+          if (this.phase === "ready" && !this.paused && !this.rig?.dead && !this.level?.vehicles?.activeVehicle) {
+            this.setHolstered(true);
+          }
+          break;
         case "Digit1":
           this.selectWeapon(0);
           break;
@@ -1845,6 +1878,19 @@ export class Game {
       }
       if (e.button === 0) {
         this.mouseL = true;
+        if (
+          this.holstered &&
+          this.phase === "ready" &&
+          !this.paused &&
+          !this.binocularsOpen &&
+          !this.rig?.dead &&
+          !this.level?.vehicles?.activeVehicle &&
+          !this.level?.aircraft?.activeAircraft &&
+          !this.level?.boats?.activeBoat &&
+          !this.level?.bodyCarry?.isCarrying
+        ) {
+          this.tryMeleeStrike(this.mouseR);
+        }
       }
       if (e.button === 2) {
         this.mouseR = true;
@@ -3020,6 +3066,7 @@ export class Game {
       playerVisionRangeMult: () => this.stats.enemyVisionRangeMult * conseq.visionRangeMult,
       difficultyScale: () => DIFFICULTY_PROFILES[this.activeDifficulty],
       onPlayerHit: (dmg) => this.damage(dmg, Math.random() * Math.PI * 2),
+      onPlayerMeleeHit: (dmg, move, attacker) => this.handleIncomingEnemyMelee(dmg, move, attacker),
       onKilled: (e, stealth) => this.onEnemyKilled(e, stealth),
       onAlert: () => this.onFirstContact(),
       onBossEngage: (boss) => this.handleBossEngage(boss),
@@ -3433,6 +3480,220 @@ export class Game {
     return true;
   }
 
+  tryMeleeStrike(heavy = false): boolean {
+    if (
+      !this.rig ||
+      this.rig.dead ||
+      this.phase !== "ready" ||
+      this.paused ||
+      this.cinematicState ||
+      this.binocularsOpen ||
+      this.weaponWheelOpen ||
+      this.mapOpen ||
+      this.phoneOpen ||
+      this.level?.vehicles?.activeVehicle ||
+      this.level?.aircraft?.activeAircraft ||
+      this.level?.boats?.activeBoat ||
+      this.level?.bodyCarry?.isCarrying
+    ) {
+      return false;
+    }
+    this.rig.triggerMelee(heavy);
+    return true;
+  }
+
+  tryMeleeDodge(): boolean {
+    if (
+      !this.rig ||
+      this.rig.dead ||
+      this.phase !== "ready" ||
+      this.paused ||
+      this.level?.vehicles?.activeVehicle ||
+      this.level?.aircraft?.activeAircraft ||
+      this.level?.boats?.activeBoat ||
+      this.level?.bodyCarry?.isCarrying
+    ) {
+      return false;
+    }
+    const ay = this.camYaw;
+    const f = (this.keys.has("KeyW") ? 1 : 0) - (this.keys.has("KeyS") ? 1 : 0);
+    const s = (this.keys.has("KeyD") ? 1 : 0) - (this.keys.has("KeyA") ? 1 : 0);
+    let dx = 0;
+    let dz = 0;
+    if (f !== 0 || s !== 0) {
+      dx = Math.sin(ay) * f - Math.cos(ay) * s;
+      dz = Math.cos(ay) * f + Math.sin(ay) * s;
+    } else {
+      // Default quick slip left/back relative to camera yaw
+      dx = -Math.cos(ay) * 0.85 - Math.sin(ay) * 0.52;
+      dz = Math.sin(ay) * 0.85 - Math.cos(ay) * 0.52;
+    }
+    const ok = this.rig.triggerDodge(dx, dz);
+    if (ok) {
+      this.sfx.meleeWhoosh(false);
+      this.meleeCallout = "SLIP";
+      this.meleeCalloutTimer = 0.45;
+    }
+    return ok;
+  }
+
+  private handleIncomingEnemyMelee(dmg: number, move: MeleeMoveDef, attacker: Fighter) {
+    if (!this.rig || this.rig.dead) return;
+    const p = this.rig.root.position;
+    const ap = attacker.rig.root.position;
+    const dx = p.x - ap.x;
+    const dz = p.z - ap.z;
+    const d = Math.hypot(dx, dz) || 1;
+    const nx = dx / d;
+    const nz = dz / d;
+    const contactPt = new THREE.Vector3((p.x + ap.x) * 0.5, p.y + 1.28, (p.z + ap.z) * 0.5);
+
+    const res = this.rig.combat.applyIncomingHit(dmg, move.hitstun, move.guardBreak, false);
+    if (res.parried) {
+      this.sfx.meleeParry();
+      this.fx.meleeImpact(contactPt, true, true);
+      this.hitstopTimer = 0.085;
+      this.camKick.kick(0.75);
+      attacker.rig.combat.inflictStagger(1.05, false);
+      attacker.rig.applyKnockback(-nx * 4.5, -nz * 4.5);
+      this.meleeCallout = "PERFECT PARRY!";
+      this.meleeCalloutTimer = 0.95;
+      this.emitHud();
+      return;
+    }
+
+    if (res.blocked) {
+      this.sfx.meleeHit(move.heavy, true);
+      this.fx.meleeImpact(contactPt, false, false);
+      this.rig.applyKnockback(nx * move.knockback * 0.3, nz * move.knockback * 0.3);
+      this.damage(res.damageTaken, Math.atan2(ap.x - p.x, ap.z - p.z));
+      this.meleeCallout = "BLOCKED";
+      this.meleeCalloutTimer = 0.5;
+      return;
+    }
+
+    if (res.damageTaken <= 0) {
+      this.meleeCallout = "EVADED";
+      this.meleeCalloutTimer = 0.45;
+      return;
+    }
+
+    this.sfx.meleeHit(move.heavy, false);
+    this.fx.meleeImpact(contactPt, false, move.heavy);
+    this.rig.applyKnockback(nx * move.knockback * 0.55, nz * move.knockback * 0.55);
+    this.damage(res.damageTaken, Math.atan2(ap.x - p.x, ap.z - p.z));
+    if (res.guardBroken) {
+      this.meleeCallout = "GUARD BROKEN!";
+      this.meleeCalloutTimer = 0.85;
+    }
+  }
+
+  private resolvePlayerMeleeHits() {
+    const rig = this.rig;
+    if (!rig || rig.dead || this.phase !== "ready") return;
+    const move = rig.combat.activeHitWindow;
+    if (!move) return;
+
+    const p = rig.root.position;
+    const fwdX = Math.sin(this.yaw);
+    const fwdZ = Math.cos(this.yaw);
+    const dmg = Math.round(move.damage * this.stats.damageMult);
+
+    // 1. Check mission & contract-compound enemies
+    let bestEnemy: Enemy | null = null;
+    let bestScore = Infinity;
+    for (const e of this.enemies) {
+      if (e.isDead || !e.rig) continue;
+      const ep = e.rig.root.position;
+      if (Math.abs(p.y - ep.y) > 1.45) continue;
+      const dx = ep.x - p.x;
+      const dz = ep.z - p.z;
+      const d = Math.hypot(dx, dz);
+      if (d > move.range + 0.38) continue;
+      const dot = d > 0.05 ? (dx / d) * fwdX + (dz / d) * fwdZ : 1;
+      if (dot < move.arcDot && d > 0.95) continue;
+      if (d < bestScore) {
+        bestScore = d;
+        bestEnemy = e;
+      }
+    }
+
+    if (bestEnemy) {
+      const ep = bestEnemy.rig.root.position;
+      const dx = ep.x - p.x;
+      const dz = ep.z - p.z;
+      const d = Math.hypot(dx, dz) || 1;
+      const nx = dx / d;
+      const nz = dz / d;
+      const eFwdX = Math.sin(bestEnemy.rig.aimYaw);
+      const eFwdZ = Math.cos(bestEnemy.rig.aimYaw);
+      const stealthRear = bestEnemy.isUnaware && eFwdX * nx + eFwdZ * nz > 0.25;
+      const hitPt = new THREE.Vector3((p.x + ep.x) * 0.5, ep.y + 1.28, (p.z + ep.z) * 0.5);
+
+      const res = bestEnemy.takeMeleeHit(dmg, move, nx, nz, stealthRear, hitPt);
+      rig.combat.markHitConnected();
+      this.sfx.meleeHit(move.heavy, res.blocked);
+      this.hitstopTimer = res.blocked ? 0.025 : move.hitstopSec;
+      this.hitMarker = 0.22;
+      this.hitKill = res.killed;
+      this.camKick.kick(move.heavy ? 0.72 : 0.38);
+      if (res.blocked) {
+        this.meleeCallout = "GUARDED";
+        this.meleeCalloutTimer = 0.45;
+      } else if (res.killed && stealthRear) {
+        this.meleeCallout = "STEALTH KO";
+        this.meleeCalloutTimer = 0.85;
+      } else if (rig.combat.comboCount >= 2) {
+        this.meleeCallout = `${rig.combat.comboCount}× ${move.label}`;
+        this.meleeCalloutTimer = 0.85;
+      }
+      this.emitHud();
+      return;
+    }
+
+    // 2. Open-world targets: Surveillance contract target/colleagues, Police Officers, and Pedestrians
+    const probeX = p.x + fwdX * (move.range * 0.62);
+    const probeY = p.y + 1.18;
+    const probeZ = p.z + fwdZ * (move.range * 0.62);
+    const hitPt = new THREE.Vector3(probeX, probeY, probeZ);
+
+    if (this.mission?.id === -1) {
+      if (this.level?.contracts?.hitAtPoint(probeX, probeY, probeZ, dmg, true, p)) {
+        rig.combat.markHitConnected();
+        this.sfx.meleeHit(move.heavy, false);
+        this.fx.meleeImpact(hitPt, false, move.heavy);
+        this.hitstopTimer = move.hitstopSec;
+        this.hitMarker = 0.24;
+        this.camKick.kick(move.heavy ? 0.65 : 0.35);
+        this.emitHud();
+        return;
+      }
+      if (this.level?.wanted?.hitAtPoint(probeX, probeY, probeZ, dmg)) {
+        rig.combat.markHitConnected();
+        this.sfx.meleeHit(move.heavy, false);
+        this.fx.meleeImpact(hitPt, false, move.heavy);
+        this.hitstopTimer = move.hitstopSec;
+        this.hitMarker = 0.22;
+        this.camKick.kick(move.heavy ? 0.65 : 0.35);
+        this.emitHud();
+        return;
+      }
+      const ped = this.level?.pedestrians?.hitAtPoint(probeX, probeY, probeZ, 0.95, dmg);
+      if (ped) {
+        rig.combat.markHitConnected();
+        this.sfx.meleeHit(move.heavy, false);
+        this.fx.meleeImpact(hitPt, false, move.heavy);
+        this.hitstopTimer = move.hitstopSec;
+        this.hitMarker = 0.22;
+        this.hitKill = ped.dead;
+        this.camKick.kick(move.heavy ? 0.65 : 0.35);
+        this.level?.wanted?.reportCrime("assault", p);
+        this.emitHud();
+        return;
+      }
+    }
+  }
+
   /* ------------------------------------------------------------ */
   private onShot(muzzle: THREE.Vector3, kick: number) {
     const rig = this.rig;
@@ -3754,7 +4015,14 @@ export class Game {
   private frame(rawDt: number) {
     if (this.phase === "loading") return;
     const rig = this.rig;
-    const dt = rawDt * this.timeScale;
+    if (this.hitstopTimer > 0) {
+      this.hitstopTimer = Math.max(0, this.hitstopTimer - rawDt);
+    }
+    if (this.meleeCalloutTimer > 0) {
+      this.meleeCalloutTimer = Math.max(0, this.meleeCalloutTimer - rawDt);
+      if (this.meleeCalloutTimer <= 0) this.meleeCallout = null;
+    }
+    const dt = rawDt * this.timeScale * (this.hitstopTimer > 0 ? 0.08 : 1);
 
     // ---- HUD
     this.fpsAcc += rawDt;
@@ -4088,7 +4356,9 @@ export class Game {
         rig.input.move.copy(mv);
         rig.input.sprint = !inIntroCine && (k.has("ShiftLeft") || k.has("ShiftRight") || this.uiHeld.sprint);
         rig.input.crouch = this.crouchToggle;
-        rig.input.ads = !inIntroCine && !this.holstered && !this.weaponWheelOpen && !this.mapOpen && !this.phoneOpen && (this.mouseR || this.uiHeld.ads);
+        const canCombatInput = !inIntroCine && !this.binocularsOpen && !this.weaponWheelOpen && !this.mapOpen && !this.phoneOpen;
+        rig.input.ads = canCombatInput && !this.holstered && (this.mouseR || this.uiHeld.ads);
+        rig.setCombatBlock(canCombatInput && this.holstered && (this.mouseR || this.uiHeld.ads));
         rig.input.lean = inIntroCine ? 0 : (k.has("KeyQ") ? 1 : 0) - (k.has("KeyE") ? 1 : 0);
         rig.aimYaw = this.yaw;
         rig.aimPitch = this.pitch;
@@ -4219,7 +4489,8 @@ export class Game {
         }
         this.level?.updateWeatherFx?.(dt, this.camera.position, this.camera, rig.speed);
 
-        /* ---- firing ---- */
+        /* ---- firing & melee hit resolution ---- */
+        this.resolvePlayerMeleeHits();
         const wantFire = !this.cinematicState && !this.holstered && !this.binocularsOpen && !this.weaponWheelOpen && !this.mapOpen && !this.phoneOpen && (this.mouseL || this.uiHeld.fire);
         if (wantFire && !dead) {
           if (rig.mag <= 0 && rig.reserve > 0 && !rig.isReloading) {
@@ -6739,6 +7010,13 @@ export class Game {
       aimSensitivity: this.aimSensitivity,
       invertY: this.invertY,
       holstered: this.holstered,
+      melee: {
+        active: this.holstered && !this.level?.vehicles?.activeVehicle && !this.level?.aircraft?.activeAircraft && !this.level?.boats?.activeBoat,
+        combo: this.rig?.combat.comboCount ?? 0,
+        blocking: this.rig?.combat.blocking ?? false,
+        moveLabel: this.rig?.combat.currentMove?.label ?? null,
+        callout: this.meleeCallout,
+      },
       weaponWheelOpen: this.weaponWheelOpen,
       mapOpen: this.mapOpen,
       phoneOpen: this.phoneOpen,
