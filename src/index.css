@@ -1,1 +1,118 @@
 @import "tailwindcss";
+@import "@fontsource/barlow-condensed/600.css";
+@import "@fontsource/barlow-condensed/700.css";
+@import "@fontsource/barlow-condensed/800.css";
+@import "@fontsource/space-grotesk/400.css";
+@import "@fontsource/space-grotesk/500.css";
+@import "@fontsource/space-grotesk/600.css";
+@import "@fontsource/space-grotesk/700.css";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/600.css";
+@import "@fontsource/jetbrains-mono/700.css";
+@import "augmented-ui/augmented-ui.min.css";
+
+@theme {
+  --font-display: "Barlow Condensed", sans-serif;
+  --font-sans: "Space Grotesk", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+}
+
+:root {
+  --voss-bg: #07080b;
+  --voss-surface: rgba(14, 16, 22, 0.88);
+  --voss-surface-solid: #0e1016;
+  --voss-hairline: rgba(242, 239, 233, 0.12);
+  --voss-bone: #f2efe9;
+  --voss-muted: #8a909e;
+  --voss-signal: #ff3b30;
+  --voss-gold: #e5a93c;
+  --voss-ice: #38bdf8;
+  --voss-emerald: #2dd4bf;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 59, 48, 0.45) rgba(255, 255, 255, 0.04);
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--voss-bg);
+  color: var(--voss-bone);
+  overflow: hidden;
+}
+
+.font-display {
+  font-family: var(--font-display);
+}
+
+/* Precision chamfered tactical panels powered by augmented-ui */
+.voss-panel {
+  --aug-border-bg: rgba(242, 239, 233, 0.18);
+  --aug-border-all: 1px;
+  --aug-inlay-bg: rgba(10, 12, 17, 0.9);
+  --aug-inlay-all: 0px;
+  --aug-tl: 10px;
+  --aug-tr: 10px;
+  --aug-br: 18px;
+  --aug-bl: 10px;
+}
+
+.voss-panel-sharp {
+  --aug-border-bg: rgba(242, 239, 233, 0.22);
+  --aug-border-all: 1px;
+  --aug-inlay-bg: rgba(9, 11, 16, 0.92);
+  --aug-inlay-all: 0px;
+  --aug-tl: 0px;
+  --aug-tr: 14px;
+  --aug-br: 0px;
+  --aug-bl: 14px;
+}
+
+.voss-panel-signal {
+  --aug-border-bg: rgba(255, 59, 48, 0.72);
+  --aug-border-all: 1px;
+  --aug-inlay-bg: rgba(22, 10, 12, 0.92);
+  --aug-inlay-all: 0px;
+  --aug-tl: 0px;
+  --aug-tr: 12px;
+  --aug-br: 12px;
+  --aug-bl: 0px;
+}
+
+.voss-grid-bg {
+  background-image:
+    linear-gradient(to right, rgba(242, 239, 233, 0.035) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(242, 239, 233, 0.035) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+
+.voss-scanline {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.015) 0px,
+    rgba(255, 255, 255, 0.015) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes eqPulse {
+  0%, 100% {
+    transform: scaleY(0.35);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}

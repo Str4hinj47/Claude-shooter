@@ -6,15 +6,33 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test:world": "node test/surveillance-boat-test.mjs && node test/house-models-test.mjs",
+    "optimize:models": "node scripts/optimize-models.mjs"
   },
   "dependencies": {
+    "@fontsource/barlow-condensed": "^5.3.0",
+    "@fontsource/jetbrains-mono": "^5.3.0",
+    "@fontsource/space-grotesk": "^5.3.0",
+    "@left4code/svg-renderer": "^1.0.7",
+    "@recast-navigation/three": "^0.44.0",
+    "@tweenjs/tween.js": "^25.0.0",
     "@types/three": "^0.187.0",
+    "augmented-ui": "^2.0.0",
     "clsx": "2.1.1",
+    "jolt-physics": "^1.1.2",
+    "lucide-react": "^1.79.0",
+    "n8ao": "^2.1.0",
+    "postprocessing": "^6.39.6",
     "react": "19.2.6",
     "react-dom": "19.2.6",
+    "recast-navigation": "^0.44.0",
+    "simplex-noise": "^4.0.3",
     "tailwind-merge": "3.4.0",
-    "three": "^0.187.0"
+    "three": "^0.187.0",
+    "three-mesh-bvh": "^0.10.0",
+    "three-subdivide": "^1.1.5"
   },
   "devDependencies": {
     "@sparticuz/chromium": "^153.0.0",
@@ -23,6 +41,7 @@
     "@types/react": "19.2.7",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "5.1.1",
+    "gltfpack": "^1.3.0",
     "puppeteer-core": "^25.17.0",
     "tailwindcss": "4.1.17",
     "typescript": "5.9.3",

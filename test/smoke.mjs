@@ -45,23 +45,23 @@ try {
   await shot("01-menu");
 
   // sanity: menu rendered?
-  const hasMenu = await page.evaluate(() => document.body.innerText.includes("Blackout Protocol"));
+  const hasMenu = await page.evaluate(() => document.body.innerText.includes("VOSS"));
   console.log("menu visible:", hasMenu);
 
-  // deploy mission 1 (First Light)
+  // deploy mission 1 (Paper Trail)
   await page.evaluate(() => {
     const cards = [...document.querySelectorAll("button")];
-    const m1 = cards.find((b) => b.textContent?.includes("FIRST LIGHT"));
+    const m1 = cards.find((b) => b.textContent?.includes("PAPER TRAIL"));
     m1?.click();
   });
   await new Promise((r) => setTimeout(r, 800));
   await shot("02-briefing");
-  const briefOk = await page.evaluate(() => document.body.innerText.includes("Deploy"));
+  const briefOk = await page.evaluate(() => document.body.innerText.includes("Deploy Operation"));
   console.log("briefing visible:", briefOk);
 
   await page.evaluate(() => {
     const btns = [...document.querySelectorAll("button")];
-    btns.find((b) => b.textContent?.trim() === "Deploy")?.click();
+    btns.find((b) => b.textContent?.includes("Deploy Operation"))?.click();
   });
   console.log("→ deployed mission 1, waiting for ready…");
   await new Promise((r) => setTimeout(r, 9000));
@@ -115,12 +115,12 @@ try {
 
   await page.evaluate(() => {
     const cards = [...document.querySelectorAll("button")];
-    cards.find((b) => b.textContent?.includes("CONCRETE HEART"))?.click();
+    cards.find((b) => b.textContent?.includes("GLASS VAULT"))?.click();
   });
   await new Promise((r) => setTimeout(r, 600));
   await page.evaluate(() => {
     const btns = [...document.querySelectorAll("button")];
-    btns.find((b) => b.textContent?.trim() === "Deploy")?.click();
+    btns.find((b) => b.textContent?.includes("Deploy Operation"))?.click();
   });
   console.log("→ deployed mission 2…");
   await new Promise((r) => setTimeout(r, 9000));
@@ -132,7 +132,7 @@ try {
   console.log("mission2 state:", JSON.stringify(state2));
 
   // mission 4 (port, night) + mission 5 (HQ, storm) quick load checks
-  for (const [name, code] of [["M4", "IRON TIDE"], ["M5", "BLACKOUT"]]) {
+  for (const [name, code] of [["M4", "BLACK LEDGER"], ["M5", "HOSTILE TAKEOVER"]]) {
     await page.evaluate(() => {
       document.querySelector("canvas")?.blur();
     });
@@ -150,7 +150,7 @@ try {
     await new Promise((r) => setTimeout(r, 500));
     await page.evaluate(() => {
       const btns = [...document.querySelectorAll("button")];
-      btns.find((b) => b.textContent?.trim() === "Deploy")?.click();
+      btns.find((b) => b.textContent?.includes("Deploy Operation"))?.click();
     });
     console.log("→ deployed", name);
     await new Promise((r) => setTimeout(r, 9000));
