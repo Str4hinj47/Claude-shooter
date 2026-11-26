@@ -103,7 +103,7 @@ int main(int argc, char** argv) {
   uiInfo.Device = gpu.device();
   uiInfo.NumFramesInFlight = 3;
   uiInfo.RenderTargetFormat = gpu.surfaceFormat();
-  uiInfo.DepthStencilFormat = gpu.depthFormat();
+  uiInfo.DepthStencilFormat = WGPUTextureFormat_Undefined;
   ImGui_ImplWGPU_Init(&uiInfo);
 
   westgate::WorldRenderer renderer;
