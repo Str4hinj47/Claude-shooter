@@ -50,6 +50,7 @@ import { DEFAULT_BODY_STATS } from "./game/bodyStats";
 import { WEAPONS } from "./character/rifle";
 import { MenuShell, type Screen } from "./components/MenuShell";
 import { GameHud } from "./components/GameHud";
+import { GameLauncher } from "./components/GameLauncher";
 import { PauseAndEndOverlays } from "./components/PauseAndEndOverlays";
 import type { HomeModalKind } from "./components/InteriorModals";
 
@@ -186,6 +187,10 @@ export default function App() {
   const [customWaypoint, setCustomWaypoint] = useState<GpsWaypoint | null>(null);
   const [endInfo, setEndInfo] = useState<{ mission: MissionDef; success: boolean; reward?: MissionReward } | null>(null);
   const [homeModal, setHomeModal] = useState<{ kind: HomeModalKind; apartmentId?: ApartmentId; carId?: CarId } | null>(null);
+  const [launchState, setLaunchState] = useState<{ launched: boolean; autoOpenWorld: boolean }>({
+    launched: false,
+    autoOpenWorld: false,
+  });
 
   const selectedCharacter = CHARACTERS.find((c) => c.id === DEFAULT_CHARACTER) ?? CHARACTERS[0];
 
@@ -195,14 +200,17 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (!host.current) return;
-    const g = new Game(host.current, setHud, { initialHangar: true });
+    if (!launchState.launched || !host.current) return;
+    const g = new Game(host.current, setHud, { initialHangar: !launchState.autoOpenWorld });
     game.current = g;
+    if (launchState.autoOpenWorld) {
+      startMission(MISSIONS[0]);
+    }
     return () => {
       g.dispose();
       game.current = null;
     };
-  }, []);
+  }, [launchState.launched]);
 
   useEffect(() => {
     game.current?.setMenuWeaponFocus(screen === "upgrades");
@@ -494,7 +502,15 @@ export default function App() {
       {/* Live 3D viewport (Menu Spotlight OR Active Mission / Westgate Bay) */}
       <div ref={host} className="absolute inset-0" />
 
-      {!playing && (
+      {!launchState.launched && (
+        <GameLauncher
+          onLaunch={({ autoStartOpenWorld }) => {
+            setLaunchState({ launched: true, autoOpenWorld: autoStartOpenWorld });
+          }}
+        />
+      )}
+
+      {launchState.launched && !playing && (
         <MenuShell
           screen={screen}
           setScreen={setScreen}
@@ -534,7 +550,7 @@ export default function App() {
         />
       )}
 
-      {playing && (
+      {launchState.launched && playing && (
         <>
           <GameHud
             hud={hud}

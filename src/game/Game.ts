@@ -39,6 +39,12 @@ import {
 } from "./story";
 import type { ContractSpotDef } from "./city/WestgateActivities";
 import { FIGHT_PIT_CENTER, type FightPitHudState } from "./city/UndergroundFightPit";
+import {
+  getLauncherProfile,
+  markBootStarted,
+  markBootSucceeded,
+  saveLauncherPreset,
+} from "./launcherConfig";
 import { createInteractableProp, type InteractableInstance } from "./interactables";
 import {
   APARTMENTS,
@@ -754,6 +760,7 @@ export class Game {
   private frameMsEma = 16.6;
   private perfEvalT = 0;
   private perfUpgradeT = 0;
+  private bootStableFrames = 0;
   private readonly audioFwdTmp = new THREE.Vector3();
   private readonly audioUpTmp = new THREE.Vector3();
   private lastCamFov = -1;
@@ -784,12 +791,13 @@ export class Game {
   ) {
     installBvhPatches();
     (this.raycaster as THREE.Raycaster & { firstHitOnly?: boolean }).firstHitOnly = true;
-    this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance", preserveDrawingBuffer: false });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    const gfx = getLauncherProfile();
+    this.renderer = new THREE.WebGLRenderer({ antialias: !gfx.useComposer, powerPreference: "high-performance", preserveDrawingBuffer: false });
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, gfx.maxDpr));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.0;
-    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.enabled = gfx.shadowsEnabled;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.domElement.style.display = "block";
     this.renderer.domElement.tabIndex = 0;
@@ -1288,6 +1296,8 @@ export class Game {
     this.stationAutoCooldown.clear();
     this.vehAudio.setActive(false);
     this.engineHud = null;
+    this.bootStableFrames = 0;
+    markBootStarted();
     this.phase = "loading";
     this.applyStatsToRig();
     this.stamina = this.maxStamina;
@@ -1493,14 +1503,16 @@ export class Game {
         }
       });
 
-      const jolt = new JoltPhysicsWorld(this.missionRoot);
-      this.joltPhysics = jolt;
-      void jolt.initFromLevel(this.level.aabbs, 0).then((ok) => {
-        if (!ok && this.joltPhysics === jolt) {
-          jolt.dispose();
-          this.joltPhysics = null;
-        }
-      });
+      if (getLauncherProfile().enableJolt) {
+        const jolt = new JoltPhysicsWorld(this.missionRoot);
+        this.joltPhysics = jolt;
+        void jolt.initFromLevel(this.level.aabbs, 0).then((ok) => {
+          if (!ok && this.joltPhysics === jolt) {
+            jolt.dispose();
+            this.joltPhysics = null;
+          }
+        });
+      }
     }
 
     // spawn enemies (parallel GLB builds after first asset cache warm-up)
@@ -2121,6 +2133,10 @@ export class Game {
     on(el, "webglcontextlost", (e: Event) => {
       e.preventDefault();
       this.contextLost = true;
+      saveLauncherPreset("safe");
+      this.renderer.shadowMap.enabled = false;
+      this.composer = null;
+      this.n8aoPass = null;
     });
     on(el, "webglcontextrestored", () => {
       this.contextLost = false;
@@ -2164,6 +2180,16 @@ export class Game {
   }
 
   private initPostProcessing() {
+    const gfx = getLauncherProfile();
+    this.renderer.shadowMap.enabled = gfx.shadowsEnabled;
+    if (!gfx.useComposer) {
+      this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      this.composer = null;
+      this.n8aoPass = null;
+      this.bloomEffect = null;
+      this.smaaEffect = null;
+      return;
+    }
     try {
       const w = Math.max(2, this.container.clientWidth || window.innerWidth);
       const h = Math.max(2, this.container.clientHeight || window.innerHeight);
@@ -2174,17 +2200,25 @@ export class Game {
       composer.setSize(w, h, false);
       composer.addPass(new RenderPass(this.scene, this.camera));
 
-      // Half-res bilateral-upsampled N8AO avoids full-res fragment stalls while preserving contact AO
-      const n8ao = new N8AOPostPass(this.scene, this.camera, w, h);
-      n8ao.configuration.halfRes = true;
-      n8ao.configuration.aoSamples = 8;
-      n8ao.configuration.denoiseSamples = 4;
-      n8ao.configuration.aoRadius = 2.4;
-      n8ao.configuration.distanceFalloff = 1.0;
-      n8ao.configuration.intensity = 2.0;
-      composer.addPass(n8ao);
+      let n8ao: N8AOPostPass | null = null;
+      if (gfx.useN8ao) {
+        n8ao = new N8AOPostPass(this.scene, this.camera, w, h);
+        n8ao.configuration.halfRes = true;
+        n8ao.configuration.aoSamples = 8;
+        n8ao.configuration.denoiseSamples = 4;
+        n8ao.configuration.aoRadius = 2.4;
+        n8ao.configuration.distanceFalloff = 1.0;
+        n8ao.configuration.intensity = 2.0;
+        composer.addPass(n8ao);
+      }
 
-      const smaa = new SMAAEffect({ preset: SMAAPreset.HIGH });
+      const smaaPreset =
+        gfx.smaaPreset === "HIGH"
+          ? SMAAPreset.HIGH
+          : gfx.smaaPreset === "LOW"
+            ? SMAAPreset.LOW
+            : SMAAPreset.MEDIUM;
+      const smaa = new SMAAEffect({ preset: smaaPreset });
       const bloom = new BloomEffect({
         mipmapBlur: true,
         luminanceThreshold: 1.04,
@@ -2219,7 +2253,8 @@ export class Game {
 
   private applyPerfTier() {
     const nativeDpr = window.devicePixelRatio || 1;
-    const cap = this.perfTier === 0 ? 1.5 : this.perfTier === 1 ? 1.25 : 1.0;
+    const baseCap = getLauncherProfile().maxDpr;
+    const cap = this.perfTier === 0 ? baseCap : this.perfTier === 1 ? Math.min(baseCap, 1.15) : 1.0;
     const nextDpr = Math.min(nativeDpr, cap);
     if (Math.abs(this.renderer.getPixelRatio() - nextDpr) > 0.02) {
       this.renderer.setPixelRatio(nextDpr);
@@ -4756,6 +4791,10 @@ export class Game {
     }
     this.damageFlash = Math.max(0, this.damageFlash - rawDt * 2.2);
     if (this.phase === "ready" && !this.paused) {
+      if (this.bootStableFrames < 6) {
+        this.bootStableFrames++;
+        if (this.bootStableFrames === 6) markBootSucceeded();
+      }
       const frameMs = clamp(rawDt * 1000, 4, 80);
       this.frameMsEma = lerp(this.frameMsEma, frameMs, 0.08);
       this.perfEvalT += rawDt;

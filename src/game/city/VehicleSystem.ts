@@ -31,6 +31,7 @@ import {
   type OvertakeVehicleState,
 } from "../vehicles/physics";
 import { APARTMENTS, DEFAULT_CAR_CUSTOM, getCarCustomConfig, loadSave } from "../progression";
+import { getLauncherProfile } from "../launcherConfig";
 import { SAFEHOUSE_CAR_SPOT, SAFEHOUSE_SPAWN } from "./SafehouseResidence";
 import { WESTGATE_CONTRACT_SPOTS } from "./WestgateActivities";
 import { WESTGATE_TELEPORTS } from "./WestgateMeta";
@@ -613,13 +614,11 @@ export class WestgateVehicleManager {
           "semi",
           "kraz",
         ];
-        const queue = npcFleet.filter((id) => id !== save.selectedCar);
-        for (let i = 0; i < queue.length; i += 2) {
+        const maxFleet = Math.max(1, getLauncherProfile().maxTrafficModels - 1);
+        const queue = npcFleet.filter((id) => id !== save.selectedCar).slice(0, maxFleet);
+        for (let i = 0; i < queue.length; i++) {
           if (this.disposed) return;
-          await Promise.all([
-            this.streamModel(queue[i]),
-            queue[i + 1] ? this.streamModel(queue[i + 1]) : Promise.resolve(),
-          ]);
+          await this.streamModel(queue[i]);
         }
       })();
     }

@@ -33,6 +33,7 @@ import { AirVehicleSystem } from "../vehicles/air/AirVehicleSystem";
 import { BoatSystem } from "../vehicles/water/BoatSystem";
 import { buildWestgateApartments, type ApartmentSystem } from "./Apartments";
 import { loadSave } from "../progression";
+import { getLauncherProfile } from "../launcherConfig";
 import {
   createWeatherState,
   stepWeather,
@@ -128,7 +129,8 @@ export function buildWestgateWorld(
   const iblSky = createRealisticSky(initialSkyState);
   skyScene.add(iblSky.mesh);
 
-  const cubeRT = new THREE.WebGLCubeRenderTarget(128, { type: THREE.HalfFloatType });
+  const gfxProfile = getLauncherProfile();
+  const cubeRT = new THREE.WebGLCubeRenderTarget(gfxProfile.cubeSize, { type: THREE.HalfFloatType });
   const cubeCam = new THREE.CubeCamera(1, 10000, cubeRT);
   const pmrem = new THREE.PMREMGenerator(renderer);
   const envCache = new Map<string, THREE.WebGLRenderTarget>();
@@ -156,10 +158,10 @@ export function buildWestgateWorld(
   main.fog = new THREE.FogExp2(0xadd0e8, 0.00038);
   renderer.toneMappingExposure = 0.96;
 
-  // 2. Dual-Cascade Directional Sun Rig (2.5cm/texel crisp near cascade + 175m far skyline/mountain cascade)
+  // 2. Dual-Cascade Directional Sun Rig (scaled by Launcher Graphics Profile)
   const sun = new THREE.DirectionalLight(0xfff1dc, 1.74);
-  sun.castShadow = true;
-  sun.shadow.mapSize.set(1536, 1536);
+  sun.castShadow = gfxProfile.shadowsEnabled;
+  sun.shadow.mapSize.set(gfxProfile.nearShadowSize, gfxProfile.nearShadowSize);
   const sc = sun.shadow.camera;
   sc.left = -26;
   sc.right = 26;
@@ -173,8 +175,8 @@ export function buildWestgateWorld(
   content.add(sun, sun.target);
 
   const sunFar = new THREE.DirectionalLight(0xfff1dc, 0.61);
-  sunFar.castShadow = true;
-  sunFar.shadow.mapSize.set(1024, 1024);
+  sunFar.castShadow = gfxProfile.shadowsEnabled && gfxProfile.farShadowEnabled;
+  sunFar.shadow.mapSize.set(gfxProfile.farShadowSize, gfxProfile.farShadowSize);
   const scFar = sunFar.shadow.camera;
   scFar.left = -175;
   scFar.right = 175;
@@ -196,10 +198,10 @@ export function buildWestgateWorld(
   const engine = new OpenWorldEngine({
     chunkBuilder: (chunk) => dispatcher.buildChunk(chunk, terrainAt, engine.roads),
     chunkOptions: {
-      nearRadius: 280,
-      lodRadius: 960,
+      nearRadius: gfxProfile.nearRadius,
+      lodRadius: gfxProfile.lodRadius,
       hysteresis: 28,
-      maxBuildsPerFrame: 3,
+      maxBuildsPerFrame: gfxProfile.id === "safe" ? 1 : 2,
     },
   });
   populateWestgateRoads(engine.roads);

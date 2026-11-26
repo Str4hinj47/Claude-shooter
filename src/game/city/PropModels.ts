@@ -3,6 +3,7 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
 import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
 import { mergeGeometries, toCreasedNormals } from "three/examples/jsm/utils/BufferGeometryUtils.js";
+import { getLauncherProfile } from "../launcherConfig";
 
 export interface CityGltfAsset {
   scene: THREE.Group;
@@ -11,6 +12,23 @@ export interface CityGltfAsset {
 
 let sharedLoader: GLTFLoader | null = null;
 const modelCache = new Map<string, Promise<CityGltfAsset | null>>();
+const MAX_CONCURRENT_CITY_GLBS = 2;
+let activeCityGlbLoads = 0;
+const cityGlbQueue: Array<() => void> = [];
+
+async function withCityGlbSlot<T>(fn: () => Promise<T>): Promise<T> {
+  if (activeCityGlbLoads >= MAX_CONCURRENT_CITY_GLBS) {
+    await new Promise<void>((resolve) => cityGlbQueue.push(resolve));
+  }
+  activeCityGlbLoads++;
+  try {
+    return await fn();
+  } finally {
+    activeCityGlbLoads--;
+    const next = cityGlbQueue.shift();
+    if (next) next();
+  }
+}
 
 function getLoader(): GLTFLoader | null {
   if (typeof window === "undefined" || typeof fetch !== "function") return null;
@@ -37,10 +55,11 @@ export function loadCityGltf(filename: string): Promise<CityGltfAsset | null> {
   let pending = modelCache.get(filename);
   if (!pending) {
     const base = (import.meta as unknown as { env?: { BASE_URL?: string } }).env?.BASE_URL ?? "/";
-    pending = (async () => {
+    pending = withCityGlbSlot(async () => {
       try {
         await MeshoptDecoder.ready;
         const gltf = await loader.loadAsync(`${base}models/${filename}`);
+        const maxAniso = getLauncherProfile().maxAnisotropy;
         gltf.scene.traverse((o) => {
           const m = o as THREE.Mesh;
           if (!m.isMesh) return;
@@ -48,10 +67,15 @@ export function loadCityGltf(filename: string): Promise<CityGltfAsset | null> {
           m.receiveShadow = true;
           m.userData.sharedGltfAsset = true;
           const norm = m.geometry?.getAttribute?.("normal");
+          const posCount = m.geometry?.getAttribute?.("position")?.count ?? 0;
           if (norm && (norm.array instanceof Int8Array || norm.array instanceof Int16Array)) {
-            try {
-              m.geometry = toCreasedNormals(m.geometry, (44 * Math.PI) / 180);
-            } catch {
+            if (posCount <= 4000) {
+              try {
+                m.geometry = toCreasedNormals(m.geometry, (44 * Math.PI) / 180);
+              } catch {
+                m.geometry.computeVertexNormals();
+              }
+            } else {
               m.geometry.computeVertexNormals();
             }
           }
@@ -64,7 +88,7 @@ export function loadCityGltf(filename: string): Promise<CityGltfAsset | null> {
                 tex.magFilter = THREE.LinearFilter;
                 tex.minFilter = THREE.LinearMipmapLinearFilter;
                 tex.generateMipmaps = true;
-                tex.anisotropy = 16;
+                tex.anisotropy = maxAniso;
                 tex.needsUpdate = true;
               }
             }
@@ -74,7 +98,7 @@ export function loadCityGltf(filename: string): Promise<CityGltfAsset | null> {
       } catch {
         return null;
       }
-    })();
+    });
     modelCache.set(filename, pending);
   }
   return pending.then((src) => (src ? { scene: src.scene.clone(true), animations: src.animations } : null));
@@ -183,6 +207,7 @@ export function attachGlbToGroup(
   opts: AttachGlbOptions,
 ): void {
   if (typeof window === "undefined") return;
+  if (opts.fitFootprint && !getLauncherProfile().maxHouseGlbs) return;
   void loadCityGlb(filename).then((raw) => {
     if (!raw) return;
     const fitted = opts.fitFootprint

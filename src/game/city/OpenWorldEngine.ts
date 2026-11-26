@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { SpatialAABBGrid, SpatialColliderGrid } from "./SpatialIndex";
+import { getLauncherProfile } from "../launcherConfig";
 import { WorldHeightSystem, type TerrainHeightFn } from "./HeightSystem";
 import { ChunkStreamer, type ChunkBuildFn, type ChunkStats, type ChunkStreamerOptions } from "./ChunkStreamer";
 import { PropBatcher, type PropBatchStats } from "./PropBatcher";
@@ -113,7 +114,8 @@ export class OpenWorldEngine implements VehicleKitWorldBridge {
     this.staticPropsRoot.matrixAutoUpdate = false;
 
     // Prewarm near + mid skyline around player spawn; outer LOD ring streams smoothly
-    this.chunks.prewarm(spawnX, spawnZ, this.chunks.nearRadius + 160);
+    const prewarmR = getLauncherProfile().prewarmRadius;
+    this.chunks.prewarm(spawnX, spawnZ, prewarmR);
   }
 
   update(focus: THREE.Vector3): void {
