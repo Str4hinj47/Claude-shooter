@@ -113,9 +113,10 @@ export class OpenWorldEngine implements VehicleKitWorldBridge {
     this.staticPropsRoot.updateMatrix();
     this.staticPropsRoot.matrixAutoUpdate = false;
 
-    // Prewarm near + mid skyline around player spawn; outer LOD ring streams smoothly
+    // Prewarm immediate spawn bubble synchronously; stream outer ring via WestgateEngineCore jobs
     const prewarmR = getLauncherProfile().prewarmRadius;
-    this.chunks.prewarm(spawnX, spawnZ, prewarmR);
+    const isBrowser = typeof requestAnimationFrame === "function";
+    this.chunks.prewarm(spawnX, spawnZ, prewarmR, isBrowser);
   }
 
   update(focus: THREE.Vector3): void {

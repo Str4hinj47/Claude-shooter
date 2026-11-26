@@ -55,6 +55,50 @@ export function GameHud({
     <>
       {/* Subtle cinematic edge vignette & damage pulse */}
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_58%,rgba(0,0,0,0.52)_100%)]" />
+      {hud.engineTelemetry && (
+        <div className="pointer-events-none fixed left-4 top-20 z-30 border border-[#38bdf8]/40 bg-[#070a0f]/88 px-3 py-2 font-mono text-[10px] leading-relaxed text-[#cbd5e1] backdrop-blur-md">
+          <div className="flex items-center justify-between gap-4 border-b border-white/10 pb-1 text-[10px] font-bold uppercase tracking-wider text-[#38bdf8]">
+            <span>{hud.engineTelemetry.engineName}</span>
+            <span className="text-[#f59e0b]">{hud.engineTelemetry.profileId.toUpperCase()}</span>
+          </div>
+          <div className="mt-1 grid grid-cols-2 gap-x-4 gap-y-0.5">
+            <span>FPS / Frame:</span>
+            <span className="text-right text-white">
+              {hud.engineTelemetry.fps} ({hud.engineTelemetry.frameMs} ms)
+            </span>
+            <span>CPU / Budget:</span>
+            <span className="text-right text-white">
+              {hud.engineTelemetry.cpuMs} / {hud.engineTelemetry.budgetMs} ms
+            </span>
+            <span>Draw Calls:</span>
+            <span className="text-right text-white">{hud.engineTelemetry.drawCalls}</span>
+            <span>Triangles:</span>
+            <span className="text-right text-white">{hud.engineTelemetry.triangles.toLocaleString()}</span>
+            <span>GPU Textures / Geo:</span>
+            <span className="text-right text-white">
+              {hud.engineTelemetry.textures} / {hud.engineTelemetry.geometries}
+            </span>
+            <span>Dynamic DPR:</span>
+            <span className="text-right text-white">{hud.engineTelemetry.dpr}x</span>
+            <span>Job Queue:</span>
+            <span className="text-right text-white">
+              {hud.engineTelemetry.queuedJobs} queued ({hud.engineTelemetry.executedJobsTotal} done)
+            </span>
+            <span>VRAM Status:</span>
+            <span
+              className={`text-right font-bold uppercase ${
+                hud.engineTelemetry.vramPressure === "critical"
+                  ? "text-[#ef4444]"
+                  : hud.engineTelemetry.vramPressure === "elevated"
+                    ? "text-[#f59e0b]"
+                    : "text-[#22c55e]"
+              }`}
+            >
+              {hud.engineTelemetry.vramPressure}
+            </span>
+          </div>
+        </div>
+      )}
       {hud.health < hud.maxHealth && !hud.dead && (
         <div
           className="pointer-events-none absolute inset-0"

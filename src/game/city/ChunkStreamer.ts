@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { SpatialAABBGrid, SpatialColliderGrid } from "./SpatialIndex";
+import { westgateEngine } from "../../engine/WestgateCore";
 
 export type ChunkState = "unloaded" | "lod" | "near";
 
@@ -176,21 +177,58 @@ export class ChunkStreamer {
     return this.chunkMap.get(`${cx},${cz}`) ?? null;
   }
 
-  /** Synchronously pre-builds and activates all chunks within `radius` (default `lodRadius`) around `(x, z)`. */
-  prewarm(x: number, z: number, radius = this.lodRadius): void {
+  /**
+   * Pre-builds chunks within `radius` around `(x, z)`.
+   * In browser runtime, only the immediate 140m spawn ring builds synchronously while outer chunks
+   * stream smoothly through WestgateEngineCore's frame-budgeted job scheduler.
+   */
+  prewarm(x: number, z: number, radius = this.lodRadius, staged = false): void {
     const r2 = radius * radius;
     const near2 = this.nearRadius * this.nearRadius;
+    const immR2 = staged ? 140 * 140 : r2;
+    const deferred: { chunk: CityChunk; d2: number }[] = [];
+
     for (let i = 0; i < this.chunks.length; i++) {
       const c = this.chunks[i];
       const d2 = this.distSqToChunk(x, z, c);
-      if (d2 <= r2) {
+      if (d2 > r2) continue;
+      if (d2 <= immR2) {
         if (!c.built) {
           this.buildFn(c);
           freezeChunkMatricesAndCacheShadows(c);
           c.built = true;
         }
         this.setChunkState(c, d2 <= near2 ? "near" : "lod");
-        if (c.state === "near") setChunkShadows(c, d2 <= 125 * 125);
+        const shadowR = westgateEngine.getShadowCasterRadius();
+        if (c.state === "near") setChunkShadows(c, d2 <= shadowR * shadowR);
+      } else if (!c.built) {
+        deferred.push({ chunk: c, d2 });
+      } else {
+        this.setChunkState(c, d2 <= near2 ? "near" : "lod");
+        const shadowR = westgateEngine.getShadowCasterRadius();
+        if (c.state === "near") setChunkShadows(c, d2 <= shadowR * shadowR);
+      }
+    }
+
+    if (deferred.length > 0) {
+      deferred.sort((a, b) => a.d2 - b.d2);
+      for (let i = 0; i < deferred.length; i++) {
+        const { chunk, d2 } = deferred[i];
+        westgateEngine.jobs.enqueue({
+          key: `chunk:${chunk.key}`,
+          priority: 1,
+          label: `chunk_${chunk.key}`,
+          run: () => {
+            if (!chunk.built) {
+              this.buildFn(chunk);
+              freezeChunkMatricesAndCacheShadows(chunk);
+              chunk.built = true;
+            }
+            this.setChunkState(chunk, d2 <= near2 ? "near" : "lod");
+            const sr = westgateEngine.getShadowCasterRadius();
+            if (chunk.state === "near") setChunkShadows(chunk, d2 <= sr * sr);
+          },
+        });
       }
     }
   }
@@ -235,20 +273,22 @@ export class ChunkStreamer {
         pendingBuilds.push({ chunk: c, d2 });
       } else if (c.built) {
         this.setChunkState(c, nextState);
-        if (c.state === "near") setChunkShadows(c, d2 <= 210 * 210);
+        const shadowR = westgateEngine.getShadowCasterRadius();
+        if (c.state === "near") setChunkShadows(c, d2 <= shadowR * shadowR);
       }
     }
 
     if (pendingBuilds.length > 0) {
       pendingBuilds.sort((a, b) => a.d2 - b.d2);
       const budget = Math.min(this.maxBuildsPerFrame, pendingBuilds.length);
+      const shadowR = westgateEngine.getShadowCasterRadius();
       for (let i = 0; i < budget; i++) {
         const { chunk, d2 } = pendingBuilds[i];
         this.buildFn(chunk);
         freezeChunkMatricesAndCacheShadows(chunk);
         chunk.built = true;
         this.setChunkState(chunk, d2 <= nearEnter2 ? "near" : "lod");
-        if (chunk.state === "near") setChunkShadows(chunk, d2 <= 210 * 210);
+        if (chunk.state === "near") setChunkShadows(chunk, d2 <= shadowR * shadowR);
       }
       this.hasPendingBuilds = pendingBuilds.length > budget;
       pendingBuilds.length = 0;

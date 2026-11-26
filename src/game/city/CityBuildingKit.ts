@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { bakeBoxMetricUv, materialFor } from "../kit/surface";
+import { westgateEngine } from "../../engine/WestgateCore";
 import type { CityChunk } from "./ChunkStreamer";
 import type { RoadNetwork } from "./RoadNetwork";
 import type { TerrainHeightFn } from "./HeightSystem";
@@ -34,7 +35,7 @@ function makeFacadeTextures(style: FacadeStyle): CachedFacade {
   const existing = facadeCache.get(style);
   if (existing) return existing;
 
-  const size = typeof document !== "undefined" ? 1024 : 128;
+  const size = westgateEngine.getFacadeTexSize();
   const scale = size / 256;
   const c = document.createElement("canvas");
   c.width = c.height = size;
@@ -194,23 +195,24 @@ function makeFacadeTextures(style: FacadeStyle): CachedFacade {
     }
   }
 
+  const aniso = westgateEngine.getMaxAnisotropy();
   const map = new THREE.CanvasTexture(c);
   map.wrapS = map.wrapT = THREE.RepeatWrapping;
-  map.anisotropy = 16;
+  map.anisotropy = aniso;
   map.colorSpace = THREE.SRGBColorSpace;
 
   const emissiveMap = new THREE.CanvasTexture(ec);
   emissiveMap.wrapS = emissiveMap.wrapT = THREE.RepeatWrapping;
-  emissiveMap.anisotropy = 16;
+  emissiveMap.anisotropy = aniso;
   emissiveMap.colorSpace = THREE.SRGBColorSpace;
 
   const roughnessMap = new THREE.CanvasTexture(rc);
   roughnessMap.wrapS = roughnessMap.wrapT = THREE.RepeatWrapping;
-  roughnessMap.anisotropy = 16;
+  roughnessMap.anisotropy = aniso;
 
   const bumpMap = new THREE.CanvasTexture(bc);
   bumpMap.wrapS = bumpMap.wrapT = THREE.RepeatWrapping;
-  bumpMap.anisotropy = 16;
+  bumpMap.anisotropy = aniso;
 
   const out: CachedFacade = { map, emissiveMap, roughnessMap, bumpMap, roughness: p.rough, metalness: p.metal };
   facadeCache.set(style, out);
@@ -233,21 +235,19 @@ export function createFacadeMaterial(
 
   const f = makeFacadeTextures(style);
 
-  const map = f.map.clone();
-  map.repeat.set(rx, ry);
-  map.needsUpdate = true;
+  const shareBase = rx === 1 && ry === 1;
+  const bindRepeat = (src: THREE.CanvasTexture) => {
+    if (shareBase) return src;
+    const t = src.clone();
+    t.repeat.set(rx, ry);
+    t.needsUpdate = true;
+    return t;
+  };
 
-  const em = f.emissiveMap.clone();
-  em.repeat.set(rx, ry);
-  em.needsUpdate = true;
-
-  const rm = f.roughnessMap.clone();
-  rm.repeat.set(rx, ry);
-  rm.needsUpdate = true;
-
-  const bm = f.bumpMap.clone();
-  bm.repeat.set(rx, ry);
-  bm.needsUpdate = true;
+  const map = bindRepeat(f.map);
+  const em = bindRepeat(f.emissiveMap);
+  const rm = bindRepeat(f.roughnessMap);
+  const bm = bindRepeat(f.bumpMap);
 
   const mat = new THREE.MeshStandardMaterial({
     map,

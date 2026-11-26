@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { westgateEngine } from "../../engine/WestgateCore";
 
 export type SurfaceFamily =
   | "wood"
@@ -243,7 +244,7 @@ function makeCanvasTexture(
   tex.colorSpace = colorSpace;
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   tex.repeat.set(repeat, repeat);
-  tex.anisotropy = 16;
+  tex.anisotropy = westgateEngine.getMaxAnisotropy();
   tex.generateMipmaps = true;
   tex.minFilter = THREE.LinearMipmapLinearFilter;
   tex.needsUpdate = true;
@@ -297,13 +298,14 @@ function buildLuminanceNormalizedAlbedo(img: HTMLImageElement | ImageBitmap): TH
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  tex.anisotropy = 16;
+  tex.anisotropy = westgateEngine.getMaxAnisotropy();
   tex.needsUpdate = true;
   return tex;
 }
 
 function subscribeArchPbr(family: SurfaceFamily, onReady: (b: ArchPbrBundle) => void): void {
   if (!ARCH_PBR_FAMILIES.has(family)) return;
+  if (!westgateEngine.allowExternalArchPbr()) return;
   if (
     typeof window === "undefined" ||
     typeof document === "undefined" ||
@@ -510,7 +512,7 @@ export function materialFor(color: THREE.ColorRepresentation, opts: MatOpts = {}
     params.emissiveIntensity = emissiveIntensity;
   }
   if (family) {
-    const texSize = typeof document !== "undefined" ? 512 : 128;
+    const texSize = westgateEngine.getSurfaceTexSize();
     const maps = surfaceMaps(family, seed, texSize, repeat);
     params.map = maps.map;
     params.normalMap = maps.normalMap;

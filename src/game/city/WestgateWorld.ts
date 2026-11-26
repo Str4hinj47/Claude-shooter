@@ -34,6 +34,7 @@ import { BoatSystem } from "../vehicles/water/BoatSystem";
 import { buildWestgateApartments, type ApartmentSystem } from "./Apartments";
 import { loadSave } from "../progression";
 import { getLauncherProfile } from "../launcherConfig";
+import { westgateEngine } from "../../engine/WestgateCore";
 import {
   createWeatherState,
   stepWeather,
@@ -274,12 +275,13 @@ export function buildWestgateWorld(
   registerSafehouseGarageSpatial(engine.spatialAABBs);
 
   // 8b. Embed all 6 campaign mission compounds directly inside Westgate Bay's city blocks
+  // Hydrated through WestgateEngineCore's frame-budgeted job queue in browser so spawn never freezes.
   const embeddedCompounds: Array<{ site: (typeof OPEN_WORLD_MISSION_SITES)[number]; comp: EmbeddedMissionCompound }> = [];
   const compoundDestroyables = new Map<number, THREE.Mesh[]>();
   const tmpCompBox = new THREE.Box3();
-  for (const id of [1, 2, 3, 4, 5, 6] as const) {
+  const hydrateCompound = (id: 1 | 2 | 3 | 4 | 5 | 6) => {
     const site = OPEN_WORLD_MISSION_SITES[id];
-    if (!site) continue;
+    if (!site) return;
     const comp = buildMissionCompoundAt(id, site);
     content.add(comp.root);
     engine.spatialAABBs.insertMany(comp.aabbs);
@@ -293,6 +295,18 @@ export function buildWestgateWorld(
     }
     compoundDestroyables.set(id, comp.destroyables);
     embeddedCompounds.push({ site, comp });
+  };
+  for (const id of [1, 2, 3, 4, 5, 6] as const) {
+    if (typeof requestAnimationFrame !== "function") {
+      hydrateCompound(id);
+    } else {
+      westgateEngine.jobs.enqueue({
+        key: `compound:${id}`,
+        priority: 1,
+        label: `compound_${id}`,
+        run: () => hydrateCompound(id),
+      });
+    }
   }
 
   upgradeWestgatePropsWithGlbs(engine.props);

@@ -8,6 +8,7 @@ import { getDistrictAt } from "./WestgateTerrain";
 import type { WestgateTeleportSpot } from "./WestgateWorld";
 import { loadInstancedPartsFromGlb } from "./PropModels";
 import { OPEN_WORLD_MISSION_SITES } from "./OpenWorldMissions";
+import { westgateEngine } from "../../engine/WestgateCore";
 
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
@@ -729,6 +730,7 @@ export function populateWestgateProps(
  */
 export function upgradeWestgatePropsWithGlbs(batcher: PropBatcher): void {
   if (typeof window === "undefined" || typeof fetch !== "function") return;
+  if (westgateEngine.activeProfile.id === "safe") return;
 
   const specs: Array<{ proto: string; file: string; axis: "y" | "z" | "max"; meters: number }> = [
     { proto: "palm_tree", file: "tree_palm.glb", axis: "y", meters: 9.2 },
@@ -743,19 +745,15 @@ export function upgradeWestgatePropsWithGlbs(batcher: PropBatcher): void {
     { proto: "traffic_cone", file: "traffic_cone.glb", axis: "y", meters: 0.68 },
   ];
 
-  void (async () => {
-    for (let i = 0; i < specs.length; i += 2) {
-      const batch = specs.slice(i, i + 2);
-      await Promise.all(
-        batch.map((sp) =>
-          loadInstancedPartsFromGlb(sp.file, sp.axis, sp.meters, 0).then((parts) => {
-            if (parts) batcher.upgradePrototypeMeshes(sp.proto, parts);
-          }),
-        ),
-      );
-      if (typeof requestAnimationFrame === "function") {
-        await new Promise<void>((r) => requestAnimationFrame(() => r()));
-      }
-    }
-  })();
+  for (const sp of specs) {
+    void loadInstancedPartsFromGlb(sp.file, sp.axis, sp.meters, 0).then((parts) => {
+      if (!parts) return;
+      westgateEngine.jobs.enqueue({
+        key: `prop_upgrade:${sp.proto}`,
+        priority: 2,
+        label: `upgrade_${sp.proto}`,
+        run: () => batcher.upgradePrototypeMeshes(sp.proto, parts),
+      });
+    });
+  }
 }

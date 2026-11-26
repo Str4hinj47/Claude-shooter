@@ -1002,6 +1002,7 @@ export class Sfx {
     type: OscillatorType = "sine",
     delay = 0,
     dest?: AudioNode,
+    attack = 0.002,
   ) {
     const ctx = this.ctx;
     if (!ctx || !this.enabled) return;
@@ -1012,7 +1013,7 @@ export class Sfx {
     o.frequency.exponentialRampToValueAtTime(Math.max(20, to), t0 + dur);
     const g = ctx.createGain();
     g.gain.setValueAtTime(0.0001, t0);
-    g.gain.linearRampToValueAtTime(gain, t0 + Math.min(0.002, dur * 0.25));
+    g.gain.linearRampToValueAtTime(gain, t0 + Math.min(attack, dur * 0.35));
     g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
     o.connect(g).connect(dest ?? this.master);
     o.start(t0);
@@ -1144,38 +1145,37 @@ export class Sfx {
   step(intensity: number, surface: "asphalt" | "wood" | "metal" | "dirt" | "water" = "asphalt") {
     const k = Math.max(0.15, Math.min(1.15, intensity));
     const j = 0.92 + Math.random() * 0.16; // natural step-to-step variation
-    const toeDelay = 0.034 + (1 - Math.min(1, k)) * 0.022;
+    const toeDelay = 0.036 + (1 - Math.min(1, k)) * 0.02;
     if (surface === "water") {
-      this.burst({ dur: 0.15, freq: 1600 * j, sweepTo: 420, type: "lowpass", gain: 0.22 + k * 0.16, pink: true });
-      this.burst({ dur: 0.08, freq: 3200 * j, q: 1.1, type: "bandpass", gain: 0.09 + k * 0.09, delay: 0.02 });
+      this.burst({ dur: 0.15, freq: 1450 * j, sweepTo: 380, type: "lowpass", gain: 0.22 + k * 0.16, pink: true, attack: 0.01 });
+      this.burst({ dur: 0.09, freq: 1100 * j, sweepTo: 480, type: "lowpass", gain: 0.08 + k * 0.07, pink: true, attack: 0.012, delay: 0.025 });
       return;
     }
     if (surface === "wood") {
-      // Hollow plank heel knock + soft sole toe roll
-      this.tone(132 * j, 62 * j, 0.055, 0.16 + k * 0.1, "triangle");
-      this.burst({ dur: 0.068, freq: (440 + k * 140) * j, sweepTo: 240 * j, q: 1.6, type: "bandpass", gain: 0.16 + k * 0.18, pink: true });
-      this.burst({ dur: 0.04, freq: 1150 * j, q: 1.2, type: "bandpass", gain: 0.06 + k * 0.07, delay: toeDelay });
+      // Hollow plank heel knock + soft sole toe roll (click-free attack ramps)
+      this.tone(124 * j, 56 * j, 0.062, 0.16 + k * 0.09, "sine", 0, undefined, 0.007);
+      this.burst({ dur: 0.07, freq: (380 + k * 110) * j, sweepTo: 180 * j, type: "lowpass", gain: 0.15 + k * 0.15, pink: true, attack: 0.008 });
+      this.burst({ dur: 0.048, freq: 520 * j, sweepTo: 240 * j, type: "lowpass", gain: 0.045 + k * 0.05, pink: true, attack: 0.012, delay: toeDelay });
       return;
     }
     if (surface === "metal") {
-      // Steel catwalk heel ring + metallic scuff
-      this.tone(430 * j, 310 * j, 0.075, 0.08 + k * 0.06, "sine");
-      this.tone(1180 * j, 960 * j, 0.045, 0.035 + k * 0.025, "sine");
-      this.burst({ dur: 0.05, freq: (1720 + k * 360) * j, q: 2.4, type: "bandpass", gain: 0.14 + k * 0.16 });
-      this.burst({ dur: 0.035, freq: 2400 * j, q: 1.8, type: "bandpass", gain: 0.07 + k * 0.06, delay: toeDelay });
+      // Steel catwalk heel ring + soft damped sole scuff
+      this.tone(360 * j, 250 * j, 0.075, 0.065 + k * 0.045, "sine", 0, undefined, 0.006);
+      this.burst({ dur: 0.055, freq: (960 + k * 240) * j, sweepTo: 420 * j, q: 1.2, type: "bandpass", gain: 0.1 + k * 0.11, pink: true, attack: 0.008 });
+      this.burst({ dur: 0.045, freq: 640 * j, sweepTo: 290 * j, type: "lowpass", gain: 0.045 + k * 0.045, pink: true, attack: 0.012, delay: toeDelay });
       return;
     }
     if (surface === "dirt") {
-      // Earth heel compression + crisp soil/gravel grit scuff
-      this.tone(105 * j, 46 * j, 0.05, 0.12 + k * 0.08, "sine");
-      this.burst({ dur: 0.085, freq: (540 + k * 240) * j, sweepTo: 240 * j, type: "lowpass", gain: 0.14 + k * 0.18, pink: true });
-      this.burst({ dur: 0.055, freq: 2350 * j, q: 0.9, type: "bandpass", gain: 0.06 + k * 0.09, delay: toeDelay * 0.8 });
+      // Earth heel compression + soft soil grit roll
+      this.tone(98 * j, 44 * j, 0.058, 0.12 + k * 0.08, "sine", 0, undefined, 0.007);
+      this.burst({ dur: 0.088, freq: (480 + k * 200) * j, sweepTo: 200 * j, type: "lowpass", gain: 0.14 + k * 0.16, pink: true, attack: 0.009 });
+      this.burst({ dur: 0.06, freq: 780 * j, sweepTo: 320 * j, type: "lowpass", gain: 0.05 + k * 0.06, pink: true, attack: 0.014, delay: toeDelay * 0.85 });
       return;
     }
-    // Asphalt / Concrete: firm rubber heel strike + fine grit toe scuff
-    this.tone(142 * j, 54 * j, 0.05, 0.13 + k * 0.1, "sine");
-    this.burst({ dur: 0.065, freq: (340 + k * 220) * j, sweepTo: 160 * j, type: "lowpass", gain: 0.13 + k * 0.18, pink: true });
-    this.burst({ dur: 0.042, freq: 1850 * j, q: 1.1, type: "bandpass", gain: 0.05 + k * 0.07, delay: toeDelay });
+    // Asphalt / Concrete: weighty rubber heel strike + muted low-pass sole roll (zero high-freq click)
+    this.tone(118 * j, 46 * j, 0.064, 0.13 + k * 0.09, "sine", 0, undefined, 0.007);
+    this.burst({ dur: 0.072, freq: (320 + k * 180) * j, sweepTo: 135 * j, type: "lowpass", gain: 0.14 + k * 0.16, pink: true, attack: 0.009 });
+    this.burst({ dur: 0.052, freq: 560 * j, sweepTo: 230 * j, type: "lowpass", gain: 0.045 + k * 0.055, pink: true, attack: 0.013, delay: toeDelay });
   }
   glassShatter() {
     this.burst({ dur: 0.16, freq: 4800, sweepTo: 2200, q: 0.9, type: "highpass", gain: 0.55, reverb: 0.45 });

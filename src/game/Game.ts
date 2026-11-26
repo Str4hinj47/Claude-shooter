@@ -45,6 +45,7 @@ import {
   markBootSucceeded,
   saveLauncherPreset,
 } from "./launcherConfig";
+import { westgateEngine, type EngineTelemetrySnapshot } from "../engine/WestgateCore";
 import { createInteractableProp, type InteractableInstance } from "./interactables";
 import {
   APARTMENTS,
@@ -292,6 +293,7 @@ export interface HudState {
     sirenOn: boolean;
   } | null;
   wanted: { stars: number; evading: boolean; evasionPct: number } | null;
+  engineTelemetry?: EngineTelemetrySnapshot | null;
   radioStation: { name: string; genre: string } | null;
   activeRace: {
     raceName: string;
@@ -577,6 +579,7 @@ export class Game {
   private fpsAcc = 0;
   private fpsN = 0;
   private fps = 60;
+  private showEngineStats = false;
   private camKick = new Spring(150, 14);
   private shakeX = new Spring(300, 20);
   private shakeY = new Spring(300, 20);
@@ -1297,6 +1300,7 @@ export class Game {
     this.vehAudio.setActive(false);
     this.engineHud = null;
     this.bootStableFrames = 0;
+    westgateEngine.resetSession();
     markBootStarted();
     this.phase = "loading";
     this.applyStatsToRig();
@@ -1864,6 +1868,11 @@ export class Game {
           if (this.mission?.id === -1 && this.phase === "ready" && !this.paused && !this.weaponWheelOpen) {
             this.setMapOpen(!this.mapOpen);
           }
+          break;
+        case "F9":
+          e.preventDefault();
+          this.showEngineStats = !this.showEngineStats;
+          this.emitHud();
           break;
         case "KeyP":
         case "ArrowUp":
@@ -4164,6 +4173,7 @@ export class Game {
       }
       this.renderer.render(this.scene, this.camera);
     }
+    westgateEngine.endFrame(this.renderer);
   }
 
   private updateGuardFlashlights() {
@@ -4190,6 +4200,7 @@ export class Game {
   /* ------------------------------------------------------------ */
   private frame(rawDt: number) {
     if (this.phase === "loading") return;
+    westgateEngine.beginFrame(rawDt, this.renderer);
     const rig = this.rig;
     if (this.hitstopTimer > 0) {
       this.hitstopTimer = Math.max(0, this.hitstopTimer - rawDt);
@@ -7420,6 +7431,7 @@ export class Game {
         : null,
       vehicle,
       wanted,
+      engineTelemetry: this.showEngineStats ? westgateEngine.getTelemetry() : null,
       radioStation,
       activeRace,
       aircraft: this.level?.aircraft?.activeAircraft

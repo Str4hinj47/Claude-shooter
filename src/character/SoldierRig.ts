@@ -861,6 +861,7 @@ export class SoldierRig {
   private phase = 0;
   private cum = 0;
   private idleT = 0;
+  private lastFootstepAt = -10;
   height = 1.8;
 
   // input / intent
@@ -1894,12 +1895,18 @@ export class SoldierRig {
         this.cum = damp(this.cum, nearestPlant, 11, dt);
       }
       this.phase = ((this.cum % 1) + 1) % 1;
-      if (this.grounded && this.locoBlend > 0.3) {
+      if (this.grounded && this.locoBlend > 0.3 && targetLoco >= 0.05) {
         const inten = clamp(animSpd / runRef + 0.25, 0.25, 1);
         const s1 = this.walkOff;
         const s2 = this.walkOff + 0.5;
-        if (Math.floor(this.cum - s1) !== Math.floor(prevCum - s1)) this.events.onFootstep?.(0, inten);
-        if (Math.floor(this.cum - s2) !== Math.floor(prevCum - s2)) this.events.onFootstep?.(1, inten);
+        const stepReady = this.idleT - this.lastFootstepAt >= 0.16;
+        if (stepReady && (Math.floor(this.cum - s1) !== Math.floor(prevCum - s1))) {
+          this.lastFootstepAt = this.idleT;
+          this.events.onFootstep?.(0, inten);
+        } else if (stepReady && (Math.floor(this.cum - s2) !== Math.floor(prevCum - s2))) {
+          this.lastFootstepAt = this.idleT;
+          this.events.onFootstep?.(1, inten);
+        }
       }
     }
     this.idleT += dt;
