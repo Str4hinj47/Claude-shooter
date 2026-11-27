@@ -175,7 +175,7 @@ void WgpuContext::recreateDepthBuffer() {
   if (!device_ || width_ == 0 || height_ == 0) return;
 
   WGPUTextureDescriptor td = WGPU_TEXTURE_DESCRIPTOR_INIT;
-  td.usage = WGPUTextureUsage_RenderAttachment;
+  td.usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding;
   td.dimension = WGPUTextureDimension_2D;
   td.size = {width_, height_, 1};
   td.format = depthFormat();

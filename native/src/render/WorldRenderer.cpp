@@ -51,6 +51,7 @@ struct ModelVertex {
   float nx, ny, nz;
   float u, v;
   float r, g, b;
+  float metallic, roughness;
 };
 
 struct SkinnedVertex {
@@ -198,24 +199,54 @@ bool WorldRenderer::init(
     return false;
   }
 
-  // Samplers & Shadow Map Texture
+  const std::string postPath = (std::filesystem::path(shaderPath).parent_path() / "post.wgsl").string();
+  const std::string postWgsl = loadTextFile(postPath);
+  if (postWgsl.empty()) {
+    if (err) *err = "Failed to load post.wgsl shader: " + postPath;
+    return false;
+  }
+  WGPUShaderSourceWGSL postSource = WGPU_SHADER_SOURCE_WGSL_INIT;
+  postSource.code = {postWgsl.c_str(), postWgsl.size()};
+  WGPUShaderModuleDescriptor postSmDesc = WGPU_SHADER_MODULE_DESCRIPTOR_INIT;
+  postSmDesc.nextInChain = &postSource.chain;
+  postShader_ = wgpuDeviceCreateShaderModule(ctx.device(), &postSmDesc);
+  if (!postShader_) {
+    if (err) *err = "wgpuDeviceCreateShaderModule (post.wgsl) failed";
+    return false;
+  }
+
+  // Samplers & 2-Cascade Shadow Map Texture Array (2048x2048x2)
   {
     WGPUTextureDescriptor std = WGPU_TEXTURE_DESCRIPTOR_INIT;
     std.usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding;
     std.dimension = WGPUTextureDimension_2D;
-    std.size = {kShadowMapSize, kShadowMapSize, 1};
+    std.size = {kShadowMapSize, kShadowMapSize, 2};
     std.format = WGPUTextureFormat_Depth32Float;
     std.mipLevelCount = 1;
     std.sampleCount = 1;
     shadowTex_ = wgpuDeviceCreateTexture(ctx.device(), &std);
 
-    WGPUTextureViewDescriptor svd = WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
-    svd.format = WGPUTextureFormat_Depth32Float;
-    svd.dimension = WGPUTextureViewDimension_2D;
-    svd.mipLevelCount = 1;
-    svd.arrayLayerCount = 1;
-    svd.aspect = WGPUTextureAspect_DepthOnly;
-    shadowView_ = wgpuTextureCreateView(shadowTex_, &svd);
+    for (uint32_t layer = 0; layer < 2; ++layer) {
+      WGPUTextureViewDescriptor lvd = WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
+      lvd.format = WGPUTextureFormat_Depth32Float;
+      lvd.dimension = WGPUTextureViewDimension_2D;
+      lvd.baseMipLevel = 0;
+      lvd.mipLevelCount = 1;
+      lvd.baseArrayLayer = layer;
+      lvd.arrayLayerCount = 1;
+      lvd.aspect = WGPUTextureAspect_DepthOnly;
+      shadowLayerViews_[layer] = wgpuTextureCreateView(shadowTex_, &lvd);
+    }
+
+    WGPUTextureViewDescriptor avd = WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
+    avd.format = WGPUTextureFormat_Depth32Float;
+    avd.dimension = WGPUTextureViewDimension_2DArray;
+    avd.baseMipLevel = 0;
+    avd.mipLevelCount = 1;
+    avd.baseArrayLayer = 0;
+    avd.arrayLayerCount = 2;
+    avd.aspect = WGPUTextureAspect_DepthOnly;
+    shadowArrayView_ = wgpuTextureCreateView(shadowTex_, &avd);
 
     WGPUSamplerDescriptor ssd = WGPU_SAMPLER_DESCRIPTOR_INIT;
     ssd.addressModeU = WGPUAddressMode_ClampToEdge;
@@ -228,9 +259,9 @@ bool WorldRenderer::init(
     shadowSampler_ = wgpuDeviceCreateSampler(ctx.device(), &ssd);
 
     WGPUSamplerDescriptor lsd = WGPU_SAMPLER_DESCRIPTOR_INIT;
-    lsd.addressModeU = WGPUAddressMode_Repeat;
-    lsd.addressModeV = WGPUAddressMode_Repeat;
-    lsd.addressModeW = WGPUAddressMode_Repeat;
+    lsd.addressModeU = WGPUAddressMode_ClampToEdge;
+    lsd.addressModeV = WGPUAddressMode_ClampToEdge;
+    lsd.addressModeW = WGPUAddressMode_ClampToEdge;
     lsd.magFilter = WGPUFilterMode_Linear;
     lsd.minFilter = WGPUFilterMode_Linear;
     lsd.mipmapFilter = WGPUMipmapFilterMode_Linear;
@@ -238,6 +269,7 @@ bool WorldRenderer::init(
   }
 
   frameUbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Uniform, nullptr, sizeof(FrameUniforms));
+  postUbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Uniform, nullptr, sizeof(PostUniforms));
 
   // @group(0): FrameUniforms only (shared safely between Shadow Pass & Forward Pass)
   {
@@ -265,14 +297,14 @@ bool WorldRenderer::init(
     frameBg_ = wgpuDeviceCreateBindGroup(ctx.device(), &bgDesc);
   }
 
-  // @group(3): shadowMap + shadowSampler (Forward Pass only — never bound during Shadow Pass!)
+  // @group(3): 2-Cascade shadowMap (2DArray) + shadowSampler (Forward Pass only)
   {
     WGPUBindGroupLayoutEntry entries[2]{};
     entries[0] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
     entries[0].binding = 0;
     entries[0].visibility = WGPUShaderStage_Fragment;
     entries[0].texture.sampleType = WGPUTextureSampleType_Depth;
-    entries[0].texture.viewDimension = WGPUTextureViewDimension_2D;
+    entries[0].texture.viewDimension = WGPUTextureViewDimension_2DArray;
 
     entries[1] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
     entries[1].binding = 1;
@@ -287,7 +319,7 @@ bool WorldRenderer::init(
     WGPUBindGroupEntry bgEntries[2]{};
     bgEntries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
     bgEntries[0].binding = 0;
-    bgEntries[0].textureView = shadowView_;
+    bgEntries[0].textureView = shadowArrayView_;
     bgEntries[1] = WGPU_BIND_GROUP_ENTRY_INIT;
     bgEntries[1].binding = 1;
     bgEntries[1].sampler = shadowSampler_;
@@ -372,15 +404,72 @@ bool WorldRenderer::init(
     scenePipeLayout_ = wgpuDeviceCreatePipelineLayout(ctx.device(), &pld);
   }
 
-  WGPUColorTargetState colorTarget = WGPU_COLOR_TARGET_STATE_INIT;
-  colorTarget.format = ctx.surfaceFormat();
-  colorTarget.writeMask = WGPUColorWriteMask_All;
+  // Post-FX bind group layout (@group(0): uPost, texA, texB, linearSampler, depthTex, texSSAO)
+  {
+    WGPUBindGroupLayoutEntry pe[6]{};
+    pe[0] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+    pe[0].binding = 0;
+    pe[0].visibility = WGPUShaderStage_Fragment;
+    pe[0].buffer.type = WGPUBufferBindingType_Uniform;
+    pe[0].buffer.minBindingSize = sizeof(PostUniforms);
+
+    pe[1] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+    pe[1].binding = 1;
+    pe[1].visibility = WGPUShaderStage_Fragment;
+    pe[1].texture.sampleType = WGPUTextureSampleType_Float;
+    pe[1].texture.viewDimension = WGPUTextureViewDimension_2D;
+
+    pe[2] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+    pe[2].binding = 2;
+    pe[2].visibility = WGPUShaderStage_Fragment;
+    pe[2].texture.sampleType = WGPUTextureSampleType_Float;
+    pe[2].texture.viewDimension = WGPUTextureViewDimension_2D;
+
+    pe[3] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+    pe[3].binding = 3;
+    pe[3].visibility = WGPUShaderStage_Fragment;
+    pe[3].sampler.type = WGPUSamplerBindingType_Filtering;
+
+    pe[4] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+    pe[4].binding = 4;
+    pe[4].visibility = WGPUShaderStage_Fragment;
+    pe[4].texture.sampleType = WGPUTextureSampleType_Depth;
+    pe[4].texture.viewDimension = WGPUTextureViewDimension_2D;
+
+    pe[5] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+    pe[5].binding = 5;
+    pe[5].visibility = WGPUShaderStage_Fragment;
+    pe[5].texture.sampleType = WGPUTextureSampleType_Float;
+    pe[5].texture.viewDimension = WGPUTextureViewDimension_2D;
+
+    WGPUBindGroupLayoutDescriptor pbgl = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+    pbgl.entryCount = 6;
+    pbgl.entries = pe;
+    postBgl_ = wgpuDeviceCreateBindGroupLayout(ctx.device(), &pbgl);
+
+    WGPUPipelineLayoutDescriptor ppld = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
+    ppld.bindGroupLayoutCount = 1;
+    ppld.bindGroupLayouts = &postBgl_;
+    postPipeLayout_ = wgpuDeviceCreatePipelineLayout(ctx.device(), &ppld);
+  }
+
+  WGPUColorTargetState hdrColorTarget = WGPU_COLOR_TARGET_STATE_INIT;
+  hdrColorTarget.format = WGPUTextureFormat_RGBA16Float;
+  hdrColorTarget.writeMask = WGPUColorWriteMask_All;
+
+  WGPUColorTargetState swapColorTarget = WGPU_COLOR_TARGET_STATE_INIT;
+  swapColorTarget.format = ctx.surfaceFormat();
+  swapColorTarget.writeMask = WGPUColorWriteMask_All;
+
+  WGPUColorTargetState ssaoColorTarget = WGPU_COLOR_TARGET_STATE_INIT;
+  ssaoColorTarget.format = WGPUTextureFormat_RGBA8Unorm;
+  ssaoColorTarget.writeMask = WGPUColorWriteMask_All;
 
   WGPUFragmentState fragState = WGPU_FRAGMENT_STATE_INIT;
   fragState.module = shader_;
   fragState.entryPoint = {"fsMain", 6};
   fragState.targetCount = 1;
-  fragState.targets = &colorTarget;
+  fragState.targets = &hdrColorTarget;
 
   WGPUDepthStencilState depthState = WGPU_DEPTH_STENCIL_STATE_INIT;
   depthState.format = ctx.depthFormat();
@@ -404,11 +493,12 @@ bool WorldRenderer::init(
   terrainVbl.attributeCount = 4;
   terrainVbl.attributes = terrainAttrs;
 
-  WGPUVertexAttribute modelAttrs[4]{};
+  WGPUVertexAttribute modelAttrs[5]{};
   modelAttrs[0] = {nullptr, WGPUVertexFormat_Float32x3, offsetof(ModelVertex, px), 0};
   modelAttrs[1] = {nullptr, WGPUVertexFormat_Float32x3, offsetof(ModelVertex, nx), 1};
   modelAttrs[2] = {nullptr, WGPUVertexFormat_Float32x2, offsetof(ModelVertex, u), 2};
   modelAttrs[3] = {nullptr, WGPUVertexFormat_Float32x3, offsetof(ModelVertex, r), 3};
+  modelAttrs[4] = {nullptr, WGPUVertexFormat_Float32x2, offsetof(ModelVertex, metallic), 8};
   WGPUVertexAttribute instAttrs[4]{};
   instAttrs[0] = {nullptr, WGPUVertexFormat_Float32x3, offsetof(InstanceAttrib, x), 4};
   instAttrs[1] = {nullptr, WGPUVertexFormat_Float32x3, offsetof(InstanceAttrib, sx), 5};
@@ -418,7 +508,7 @@ bool WorldRenderer::init(
   instVbls[0] = WGPU_VERTEX_BUFFER_LAYOUT_INIT;
   instVbls[0].stepMode = WGPUVertexStepMode_Vertex;
   instVbls[0].arrayStride = sizeof(ModelVertex);
-  instVbls[0].attributeCount = 4;
+  instVbls[0].attributeCount = 5;
   instVbls[0].attributes = modelAttrs;
   instVbls[1] = WGPU_VERTEX_BUFFER_LAYOUT_INIT;
   instVbls[1].stepMode = WGPUVertexStepMode_Instance;
@@ -439,12 +529,12 @@ bool WorldRenderer::init(
   skinVbl.attributeCount = 6;
   skinVbl.attributes = skinAttrs;
 
-  // Shadow pipelines (depth-only, fragment = nullptr)
+  // 2-Cascade Shadow pipelines (depth-only, Near 52m + Far 260m)
   {
     WGPURenderPipelineDescriptor rp = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
     rp.layout = shadowStaticPipeLayout_;
     rp.vertex.module = shader_;
-    rp.vertex.entryPoint = {"vsShadowTerrain", 15};
+    rp.vertex.entryPoint = {"vsShadowTerrainNear", 19};
     rp.vertex.bufferCount = 1;
     rp.vertex.buffers = &terrainVbl;
     rp.fragment = nullptr;
@@ -454,27 +544,36 @@ bool WorldRenderer::init(
     rp.primitive.frontFace = WGPUFrontFace_CCW;
     rp.multisample.count = 1;
     rp.multisample.mask = 0xFFFFFFFFu;
-    shadowTerrainPipeline_ = wgpuDeviceCreateRenderPipeline(ctx.device(), &rp);
+    shadowTerrainNearPipeline_ = wgpuDeviceCreateRenderPipeline(ctx.device(), &rp);
 
-    rp.vertex.entryPoint = {"vsShadowInstanced", 17};
+    rp.vertex.entryPoint = {"vsShadowTerrainFar", 18};
+    shadowTerrainFarPipeline_ = wgpuDeviceCreateRenderPipeline(ctx.device(), &rp);
+
+    rp.vertex.entryPoint = {"vsShadowInstancedNear", 21};
     rp.vertex.bufferCount = 2;
     rp.vertex.buffers = instVbls;
-    shadowInstancedPipeline_ = wgpuDeviceCreateRenderPipeline(ctx.device(), &rp);
+    shadowInstancedNearPipeline_ = wgpuDeviceCreateRenderPipeline(ctx.device(), &rp);
+
+    rp.vertex.entryPoint = {"vsShadowInstancedFar", 20};
+    shadowInstancedFarPipeline_ = wgpuDeviceCreateRenderPipeline(ctx.device(), &rp);
 
     rp.layout = shadowSkinnedPipeLayout_;
-    rp.vertex.entryPoint = {"vsShadowSkinned", 15};
+    rp.vertex.entryPoint = {"vsShadowSkinnedNear", 19};
     rp.vertex.bufferCount = 1;
     rp.vertex.buffers = &skinVbl;
-    shadowSkinnedPipeline_ = wgpuDeviceCreateRenderPipeline(ctx.device(), &rp);
+    shadowSkinnedNearPipeline_ = wgpuDeviceCreateRenderPipeline(ctx.device(), &rp);
+
+    rp.vertex.entryPoint = {"vsShadowSkinnedFar", 18};
+    shadowSkinnedFarPipeline_ = wgpuDeviceCreateRenderPipeline(ctx.device(), &rp);
   }
 
-  // Forward pipelines (including Procedural Atmospheric Sky Dome)
+  // HDR Scene Forward pipelines (RGBA16Float)
   {
     WGPUFragmentState skyFrag = WGPU_FRAGMENT_STATE_INIT;
     skyFrag.module = shader_;
     skyFrag.entryPoint = {"fsSky", 5};
     skyFrag.targetCount = 1;
-    skyFrag.targets = &colorTarget;
+    skyFrag.targets = &hdrColorTarget;
 
     WGPUDepthStencilState skyDepth = WGPU_DEPTH_STENCIL_STATE_INIT;
     skyDepth.format = ctx.depthFormat();
@@ -522,6 +621,39 @@ bool WorldRenderer::init(
     rp.primitive.cullMode = WGPUCullMode_None;
     skinnedPipeline_ = wgpuDeviceCreateRenderPipeline(ctx.device(), &rp);
   }
+
+  // Post-FX Pipelines (SSAO, Bloom Threshold, Bloom H/V Blur, Composite Tonemap)
+  {
+    auto makePostPipe = [&](const char* fragEntry, const WGPUColorTargetState* target) {
+      WGPUFragmentState fs = WGPU_FRAGMENT_STATE_INIT;
+      fs.module = postShader_;
+      fs.entryPoint = {fragEntry, std::strlen(fragEntry)};
+      fs.targetCount = 1;
+      fs.targets = target;
+
+      WGPURenderPipelineDescriptor prp = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
+      prp.layout = postPipeLayout_;
+      prp.vertex.module = postShader_;
+      prp.vertex.entryPoint = {"vsFullscreen", 12};
+      prp.vertex.bufferCount = 0;
+      prp.vertex.buffers = nullptr;
+      prp.fragment = &fs;
+      prp.depthStencil = nullptr;
+      prp.primitive.topology = WGPUPrimitiveTopology_TriangleList;
+      prp.primitive.cullMode = WGPUCullMode_None;
+      prp.primitive.frontFace = WGPUFrontFace_CCW;
+      prp.multisample.count = 1;
+      prp.multisample.mask = 0xFFFFFFFFu;
+      return wgpuDeviceCreateRenderPipeline(ctx.device(), &prp);
+    };
+    ssaoPipeline_ = makePostPipe("fsSSAO", &ssaoColorTarget);
+    bloomThreshPipeline_ = makePostPipe("fsBloomThreshold", &hdrColorTarget);
+    bloomBlurHPipeline_ = makePostPipe("fsBloomBlurH", &hdrColorTarget);
+    bloomBlurVPipeline_ = makePostPipe("fsBloomBlurV", &hdrColorTarget);
+    compositePipeline_ = makePostPipe("fsComposite", &swapColorTarget);
+  }
+
+  ensureOffscreenTargets(ctx);
 
   buildTerrainAndOceanBuffers(ctx, world);
   buildRoadAndArenaBuffers(ctx, world);
@@ -579,7 +711,7 @@ void WorldRenderer::buildTerrainAndOceanBuffers(WgpuContext& ctx, const WorldDat
     }
   }
 
-  // Subdivided Ocean Water Grid at y = 0 (kind = 1.0, animated in vsTerrain)
+  // Subdivided Ocean Water Grid at y = 0 (kind = 1.0, u = groundY for shoreline foam & shallow cove tint)
   const uint32_t wBase = static_cast<uint32_t>(verts.size());
   const float wExt = 1800.0f;
   for (uint32_t iz = 0; iz < WN; ++iz) {
@@ -588,7 +720,8 @@ void WorldRenderer::buildTerrainAndOceanBuffers(WgpuContext& ctx, const WorldDat
     for (uint32_t ix = 0; ix < WN; ++ix) {
       const float tx = static_cast<float>(ix) / static_cast<float>(WN - 1);
       const float x = -wExt + tx * (2.0f * wExt);
-      verts.push_back(StaticVertex{x, 0.0f, z, 0.0f, 1.0f, 0.0f, 0.06f, 0.22f, 0.34f, tx, tz, 1.0f});
+      const float groundY = world.heightfield.sampleHeight(x, z);
+      verts.push_back(StaticVertex{x, 0.0f, z, 0.0f, 1.0f, 0.0f, 0.06f, 0.22f, 0.34f, groundY, tz, 1.0f});
     }
   }
   for (uint32_t iz = 0; iz < WN - 1; ++iz) {
@@ -771,6 +904,111 @@ void WorldRenderer::buildRoadAndArenaBuffers(WgpuContext& ctx, const WorldData& 
   }
 }
 
+WGPUBindGroup WorldRenderer::createPostBindGroup(
+  WgpuContext& ctx,
+  WGPUTextureView texA,
+  WGPUTextureView texB,
+  WGPUTextureView depthView,
+  WGPUTextureView ssaoView
+) {
+  WGPUBindGroupEntry pe[6]{};
+  pe[0] = WGPU_BIND_GROUP_ENTRY_INIT;
+  pe[0].binding = 0;
+  pe[0].buffer = postUbo_;
+  pe[0].offset = 0;
+  pe[0].size = sizeof(PostUniforms);
+
+  pe[1] = WGPU_BIND_GROUP_ENTRY_INIT;
+  pe[1].binding = 1;
+  pe[1].textureView = texA;
+
+  pe[2] = WGPU_BIND_GROUP_ENTRY_INIT;
+  pe[2].binding = 2;
+  pe[2].textureView = texB;
+
+  pe[3] = WGPU_BIND_GROUP_ENTRY_INIT;
+  pe[3].binding = 3;
+  pe[3].sampler = linearSampler_;
+
+  pe[4] = WGPU_BIND_GROUP_ENTRY_INIT;
+  pe[4].binding = 4;
+  pe[4].textureView = depthView;
+
+  pe[5] = WGPU_BIND_GROUP_ENTRY_INIT;
+  pe[5].binding = 5;
+  pe[5].textureView = ssaoView;
+
+  WGPUBindGroupDescriptor bgd = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+  bgd.layout = postBgl_;
+  bgd.entryCount = 6;
+  bgd.entries = pe;
+  return wgpuDeviceCreateBindGroup(ctx.device(), &bgd);
+}
+
+void WorldRenderer::releaseOffscreenTargets() {
+  auto relBg = [](WGPUBindGroup& bg) { if (bg) { wgpuBindGroupRelease(bg); bg = nullptr; } };
+  auto relView = [](WGPUTextureView& v) { if (v) { wgpuTextureViewRelease(v); v = nullptr; } };
+  auto relTex = [](WGPUTexture& t) { if (t) { wgpuTextureRelease(t); t = nullptr; } };
+
+  relBg(postBgSSAO_);
+  relBg(postBgThresh_);
+  relBg(postBgBlurH_);
+  relBg(postBgBlurV_);
+  relBg(postBgComposite_);
+
+  relView(hdrView_);
+  relTex(hdrTex_);
+  relView(ssaoView_);
+  relTex(ssaoTex_);
+  relView(bloomViewA_);
+  relTex(bloomTexA_);
+  relView(bloomViewB_);
+  relTex(bloomTexB_);
+  offscreenW_ = 0;
+  offscreenH_ = 0;
+}
+
+void WorldRenderer::ensureOffscreenTargets(WgpuContext& ctx) {
+  const uint32_t w = std::max(1u, ctx.width());
+  const uint32_t h = std::max(1u, ctx.height());
+  if (w == offscreenW_ && h == offscreenH_ && hdrView_ && ssaoView_ && bloomViewA_ && bloomViewB_) return;
+
+  releaseOffscreenTargets();
+  offscreenW_ = w;
+  offscreenH_ = h;
+
+  auto makeTarget = [&](uint32_t tw, uint32_t th, WGPUTextureFormat fmt, WGPUTexture& outTex, WGPUTextureView& outView) {
+    WGPUTextureDescriptor td = WGPU_TEXTURE_DESCRIPTOR_INIT;
+    td.usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding;
+    td.dimension = WGPUTextureDimension_2D;
+    td.size = {std::max(1u, tw), std::max(1u, th), 1};
+    td.format = fmt;
+    td.mipLevelCount = 1;
+    td.sampleCount = 1;
+    outTex = wgpuDeviceCreateTexture(ctx.device(), &td);
+
+    WGPUTextureViewDescriptor tvd = WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
+    tvd.format = fmt;
+    tvd.dimension = WGPUTextureViewDimension_2D;
+    tvd.mipLevelCount = 1;
+    tvd.arrayLayerCount = 1;
+    tvd.aspect = WGPUTextureAspect_All;
+    outView = wgpuTextureCreateView(outTex, &tvd);
+  };
+
+  makeTarget(w, h, WGPUTextureFormat_RGBA16Float, hdrTex_, hdrView_);
+  makeTarget(std::max(1u, w / 2), std::max(1u, h / 2), WGPUTextureFormat_RGBA8Unorm, ssaoTex_, ssaoView_);
+  makeTarget(std::max(1u, w / 4), std::max(1u, h / 4), WGPUTextureFormat_RGBA16Float, bloomTexA_, bloomViewA_);
+  makeTarget(std::max(1u, w / 4), std::max(1u, h / 4), WGPUTextureFormat_RGBA16Float, bloomTexB_, bloomViewB_);
+
+  // Bind groups for each post pass (no texture is simultaneously RenderAttachment & TextureBinding!)
+  postBgSSAO_ = createPostBindGroup(ctx, defaultWhiteTex_.view, defaultWhiteTex_.view, ctx.depthView(), defaultWhiteTex_.view);
+  postBgThresh_ = createPostBindGroup(ctx, hdrView_, defaultWhiteTex_.view, ctx.depthView(), defaultWhiteTex_.view);
+  postBgBlurH_ = createPostBindGroup(ctx, bloomViewA_, defaultWhiteTex_.view, ctx.depthView(), defaultWhiteTex_.view);
+  postBgBlurV_ = createPostBindGroup(ctx, bloomViewB_, defaultWhiteTex_.view, ctx.depthView(), defaultWhiteTex_.view);
+  postBgComposite_ = createPostBindGroup(ctx, hdrView_, bloomViewA_, ctx.depthView(), ssaoView_);
+}
+
 bool WorldRenderer::loadGlbBatch(
   WgpuContext& ctx,
   const std::string& path,
@@ -791,23 +1029,71 @@ bool WorldRenderer::loadGlbBatch(
   const float cz = (normalizeTargetLength > 0.0f) ? (model.boundsMin.z + model.boundsMax.z) * 0.5f : 0.0f;
   const float minY = model.boundsMin.y;
 
-  for (const auto& prim : model.primitives) {
+  std::unordered_map<int32_t, WGPUBindGroup> texBgCache;
+  std::vector<size_t> primOrder(model.primitives.size());
+  for (size_t i = 0; i < primOrder.size(); ++i) primOrder[i] = i;
+  std::sort(primOrder.begin(), primOrder.end(), [&](size_t a, size_t b) {
+    const int32_t ma = model.primitives[a].materialIndex;
+    const int32_t mb = model.primitives[b].materialIndex;
+    const int32_t ta = (ma >= 0 && static_cast<size_t>(ma) < model.materials.size()) ? model.materials[ma].baseColorTexIndex : -1;
+    const int32_t tb = (mb >= 0 && static_cast<size_t>(mb) < model.materials.size()) ? model.materials[mb].baseColorTexIndex : -1;
+    return ta < tb;
+  });
+
+  WGPUBindGroup curTexBg = nullptr;
+  for (size_t pi : primOrder) {
+    const auto& prim = model.primitives[pi];
     const uint32_t base = static_cast<uint32_t>(verts.size());
+    const uint32_t iStart = static_cast<uint32_t>(indices.size());
     glm::vec3 matCol(1.0f);
+    float metallic = 0.05f;
+    float roughness = 0.58f;
+    WGPUBindGroup texBg = defaultWhiteTex_.bindGroup;
+
     if (prim.materialIndex >= 0 && static_cast<size_t>(prim.materialIndex) < model.materials.size()) {
-      matCol = glm::vec3(model.materials[prim.materialIndex].baseColor);
+      const auto& mat = model.materials[prim.materialIndex];
+      matCol = glm::vec3(mat.baseColor);
+      metallic = std::clamp(mat.metallic, 0.0f, 1.0f);
+      roughness = std::clamp(mat.roughness, 0.08f, 0.98f);
+      if (mat.baseColorTexIndex >= 0 && static_cast<size_t>(mat.baseColorTexIndex) < model.textures.size()) {
+        auto it = texBgCache.find(mat.baseColorTexIndex);
+        if (it != texBgCache.end()) {
+          texBg = it->second;
+          matCol = glm::vec3(1.0f);
+        } else {
+          const auto& td = model.textures[mat.baseColorTexIndex];
+          if (td.width > 0 && td.height > 0 && !td.rgba8.empty()) {
+            GpuTextureBinding gtb = createRgbaTexture(ctx, td.width, td.height, td.rgba8.data());
+            texBg = gtb.bindGroup;
+            texBgCache[mat.baseColorTexIndex] = texBg;
+            outBatch.ownedTextures.push_back(gtb);
+            matCol = glm::vec3(1.0f);
+          }
+        }
+      }
     }
+
     for (const auto& v : prim.vertices) {
       const glm::vec3 col = glm::vec3(v.color) * matCol;
       verts.push_back(ModelVertex{
         (v.position.x - cx) * scale, (v.position.y - minY) * scale, (v.position.z - cz) * scale,
         v.normal.x, v.normal.y, v.normal.z,
         std::max(0.0f, v.uv.x), std::max(0.0f, v.uv.y),
-        col.r, col.g, col.b
+        col.r, col.g, col.b,
+        metallic, roughness
       });
     }
     for (uint32_t idx : prim.indices) {
       indices.push_back(base + idx);
+    }
+    const uint32_t addedIdx = static_cast<uint32_t>(indices.size()) - iStart;
+    if (addedIdx > 0) {
+      if (!outBatch.submeshes.empty() && curTexBg == texBg) {
+        outBatch.submeshes.back().indexCount += addedIdx;
+      } else {
+        outBatch.submeshes.push_back(GlbSubmesh{iStart, addedIdx, texBg});
+        curTexBg = texBg;
+      }
     }
   }
   if (indices.empty()) return false;
@@ -843,12 +1129,50 @@ bool WorldRenderer::loadGlbUnitBoxBatch(
   const glm::vec3 sz = glm::max(model.boundsMax - model.boundsMin, glm::vec3(0.01f));
   const glm::vec3 ctr = (model.boundsMin + model.boundsMax) * 0.5f;
 
-  for (const auto& prim : model.primitives) {
+  std::unordered_map<int32_t, WGPUBindGroup> texBgCache;
+  std::vector<size_t> primOrder(model.primitives.size());
+  for (size_t i = 0; i < primOrder.size(); ++i) primOrder[i] = i;
+  std::sort(primOrder.begin(), primOrder.end(), [&](size_t a, size_t b) {
+    const int32_t ma = model.primitives[a].materialIndex;
+    const int32_t mb = model.primitives[b].materialIndex;
+    const int32_t ta = (ma >= 0 && static_cast<size_t>(ma) < model.materials.size()) ? model.materials[ma].baseColorTexIndex : -1;
+    const int32_t tb = (mb >= 0 && static_cast<size_t>(mb) < model.materials.size()) ? model.materials[mb].baseColorTexIndex : -1;
+    return ta < tb;
+  });
+
+  WGPUBindGroup curTexBg = nullptr;
+  for (size_t pi : primOrder) {
+    const auto& prim = model.primitives[pi];
     const uint32_t base = static_cast<uint32_t>(verts.size());
+    const uint32_t iStart = static_cast<uint32_t>(indices.size());
     glm::vec3 matCol(1.0f);
+    float metallic = 0.04f;
+    float roughness = 0.76f;
+    WGPUBindGroup texBg = defaultWhiteTex_.bindGroup;
+
     if (prim.materialIndex >= 0 && static_cast<size_t>(prim.materialIndex) < model.materials.size()) {
-      matCol = glm::vec3(model.materials[prim.materialIndex].baseColor);
+      const auto& mat = model.materials[prim.materialIndex];
+      matCol = glm::vec3(mat.baseColor);
+      metallic = std::clamp(mat.metallic, 0.0f, 1.0f);
+      roughness = std::clamp(mat.roughness, 0.12f, 0.98f);
+      if (mat.baseColorTexIndex >= 0 && static_cast<size_t>(mat.baseColorTexIndex) < model.textures.size()) {
+        auto it = texBgCache.find(mat.baseColorTexIndex);
+        if (it != texBgCache.end()) {
+          texBg = it->second;
+          matCol = glm::vec3(1.0f);
+        } else {
+          const auto& td = model.textures[mat.baseColorTexIndex];
+          if (td.width > 0 && td.height > 0 && !td.rgba8.empty()) {
+            GpuTextureBinding gtb = createRgbaTexture(ctx, td.width, td.height, td.rgba8.data());
+            texBg = gtb.bindGroup;
+            texBgCache[mat.baseColorTexIndex] = texBg;
+            outBatch.ownedTextures.push_back(gtb);
+            matCol = glm::vec3(1.0f);
+          }
+        }
+      }
     }
+
     for (const auto& v : prim.vertices) {
       const glm::vec3 col = glm::vec3(v.color) * matCol;
       verts.push_back(ModelVertex{
@@ -857,11 +1181,21 @@ bool WorldRenderer::loadGlbUnitBoxBatch(
         (v.position.z - ctr.z) / sz.z,
         v.normal.x, v.normal.y, v.normal.z,
         std::max(0.0f, v.uv.x), std::max(0.0f, v.uv.y),
-        col.r, col.g, col.b
+        col.r, col.g, col.b,
+        metallic, roughness
       });
     }
     for (uint32_t idx : prim.indices) {
       indices.push_back(base + idx);
+    }
+    const uint32_t addedIdx = static_cast<uint32_t>(indices.size()) - iStart;
+    if (addedIdx > 0) {
+      if (!outBatch.submeshes.empty() && curTexBg == texBg) {
+        outBatch.submeshes.back().indexCount += addedIdx;
+      } else {
+        outBatch.submeshes.push_back(GlbSubmesh{iStart, addedIdx, texBg});
+        curTexBg = texBg;
+      }
     }
   }
   if (indices.empty()) return false;
@@ -878,12 +1212,12 @@ bool WorldRenderer::loadGlbUnitBoxBatch(
 void WorldRenderer::buildPropAndVehicleBatches(WgpuContext& ctx, const WorldData& world, const std::string& assetsRoot) {
   // Unit 1x1x1 cube for buildings & fallback props (uv = (-1, -1) flags building window grid in WGSL)
   const ModelVertex boxVerts[24] = {
-    {-0.5f, -0.5f,  0.5f, 0, 0, 1, -1, -1, 1, 1, 1}, { 0.5f, -0.5f,  0.5f, 0, 0, 1, -1, -1, 1, 1, 1}, { 0.5f,  0.5f,  0.5f, 0, 0, 1, -1, -1, 1, 1, 1}, {-0.5f,  0.5f,  0.5f, 0, 0, 1, -1, -1, 1, 1, 1},
-    { 0.5f, -0.5f, -0.5f, 0, 0, -1, -1, -1, 1, 1, 1}, {-0.5f, -0.5f, -0.5f, 0, 0, -1, -1, -1, 1, 1, 1}, {-0.5f,  0.5f, -0.5f, 0, 0, -1, -1, -1, 1, 1, 1}, { 0.5f,  0.5f, -0.5f, 0, 0, -1, -1, -1, 1, 1, 1},
-    { 0.5f, -0.5f,  0.5f, 1, 0, 0, -1, -1, 1, 1, 1}, { 0.5f, -0.5f, -0.5f, 1, 0, 0, -1, -1, 1, 1, 1}, { 0.5f,  0.5f, -0.5f, 1, 0, 0, -1, -1, 1, 1, 1}, { 0.5f,  0.5f,  0.5f, 1, 0, 0, -1, -1, 1, 1, 1},
-    {-0.5f, -0.5f, -0.5f, -1, 0, 0, -1, -1, 1, 1, 1}, {-0.5f, -0.5f,  0.5f, -1, 0, 0, -1, -1, 1, 1, 1}, {-0.5f,  0.5f,  0.5f, -1, 0, 0, -1, -1, 1, 1, 1}, {-0.5f,  0.5f, -0.5f, -1, 0, 0, -1, -1, 1, 1, 1},
-    {-0.5f,  0.5f,  0.5f, 0, 1, 0, -1, -1, 1, 1, 1}, { 0.5f,  0.5f,  0.5f, 0, 1, 0, -1, -1, 1, 1, 1}, { 0.5f,  0.5f, -0.5f, 0, 1, 0, -1, -1, 1, 1, 1}, {-0.5f,  0.5f, -0.5f, 0, 1, 0, -1, -1, 1, 1, 1},
-    {-0.5f, -0.5f, -0.5f, 0, -1, 0, -1, -1, 1, 1, 1}, { 0.5f, -0.5f, -0.5f, 0, -1, 0, -1, -1, 1, 1, 1}, { 0.5f, -0.5f,  0.5f, 0, -1, 0, -1, -1, 1, 1, 1}, {-0.5f, -0.5f,  0.5f, 0, -1, 0, -1, -1, 1, 1, 1},
+    {-0.5f, -0.5f,  0.5f, 0, 0, 1, -1, -1, 1, 1, 1, 0.04f, 0.72f}, { 0.5f, -0.5f,  0.5f, 0, 0, 1, -1, -1, 1, 1, 1, 0.04f, 0.72f}, { 0.5f,  0.5f,  0.5f, 0, 0, 1, -1, -1, 1, 1, 1, 0.04f, 0.72f}, {-0.5f,  0.5f,  0.5f, 0, 0, 1, -1, -1, 1, 1, 1, 0.04f, 0.72f},
+    { 0.5f, -0.5f, -0.5f, 0, 0, -1, -1, -1, 1, 1, 1, 0.04f, 0.72f}, {-0.5f, -0.5f, -0.5f, 0, 0, -1, -1, -1, 1, 1, 1, 0.04f, 0.72f}, {-0.5f,  0.5f, -0.5f, 0, 0, -1, -1, -1, 1, 1, 1, 0.04f, 0.72f}, { 0.5f,  0.5f, -0.5f, 0, 0, -1, -1, -1, 1, 1, 1, 0.04f, 0.72f},
+    { 0.5f, -0.5f,  0.5f, 1, 0, 0, -1, -1, 1, 1, 1, 0.04f, 0.72f}, { 0.5f, -0.5f, -0.5f, 1, 0, 0, -1, -1, 1, 1, 1, 0.04f, 0.72f}, { 0.5f,  0.5f, -0.5f, 1, 0, 0, -1, -1, 1, 1, 1, 0.04f, 0.72f}, { 0.5f,  0.5f,  0.5f, 1, 0, 0, -1, -1, 1, 1, 1, 0.04f, 0.72f},
+    {-0.5f, -0.5f, -0.5f, -1, 0, 0, -1, -1, 1, 1, 1, 0.04f, 0.72f}, {-0.5f, -0.5f,  0.5f, -1, 0, 0, -1, -1, 1, 1, 1, 0.04f, 0.72f}, {-0.5f,  0.5f,  0.5f, -1, 0, 0, -1, -1, 1, 1, 1, 0.04f, 0.72f}, {-0.5f,  0.5f, -0.5f, -1, 0, 0, -1, -1, 1, 1, 1, 0.04f, 0.72f},
+    {-0.5f,  0.5f,  0.5f, 0, 1, 0, -1, -1, 1, 1, 1, 0.04f, 0.72f}, { 0.5f,  0.5f,  0.5f, 0, 1, 0, -1, -1, 1, 1, 1, 0.04f, 0.72f}, { 0.5f,  0.5f, -0.5f, 0, 1, 0, -1, -1, 1, 1, 1, 0.04f, 0.72f}, {-0.5f,  0.5f, -0.5f, 0, 1, 0, -1, -1, 1, 1, 1, 0.04f, 0.72f},
+    {-0.5f, -0.5f, -0.5f, 0, -1, 0, -1, -1, 1, 1, 1, 0.04f, 0.72f}, { 0.5f, -0.5f, -0.5f, 0, -1, 0, -1, -1, 1, 1, 1, 0.04f, 0.72f}, { 0.5f, -0.5f,  0.5f, 0, -1, 0, -1, -1, 1, 1, 1, 0.04f, 0.72f}, {-0.5f, -0.5f,  0.5f, 0, -1, 0, -1, -1, 1, 1, 1, 0.04f, 0.72f},
   };
   const uint32_t boxIdx[36] = {
      0,  1,  2,  0,  2,  3,  4,  5,  6,  4,  6,  7,
@@ -1238,8 +1572,9 @@ void WorldRenderer::render(
                          glm::angleAxis(v.pitchRad, glm::vec3(1.0f, 0.0f, 0.0f)) *
                          glm::angleAxis(v.rollRad, glm::vec3(0.0f, 0.0f, 1.0f));
     const glm::vec3 rotorHub = v.pos + vq * glm::vec3(0.0f, 3.05f, 0.25f);
-    const glm::quat rq1 = vq * glm::angleAxis(v.rotorAngleRad, glm::vec3(0.0f, 1.0f, 0.0f));
-    const glm::quat rq2 = vq * glm::angleAxis(v.rotorAngleRad + 1.5707963f, glm::vec3(0.0f, 1.0f, 0.0f));
+    const float rotorAngle = timeSec * (v.occupiedByPlayer ? 22.0f : 14.0f);
+    const glm::quat rq1 = vq * glm::angleAxis(rotorAngle, glm::vec3(0.0f, 1.0f, 0.0f));
+    const glm::quat rq2 = vq * glm::angleAxis(rotorAngle + 1.5707963f, glm::vec3(0.0f, 1.0f, 0.0f));
     markerStaging_.push_back(makeInst(rotorHub.x, rotorHub.y, rotorHub.z, 9.6f, 0.06f, 0.22f, rq1, 0.16f, 0.17f, 0.20f, 0.0f));
     markerStaging_.push_back(makeInst(rotorHub.x, rotorHub.y, rotorHub.z, 9.6f, 0.06f, 0.22f, rq2, 0.16f, 0.17f, 0.20f, 0.0f));
   }
@@ -1283,17 +1618,29 @@ void WorldRenderer::render(
     }
   }
 
-  // Texel-snapped directional sun shadow camera centered on focusPos
+  // Compute 2-cascade texel-snapped directional sun shadow matrices
   const glm::vec3 sunDir = glm::normalize(sky.sunDir);
-  const float shadowExtent = 160.0f;
-  const float texelWorld = (shadowExtent * 2.0f) / static_cast<float>(kShadowMapSize);
-  const glm::vec3 snappedCenter(
-    std::floor(focusPos.x / texelWorld) * texelWorld,
+  const glm::vec3 shadowUp = (std::abs(sunDir.y) > 0.98f) ? glm::vec3(0.0f, 0.0f, 1.0f) : glm::vec3(0.0f, 1.0f, 0.0f);
+
+  const float nearExt = 52.0f;
+  const float nearTexel = (nearExt * 2.0f) / static_cast<float>(kShadowMapSize);
+  const glm::vec3 nearCenter(
+    std::floor(focusPos.x / nearTexel) * nearTexel,
     focusPos.y,
-    std::floor(focusPos.z / texelWorld) * texelWorld
+    std::floor(focusPos.z / nearTexel) * nearTexel
   );
-  const glm::mat4 lightProj = glm::orthoZO(-shadowExtent, shadowExtent, -shadowExtent, shadowExtent, 1.0f, 450.0f);
-  const glm::mat4 lightView = glm::lookAt(snappedCenter + sunDir * 210.0f, snappedCenter, glm::vec3(0.0f, 1.0f, 0.0f));
+  const glm::mat4 lightProjNear = glm::orthoZO(-nearExt, nearExt, -nearExt, nearExt, 1.0f, 360.0f);
+  const glm::mat4 lightViewNear = glm::lookAt(nearCenter + sunDir * 170.0f, nearCenter, shadowUp);
+
+  const float farExt = 260.0f;
+  const float farTexel = (farExt * 2.0f) / static_cast<float>(kShadowMapSize);
+  const glm::vec3 farCenter(
+    std::floor(focusPos.x / farTexel) * farTexel,
+    focusPos.y,
+    std::floor(focusPos.z / farTexel) * farTexel
+  );
+  const glm::mat4 lightProjFar = glm::orthoZO(-farExt, farExt, -farExt, farExt, 1.0f, 650.0f);
+  const glm::mat4 lightViewFar = glm::lookAt(farCenter + sunDir * 300.0f, farCenter, shadowUp);
 
   const uint32_t lightCount = static_cast<uint32_t>(std::min<size_t>(pointLights.size(), kMaxPointLights));
   telemetry_.activePointLights = lightCount;
@@ -1301,17 +1648,25 @@ void WorldRenderer::render(
   FrameUniforms ubo{};
   ubo.viewProj = vp;
   ubo.invViewProj = glm::inverse(vp);
-  ubo.lightViewProj = lightProj * lightView;
+  ubo.lightViewProjNear = lightProjNear * lightViewNear;
+  ubo.lightViewProjFar = lightProjFar * lightViewFar;
   ubo.camPos = glm::vec4(camPos, timeSec);
   ubo.sunDir = glm::vec4(sunDir, static_cast<float>(lightCount));
-  ubo.sunColor = glm::vec4(sky.sunColor * 1.32f, 1.0f);
+  ubo.sunColor = glm::vec4(sky.sunColor * 1.38f, 1.0f);
   ubo.fogColor = glm::vec4(sky.fogColor, sky.nightFactor);
-  ubo.weatherParams = glm::vec4(sky.rainIntensity, sky.wetness, sky.lightningFlash, 0.0f);
+  ubo.weatherParams = glm::vec4(sky.rainIntensity, sky.wetness, sky.lightningFlash, nearExt);
   for (uint32_t li = 0; li < lightCount; ++li) {
     ubo.pointLights[li].posAndRadius = glm::vec4(pointLights[li].pos, pointLights[li].radius);
     ubo.pointLights[li].colorAndIntensity = glm::vec4(pointLights[li].color, pointLights[li].intensity);
   }
   wgpuQueueWriteBuffer(ctx.queue(), frameUbo_, 0, &ubo, sizeof(ubo));
+
+  ensureOffscreenTargets(ctx);
+
+  PostUniforms postUbo{};
+  postUbo.screenSize = glm::vec4(static_cast<float>(ctx.width()), static_cast<float>(ctx.height()), 1.05f, 0.28f);
+  postUbo.projParams = glm::vec4(0.25f, 2800.0f, 16.0f, 0.72f);
+  wgpuQueueWriteBuffer(ctx.queue(), postUbo_, 0, &postUbo, sizeof(postUbo));
 
   // Upload skinned character uniform slots
   const uint32_t charCount = static_cast<uint32_t>(std::min<size_t>(characters.size(), kMaxSkinSlots));
@@ -1357,11 +1712,11 @@ void WorldRenderer::render(
   WGPUCommandEncoder enc = wgpuDeviceCreateCommandEncoder(ctx.device(), &encDesc);
 
   // -------------------------------------------------------------------------
-  // Pass 1: 2048x2048 Directional Sun Shadow Pass
+  // Pass 1A & 1B: 2-Cascade 2048x2048 Directional Sun Shadow Passes (Near 52m + Far 260m)
   // -------------------------------------------------------------------------
-  {
+  const auto runShadowCascade = [&](WGPUTextureView layerView, WGPURenderPipeline terrainPipe, WGPURenderPipeline instPipe, WGPURenderPipeline skinPipe) {
     WGPURenderPassDepthStencilAttachment sDepth = WGPU_RENDER_PASS_DEPTH_STENCIL_ATTACHMENT_INIT;
-    sDepth.view = shadowView_;
+    sDepth.view = layerView;
     sDepth.depthLoadOp = WGPULoadOp_Clear;
     sDepth.depthStoreOp = WGPUStoreOp_Store;
     sDepth.depthClearValue = 1.0f;
@@ -1371,9 +1726,16 @@ void WorldRenderer::render(
     srp.depthStencilAttachment = &sDepth;
 
     WGPURenderPassEncoder spass = wgpuCommandEncoderBeginRenderPass(enc, &srp);
-    wgpuRenderPassEncoderSetPipeline(spass, shadowInstancedPipeline_);
     wgpuRenderPassEncoderSetBindGroup(spass, 0, frameBg_, 0, nullptr);
 
+    if (terrainPipe && terrainIndexCount_ > 0) {
+      wgpuRenderPassEncoderSetPipeline(spass, terrainPipe);
+      wgpuRenderPassEncoderSetVertexBuffer(spass, 0, terrainVbo_, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderSetIndexBuffer(spass, terrainIbo_, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderDrawIndexed(spass, terrainIndexCount_, 1, 0, 0, 0);
+    }
+
+    wgpuRenderPassEncoderSetPipeline(spass, instPipe);
     if (!buildingStaging_.empty()) {
       wgpuRenderPassEncoderSetVertexBuffer(spass, 0, unitBoxVbo_, 0, WGPU_WHOLE_SIZE);
       wgpuRenderPassEncoderSetVertexBuffer(spass, 1, buildingInstVbo_, 0, WGPU_WHOLE_SIZE);
@@ -1413,7 +1775,7 @@ void WorldRenderer::render(
     }
 
     if (charCount > 0) {
-      wgpuRenderPassEncoderSetPipeline(spass, shadowSkinnedPipeline_);
+      wgpuRenderPassEncoderSetPipeline(spass, skinPipe);
       wgpuRenderPassEncoderSetBindGroup(spass, 0, frameBg_, 0, nullptr);
       for (uint32_t ci = 0; ci < charCount; ++ci) {
         wgpuRenderPassEncoderSetBindGroup(spass, 1, skinSlots_[ci].bindGroup, 0, nullptr);
@@ -1439,14 +1801,17 @@ void WorldRenderer::render(
 
     wgpuRenderPassEncoderEnd(spass);
     wgpuRenderPassEncoderRelease(spass);
-  }
+  };
+
+  runShadowCascade(shadowLayerViews_[0], shadowTerrainNearPipeline_, shadowInstancedNearPipeline_, shadowSkinnedNearPipeline_);
+  runShadowCascade(shadowLayerViews_[1], shadowTerrainFarPipeline_, shadowInstancedFarPipeline_, shadowSkinnedFarPipeline_);
 
   // -------------------------------------------------------------------------
-  // Pass 2: Main Forward PBR + Shadows Scene Pass
+  // Pass 2: Main Linear HDR Forward PBR + 2-Cascade Shadows Scene Pass
   // -------------------------------------------------------------------------
   {
     WGPURenderPassColorAttachment colorAtt = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
-    colorAtt.view = backView;
+    colorAtt.view = hdrView_;
     colorAtt.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
     colorAtt.loadOp = WGPULoadOp_Clear;
     colorAtt.storeOp = WGPUStoreOp_Store;
@@ -1465,7 +1830,7 @@ void WorldRenderer::render(
 
     WGPURenderPassEncoder pass = wgpuCommandEncoderBeginRenderPass(enc, &rpDesc);
 
-    // Sky Dome + Sun + Moon + Stars (fullscreen atmospheric pass)
+    // Sky Dome + FBM Clouds + Sun + Moon + Stars (fullscreen atmospheric pass)
     if (skyPipeline_) {
       wgpuRenderPassEncoderSetPipeline(pass, skyPipeline_);
       wgpuRenderPassEncoderSetBindGroup(pass, 0, frameBg_, 0, nullptr);
@@ -1477,7 +1842,7 @@ void WorldRenderer::render(
     wgpuRenderPassEncoderSetBindGroup(pass, 2, defaultWhiteTex_.bindGroup, 0, nullptr);
     wgpuRenderPassEncoderSetBindGroup(pass, 3, shadowReadBg_, 0, nullptr);
 
-    // Terrain + Ocean
+    // Terrain + Depth-Tinted Ocean
     wgpuRenderPassEncoderSetPipeline(pass, terrainPipeline_);
     wgpuRenderPassEncoderSetVertexBuffer(pass, 0, terrainVbo_, 0, WGPU_WHOLE_SIZE);
     wgpuRenderPassEncoderSetIndexBuffer(pass, terrainIbo_, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
@@ -1490,56 +1855,61 @@ void WorldRenderer::render(
       wgpuRenderPassEncoderDrawIndexed(pass, roadIndexCount_, 1, 0, 0, 0);
     }
 
-    // Instanced Buildings, GLB Props, Fallback Street Props, and Traffic Vehicles
+    // Helper for multi-submesh textured GLB instanced batches
+    const auto drawGlbBatch = [&](const InstancedGlbBatch& batch, uint32_t count) {
+      if (count == 0 || !batch.vbo || !batch.ibo) return;
+      wgpuRenderPassEncoderSetVertexBuffer(pass, 0, batch.vbo, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderSetVertexBuffer(pass, 1, batch.instVbo, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderSetIndexBuffer(pass, batch.ibo, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
+      if (batch.submeshes.empty()) {
+        wgpuRenderPassEncoderSetBindGroup(pass, 2, defaultWhiteTex_.bindGroup, 0, nullptr);
+        wgpuRenderPassEncoderDrawIndexed(pass, batch.indexCount, count, 0, 0, 0);
+      } else {
+        for (const auto& sub : batch.submeshes) {
+          wgpuRenderPassEncoderSetBindGroup(pass, 2, sub.texBindGroup ? sub.texBindGroup : defaultWhiteTex_.bindGroup, 0, nullptr);
+          wgpuRenderPassEncoderDrawIndexed(pass, sub.indexCount, count, sub.indexOffset, 0, 0);
+        }
+      }
+    };
+
+    // Instanced Buildings, Textured GLB Houses/Props/Vehicles, Fallback Street Props, Dynamic Props, Markers
     wgpuRenderPassEncoderSetPipeline(pass, instancedPipeline_);
     if (!buildingStaging_.empty()) {
+      wgpuRenderPassEncoderSetBindGroup(pass, 2, defaultWhiteTex_.bindGroup, 0, nullptr);
       wgpuRenderPassEncoderSetVertexBuffer(pass, 0, unitBoxVbo_, 0, WGPU_WHOLE_SIZE);
       wgpuRenderPassEncoderSetVertexBuffer(pass, 1, buildingInstVbo_, 0, WGPU_WHOLE_SIZE);
       wgpuRenderPassEncoderSetIndexBuffer(pass, unitBoxIbo_, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
       wgpuRenderPassEncoderDrawIndexed(pass, unitBoxIndexCount_, static_cast<uint32_t>(buildingStaging_.size()), 0, 0, 0);
     }
     for (size_t hi = 0; hi < kNumHouseGlbs; ++hi) {
-      const uint32_t cnt = static_cast<uint32_t>(houseStaging_[hi].size());
-      if (cnt > 0 && houseBatches_[hi].vbo) {
-        wgpuRenderPassEncoderSetVertexBuffer(pass, 0, houseBatches_[hi].vbo, 0, WGPU_WHOLE_SIZE);
-        wgpuRenderPassEncoderSetVertexBuffer(pass, 1, houseBatches_[hi].instVbo, 0, WGPU_WHOLE_SIZE);
-        wgpuRenderPassEncoderSetIndexBuffer(pass, houseBatches_[hi].ibo, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
-        wgpuRenderPassEncoderDrawIndexed(pass, houseBatches_[hi].indexCount, cnt, 0, 0, 0);
-      }
+      drawGlbBatch(houseBatches_[hi], static_cast<uint32_t>(houseStaging_[hi].size()));
     }
     if (fallbackPropCount_ > 0 && fallbackPropInstVbo_) {
+      wgpuRenderPassEncoderSetBindGroup(pass, 2, defaultWhiteTex_.bindGroup, 0, nullptr);
       wgpuRenderPassEncoderSetVertexBuffer(pass, 0, unitBoxVbo_, 0, WGPU_WHOLE_SIZE);
       wgpuRenderPassEncoderSetVertexBuffer(pass, 1, fallbackPropInstVbo_, 0, WGPU_WHOLE_SIZE);
       wgpuRenderPassEncoderSetIndexBuffer(pass, unitBoxIbo_, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
       wgpuRenderPassEncoderDrawIndexed(pass, unitBoxIndexCount_, fallbackPropCount_, 0, 0, 0);
     }
     for (const auto& batch : glbPropBatches_) {
-      if (batch.instanceCount == 0) continue;
-      wgpuRenderPassEncoderSetVertexBuffer(pass, 0, batch.vbo, 0, WGPU_WHOLE_SIZE);
-      wgpuRenderPassEncoderSetVertexBuffer(pass, 1, batch.instVbo, 0, WGPU_WHOLE_SIZE);
-      wgpuRenderPassEncoderSetIndexBuffer(pass, batch.ibo, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
-      wgpuRenderPassEncoderDrawIndexed(pass, batch.indexCount, batch.instanceCount, 0, 0, 0);
+      drawGlbBatch(batch, batch.instanceCount);
     }
     if (!markerStaging_.empty() && markerInstVbo_) {
+      wgpuRenderPassEncoderSetBindGroup(pass, 2, defaultWhiteTex_.bindGroup, 0, nullptr);
       wgpuRenderPassEncoderSetVertexBuffer(pass, 0, unitBoxVbo_, 0, WGPU_WHOLE_SIZE);
       wgpuRenderPassEncoderSetVertexBuffer(pass, 1, markerInstVbo_, 0, WGPU_WHOLE_SIZE);
       wgpuRenderPassEncoderSetIndexBuffer(pass, unitBoxIbo_, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
       wgpuRenderPassEncoderDrawIndexed(pass, unitBoxIndexCount_, static_cast<uint32_t>(markerStaging_.size()), 0, 0, 0);
     }
     if (!dynPropStaging_.empty() && dynPropInstVbo_) {
+      wgpuRenderPassEncoderSetBindGroup(pass, 2, defaultWhiteTex_.bindGroup, 0, nullptr);
       wgpuRenderPassEncoderSetVertexBuffer(pass, 0, unitBoxVbo_, 0, WGPU_WHOLE_SIZE);
       wgpuRenderPassEncoderSetVertexBuffer(pass, 1, dynPropInstVbo_, 0, WGPU_WHOLE_SIZE);
       wgpuRenderPassEncoderSetIndexBuffer(pass, unitBoxIbo_, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
       wgpuRenderPassEncoderDrawIndexed(pass, unitBoxIndexCount_, static_cast<uint32_t>(dynPropStaging_.size()), 0, 0, 0);
     }
     for (size_t k = 0; k < kVehicleModelCount; ++k) {
-      const uint32_t cnt = static_cast<uint32_t>(vehicleStaging_[k].size());
-      if (cnt > 0 && vehicleBatches_[k].vbo) {
-        wgpuRenderPassEncoderSetVertexBuffer(pass, 0, vehicleBatches_[k].vbo, 0, WGPU_WHOLE_SIZE);
-        wgpuRenderPassEncoderSetVertexBuffer(pass, 1, vehicleBatches_[k].instVbo, 0, WGPU_WHOLE_SIZE);
-        wgpuRenderPassEncoderSetIndexBuffer(pass, vehicleBatches_[k].ibo, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
-        wgpuRenderPassEncoderDrawIndexed(pass, vehicleBatches_[k].indexCount, cnt, 0, 0, 0);
-      }
+      drawGlbBatch(vehicleBatches_[k], static_cast<uint32_t>(vehicleStaging_[k].size()));
     }
 
     // Skinned Textured Characters (Player + City Pedestrians + Police + Contract Targets + Iron Pit)
@@ -1573,7 +1943,37 @@ void WorldRenderer::render(
   }
 
   // -------------------------------------------------------------------------
-  // Pass 3: Dear ImGui Native HUD Pass
+  // Passes 3–7: Half-Res SSAO + Quarter-Res Bloom + ACES Composite Tonemap
+  // -------------------------------------------------------------------------
+  const auto runFullscreenPost = [&](WGPUTextureView targetView, WGPURenderPipeline pipe, WGPUBindGroup bg) {
+    if (!targetView || !pipe || !bg) return;
+    WGPURenderPassColorAttachment att = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
+    att.view = targetView;
+    att.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
+    att.loadOp = WGPULoadOp_Clear;
+    att.storeOp = WGPUStoreOp_Store;
+    att.clearValue = {0.0, 0.0, 0.0, 1.0};
+
+    WGPURenderPassDescriptor rpd = {};
+    rpd.colorAttachmentCount = 1;
+    rpd.colorAttachments = &att;
+
+    WGPURenderPassEncoder p = wgpuCommandEncoderBeginRenderPass(enc, &rpd);
+    wgpuRenderPassEncoderSetPipeline(p, pipe);
+    wgpuRenderPassEncoderSetBindGroup(p, 0, bg, 0, nullptr);
+    wgpuRenderPassEncoderDraw(p, 3, 1, 0, 0);
+    wgpuRenderPassEncoderEnd(p);
+    wgpuRenderPassEncoderRelease(p);
+  };
+
+  runFullscreenPost(ssaoView_, ssaoPipeline_, postBgSSAO_);
+  runFullscreenPost(bloomViewA_, bloomThreshPipeline_, postBgThresh_);
+  runFullscreenPost(bloomViewB_, bloomBlurHPipeline_, postBgBlurH_);
+  runFullscreenPost(bloomViewA_, bloomBlurVPipeline_, postBgBlurV_);
+  runFullscreenPost(backView, compositePipeline_, postBgComposite_);
+
+  // -------------------------------------------------------------------------
+  // Pass 8: Dear ImGui Native HUD Pass
   // -------------------------------------------------------------------------
   if (drawUiCallback) {
     WGPURenderPassColorAttachment uiAtt = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
@@ -1604,6 +2004,8 @@ void WorldRenderer::render(
 }
 
 void WorldRenderer::shutdown() {
+  releaseOffscreenTargets();
+
   auto relBuf = [](WGPUBuffer& b) {
     if (b) { wgpuBufferRelease(b); b = nullptr; }
   };
@@ -1616,6 +2018,9 @@ void WorldRenderer::shutdown() {
     relBuf(b.vbo);
     relBuf(b.ibo);
     relBuf(b.instVbo);
+    for (auto& t : b.ownedTextures) relTex(t);
+    b.ownedTextures.clear();
+    b.submeshes.clear();
     b.indexCount = 0;
     b.instanceCount = 0;
   };
@@ -1638,6 +2043,7 @@ void WorldRenderer::shutdown() {
   relBuf(markerInstVbo_);
   relBuf(dynPropInstVbo_);
   relBuf(frameUbo_);
+  relBuf(postUbo_);
   for (auto& s : skinSlots_) {
     relBuf(s.ubo);
     if (s.bindGroup) { wgpuBindGroupRelease(s.bindGroup); s.bindGroup = nullptr; }
@@ -1655,29 +2061,46 @@ void WorldRenderer::shutdown() {
   relSkin(securityGpu_);
   relTex(defaultWhiteTex_);
 
-  if (shadowView_) { wgpuTextureViewRelease(shadowView_); shadowView_ = nullptr; }
+  for (auto& lv : shadowLayerViews_) {
+    if (lv) { wgpuTextureViewRelease(lv); lv = nullptr; }
+  }
+  if (shadowArrayView_) { wgpuTextureViewRelease(shadowArrayView_); shadowArrayView_ = nullptr; }
   if (shadowTex_) { wgpuTextureRelease(shadowTex_); shadowTex_ = nullptr; }
   if (shadowSampler_) { wgpuSamplerRelease(shadowSampler_); shadowSampler_ = nullptr; }
   if (linearSampler_) { wgpuSamplerRelease(linearSampler_); linearSampler_ = nullptr; }
 
-  if (shadowTerrainPipeline_) { wgpuRenderPipelineRelease(shadowTerrainPipeline_); shadowTerrainPipeline_ = nullptr; }
-  if (shadowInstancedPipeline_) { wgpuRenderPipelineRelease(shadowInstancedPipeline_); shadowInstancedPipeline_ = nullptr; }
-  if (shadowSkinnedPipeline_) { wgpuRenderPipelineRelease(shadowSkinnedPipeline_); shadowSkinnedPipeline_ = nullptr; }
-  if (skyPipeline_) { wgpuRenderPipelineRelease(skyPipeline_); skyPipeline_ = nullptr; }
-  if (terrainPipeline_) { wgpuRenderPipelineRelease(terrainPipeline_); terrainPipeline_ = nullptr; }
-  if (instancedPipeline_) { wgpuRenderPipelineRelease(instancedPipeline_); instancedPipeline_ = nullptr; }
-  if (skinnedPipeline_) { wgpuRenderPipelineRelease(skinnedPipeline_); skinnedPipeline_ = nullptr; }
+  auto relPipe = [](WGPURenderPipeline& p) {
+    if (p) { wgpuRenderPipelineRelease(p); p = nullptr; }
+  };
+  relPipe(shadowTerrainNearPipeline_);
+  relPipe(shadowTerrainFarPipeline_);
+  relPipe(shadowInstancedNearPipeline_);
+  relPipe(shadowInstancedFarPipeline_);
+  relPipe(shadowSkinnedNearPipeline_);
+  relPipe(shadowSkinnedFarPipeline_);
+  relPipe(skyPipeline_);
+  relPipe(terrainPipeline_);
+  relPipe(instancedPipeline_);
+  relPipe(skinnedPipeline_);
+  relPipe(ssaoPipeline_);
+  relPipe(bloomThreshPipeline_);
+  relPipe(bloomBlurHPipeline_);
+  relPipe(bloomBlurVPipeline_);
+  relPipe(compositePipeline_);
 
   if (shadowStaticPipeLayout_) { wgpuPipelineLayoutRelease(shadowStaticPipeLayout_); shadowStaticPipeLayout_ = nullptr; }
   if (shadowSkinnedPipeLayout_) { wgpuPipelineLayoutRelease(shadowSkinnedPipeLayout_); shadowSkinnedPipeLayout_ = nullptr; }
   if (scenePipeLayout_) { wgpuPipelineLayoutRelease(scenePipeLayout_); scenePipeLayout_ = nullptr; }
+  if (postPipeLayout_) { wgpuPipelineLayoutRelease(postPipeLayout_); postPipeLayout_ = nullptr; }
   if (shadowReadBg_) { wgpuBindGroupRelease(shadowReadBg_); shadowReadBg_ = nullptr; }
   if (frameBg_) { wgpuBindGroupRelease(frameBg_); frameBg_ = nullptr; }
   if (shadowReadBgl_) { wgpuBindGroupLayoutRelease(shadowReadBgl_); shadowReadBgl_ = nullptr; }
   if (frameBgl_) { wgpuBindGroupLayoutRelease(frameBgl_); frameBgl_ = nullptr; }
   if (skinBgl_) { wgpuBindGroupLayoutRelease(skinBgl_); skinBgl_ = nullptr; }
   if (matBgl_) { wgpuBindGroupLayoutRelease(matBgl_); matBgl_ = nullptr; }
+  if (postBgl_) { wgpuBindGroupLayoutRelease(postBgl_); postBgl_ = nullptr; }
   if (shader_) { wgpuShaderModuleRelease(shader_); shader_ = nullptr; }
+  if (postShader_) { wgpuShaderModuleRelease(postShader_); postShader_ = nullptr; }
 }
 
 } // namespace westgate

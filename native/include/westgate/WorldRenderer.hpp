@@ -108,13 +108,19 @@ private:
   struct alignas(16) FrameUniforms {
     glm::mat4 viewProj;
     glm::mat4 invViewProj;
-    glm::mat4 lightViewProj;
+    glm::mat4 lightViewProjNear;
+    glm::mat4 lightViewProjFar;
     glm::vec4 camPos;
     glm::vec4 sunDir;   // w = pointLightCount
     glm::vec4 sunColor;
     glm::vec4 fogColor; // w = nightFactor
-    glm::vec4 weatherParams; // x = rainIntensity, y = wetness, z = lightningFlash
+    glm::vec4 weatherParams; // x = rainIntensity, y = wetness, z = lightningFlash, w = nearSplit
     std::array<GpuPointLight, kMaxPointLights> pointLights;
+  };
+
+  struct alignas(16) PostUniforms {
+    glm::vec4 screenSize; // x = width, y = height, z = bloomThreshold, w = bloomIntensity
+    glm::vec4 projParams; // x = near, y = far, z = ssaoRadius, w = ssaoStrength
   };
 
   struct alignas(16) SkinUniforms {
@@ -129,11 +135,19 @@ private:
     WGPUBindGroup bindGroup = nullptr;
   };
 
+  struct GlbSubmesh {
+    uint32_t indexOffset = 0;
+    uint32_t indexCount = 0;
+    WGPUBindGroup texBindGroup = nullptr;
+  };
+
   struct InstancedGlbBatch {
     std::string protoId;
     WGPUBuffer vbo = nullptr;
     WGPUBuffer ibo = nullptr;
     WGPUBuffer instVbo = nullptr;
+    std::vector<GlbSubmesh> submeshes;
+    std::vector<GpuTextureBinding> ownedTextures;
     uint32_t indexCount = 0;
     uint32_t instanceCount = 0;
     uint32_t maxInstances = 0;
@@ -164,32 +178,65 @@ private:
   bool loadGlbUnitBoxBatch(WgpuContext& ctx, const std::string& glbPath, uint32_t maxInstances, InstancedGlbBatch& outBatch);
   void buildSkinnedMesh(WgpuContext& ctx, const GltfModel& model, SkinnedMeshGpu& outMesh);
   GpuTextureBinding createRgbaTexture(WgpuContext& ctx, uint32_t w, uint32_t h, const uint8_t* rgba8);
+  void ensureOffscreenTargets(WgpuContext& ctx);
+  void releaseOffscreenTargets();
+  WGPUBindGroup createPostBindGroup(WgpuContext& ctx, WGPUTextureView texA, WGPUTextureView texB, WGPUTextureView depthView, WGPUTextureView ssaoView);
 
   WGPUShaderModule shader_ = nullptr;
+  WGPUShaderModule postShader_ = nullptr;
   WGPUBindGroupLayout frameBgl_ = nullptr;
   WGPUBindGroupLayout skinBgl_ = nullptr;
   WGPUBindGroupLayout matBgl_ = nullptr;
   WGPUBindGroupLayout shadowReadBgl_ = nullptr;
+  WGPUBindGroupLayout postBgl_ = nullptr;
   WGPUBindGroup frameBg_ = nullptr;
   WGPUBindGroup shadowReadBg_ = nullptr;
 
   WGPUPipelineLayout shadowStaticPipeLayout_ = nullptr;
   WGPUPipelineLayout shadowSkinnedPipeLayout_ = nullptr;
   WGPUPipelineLayout scenePipeLayout_ = nullptr;
+  WGPUPipelineLayout postPipeLayout_ = nullptr;
 
-  WGPURenderPipeline shadowTerrainPipeline_ = nullptr;
-  WGPURenderPipeline shadowInstancedPipeline_ = nullptr;
-  WGPURenderPipeline shadowSkinnedPipeline_ = nullptr;
+  WGPURenderPipeline shadowTerrainNearPipeline_ = nullptr;
+  WGPURenderPipeline shadowTerrainFarPipeline_ = nullptr;
+  WGPURenderPipeline shadowInstancedNearPipeline_ = nullptr;
+  WGPURenderPipeline shadowInstancedFarPipeline_ = nullptr;
+  WGPURenderPipeline shadowSkinnedNearPipeline_ = nullptr;
+  WGPURenderPipeline shadowSkinnedFarPipeline_ = nullptr;
   WGPURenderPipeline skyPipeline_ = nullptr;
   WGPURenderPipeline terrainPipeline_ = nullptr;
   WGPURenderPipeline instancedPipeline_ = nullptr;
   WGPURenderPipeline skinnedPipeline_ = nullptr;
 
+  WGPURenderPipeline ssaoPipeline_ = nullptr;
+  WGPURenderPipeline bloomThreshPipeline_ = nullptr;
+  WGPURenderPipeline bloomBlurHPipeline_ = nullptr;
+  WGPURenderPipeline bloomBlurVPipeline_ = nullptr;
+  WGPURenderPipeline compositePipeline_ = nullptr;
+
   WGPUTexture shadowTex_ = nullptr;
-  WGPUTextureView shadowView_ = nullptr;
+  WGPUTextureView shadowLayerViews_[2] = {nullptr, nullptr};
+  WGPUTextureView shadowArrayView_ = nullptr;
   WGPUSampler shadowSampler_ = nullptr;
   WGPUSampler linearSampler_ = nullptr;
   GpuTextureBinding defaultWhiteTex_{};
+
+  uint32_t offscreenW_ = 0;
+  uint32_t offscreenH_ = 0;
+  WGPUTexture hdrTex_ = nullptr;
+  WGPUTextureView hdrView_ = nullptr;
+  WGPUTexture ssaoTex_ = nullptr;
+  WGPUTextureView ssaoView_ = nullptr;
+  WGPUTexture bloomTexA_ = nullptr;
+  WGPUTextureView bloomViewA_ = nullptr;
+  WGPUTexture bloomTexB_ = nullptr;
+  WGPUTextureView bloomViewB_ = nullptr;
+  WGPUBuffer postUbo_ = nullptr;
+  WGPUBindGroup postBgSSAO_ = nullptr;
+  WGPUBindGroup postBgThresh_ = nullptr;
+  WGPUBindGroup postBgBlurH_ = nullptr;
+  WGPUBindGroup postBgBlurV_ = nullptr;
+  WGPUBindGroup postBgComposite_ = nullptr;
 
   WGPUBuffer frameUbo_ = nullptr;
   std::array<SkinSlot, kMaxSkinSlots> skinSlots_{};
