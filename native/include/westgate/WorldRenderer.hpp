@@ -3,6 +3,7 @@
 #include "westgate/EngineTypes.hpp"
 #include "westgate/GameSession.hpp"
 #include "westgate/GltfAssetLoader.hpp"
+#include "westgate/PhysicsWorld.hpp"
 #include "westgate/WgpuContext.hpp"
 #include "westgate/WorldData.hpp"
 #include <array>
@@ -14,6 +15,7 @@
 namespace westgate {
 
 constexpr size_t kMaxSkinSlots = 48;
+constexpr size_t kMaxPointLights = 24;
 
 struct RenderTelemetry {
   uint32_t visibleChunks = 0;
@@ -25,13 +27,15 @@ struct RenderTelemetry {
   uint32_t drawnCharacters = 0;
   uint32_t glbPropTypesLoaded = 0;
   uint32_t terrainTriangles = 0;
+  uint32_t activePointLights = 0;
+  uint32_t dynamicPhysicsProps = 0;
 };
 
 struct InstanceAttrib {
   float x, y, z;
   float sx, sy, sz;
-  float rotY;
-  float r, g, b;
+  float qx, qy, qz, qw;
+  float r, g, b, emissive;
 };
 
 enum class SkinnedPartKind : uint8_t {
@@ -87,19 +91,28 @@ public:
     const std::vector<SkinnedRenderCharacter>& characters,
     const std::vector<VehicleEntity>& vehicles,
     const std::vector<WorldMarkerBox>& markers,
+    const std::vector<DynamicPointLight>& pointLights,
+    const std::vector<DynamicPropPose>& dynamicProps,
     bool drawUiCallback
   );
 
   const RenderTelemetry& telemetry() const { return telemetry_; }
 
 private:
+  struct alignas(16) GpuPointLight {
+    glm::vec4 posAndRadius;
+    glm::vec4 colorAndIntensity;
+  };
+
   struct alignas(16) FrameUniforms {
     glm::mat4 viewProj;
+    glm::mat4 invViewProj;
     glm::mat4 lightViewProj;
     glm::vec4 camPos;
-    glm::vec4 sunDir;
+    glm::vec4 sunDir;   // w = pointLightCount
     glm::vec4 sunColor;
     glm::vec4 fogColor; // w = nightFactor
+    std::array<GpuPointLight, kMaxPointLights> pointLights;
   };
 
   struct alignas(16) SkinUniforms {
@@ -164,6 +177,7 @@ private:
   WGPURenderPipeline shadowTerrainPipeline_ = nullptr;
   WGPURenderPipeline shadowInstancedPipeline_ = nullptr;
   WGPURenderPipeline shadowSkinnedPipeline_ = nullptr;
+  WGPURenderPipeline skyPipeline_ = nullptr;
   WGPURenderPipeline terrainPipeline_ = nullptr;
   WGPURenderPipeline instancedPipeline_ = nullptr;
   WGPURenderPipeline skinnedPipeline_ = nullptr;
@@ -198,6 +212,10 @@ private:
   WGPUBuffer markerInstVbo_ = nullptr;
   uint32_t markerCapacity_ = 0;
   std::vector<InstanceAttrib> markerStaging_;
+
+  WGPUBuffer dynPropInstVbo_ = nullptr;
+  uint32_t dynPropCapacity_ = 0;
+  std::vector<InstanceAttrib> dynPropStaging_;
 
   std::vector<InstancedGlbBatch> glbPropBatches_;
   std::array<InstancedGlbBatch, 6> vehicleBatches_{};

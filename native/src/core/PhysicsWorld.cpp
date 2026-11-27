@@ -7,6 +7,7 @@
 #include <Jolt/Physics/PhysicsSystem.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
+#include <Jolt/Physics/Collision/Shape/CylinderShape.h>
 #include <Jolt/Physics/Collision/Shape/HeightFieldShape.h>
 #include <Jolt/Physics/Collision/RayCast.h>
 #include <Jolt/Physics/Collision/CastResult.h>
@@ -16,6 +17,7 @@
 #include "westgate/PhysicsWorld.hpp"
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <thread>
 
 namespace westgate {
@@ -77,6 +79,13 @@ class ObjectLayerPairFilterImpl final : public JPH::ObjectLayerPairFilter {
   }
 };
 
+struct DynamicBodyEntry {
+  JPH::BodyID id;
+  DynamicPropKind kind = DynamicPropKind::Crate;
+  glm::vec3 halfExtents{0.35f};
+  glm::vec3 color{0.7f, 0.5f, 0.3f};
+};
+
 std::atomic<int> gJoltRefCount{0};
 
 void ensureJoltInitialized() {
@@ -105,6 +114,7 @@ struct PhysicsWorld::Impl {
   ObjectLayerPairFilterImpl objectVsObjectLayerFilter;
   std::unique_ptr<JPH::PhysicsSystem> physicsSystem;
   JPH::Ref<JPH::CharacterVirtual> character;
+  std::vector<DynamicBodyEntry> dynamicBodies;
   bool initialized = false;
 };
 
@@ -124,10 +134,10 @@ bool PhysicsWorld::initFromWorld(const WorldData& world, std::string* err) {
   const uint32_t threads = std::max(1u, std::thread::hardware_concurrency() > 1 ? std::thread::hardware_concurrency() - 1 : 1u);
   impl_->jobSystem = std::make_unique<JPH::JobSystemThreadPool>(JPH::cMaxPhysicsJobs, JPH::cMaxPhysicsBarriers, static_cast<int>(threads));
 
-  const uint32_t maxBodies = 16384;
+  const uint32_t maxBodies = 24576;
   const uint32_t numBodyMutexes = 0;
-  const uint32_t maxBodyPairs = 16384;
-  const uint32_t maxContactConstraints = 8192;
+  const uint32_t maxBodyPairs = 24576;
+  const uint32_t maxContactConstraints = 12288;
 
   impl_->physicsSystem = std::make_unique<JPH::PhysicsSystem>();
   impl_->physicsSystem->Init(
@@ -143,6 +153,7 @@ bool PhysicsWorld::initFromWorld(const WorldData& world, std::string* err) {
 
   JPH::BodyInterface& bodyInterface = impl_->physicsSystem->GetBodyInterface();
   staticBodyCount_ = 0;
+  dynamicBodyCount_ = 0;
 
   // 1. 512x512 HeightFieldShape terrain
   const uint32_t gridN = world.heightfield.gridSize();
@@ -189,6 +200,123 @@ bool PhysicsWorld::initFromWorld(const WorldData& world, std::string* err) {
     }
   }
 
+  // 3. Static prop colliders (trees, dumpsters, benches) so player/cars/rigid bodies collide realistically
+  {
+    JPH::ShapeRefC trunkShape = JPH::CylinderShapeSettings(2.1f, 0.35f).Create().Get();
+    JPH::ShapeRefC dumpsterShape = JPH::BoxShapeSettings(JPH::Vec3(1.0f, 0.72f, 0.65f)).Create().Get();
+    JPH::ShapeRefC benchShape = JPH::BoxShapeSettings(JPH::Vec3(0.95f, 0.45f, 0.38f)).Create().Get();
+
+    for (const auto& p : world.props) {
+      JPH::ShapeRefC shape;
+      float yOff = 0.0f;
+      if (p.proto == "palm_tree" || p.proto == "oak_tree" || p.proto == "pine_tree") {
+        shape = trunkShape;
+        yOff = 2.1f;
+      } else if (p.proto == "dumpster") {
+        shape = dumpsterShape;
+        yOff = 0.72f;
+      } else if (p.proto == "park_bench") {
+        shape = benchShape;
+        yOff = 0.45f;
+      }
+      if (!shape) continue;
+      const JPH::Quat rot = JPH::Quat::sRotation(JPH::Vec3::sAxisY(), p.ry);
+      JPH::BodyCreationSettings bcs(
+        shape,
+        JPH::RVec3(p.pos.x, p.pos.y + yOff, p.pos.z),
+        rot,
+        JPH::EMotionType::Static,
+        Layers::NON_MOVING
+      );
+      bodyInterface.CreateAndAddBody(bcs, JPH::EActivation::DontActivate);
+      ++staticBodyCount_;
+    }
+  }
+
+  // 4. Iron Pit Arena Platform + Bleachers + Cage Posts colliders
+  {
+    const float pitY = world.heightfield.sampleHeight(world.fightPitPos.x, world.fightPitPos.z);
+    JPH::ShapeRefC platShape = JPH::BoxShapeSettings(JPH::Vec3(6.5f, 0.34f, 6.5f)).Create().Get();
+    bodyInterface.CreateAndAddBody(
+      JPH::BodyCreationSettings(platShape, JPH::RVec3(world.fightPitPos.x, pitY + 0.34f, world.fightPitPos.z), JPH::Quat::sIdentity(), JPH::EMotionType::Static, Layers::NON_MOVING),
+      JPH::EActivation::DontActivate
+    );
+    ++staticBodyCount_;
+
+    JPH::ShapeRefC bleacherShape = JPH::BoxShapeSettings(JPH::Vec3(4.4f, 0.52f, 0.8f)).Create().Get();
+    for (float side : {-1.0f, 1.0f}) {
+      bodyInterface.CreateAndAddBody(
+        JPH::BodyCreationSettings(bleacherShape, JPH::RVec3(world.fightPitPos.x, pitY + 0.52f, world.fightPitPos.z + side * 8.9f), JPH::Quat::sIdentity(), JPH::EMotionType::Static, Layers::NON_MOVING),
+        JPH::EActivation::DontActivate
+      );
+      ++staticBodyCount_;
+    }
+  }
+
+  // 5. Dynamic Jolt Rigid Bodies (smashable wooden crates & steel barrels around Safehouse, Iron Pit & Seaport)
+  {
+    auto addDynamic = [&](DynamicPropKind kind, const glm::vec3& pos, const glm::vec3& halfExt, const glm::vec3& color, float mass) {
+      JPH::ShapeSettings::ShapeResult res = (kind == DynamicPropKind::Barrel)
+        ? JPH::CylinderShapeSettings(halfExt.y, halfExt.x).Create()
+        : JPH::BoxShapeSettings(JPH::Vec3(halfExt.x, halfExt.y, halfExt.z)).Create();
+      if (!res.IsValid()) return;
+      JPH::BodyCreationSettings bcs(
+        res.Get(),
+        JPH::RVec3(pos.x, pos.y + halfExt.y + 0.04f, pos.z),
+        JPH::Quat::sIdentity(),
+        JPH::EMotionType::Dynamic,
+        Layers::MOVING
+      );
+      bcs.mOverrideMassProperties = JPH::EOverrideMassProperties::CalculateInertia;
+      bcs.mMassPropertiesOverride.mMass = mass;
+      bcs.mRestitution = 0.22f;
+      bcs.mFriction = 0.62f;
+      bcs.mLinearDamping = 0.12f;
+      bcs.mAngularDamping = 0.18f;
+      const JPH::BodyID id = bodyInterface.CreateAndAddBody(bcs, JPH::EActivation::DontActivate);
+      if (!id.IsInvalid()) {
+        impl_->dynamicBodies.push_back({id, kind, halfExt, color});
+        ++dynamicBodyCount_;
+      }
+    };
+
+    const float pitY = world.heightfield.sampleHeight(world.fightPitPos.x, world.fightPitPos.z);
+    // Iron Pit dockyard stacks & barrels
+    for (int i = 0; i < 6; ++i) {
+      const float bx = world.fightPitPos.x + 8.6f + (i % 2) * 0.95f;
+      const float bz = world.fightPitPos.z - 5.0f + static_cast<float>(i / 2) * 1.1f;
+      addDynamic(DynamicPropKind::Crate, {bx, world.heightfield.sampleHeight(bx, bz), bz}, {0.42f, 0.42f, 0.42f}, {0.62f, 0.45f, 0.28f}, 24.0f);
+    }
+    for (int i = 0; i < 4; ++i) {
+      const float bx = world.fightPitPos.x - 8.8f - (i % 2) * 0.95f;
+      const float bz = world.fightPitPos.z + 5.8f + static_cast<float>(i / 2) * 1.0f;
+      addDynamic(DynamicPropKind::Barrel, {bx, pitY, bz}, {0.34f, 0.48f, 0.34f}, {0.72f, 0.24f, 0.16f}, 32.0f);
+    }
+
+    // Safehouse driveway & Seaport cargo dynamic stacks
+    const glm::vec2 clusters[] = {
+      {world.spawnPos.x - 11.5f, world.spawnPos.z + 10.0f},
+      {world.spawnPos.x + 11.0f, world.spawnPos.z - 8.0f},
+      {620.0f, 415.0f},
+      {380.0f, 255.0f},
+      {-685.0f, 22.0f},
+      {22.0f, -75.0f},
+    };
+    for (size_t ci = 0; ci < std::size(clusters); ++ci) {
+      const auto& c = clusters[ci];
+      for (int k = 0; k < 5; ++k) {
+        const float px = c.x + static_cast<float>(k % 3) * 0.95f;
+        const float pz = c.y + static_cast<float>(k / 3) * 0.95f;
+        const float py = world.heightfield.sampleHeight(px, pz);
+        if ((k + static_cast<int>(ci)) % 2 == 0) {
+          addDynamic(DynamicPropKind::Crate, {px, py, pz}, {0.40f, 0.40f, 0.40f}, {0.64f, 0.47f, 0.29f}, 22.0f);
+        } else {
+          addDynamic(DynamicPropKind::Barrel, {px, py, pz}, {0.33f, 0.46f, 0.33f}, {0.22f, 0.46f, 0.72f}, 28.0f);
+        }
+      }
+    }
+  }
+
   impl_->physicsSystem->OptimizeBroadPhase();
   impl_->initialized = true;
   spawnCharacter(world.spawnPos + glm::vec3(0.0f, 1.0f, 0.0f));
@@ -196,12 +324,14 @@ bool PhysicsWorld::initFromWorld(const WorldData& world, std::string* err) {
 }
 
 void PhysicsWorld::shutdown() {
+  impl_->dynamicBodies.clear();
   impl_->character = nullptr;
   impl_->physicsSystem.reset();
   impl_->jobSystem.reset();
   impl_->tempAllocator.reset();
   impl_->initialized = false;
   staticBodyCount_ = 0;
+  dynamicBodyCount_ = 0;
 }
 
 void PhysicsWorld::spawnCharacter(const glm::vec3& pos) {
@@ -301,6 +431,73 @@ RaycastHit PhysicsWorld::raycast(const glm::vec3& origin, const glm::vec3& direc
     }
   }
   return out;
+}
+
+void PhysicsWorld::applyImpulseNear(const glm::vec3& pos, const glm::vec3& impulse, float radius) {
+  if (!impl_->initialized || impl_->dynamicBodies.empty()) return;
+  JPH::BodyInterface& bi = impl_->physicsSystem->GetBodyInterface();
+  const float rSq = radius * radius;
+  for (const auto& entry : impl_->dynamicBodies) {
+    const JPH::RVec3 bp = bi.GetPosition(entry.id);
+    const glm::vec3 p(static_cast<float>(bp.GetX()), static_cast<float>(bp.GetY()), static_cast<float>(bp.GetZ()));
+    const glm::vec3 d = p - pos;
+    const float dSq = glm::dot(d, d);
+    if (dSq <= rSq) {
+      const float falloff = 1.0f - std::sqrt(dSq) / std::max(0.01f, radius);
+      const JPH::Vec3 imp(impulse.x * falloff, (impulse.y + 1.8f) * falloff, impulse.z * falloff);
+      bi.ActivateBody(entry.id);
+      bi.AddImpulse(entry.id, imp);
+      bi.AddAngularImpulse(entry.id, JPH::Vec3(impulse.z * 0.25f * falloff, 0.3f * falloff, -impulse.x * 0.25f * falloff));
+    }
+  }
+}
+
+bool PhysicsWorld::resolveVehicleCollision(const glm::vec3& center, float radius, glm::vec3& outPushXZ, float& outImpactSpeedScale) const {
+  outPushXZ = glm::vec3(0.0f);
+  outImpactSpeedScale = 1.0f;
+  if (!impl_->initialized) return false;
+
+  // 8-direction horizontal perimeter raycasts against NON_MOVING world geometry (buildings, trees, pit walls)
+  bool hitAny = false;
+  const glm::vec3 probeOrig = center + glm::vec3(0.0f, 0.95f, 0.0f);
+  const JPH::SpecifiedObjectLayerFilter staticFilter(Layers::NON_MOVING);
+  const JPH::SpecifiedBroadPhaseLayerFilter bpStaticFilter(BroadPhaseLayers::NON_MOVING);
+
+  for (int i = 0; i < 8; ++i) {
+    const float a = static_cast<float>(i) * (6.2831853f / 8.0f);
+    const glm::vec3 dir(std::sin(a), 0.0f, std::cos(a));
+    JPH::RRayCast ray(JPH::RVec3(probeOrig.x, probeOrig.y, probeOrig.z), JPH::Vec3(dir.x * radius, 0.0f, dir.z * radius));
+    JPH::RayCastResult res;
+    if (impl_->physicsSystem->GetNarrowPhaseQuery().CastRay(ray, res, bpStaticFilter, staticFilter)) {
+      const float pen = radius * (1.0f - res.mFraction);
+      if (pen > 0.01f) {
+        outPushXZ.x -= dir.x * pen;
+        outPushXZ.z -= dir.z * pen;
+        hitAny = true;
+      }
+    }
+  }
+  if (hitAny) outImpactSpeedScale = 0.42f;
+  return hitAny;
+}
+
+void PhysicsWorld::gatherDynamicProps(std::vector<DynamicPropPose>& outProps) const {
+  outProps.clear();
+  if (!impl_->initialized || impl_->dynamicBodies.empty()) return;
+  outProps.reserve(impl_->dynamicBodies.size());
+  const JPH::BodyInterface& bi = impl_->physicsSystem->GetBodyInterface();
+  for (const auto& entry : impl_->dynamicBodies) {
+    JPH::RVec3 pos;
+    JPH::Quat rot;
+    bi.GetPositionAndRotation(entry.id, pos, rot);
+    DynamicPropPose p;
+    p.kind = entry.kind;
+    p.position = glm::vec3(static_cast<float>(pos.GetX()), static_cast<float>(pos.GetY()), static_cast<float>(pos.GetZ()));
+    p.rotation = glm::quat(rot.GetW(), rot.GetX(), rot.GetY(), rot.GetZ());
+    p.halfExtents = entry.halfExtents;
+    p.color = entry.color;
+    outProps.push_back(p);
+  }
 }
 
 } // namespace westgate

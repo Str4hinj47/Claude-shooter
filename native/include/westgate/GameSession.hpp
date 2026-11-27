@@ -123,11 +123,62 @@ struct NpcEntity {
   glm::vec3 homePos{0.0f};
 };
 
+struct IronPitFighterDef {
+  std::string name;
+  std::string style;
+  std::string record;
+  float power = 1.0f;
+  float speed = 1.0f;
+  float defense = 1.0f;
+  glm::vec3 skinTint{0.82f, 0.65f, 0.52f};
+  glm::vec3 shortsTint{0.85f, 0.15f, 0.18f};
+  glm::vec3 hairTint{0.10f, 0.08f, 0.07f};
+};
+
+struct IronPitCardMatch {
+  int redIdx = 0;
+  int blueIdx = 1;
+  float redOdds = 1.85f;
+  float blueOdds = 1.95f;
+  float koPropOdds = 2.60f;
+  bool settled = false;
+};
+
+struct SpectatorFighterState {
+  int fighterIdx = 0;
+  float hp = 120.0f;
+  float maxHp = 120.0f;
+  glm::vec3 pos{0.0f};
+  float yawRad = 0.0f;
+  std::string animClip = "fight_idle";
+  float animTime = 0.0f;
+  float attackCooldown = 1.0f;
+  float hitFlash = 0.0f;
+  bool hitApplied = false;
+  bool downed = false;
+};
+
+struct SpectatorBoutState {
+  bool active = false;
+  int matchIdx = 0;
+  SpectatorFighterState red;
+  SpectatorFighterState blue;
+  float elapsed = 0.0f;
+  int winnerCorner = -1; // -1 none, 0 red, 1 blue
+  int betCorner = 0;
+  int betWager = 0;
+  bool quickKoProp = false;
+  float endBannerTimer = 0.0f;
+};
+
 struct IronPitState {
   int tier = 1;
-  std::string opponentName = "Dockside Scrapper";
-  float hp = 100.0f;
-  float maxHp = 100.0f;
+  std::string opponentName = "\"Scrapyard\" Rico";
+  glm::vec3 skinTint{0.80f, 0.62f, 0.48f};
+  glm::vec3 shortsTint{0.84f, 0.16f, 0.16f};
+  glm::vec3 hairTint{0.09f, 0.07f, 0.06f};
+  float hp = 110.0f;
+  float maxHp = 110.0f;
   int purse = 500;
   glm::vec3 pos{722.0f, 3.4f, 118.0f};
   float yawRad = 3.14159f;
@@ -191,6 +242,21 @@ struct BulletTracer {
   float ttl = 0.09f;
 };
 
+struct SparkParticle {
+  glm::vec3 pos{0.0f};
+  glm::vec3 vel{0.0f};
+  glm::vec3 color{1.0f, 0.78f, 0.28f};
+  float ttl = 0.35f;
+  float size = 0.08f;
+};
+
+struct DynamicPointLight {
+  glm::vec3 pos{0.0f};
+  float radius = 12.0f;
+  glm::vec3 color{1.0f};
+  float intensity = 1.0f;
+};
+
 struct GameInputFrame {
   PlayerInputState moveInput{};
   bool fireDown = false;
@@ -211,6 +277,7 @@ struct WorldMarkerBox {
   glm::vec3 scale{1.0f};
   float yawRad = 0.0f;
   glm::vec3 color{1.0f};
+  float pitchRad = 0.0f;
 };
 
 class GameSession {
@@ -235,6 +302,7 @@ public:
   // Queries for Renderer & HUD
   SkyLightingState skyLighting() const;
   std::vector<WorldMarkerBox> gatherWorldMarkers(float elapsedSec) const;
+  std::vector<DynamicPointLight> gatherDynamicLights(const WorldData& world, const PlayerController& player, float elapsedSec) const;
 
   const std::vector<WeaponSlotState>& weapons() const { return weapons_; }
   int activeWeaponIdx() const { return activeWeapon_; }
@@ -243,11 +311,15 @@ public:
   const std::vector<VehicleEntity>& vehicles() const { return vehicles_; }
   const std::vector<NpcEntity>& npcs() const { return npcs_; }
   const IronPitState& ironPit() const { return ironPit_; }
+  const std::vector<IronPitFighterDef>& pitRoster() const { return pitRoster_; }
+  const std::vector<IronPitCardMatch>& pitCard() const { return pitCard_; }
+  const SpectatorBoutState& spectatorBout() const { return spectatorBout_; }
   const std::vector<ContractDef>& contracts() const { return contracts_; }
   const std::vector<StreetRaceDef>& races() const { return races_; }
   const std::vector<StuntJumpDef>& stuntJumps() const { return stuntJumps_; }
   const std::vector<ShopDef>& shops() const { return shops_; }
   const std::vector<BulletTracer>& tracers() const { return tracers_; }
+  const std::vector<SparkParticle>& sparks() const { return sparks_; }
 
   float playerHp() const { return playerHp_; }
   float playerMaxHp() const { return playerMaxHp_; }
@@ -297,8 +369,11 @@ public:
   float playerAttackTime() const { return playerAttackTimer_; }
   bool placeIronPitBet(int wager);
   bool buyCutmanHeal();
+  bool startSpectatorBout(int matchIdx, int pickCorner, int wager, bool quickKoProp, const WorldData& world, AudioEngine* audio);
+  void refreshFightCard();
 
 private:
+  void spawnSparks(const glm::vec3& pos, const glm::vec3& normal, const glm::vec3& color, int count);
   void pushToast(const std::string& msg, float duration = 3.5f);
   void reportCrime(CrimeKind kind, const glm::vec3& pos, const WorldData& world);
   void spawnIronPitTier(int tier, const WorldData& world);
@@ -307,6 +382,7 @@ private:
   void updateTrafficAndVehicles(float dt, const GameInputFrame& input, PlayerController& player, PhysicsWorld& physics, const WorldData& world, AudioEngine* audio);
   void updateNpcsAndPolice(float dt, PlayerController& player, PhysicsWorld& physics, const WorldData& world, AudioEngine* audio);
   void updateIronPit(float dt, const GameInputFrame& input, PlayerController& player, const WorldData& world, AudioEngine* audio);
+  void updateSpectatorBout(float dt, const WorldData& world, AudioEngine* audio);
   void updateActivitiesAndShops(float dt, const GameInputFrame& input, PlayerController& player, const WorldData& world, AudioEngine* audio);
 
   std::vector<WeaponSlotState> weapons_;
@@ -346,6 +422,9 @@ private:
   float policeSpawnCooldown_ = 0.0f;
 
   IronPitState ironPit_;
+  std::vector<IronPitFighterDef> pitRoster_;
+  std::vector<IronPitCardMatch> pitCard_;
+  SpectatorBoutState spectatorBout_;
   std::vector<ContractDef> contracts_;
   int activeContractIdx_ = -1;
   bool contractSeenByWitness_ = false;
@@ -359,6 +438,9 @@ private:
   std::vector<StuntJumpDef> stuntJumps_;
   std::vector<ShopDef> shops_;
   std::vector<BulletTracer> tracers_;
+  std::vector<SparkParticle> sparks_;
+  float muzzleFlashTimer_ = 0.0f;
+  glm::vec3 muzzleFlashPos_{0.0f};
 
   bool hasWaypoint_ = true;
   glm::vec3 waypointPos_{722.0f, 2.8f, 115.0f};

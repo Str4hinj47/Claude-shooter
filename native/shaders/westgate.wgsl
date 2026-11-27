@@ -1,10 +1,17 @@
+struct PointLight {
+  posAndRadius      : vec4<f32>, // xyz = world pos, w = radius
+  colorAndIntensity : vec4<f32>, // rgb = color, w = intensity
+};
+
 struct FrameUniforms {
-  viewProj      : mat4x4<f32>,
-  lightViewProj : mat4x4<f32>,
-  camPos        : vec4<f32>, // xyz = camPos, w = timeSec
-  sunDir        : vec4<f32>,
-  sunColor      : vec4<f32>,
-  fogColor      : vec4<f32>,
+  viewProj        : mat4x4<f32>,
+  invViewProj     : mat4x4<f32>,
+  lightViewProj   : mat4x4<f32>,
+  camPos          : vec4<f32>, // xyz = camPos, w = timeSec
+  sunDir          : vec4<f32>, // xyz = sunDir, w = f32(pointLightCount)
+  sunColor        : vec4<f32>,
+  fogColor        : vec4<f32>, // rgb = fogColor, w = nightFactor
+  pointLights     : array<PointLight, 24>,
 };
 
 struct SkinUniforms {
@@ -37,8 +44,8 @@ struct InstancedVSIn {
   @location(3) vtxCol    : vec3<f32>,
   @location(4) instPos   : vec3<f32>,
   @location(5) instScale : vec3<f32>,
-  @location(6) instRotY  : f32,
-  @location(7) instCol   : vec3<f32>,
+  @location(6) instQuat  : vec4<f32>, // (qx, qy, qz, qw)
+  @location(7) instColEm : vec4<f32>, // rgb = tint, w = emissiveBoost
 };
 
 struct SkinnedVSIn {
@@ -58,7 +65,19 @@ struct VSOut {
   @location(3) color         : vec3<f32>,
   @location(4) uv            : vec2<f32>,
   @location(5) surfaceKind   : f32,
+  @location(6) emissiveBoost : f32,
 };
+
+struct SkyVSOut {
+  @builtin(position) clipPos : vec4<f32>,
+  @location(0) ndc           : vec2<f32>,
+};
+
+fn rotateByQuat(v : vec3<f32>, q : vec4<f32>) -> vec3<f32> {
+  let u = q.xyz;
+  let s = q.w;
+  return 2.0 * dot(u, v) * u + (s * s - dot(u, u)) * v + 2.0 * s * cross(u, v);
+}
 
 fn computeShadowPos(worldPos : vec3<f32>) -> vec3<f32> {
   let lp = uFrame.lightViewProj * vec4<f32>(worldPos, 1.0);
@@ -77,6 +96,69 @@ fn skinMatrix(joints : vec4<u32>, weights : vec4<f32>) -> mat4x4<f32> {
          uSkin.bones[j3] * weights.w;
 }
 
+fn acesTonemap(x : vec3<f32>) -> vec3<f32> {
+  let a = 2.51;
+  let b = 0.03;
+  let c = 2.43;
+  let d = 0.59;
+  let e = 0.14;
+  return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+// ---------------------------------------------------------------------------
+// Procedural Atmospheric Sky Dome + Sun Disc + Moon + Starfield
+// ---------------------------------------------------------------------------
+@vertex
+fn vsSky(@builtin(vertex_index) vid : u32) -> SkyVSOut {
+  var pos = array<vec2<f32>, 3>(
+    vec2<f32>(-1.0, -1.0),
+    vec2<f32>( 3.0, -1.0),
+    vec2<f32>(-1.0,  3.0)
+  );
+  var out : SkyVSOut;
+  let p = pos[vid];
+  out.clipPos = vec4<f32>(p, 0.9999, 1.0);
+  out.ndc = p;
+  return out;
+}
+
+@fragment
+fn fsSky(in : SkyVSOut) -> @location(0) vec4<f32> {
+  let farWorld = uFrame.invViewProj * vec4<f32>(in.ndc, 1.0, 1.0);
+  let rayDir = normalize(farWorld.xyz / farWorld.w - uFrame.camPos.xyz);
+  let L = normalize(uFrame.sunDir.xyz);
+  let nightFactor = clamp(uFrame.fogColor.w, 0.0, 1.0);
+  let tSec = uFrame.camPos.w;
+
+  let upness = clamp(rayDir.y, 0.0, 1.0);
+  let zenithDay = vec3<f32>(0.16, 0.42, 0.82);
+  let zenithNight = vec3<f32>(0.02, 0.03, 0.08);
+  let zenith = mix(zenithDay, zenithNight, nightFactor);
+  let horizon = uFrame.fogColor.rgb;
+
+  var sky = mix(horizon, zenith, pow(upness, 0.55));
+
+  // Sun / Moon disc & Mie atmospheric halo
+  let sunCos = max(dot(rayDir, L), 0.0);
+  let halo = pow(sunCos, 16.0) * (0.45 - 0.30 * nightFactor);
+  let disc = smoothstep(0.9992, 0.9997, sunCos) * (1.0 - 0.65 * nightFactor);
+  sky += uFrame.sunColor.rgb * (halo + disc * 3.2);
+
+  // Subtle starfield at dusk/night
+  if (nightFactor > 0.15 && rayDir.y > 0.04) {
+    let cell = floor(rayDir * 240.0);
+    let h = fract(sin(dot(cell, vec3<f32>(12.9898, 78.233, 37.719))) * 43758.5453);
+    if (h > 0.993) {
+      let twinkle = 0.65 + 0.35 * sin(tSec * 2.8 + h * 120.0);
+      sky += vec3<f32>(0.85, 0.90, 1.0) * (nightFactor * twinkle * smoothstep(0.04, 0.25, rayDir.y));
+    }
+  }
+
+  let mapped = acesTonemap(sky);
+  let gamma = pow(mapped, vec3<f32>(1.0 / 2.2));
+  return vec4<f32>(gamma, 1.0);
+}
+
 // ---------------------------------------------------------------------------
 // Shadow Depth Vertex Shaders
 // ---------------------------------------------------------------------------
@@ -87,14 +169,8 @@ fn vsShadowTerrain(in : TerrainVSIn) -> @builtin(position) vec4<f32> {
 
 @vertex
 fn vsShadowInstanced(in : InstancedVSIn) -> @builtin(position) vec4<f32> {
-  let c = cos(in.instRotY);
-  let s = sin(in.instRotY);
   let scaled = in.pos * in.instScale;
-  let worldPos = vec3<f32>(
-    scaled.x * c + scaled.z * s,
-    scaled.y,
-    -scaled.x * s + scaled.z * c
-  ) + in.instPos;
+  let worldPos = rotateByQuat(scaled, in.instQuat) + in.instPos;
   return uFrame.lightViewProj * vec4<f32>(worldPos, 1.0);
 }
 
@@ -119,34 +195,25 @@ fn vsTerrain(in : TerrainVSIn) -> VSOut {
   out.color = in.color;
   out.uv = in.uvKind.xy;
   out.surfaceKind = in.uvKind.z;
+  out.emissiveBoost = 0.0;
   return out;
 }
 
 @vertex
 fn vsInstanced(in : InstancedVSIn) -> VSOut {
-  let c = cos(in.instRotY);
-  let s = sin(in.instRotY);
   let scaled = in.pos * in.instScale;
-  let rotPos = vec3<f32>(
-    scaled.x * c + scaled.z * s,
-    scaled.y,
-    -scaled.x * s + scaled.z * c
-  );
-  let worldPos = rotPos + in.instPos;
-  let rotNorm = normalize(vec3<f32>(
-    in.normal.x * c + in.normal.z * s,
-    in.normal.y,
-    -in.normal.x * s + in.normal.z * c
-  ));
+  let worldPos = rotateByQuat(scaled, in.instQuat) + in.instPos;
+  let rotNorm = normalize(rotateByQuat(in.normal, in.instQuat));
 
   var out : VSOut;
   out.clipPos = uFrame.viewProj * vec4<f32>(worldPos, 1.0);
   out.worldPos = worldPos;
   out.shadowPos = computeShadowPos(worldPos);
   out.normal = rotNorm;
-  out.color = in.vtxCol * in.instCol;
+  out.color = in.vtxCol * in.instColEm.rgb;
   out.uv = in.uv;
   out.surfaceKind = 4.0;
+  out.emissiveBoost = in.instColEm.w;
   return out;
 }
 
@@ -166,11 +233,12 @@ fn vsSkinned(in : SkinnedVSIn) -> VSOut {
   out.color = in.vtxCol * uSkin.tint.rgb;
   out.uv = in.uv;
   out.surfaceKind = select(5.0, 6.0, uSkin.tint.a > 1.5);
+  out.emissiveBoost = 0.0;
   return out;
 }
 
 // ---------------------------------------------------------------------------
-// 3x3 PCF Shadows & ACES PBR Shading
+// 3x3 PCF Shadows & Multi-Light ACES PBR Shading
 // ---------------------------------------------------------------------------
 fn sampleShadowPCF(shadowPos : vec3<f32>, ndotl : f32) -> f32 {
   let inBounds = shadowPos.x > 0.002 && shadowPos.x < 0.998 &&
@@ -192,15 +260,6 @@ fn sampleShadowPCF(shadowPos : vec3<f32>, ndotl : f32) -> f32 {
   return select(1.0, pcf, inBounds);
 }
 
-fn acesTonemap(x : vec3<f32>) -> vec3<f32> {
-  let a = 2.51;
-  let b = 0.03;
-  let c = 2.43;
-  let d = 0.59;
-  let e = 0.14;
-  return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3<f32>(0.0), vec3<f32>(1.0));
-}
-
 @fragment
 fn fsMain(in : VSOut) -> @location(0) vec4<f32> {
   // Always sample texture in uniform control flow for WGSL validation compliance
@@ -214,7 +273,7 @@ fn fsMain(in : VSOut) -> @location(0) vec4<f32> {
   var albedo = in.color;
   var specPower = 32.0;
   var specStrength = 0.16;
-  var emissive = vec3<f32>(0.0);
+  var emissive = in.color * in.emissiveBoost;
   let nightFactor = clamp(uFrame.fogColor.w, 0.0, 1.0);
 
   if (in.surfaceKind > 5.5) {
@@ -241,7 +300,7 @@ fn fsMain(in : VSOut) -> @location(0) vec4<f32> {
         let winHash = fract(sin(dot(vec2<f32>(cellX, cellY), vec2<f32>(12.9898, 78.233))) * 43758.5453);
         if (winHash > 0.52 && nightFactor > 0.05) {
           let warm = mix(vec3<f32>(0.45, 0.78, 0.96), vec3<f32>(1.0, 0.78, 0.40), step(0.68, winHash));
-          emissive = warm * (nightFactor * 0.85);
+          emissive += warm * (nightFactor * 0.85);
         }
       }
     }
@@ -260,8 +319,8 @@ fn fsMain(in : VSOut) -> @location(0) vec4<f32> {
         albedo = vec3<f32>(0.82, 0.84, 0.86);
       }
     }
-    specPower = 18.0;
-    specStrength = 0.10;
+    specPower = 22.0;
+    specStrength = 0.12;
   } else if (in.surfaceKind > 0.5 && in.surfaceKind < 1.5) {
     // Ocean water ripples + Fresnel sky reflection
     let w1 = sin(in.worldPos.x * 0.18 + tSec * 1.6) * cos(in.worldPos.z * 0.15 - tSec * 1.1);
@@ -289,6 +348,25 @@ fn fsMain(in : VSOut) -> @location(0) vec4<f32> {
   let spec = pow(max(dot(N, H), 0.0), specPower) * specStrength * shadow;
 
   var lit = albedo * (skyAmbient + uFrame.sunColor.rgb * ndotl * shadow) + uFrame.sunColor.rgb * spec + emissive;
+
+  // Dynamic local point lights (Iron Pit braziers, floodlights, muzzle flash, siren strobes, streetlamps)
+  let lightCount = min(u32(max(uFrame.sunDir.w, 0.0)), 24u);
+  for (var li : u32 = 0u; li < lightCount; li = li + 1u) {
+    let pl = uFrame.pointLights[li];
+    let toLight = pl.posAndRadius.xyz - in.worldPos;
+    let distSq = dot(toLight, toLight);
+    let radius = max(pl.posAndRadius.w, 0.1);
+    if (distSq < radius * radius) {
+      let d = sqrt(distSq);
+      let win = clamp(1.0 - d / radius, 0.0, 1.0);
+      let att = (win * win) / (1.0 + 0.08 * distSq);
+      let pL = toLight / max(d, 0.001);
+      let pNdotL = max(dot(N, pL), 0.0);
+      let pH = normalize(pL + V);
+      let pSpec = pow(max(dot(N, pH), 0.0), specPower) * specStrength * 0.8;
+      lit += (albedo * pNdotL + vec3<f32>(pSpec)) * pl.colorAndIntensity.rgb * (pl.colorAndIntensity.w * att);
+    }
+  }
 
   // Atmospheric distance haze
   let dist = length(uFrame.camPos.xyz - in.worldPos);

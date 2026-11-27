@@ -257,7 +257,10 @@ if(WESTGATE_BUILD_DESKTOP)
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/fighter/base_body.glb"
         "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/fighter/clothing_shorts.glb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/fighter/clothing_jeans.glb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/fighter/clothing_boots.glb"
         "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/fighter/hair_short02.glb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/fighter/hair_short04.glb"
         "$<TARGET_FILE_DIR:westgate_engine>/assets/characters/fighter/"
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/business.glb"
@@ -284,6 +287,21 @@ if(WESTGATE_BUILD_DESKTOP)
         "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/mustang.glb"
         "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/ferrari.glb"
         "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/rangerover.glb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/pit_barrel.glb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/pit_barrel_open.glb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/pit_barrier.glb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/pit_cash_register.glb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/pit_chair.glb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/pit_crate_stack.glb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/pit_floodlight.glb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/pit_pallet.glb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/pit_speaker.glb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/pit_stool.glb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/pit_trophy.glb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/int_table.glb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/pos_terminal.glb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/stash_bag.glb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/medkit.glb"
         "$<TARGET_FILE_DIR:westgate_engine>/assets/models/"
     )
   endif()

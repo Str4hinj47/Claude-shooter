@@ -65,6 +65,20 @@ class CharacterAnimator {
     std::array<glm::mat4, kMaxSkinBones>& outPalette
   ) const;
 
+  /**
+   * Upper/lower-body skeletal layering:
+   * Lower body (hips & legs) plays `lowerClip`, while upper body (spine, torso, arms, head)
+   * smoothly blends toward `upperClip` by `upperWeight` in [0..1].
+   */
+  void evaluateLayered(
+    const SourceClip& lowerClip,
+    float lowerTime,
+    const SourceClip& upperClip,
+    float upperTime,
+    float upperWeight,
+    std::array<glm::mat4, kMaxSkinBones>& outPalette
+  ) const;
+
   static std::string canonicalizeBoneName(const std::string& rawName);
 
  private:

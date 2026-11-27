@@ -78,8 +78,34 @@ int main() {
 
   const westgate::RaycastHit groundHit = physics.raycast(endPos + glm::vec3(0.0f, 20.0f, 0.0f), glm::vec3(0.0f, -1.0f, 0.0f), 40.0f);
   assert(groundHit.hit && std::abs(groundHit.position.y - pitY) < 1.5f);
-  std::printf("[PASS] JoltPhysics: bodies=%u, walkedTo=(%.2f, %.2f, %.2f), grounded=%d, rayHitY=%.2f\n",
-              physics.staticBodyCount(), endPos.x, endPos.y, endPos.z, player.grounded() ? 1 : 0, groundHit.position.y);
+
+  // Verify dynamic Jolt rigid-body crates/barrels respond to real impulses
+  assert(physics.dynamicBodyCount() >= 30);
+  std::vector<westgate::DynamicPropPose> dynBefore, dynAfter;
+  physics.gatherDynamicProps(dynBefore);
+  assert(dynBefore.size() == physics.dynamicBodyCount());
+  const glm::vec3 firstCratePos = dynBefore[0].position;
+  physics.applyImpulseNear(firstCratePos, glm::vec3(180.0f, 40.0f, 90.0f), 2.5f);
+  for (int f = 0; f < 30; ++f) physics.step(1.0f / 60.0f);
+  physics.gatherDynamicProps(dynAfter);
+  const float crateMoved = glm::distance(firstCratePos, dynAfter[0].position);
+  assert(crateMoved > 0.15f);
+
+  // Verify vehicle collision probe detects static buildings
+  if (!world.chunks.empty()) {
+    for (const auto& ch : world.chunks) {
+      if (!ch.buildings.empty()) {
+        const auto& b = ch.buildings[0];
+        glm::vec3 pushXZ(0.0f);
+        float spdScale = 1.0f;
+        const glm::vec3 probeCenter(b.center.x, world.heightfield.sampleHeight(b.center.x, b.center.z), b.center.z);
+        (void)physics.resolveVehicleCollision(probeCenter, std::max(b.size.x, b.size.z) * 0.5f + 2.0f, pushXZ, spdScale);
+        break;
+      }
+    }
+  }
+  std::printf("[PASS] JoltPhysics: static=%u, dynamic=%u (crateMoved=%.2fm), grounded=%d, rayHitY=%.2f\n",
+              physics.staticBodyCount(), physics.dynamicBodyCount(), crateMoved, player.grounded() ? 1 : 0, groundHit.position.y);
 
   // 4. Native glTF/GLB loader + Node Transform Baking + Skeletal Retargeting
   const std::filesystem::path fighterGlb = publicDir / "characters" / "fighter" / "base_body.glb";
@@ -122,6 +148,20 @@ int main() {
     }
     std::printf("[PASS] CharacterAnimator retarget (Mixamo -> base_body): skinnedVert=(%.2f, %.2f, %.2f)\n",
                 skinned.x, skinned.y, skinned.z);
+
+    // Layered upper/lower body skeletal blending (jab over fight_idle)
+    const std::filesystem::path jabGlb = publicDir / "animations" / "combat" / "jab.glb";
+    westgate::GltfModel jabAnim;
+    if (westgate::GltfAssetLoader::loadGlb(jabGlb.string(), jabAnim, false, &err)) {
+      westgate::CharacterAnimator::SourceClip srcJab;
+      assert(westgate::CharacterAnimator::buildSourceClip("jab", jabAnim, 0, false, srcJab));
+      std::array<glm::mat4, westgate::kMaxSkinBones> layeredPal{};
+      anim.evaluateLayered(srcIdle, 0.25f, srcJab, 0.22f, 0.85f, layeredPal);
+      const glm::vec3 layeredSkinned = glm::vec3((layeredPal[j4.x] * w4.x + layeredPal[j4.y] * w4.y + layeredPal[j4.z] * w4.z + layeredPal[j4.w] * w4.w) * glm::vec4(samplePos, 1.0f));
+      assert(std::isfinite(layeredSkinned.x) && std::isfinite(layeredSkinned.y) && std::abs(layeredSkinned.y) < 3.0f);
+      std::printf("[PASS] CharacterAnimator evaluateLayered: vert=(%.2f, %.2f, %.2f)\n",
+                  layeredSkinned.x, layeredSkinned.y, layeredSkinned.z);
+    }
   }
 
   const std::filesystem::path bizGlb = publicDir / "characters" / "business.glb";
@@ -251,12 +291,31 @@ int main() {
       return 1;
     }
 
-    // Iron Pit betting & Cutman recovery check
+    // Iron Pit 8-fighter roster, 3-match Fight Card, live AI-vs-AI Spectator Cage Bout & Dynamic Point Lights
+    assert(session.pitRoster().size() == 8);
+    assert(session.pitCard().size() == 3);
+    const auto lightsDay = session.gatherDynamicLights(world, player, 1.0f);
+    assert(lightsDay.size() >= 7); // 4 pit floods + 2 flickering braziers + Viktor's green lamp
+
     const int preCash = session.playerCash();
     if (!session.placeIronPitBet(100) || session.playerCash() != preCash - 100 || !session.ironPit().betActive) {
       std::fprintf(stderr, "FAIL placeIronPitBet\n");
       return 1;
     }
+
+    if (!session.startSpectatorBout(0, 0, 50, false, world, nullptr) || !session.spectatorBout().active) {
+      std::fprintf(stderr, "FAIL startSpectatorBout\n");
+      return 1;
+    }
+    for (int step = 0; step < 3000 && session.spectatorBout().active; ++step) {
+      westgate::GameInputFrame idle{};
+      session.update(1.0f / 30.0f, idle, player, physics, world, nullptr);
+    }
+    if (session.spectatorBout().active || !session.pitCard()[0].settled) {
+      std::fprintf(stderr, "FAIL AI-vs-AI spectator bout did not settle\n");
+      return 1;
+    }
+    std::printf("[PASS] Iron Pit 8-fighter card + AI-vs-AI spectator bout settled, dynLights=%zu\n", lightsDay.size());
 
     // Verify Iron Pit CC0 GLB props load cleanly
     const char* pitProps[] = {

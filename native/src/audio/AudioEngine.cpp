@@ -44,7 +44,7 @@ void AudioEngine::dataCallback(void* rawDevice, void* output, const void* /*inpu
 
 bool AudioEngine::init() {
   if (initialized_) return true;
-  grains_.resize(24);
+  grains_.resize(40);
   for (auto& g : grains_) g.phase = g.duration + 1.0;
 
   impl_ = new Impl();
@@ -82,8 +82,41 @@ void AudioEngine::shutdown() {
   initialized_ = false;
 }
 
+void AudioEngine::setListener(const glm::vec3& pos, float yawRad) {
+  listenerX_.store(pos.x, std::memory_order_relaxed);
+  listenerY_.store(pos.y, std::memory_order_relaxed);
+  listenerZ_.store(pos.z, std::memory_order_relaxed);
+  listenerYaw_.store(yawRad, std::memory_order_relaxed);
+}
+
+void AudioEngine::computeSpatial(const glm::vec3& worldPos, float maxDist, float& outGain, float& outPan) const {
+  const glm::vec3 lp(
+    listenerX_.load(std::memory_order_relaxed),
+    listenerY_.load(std::memory_order_relaxed),
+    listenerZ_.load(std::memory_order_relaxed)
+  );
+  const glm::vec3 d = worldPos - lp;
+  const float dist = glm::length(d);
+  if (dist >= maxDist) {
+    outGain = 0.0f;
+    outPan = 0.0f;
+    return;
+  }
+  const float norm = dist / std::max(1.0f, maxDist);
+  outGain = std::clamp((1.0f - norm) * (1.0f - norm), 0.04f, 1.0f);
+  if (dist < 0.75f) {
+    outPan = 0.0f;
+    return;
+  }
+  const float yaw = listenerYaw_.load(std::memory_order_relaxed);
+  // Camera right vector in XZ plane: (cos(yaw), 0, -sin(yaw))
+  const glm::vec2 rightXZ(std::cos(yaw), -std::sin(yaw));
+  const glm::vec2 dirXZ = glm::vec2(d.x, d.z) / std::max(0.01f, std::hypot(d.x, d.z));
+  outPan = std::clamp(glm::dot(rightXZ, dirXZ), -1.0f, 1.0f);
+}
+
 void AudioEngine::pushGrain(const ActiveGrain& g) {
-  if (!initialized_ || grains_.empty()) return;
+  if (!initialized_ || grains_.empty() || g.gain <= 0.002f) return;
   const uint32_t idx = writeIdx_.fetch_add(1, std::memory_order_relaxed) % static_cast<uint32_t>(grains_.size());
   grains_[idx] = g;
 }
@@ -96,6 +129,7 @@ void AudioEngine::playFootstep(float intensity, bool inWater) {
   g.endFreq = inWater ? 110.0 : 58.0;
   g.gain = std::clamp(intensity, 0.2f, 1.0f) * (inWater ? 0.18f : 0.22f);
   g.noiseMix = inWater ? 0.65f : 0.28f;
+  g.pan = 0.0f;
   g.rng = static_cast<uint32_t>(writeIdx_.load(std::memory_order_relaxed) * 2654435761u + 17u);
   pushGrain(g);
 }
@@ -108,6 +142,23 @@ void AudioEngine::playImpact(float strength) {
   g.endFreq = 46.0;
   g.gain = std::clamp(strength, 0.25f, 1.3f) * 0.34f;
   g.noiseMix = 0.42f;
+  g.pan = 0.0f;
+  g.rng = static_cast<uint32_t>(writeIdx_.load(std::memory_order_relaxed) * 2246822519u + 91u);
+  pushGrain(g);
+}
+
+void AudioEngine::playSpatialImpact(const glm::vec3& worldPos, float strength) {
+  float att = 1.0f, pan = 0.0f;
+  computeSpatial(worldPos, 48.0f, att, pan);
+  if (att <= 0.01f) return;
+  ActiveGrain g;
+  g.phase = 0.0;
+  g.duration = 0.125;
+  g.freq = 185.0;
+  g.endFreq = 46.0;
+  g.gain = std::clamp(strength, 0.25f, 1.3f) * 0.36f * att;
+  g.noiseMix = 0.42f;
+  g.pan = pan;
   g.rng = static_cast<uint32_t>(writeIdx_.load(std::memory_order_relaxed) * 2246822519u + 91u);
   pushGrain(g);
 }
@@ -120,6 +171,23 @@ void AudioEngine::playGunshot(bool suppressed, float pitch) {
   g.endFreq = suppressed ? 95.0 : 48.0;
   g.gain = suppressed ? 0.22f : 0.40f;
   g.noiseMix = suppressed ? 0.52f : 0.72f;
+  g.pan = 0.0f;
+  g.rng = static_cast<uint32_t>(writeIdx_.load(std::memory_order_relaxed) * 3266489917u + 37u);
+  pushGrain(g);
+}
+
+void AudioEngine::playSpatialGunshot(const glm::vec3& worldPos, bool suppressed, float pitch) {
+  float att = 1.0f, pan = 0.0f;
+  computeSpatial(worldPos, 110.0f, att, pan);
+  if (att <= 0.01f) return;
+  ActiveGrain g;
+  g.phase = 0.0;
+  g.duration = suppressed ? 0.075 : 0.165;
+  g.freq = (suppressed ? 420.0 : 280.0) * static_cast<double>(pitch);
+  g.endFreq = suppressed ? 95.0 : 48.0;
+  g.gain = (suppressed ? 0.22f : 0.40f) * att;
+  g.noiseMix = suppressed ? 0.52f : 0.72f;
+  g.pan = pan;
   g.rng = static_cast<uint32_t>(writeIdx_.load(std::memory_order_relaxed) * 3266489917u + 37u);
   pushGrain(g);
 }
@@ -146,10 +214,100 @@ void AudioEngine::playSirenPulse() {
   pushGrain(g);
 }
 
+void AudioEngine::playSpatialSiren(const glm::vec3& worldPos) {
+  float att = 1.0f, pan = 0.0f;
+  computeSpatial(worldPos, 140.0f, att, pan);
+  if (att <= 0.01f) return;
+  ActiveGrain g;
+  g.phase = 0.0;
+  g.duration = 0.26;
+  g.freq = 640.0;
+  g.endFreq = 930.0;
+  g.gain = 0.14f * att;
+  g.noiseMix = 0.02f;
+  g.pan = pan;
+  pushGrain(g);
+}
+
+void AudioEngine::playPitBell(bool roundEnd) {
+  ActiveGrain g;
+  g.phase = 0.0;
+  g.duration = roundEnd ? 0.65 : 0.48;
+  g.freq = roundEnd ? 980.0 : 1140.0;
+  g.endFreq = roundEnd ? 955.0 : 1120.0;
+  g.gain = 0.26f;
+  g.noiseMix = 0.04f;
+  pushGrain(g);
+}
+
+void AudioEngine::playCrowdCheer(float intensity) {
+  ActiveGrain g;
+  g.phase = 0.0;
+  g.duration = 0.72;
+  g.freq = 320.0;
+  g.endFreq = 180.0;
+  g.gain = std::clamp(intensity, 0.2f, 1.0f) * 0.22f;
+  g.noiseMix = 0.88f;
+  g.rng = static_cast<uint32_t>(writeIdx_.load(std::memory_order_relaxed) * 1597334677u + 53u);
+  pushGrain(g);
+}
+
+void AudioEngine::playVehicleCrash(float strength) {
+  ActiveGrain g;
+  g.phase = 0.0;
+  g.duration = 0.24;
+  g.freq = 140.0;
+  g.endFreq = 36.0;
+  g.gain = std::clamp(strength, 0.2f, 1.2f) * 0.34f;
+  g.noiseMix = 0.68f;
+  g.rng = static_cast<uint32_t>(writeIdx_.load(std::memory_order_relaxed) * 2869860233u + 19u);
+  pushGrain(g);
+}
+
+void AudioEngine::playExplosion(const glm::vec3& worldPos) {
+  float att = 1.0f, pan = 0.0f;
+  computeSpatial(worldPos, 150.0f, att, pan);
+  if (att <= 0.01f) return;
+  ActiveGrain g;
+  g.phase = 0.0;
+  g.duration = 0.55;
+  g.freq = 120.0;
+  g.endFreq = 26.0;
+  g.gain = 0.48f * att;
+  g.noiseMix = 0.80f;
+  g.pan = pan;
+  g.rng = static_cast<uint32_t>(writeIdx_.load(std::memory_order_relaxed) * 40503u + 7u);
+  pushGrain(g);
+}
+
+void AudioEngine::setEngineState(bool inVehicle, float speedRatio) {
+  engineGain_.store(inVehicle ? 0.075f : 0.0f, std::memory_order_relaxed);
+  engineSpeedRatio_.store(std::clamp(speedRatio, 0.0f, 1.5f), std::memory_order_relaxed);
+}
+
 void AudioEngine::mixSamples(float* output, uint32_t frameCount) {
   const double dt = 1.0 / std::max(8000.0, sampleRate_);
+  const float engGain = engineGain_.load(std::memory_order_relaxed);
+  const float engSpd = engineSpeedRatio_.load(std::memory_order_relaxed);
+  const double engFreqA = 34.0 + static_cast<double>(engSpd) * 76.0;
+  const double engFreqB = engFreqA * 1.98;
+
   for (uint32_t i = 0; i < frameCount; ++i) {
-    float sample = 0.0f;
+    float left = 0.0f;
+    float right = 0.0f;
+
+    if (engGain > 0.001f) {
+      enginePhaseA_ += dt * engFreqA;
+      enginePhaseB_ += dt * engFreqB;
+      if (enginePhaseA_ > 1.0) enginePhaseA_ -= std::floor(enginePhaseA_);
+      if (enginePhaseB_ > 1.0) enginePhaseB_ -= std::floor(enginePhaseB_);
+      const float sA = static_cast<float>(std::sin(2.0 * 3.14159265358979 * enginePhaseA_));
+      const float sB = static_cast<float>(std::sin(2.0 * 3.14159265358979 * enginePhaseB_));
+      const float eng = (sA * 0.68f + sB * 0.32f) * engGain;
+      left += eng;
+      right += eng;
+    }
+
     for (auto& g : grains_) {
       if (g.phase >= g.duration) continue;
       const double u = g.phase / g.duration;
@@ -160,13 +318,16 @@ void AudioEngine::mixSamples(float* output, uint32_t frameCount) {
       g.rng = g.rng * 1664525u + 1013904223u;
       const float white = (static_cast<float>((g.rng >> 8) & 0xFFFF) / 32768.0f) - 1.0f;
       const float mixed = static_cast<float>(tone) * (1.0f - g.noiseMix) + white * g.noiseMix;
+      const float val = mixed * static_cast<float>(env) * g.gain;
 
-      sample += mixed * static_cast<float>(env) * g.gain;
+      const float p = std::clamp(g.pan, -1.0f, 1.0f);
+      const float ang = (p + 1.0f) * 0.78539816f; // [0 .. pi/2] equal-power pan
+      left += val * std::cos(ang);
+      right += val * std::sin(ang);
       g.phase += dt;
     }
-    sample = std::tanh(sample);
-    output[i * 2 + 0] = sample;
-    output[i * 2 + 1] = sample;
+    output[i * 2 + 0] = std::tanh(left);
+    output[i * 2 + 1] = std::tanh(right);
   }
 }
 

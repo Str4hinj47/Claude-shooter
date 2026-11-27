@@ -382,6 +382,83 @@ void CharacterAnimator::evaluateBlended(
   buildPaletteFromTargetLocals(localT, localR, localS, outPalette);
 }
 
+void CharacterAnimator::evaluateLayered(
+  const SourceClip& lowerClip,
+  float lowerTime,
+  const SourceClip& upperClip,
+  float upperTime,
+  float upperWeight,
+  std::array<glm::mat4, kMaxSkinBones>& outPalette
+) const {
+  const float rawW = std::clamp(upperWeight, 0.0f, 1.0f);
+  const float w = rawW * rawW * (3.0f - 2.0f * rawW);
+  if (w <= 0.001f) {
+    evaluateClip(lowerClip, lowerTime, outPalette);
+    return;
+  }
+  if (!target_ || !target_->skin.valid) {
+    outPalette.fill(glm::mat4(1.0f));
+    return;
+  }
+
+  std::vector<glm::quat> srcLowerQ, srcUpperQ;
+  glm::vec3 hipL(0.0f), hipU(0.0f);
+  sampleSourcePose(lowerClip, lowerTime, srcLowerQ, hipL);
+  sampleSourcePose(upperClip, upperTime, srcUpperQ, hipU);
+
+  auto boneUpperMask = [](const std::string& canon) -> float {
+    if (canon == "Spine") return 0.55f;
+    if (canon == "Spine1") return 0.85f;
+    if (canon == "Spine2" || canon == "Neck" || canon == "Head") return 1.0f;
+    if (canon.rfind("LeftShoulder", 0) == 0 || canon.rfind("LeftArm", 0) == 0 ||
+        canon.rfind("LeftForeArm", 0) == 0 || canon.rfind("LeftHand", 0) == 0 ||
+        canon.rfind("RightShoulder", 0) == 0 || canon.rfind("RightArm", 0) == 0 ||
+        canon.rfind("RightForeArm", 0) == 0 || canon.rfind("RightHand", 0) == 0) {
+      return 1.0f;
+    }
+    return 0.0f;
+  };
+
+  const size_t n = target_->nodes.size();
+  std::vector<glm::vec3> localT(n);
+  std::vector<glm::quat> localR(n);
+  std::vector<glm::vec3> localS(n);
+  for (size_t i = 0; i < n; ++i) {
+    localT[i] = target_->nodes[i].restT;
+    localR[i] = target_->nodes[i].restR;
+    localS[i] = target_->nodes[i].restS;
+  }
+
+  std::vector<glm::quat> targetWorldQ = targetRestWorldQ_;
+  for (int32_t idx : targetTopoOrder_) {
+    const int32_t p = target_->nodes[idx].parent;
+    const glm::quat parentWorldQ = (p >= 0) ? targetWorldQ[p] : glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+    const std::string& canon = targetCanonicalNames_[idx];
+
+    if (!canon.empty()) {
+      auto itL = lowerClip.canonicalToSrcNode.find(canon);
+      auto itU = upperClip.canonicalToSrcNode.find(canon);
+      const float mask = w * boneUpperMask(canon);
+      if (itL != lowerClip.canonicalToSrcNode.end() && itU != upperClip.canonicalToSrcNode.end()) {
+        const glm::quat wL = glm::normalize((srcLowerQ[itL->second] * glm::inverse(lowerClip.srcRestWorldQ[itL->second])) * targetRestWorldQ_[idx]);
+        const glm::quat wU = glm::normalize((srcUpperQ[itU->second] * glm::inverse(upperClip.srcRestWorldQ[itU->second])) * targetRestWorldQ_[idx]);
+        const glm::quat desiredWorldQ = glm::normalize(glm::slerp(wL, wU, mask));
+        targetWorldQ[idx] = desiredWorldQ;
+        localR[idx] = glm::normalize(glm::inverse(parentWorldQ) * desiredWorldQ);
+        continue;
+      } else if (itL != lowerClip.canonicalToSrcNode.end()) {
+        const glm::quat wL = glm::normalize((srcLowerQ[itL->second] * glm::inverse(lowerClip.srcRestWorldQ[itL->second])) * targetRestWorldQ_[idx]);
+        targetWorldQ[idx] = wL;
+        localR[idx] = glm::normalize(glm::inverse(parentWorldQ) * wL);
+        continue;
+      }
+    }
+    targetWorldQ[idx] = glm::normalize(parentWorldQ * localR[idx]);
+  }
+
+  buildPaletteFromTargetLocals(localT, localR, localS, outPalette);
+}
+
 void CharacterAnimator::buildPaletteFromTargetLocals(
   const std::vector<glm::vec3>& localT,
   const std::vector<glm::quat>& localR,

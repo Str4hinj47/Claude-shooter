@@ -131,7 +131,19 @@ void GameSession::init(const WorldData& world, PlayerController* player, Physics
     }
   }
 
-  // Iron Pit setup
+  // Iron Pit 8-fighter roster + 3-match fight card + Tier 1 spawn
+  pitRoster_ = {
+    {"\"Scrapyard\" Rico", "Brawler", "9-4", 0.92f, 0.95f, 0.90f, {0.78f, 0.58f, 0.44f}, {0.84f, 0.16f, 0.16f}, {0.09f, 0.07f, 0.06f}},
+    {"Darius \"Brick\" Cole", "Slugger", "12-3", 1.15f, 0.85f, 1.05f, {0.42f, 0.28f, 0.20f}, {0.15f, 0.45f, 0.88f}, {0.06f, 0.05f, 0.05f}},
+    {"Kaito \"Razor\" Sato", "Counter", "14-2", 0.96f, 1.24f, 1.08f, {0.88f, 0.72f, 0.58f}, {0.92f, 0.72f, 0.14f}, {0.07f, 0.07f, 0.09f}},
+    {"\"Hammer\" Kowalski", "Heavyweight", "16-4", 1.28f, 0.80f, 1.12f, {0.90f, 0.72f, 0.62f}, {0.20f, 0.75f, 0.42f}, {0.32f, 0.24f, 0.14f}},
+    {"Mateo \"El Diablo\" Cruz", "Champion", "21-1", 1.26f, 1.18f, 1.22f, {0.72f, 0.52f, 0.38f}, {0.88f, 0.18f, 0.55f}, {0.06f, 0.05f, 0.05f}},
+    {"Viktor \"The Bear\" Volkov", "Grappler", "11-5", 1.20f, 0.82f, 1.02f, {0.88f, 0.70f, 0.60f}, {0.48f, 0.22f, 0.85f}, {0.22f, 0.16f, 0.11f}},
+    {"\"Slick\" Eddie Morales", "Boxer-Puncher", "13-6", 0.94f, 1.16f, 0.96f, {0.76f, 0.56f, 0.42f}, {0.14f, 0.78f, 0.82f}, {0.08f, 0.07f, 0.06f}},
+    {"Tariq \"Steel\" Mensah", "Pressure", "15-3", 1.12f, 1.08f, 1.06f, {0.36f, 0.24f, 0.17f}, {0.96f, 0.46f, 0.12f}, {0.05f, 0.05f, 0.05f}},
+  };
+  spectatorBout_ = SpectatorBoutState{};
+  refreshFightCard();
   spawnIronPitTier(1, world);
 
   // Surveillance Hit Contracts
@@ -223,7 +235,7 @@ void GameSession::spawnIronPitTier(int tier, const WorldData& world) {
     ironPit_.betWager = 0;
     ironPit_.winStreak = 0;
   }
-  ironPit_.tier = std::clamp(tier, 1, 3);
+  ironPit_.tier = std::clamp(tier, 1, 5);
   const float pitY = world.heightfield.sampleHeight(world.fightPitPos.x, world.fightPitPos.z) + 0.65f;
   ironPit_.pos = glm::vec3(world.fightPitPos.x, pitY, world.fightPitPos.z + 2.8f);
   ironPit_.yawRad = 3.14159f;
@@ -234,20 +246,99 @@ void GameSession::spawnIronPitTier(int tier, const WorldData& world) {
   ironPit_.hitApplied = false;
   ironPit_.defeated = false;
 
-  if (ironPit_.tier == 1) {
-    ironPit_.opponentName = "Dockside Scrapper";
-    ironPit_.maxHp = 100.0f;
-    ironPit_.purse = 500;
-  } else if (ironPit_.tier == 2) {
-    ironPit_.opponentName = "Foundry Heavy";
-    ironPit_.maxHp = 150.0f;
-    ironPit_.purse = 1250;
-  } else {
-    ironPit_.opponentName = "Iron Pit Champion";
-    ironPit_.maxHp = 210.0f;
-    ironPit_.purse = 2500;
+  static const int kTierPurses[5] = {500, 900, 1450, 2100, 3200};
+  static const float kTierHps[5] = {105.0f, 145.0f, 185.0f, 230.0f, 290.0f};
+  const size_t idx = static_cast<size_t>(ironPit_.tier - 1);
+  if (idx < pitRoster_.size()) {
+    const auto& f = pitRoster_[idx];
+    ironPit_.opponentName = f.name;
+    ironPit_.skinTint = f.skinTint;
+    ironPit_.shortsTint = f.shortsTint;
+    ironPit_.hairTint = f.hairTint;
   }
+  ironPit_.maxHp = kTierHps[idx];
+  ironPit_.purse = kTierPurses[idx];
   ironPit_.hp = ironPit_.maxHp;
+}
+
+void GameSession::refreshFightCard() {
+  pitCard_.clear();
+  if (pitRoster_.size() < 6) return;
+  for (int m = 0; m < 3; ++m) {
+    rng_ = rng_ * 1664525u + 1013904223u;
+    const int r = static_cast<int>(rng_ % pitRoster_.size());
+    rng_ = rng_ * 1664525u + 1013904223u;
+    int b = static_cast<int>(rng_ % pitRoster_.size());
+    if (b == r) b = (r + 1) % static_cast<int>(pitRoster_.size());
+
+    const auto& fr = pitRoster_[static_cast<size_t>(r)];
+    const auto& fb = pitRoster_[static_cast<size_t>(b)];
+    const float ratingR = fr.power * 0.42f + fr.speed * 0.34f + fr.defense * 0.24f;
+    const float ratingB = fb.power * 0.42f + fb.speed * 0.34f + fb.defense * 0.24f;
+    const float pRed = std::clamp(0.5f + (ratingR - ratingB) * 0.65f, 0.22f, 0.78f);
+    const float pBlue = 1.0f - pRed;
+    const float rOdds = std::round((0.94f / pRed) * 100.0f) / 100.0f;
+    const float bOdds = std::round((0.94f / pBlue) * 100.0f) / 100.0f;
+    const float koOdds = std::round((1.75f + (fr.defense + fb.defense) * 0.45f) * 100.0f) / 100.0f;
+    pitCard_.push_back({r, b, rOdds, bOdds, koOdds, false});
+  }
+}
+
+bool GameSession::startSpectatorBout(int matchIdx, int pickCorner, int wager, bool quickKoProp, const WorldData& world, AudioEngine* audio) {
+  if (spectatorBout_.active || matchIdx < 0 || matchIdx >= static_cast<int>(pitCard_.size())) return false;
+  auto& card = pitCard_[static_cast<size_t>(matchIdx)];
+  if (card.settled) return false;
+  if (wager > 0 && playerCash_ < wager) {
+    pushToast("Not enough cash for wager ($" + std::to_string(wager) + ")", 2.5f);
+    return false;
+  }
+  if (wager > 0) playerCash_ -= wager;
+
+  const float pitY = world.heightfield.sampleHeight(world.fightPitPos.x, world.fightPitPos.z) + 0.65f;
+  spectatorBout_ = SpectatorBoutState{};
+  spectatorBout_.active = true;
+  spectatorBout_.matchIdx = matchIdx;
+  spectatorBout_.betCorner = std::clamp(pickCorner, 0, 1);
+  spectatorBout_.betWager = std::max(0, wager);
+  spectatorBout_.quickKoProp = quickKoProp;
+
+  const auto& fr = pitRoster_[static_cast<size_t>(card.redIdx)];
+  const auto& fb = pitRoster_[static_cast<size_t>(card.blueIdx)];
+  spectatorBout_.red.fighterIdx = card.redIdx;
+  spectatorBout_.red.maxHp = 115.0f * fr.defense;
+  spectatorBout_.red.hp = spectatorBout_.red.maxHp;
+  spectatorBout_.red.pos = glm::vec3(world.fightPitPos.x - 2.3f, pitY, world.fightPitPos.z);
+  spectatorBout_.red.yawRad = 1.5708f;
+  spectatorBout_.red.attackCooldown = 0.7f;
+
+  spectatorBout_.blue.fighterIdx = card.blueIdx;
+  spectatorBout_.blue.maxHp = 115.0f * fb.defense;
+  spectatorBout_.blue.hp = spectatorBout_.blue.maxHp;
+  spectatorBout_.blue.pos = glm::vec3(world.fightPitPos.x + 2.3f, pitY, world.fightPitPos.z);
+  spectatorBout_.blue.yawRad = -1.5708f;
+  spectatorBout_.blue.attackCooldown = 0.85f;
+
+  if (audio) audio->playPitBell(false);
+  pushToast("CAGE BOUT LIVE: " + fr.name + " vs " + fb.name + "!", 3.5f);
+  return true;
+}
+
+void GameSession::spawnSparks(const glm::vec3& pos, const glm::vec3& normal, const glm::vec3& color, int count) {
+  for (int i = 0; i < count && sparks_.size() < 160; ++i) {
+    rng_ = rng_ * 1664525u + 1013904223u;
+    const float rx = (static_cast<float>((rng_ >> 8) & 0xFFFF) / 32768.0f - 1.0f) * 3.8f;
+    rng_ = rng_ * 1664525u + 1013904223u;
+    const float ry = static_cast<float>((rng_ >> 8) & 0xFFFF) / 65535.0f * 4.2f + 1.2f;
+    rng_ = rng_ * 1664525u + 1013904223u;
+    const float rz = (static_cast<float>((rng_ >> 8) & 0xFFFF) / 32768.0f - 1.0f) * 3.8f;
+    SparkParticle sp;
+    sp.pos = pos;
+    sp.vel = normal * 2.4f + glm::vec3(rx, ry, rz);
+    sp.color = color;
+    sp.ttl = 0.25f + static_cast<float>(i % 4) * 0.07f;
+    sp.size = 0.06f + static_cast<float>(i % 3) * 0.025f;
+    sparks_.push_back(sp);
+  }
 }
 
 void GameSession::setTimeOfDayPreset(TimeOfDayPreset preset) {
@@ -545,12 +636,14 @@ void GameSession::fireActiveWeapon(const PlayerController& player, PhysicsWorld&
 
   w.magAmmo--;
   fireCooldown_ = 60.0f / std::max(30.0f, w.rpm);
+  muzzleFlashTimer_ = 0.055f;
   if (audio) audio->playGunshot(w.suppressed, 1.0f);
 
   const glm::vec3 camPos = cameraPosition(player);
   const glm::vec3 camTgt = cameraTarget(player);
   const glm::vec3 aimDir = glm::normalize(camTgt - camPos);
   const glm::vec3 muzzle = player.position() + glm::vec3(0.0f, 1.42f, 0.0f) + aimDir * 0.65f;
+  muzzleFlashPos_ = muzzle;
   const float spread = aiming_ ? w.adsSpread : w.spread;
 
   bool hitAnything = false;
@@ -592,6 +685,10 @@ void GameSession::fireActiveWeapon(const PlayerController& player, PhysicsWorld&
 
     const glm::vec3 endPt = camPos + rayDir * bestT;
     tracers_.push_back({muzzle, endPt, w.suppressed ? glm::vec3(0.65f, 0.92f, 1.0f) : glm::vec3(1.0f, 0.85f, 0.30f), 0.085f});
+    if (worldHit.hit && hitNpcIdx < 0 && !hitIronOpp) {
+      spawnSparks(worldHit.position, worldHit.normal, {1.0f, 0.78f, 0.32f}, 5);
+      physics.applyImpulseNear(worldHit.position, rayDir * (w.damage * 0.65f), 1.6f);
+    }
 
     if (hitNpcIdx >= 0) {
       hitAnything = true;
@@ -710,16 +807,25 @@ void GameSession::updateTrafficAndVehicles(float dt, const GameInputFrame& input
       const glm::vec3 fwd(std::sin(v.yawRad), 0.0f, std::cos(v.yawRad));
 
       const glm::vec3 nextXZ = v.pos + fwd * (v.speed * dt);
-      // Probe world buildings with Jolt raycast to prevent clipping into skyscrapers
-      if (std::abs(v.speed) > 0.4f) {
-        const glm::vec3 probeStart = v.pos + glm::vec3(0.0f, 0.9f, 0.0f);
-        const glm::vec3 probeDir = (v.speed >= 0.0f ? fwd : -fwd);
-        const RaycastHit wallHit = physics.raycast(probeStart, probeDir, 2.6f);
-        if (wallHit.hit && wallHit.distance < 2.45f) {
-          v.speed *= -0.25f;
+      // Real Jolt collision sweep against buildings/trees/pit walls + dynamic rigid-body crate/barrel smashing
+      if (std::abs(v.speed) > 0.3f) {
+        glm::vec3 pushXZ(0.0f);
+        float impactScale = 1.0f;
+        if (physics.resolveVehicleCollision(nextXZ, 2.15f, pushXZ, impactScale)) {
+          v.pos.x = std::clamp(nextXZ.x + pushXZ.x, world.worldMin + 15.0f, world.worldMax - 15.0f);
+          v.pos.z = std::clamp(nextXZ.z + pushXZ.z, world.worldMin + 15.0f, world.worldMax - 15.0f);
+          if (std::abs(v.speed) > 8.0f) {
+            spawnSparks(v.pos + fwd * 1.6f + glm::vec3(0.0f, 0.7f, 0.0f), -fwd, {1.0f, 0.72f, 0.25f}, 7);
+            if (audio) audio->playVehicleCrash(std::min(1.1f, std::abs(v.speed) / 28.0f));
+          }
+          v.speed *= -0.32f;
         } else {
           v.pos.x = std::clamp(nextXZ.x, world.worldMin + 15.0f, world.worldMax - 15.0f);
           v.pos.z = std::clamp(nextXZ.z, world.worldMin + 15.0f, world.worldMax - 15.0f);
+        }
+        // Knock dynamic Jolt crates & barrels flying on impact!
+        if (std::abs(v.speed) > 2.5f) {
+          physics.applyImpulseNear(v.pos + fwd * 1.2f, fwd * (v.speed * 1.4f), 2.8f);
         }
       }
 
@@ -892,7 +998,7 @@ void GameSession::updateNpcsAndPolice(float dt, PlayerController& player, Physic
           const float dLen = glm::length(delta);
           const RaycastHit los = (dLen > 0.1f) ? physics.raycast(eye, delta / dLen, dLen) : RaycastHit{};
           if (!los.hit || los.distance > dLen * 0.92f) {
-            if (audio) audio->playGunshot(false, 1.1f);
+            if (audio) audio->playSpatialGunshot(eye, false, 1.1f);
             tracers_.push_back({eye, pTarget, {1.0f, 0.45f, 0.2f}, 0.09f});
             damagePlayer(6.0f + static_cast<float>(wantedStars_), world, player, audio);
           }
@@ -966,12 +1072,13 @@ void GameSession::updateIronPit(float dt, const GameInputFrame& input, PlayerCon
   const bool nearPit = glm::distance(glm::vec2(pPos.x, pPos.z), glm::vec2(world.fightPitPos.x, world.fightPitPos.z)) < 16.0f;
   const bool unarmed = weapons_[static_cast<size_t>(activeWeapon_)].isMelee;
 
-  if (unarmed && nearPit && input.rematchPressed) {
-    const int nextTier = ironPit_.defeated ? (ironPit_.tier >= 3 ? 1 : ironPit_.tier + 1) : ironPit_.tier;
+  if (unarmed && nearPit && input.rematchPressed && !spectatorBout_.active) {
+    const int nextTier = ironPit_.defeated ? (ironPit_.tier >= 5 ? 1 : ironPit_.tier + 1) : ironPit_.tier;
     spawnIronPitTier(nextTier, world);
     playerHp_ = playerMaxHp_;
     playerStamina_ = 100.0f;
-    pushToast("IRON PIT TIER " + std::to_string(nextTier) + ": " + ironPit_.opponentName + "!", 3.0f);
+    if (audio) audio->playPitBell(false);
+    pushToast("IRON PIT TIER " + std::to_string(nextTier) + "/5: " + ironPit_.opponentName + "!", 3.0f);
   }
 
   auto tryStartMelee = [&](const std::string& clip, float stamCost) {
@@ -1004,7 +1111,8 @@ void GameSession::updateIronPit(float dt, const GameInputFrame& input, PlayerCon
         ironPit_.hp = std::max(0.0f, ironPit_.hp - dmg);
         ironPit_.hitFlash = 1.0f;
         hitmarkerTimer_ = 0.16f;
-        if (audio) audio->playImpact(dmg / 20.0f);
+        spawnSparks(ironPit_.pos + glm::vec3(0.0f, 1.35f, 0.0f), {0.0f, 1.0f, 0.0f}, {1.0f, 0.85f, 0.4f}, 4);
+        if (audio) audio->playSpatialImpact(ironPit_.pos, dmg / 20.0f);
         if (ironPit_.hp <= 0.0f) {
           ironPit_.defeated = true;
           ironPit_.animClip = "knockdown";
@@ -1022,7 +1130,11 @@ void GameSession::updateIronPit(float dt, const GameInputFrame& input, PlayerCon
             ironPit_.betWager = 0;
           }
           playerCash_ += (purseWon + betPayout);
-          if (audio) audio->playCashChime();
+          if (audio) {
+            audio->playPitBell(true);
+            audio->playCrowdCheer(0.95f);
+            audio->playCashChime();
+          }
           pushToast("KNOCKOUT! +$" + std::to_string(purseWon + betPayout) + " — Press [R] for next tier!", 4.5f);
         } else {
           ironPit_.animClip = "hit";
@@ -1085,8 +1197,110 @@ void GameSession::updateIronPit(float dt, const GameInputFrame& input, PlayerCon
         ironPit_.animClip = "jab";
         ironPit_.animTime = 0.0f;
         ironPit_.hitApplied = false;
-        ironPit_.attackCooldown = std::max(0.8f, 2.0f - 0.35f * static_cast<float>(ironPit_.tier));
+        ironPit_.attackCooldown = std::max(0.65f, 2.0f - 0.25f * static_cast<float>(ironPit_.tier));
       }
+    }
+  }
+}
+
+void GameSession::updateSpectatorBout(float dt, const WorldData& world, AudioEngine* audio) {
+  if (!spectatorBout_.active) return;
+  spectatorBout_.elapsed += dt;
+
+  auto stepFighter = [&](SpectatorFighterState& self, SpectatorFighterState& opp, int corner) {
+    self.hitFlash = std::max(0.0f, self.hitFlash - dt * 4.0f);
+    self.animTime += dt;
+    if (self.downed || spectatorBout_.winnerCorner >= 0) return;
+
+    const glm::vec3 toOpp = opp.pos - self.pos;
+    const float dist = glm::length(glm::vec2(toOpp.x, toOpp.z));
+    if (dist > 0.05f) self.yawRad = std::atan2(toOpp.x, toOpp.z);
+
+    const auto& def = pitRoster_[static_cast<size_t>(self.fighterIdx)];
+    if (self.animClip == "jab" || self.animClip == "cross" || self.animClip == "hook" || self.animClip == "uppercut" || self.animClip == "kick") {
+      const float dur = (self.animClip == "uppercut" || self.animClip == "kick") ? 0.80f : 0.56f;
+      if (!self.hitApplied && self.animTime >= dur * 0.38f) {
+        self.hitApplied = true;
+        if (dist < 2.25f) {
+          const float baseDmg = (self.animClip == "uppercut" || self.animClip == "kick") ? 22.0f : 14.0f;
+          const float dmg = baseDmg * def.power;
+          opp.hp = std::max(0.0f, opp.hp - dmg);
+          opp.hitFlash = 1.0f;
+          spawnSparks(opp.pos + glm::vec3(0.0f, 1.35f, 0.0f), {0.0f, 1.0f, 0.0f}, {1.0f, 0.82f, 0.35f}, 4);
+          if (audio) audio->playSpatialImpact(opp.pos, 0.9f);
+          if (opp.hp <= 0.0f) {
+            opp.downed = true;
+            opp.animClip = "knockdown";
+            opp.animTime = 0.0f;
+            spectatorBout_.winnerCorner = corner;
+            spectatorBout_.endBannerTimer = 3.2f;
+            if (audio) {
+              audio->playPitBell(true);
+              audio->playCrowdCheer(1.0f);
+            }
+          } else {
+            opp.animClip = "hit";
+            opp.animTime = 0.0f;
+          }
+        }
+      }
+      if (self.animTime >= dur) {
+        self.animClip = "fight_idle";
+        self.animTime = 0.0f;
+      }
+    } else if (self.animClip == "hit") {
+      if (self.animTime >= 0.45f) {
+        self.animClip = "fight_idle";
+        self.animTime = 0.0f;
+      }
+    } else if (dist > 1.72f) {
+      const glm::vec2 dir = glm::normalize(glm::vec2(toOpp.x, toOpp.z));
+      self.pos.x = std::clamp(self.pos.x + dir.x * (2.5f * def.speed) * dt, world.fightPitPos.x - 4.4f, world.fightPitPos.x + 4.4f);
+      self.pos.z = std::clamp(self.pos.z + dir.y * (2.5f * def.speed) * dt, world.fightPitPos.z - 4.4f, world.fightPitPos.z + 4.4f);
+      self.animClip = "Walk";
+    } else {
+      self.animClip = "fight_idle";
+      self.attackCooldown -= dt * def.speed;
+      if (self.attackCooldown <= 0.0f) {
+        rng_ = rng_ * 1664525u + 1013904223u;
+        static const char* kMoves[5] = {"jab", "cross", "hook", "uppercut", "kick"};
+        self.animClip = kMoves[rng_ % 5];
+        self.animTime = 0.0f;
+        self.hitApplied = false;
+        self.attackCooldown = 0.72f + static_cast<float>((rng_ >> 8) % 40) * 0.015f;
+      }
+    }
+  };
+
+  stepFighter(spectatorBout_.red, spectatorBout_.blue, 0);
+  stepFighter(spectatorBout_.blue, spectatorBout_.red, 1);
+
+  if (spectatorBout_.winnerCorner >= 0) {
+    spectatorBout_.endBannerTimer -= dt;
+    if (spectatorBout_.endBannerTimer <= 0.0f) {
+      auto& match = pitCard_[static_cast<size_t>(spectatorBout_.matchIdx)];
+      match.settled = true;
+      const bool wonBet = (spectatorBout_.betWager > 0 && spectatorBout_.betCorner == spectatorBout_.winnerCorner);
+      int payout = 0;
+      if (wonBet) {
+        const float odds = (spectatorBout_.winnerCorner == 0) ? match.redOdds : match.blueOdds;
+        payout = static_cast<int>(std::round(static_cast<float>(spectatorBout_.betWager) * odds));
+        if (spectatorBout_.quickKoProp && spectatorBout_.elapsed <= 22.0f) {
+          payout = static_cast<int>(std::round(static_cast<float>(payout) * 1.45f));
+        }
+        playerCash_ += payout;
+        ironPit_.betWins++;
+        ironPit_.betProfit += (payout - spectatorBout_.betWager);
+        if (audio) audio->playCashChime();
+        pushToast("BOOKIE PAYOUT! Won $" + std::to_string(payout) + " on cage bout!", 4.5f);
+      } else if (spectatorBout_.betWager > 0) {
+        ironPit_.betProfit -= spectatorBout_.betWager;
+        pushToast("Cage bout settled — ticket lost (-$" + std::to_string(spectatorBout_.betWager) + ").", 3.5f);
+      }
+      spectatorBout_.active = false;
+      bool allSettled = true;
+      for (const auto& m : pitCard_) if (!m.settled) allSettled = false;
+      if (allSettled) refreshFightCard();
     }
   }
 }
@@ -1177,14 +1391,32 @@ void GameSession::update(float dt, const GameInputFrame& input, PlayerController
   hitmarkerTimer_ = std::max(0.0f, hitmarkerTimer_ - dt);
   toastTimer_ = std::max(0.0f, toastTimer_ - dt);
   fireCooldown_ = std::max(0.0f, fireCooldown_ - dt);
+  muzzleFlashTimer_ = std::max(0.0f, muzzleFlashTimer_ - dt);
 
   if (autoAdvanceTime_) {
     timeOfDayHours_ = std::fmod(timeOfDayHours_ + dt * 0.015f, 24.0f);
   }
 
-  // Expire bullet tracers
+  // Update 3D spatial audio listener + engine RPM rumble
+  if (audio) {
+    audio->setListener(player.position() + glm::vec3(0.0f, 1.5f, 0.0f), player.yaw());
+    if (const auto* veh = currentVehicle()) {
+      audio->setEngineState(true, std::abs(veh->speed) / std::max(1.0f, veh->maxSpeed));
+    } else {
+      audio->setEngineState(false, 0.0f);
+    }
+  }
+
+  // Expire bullet tracers & integrate spark particles
   for (auto& tr : tracers_) tr.ttl -= dt;
   tracers_.erase(std::remove_if(tracers_.begin(), tracers_.end(), [](const BulletTracer& t) { return t.ttl <= 0.0f; }), tracers_.end());
+
+  for (auto& sp : sparks_) {
+    sp.pos += sp.vel * dt;
+    sp.vel.y -= 16.0f * dt;
+    sp.ttl -= dt;
+  }
+  sparks_.erase(std::remove_if(sparks_.begin(), sparks_.end(), [](const SparkParticle& s) { return s.ttl <= 0.0f; }), sparks_.end());
 
   // Weapon selection 0..5
   if (input.selectWeaponSlot >= 0 && input.selectWeaponSlot < static_cast<int>(weapons_.size())) {
@@ -1238,7 +1470,10 @@ void GameSession::update(float dt, const GameInputFrame& input, PlayerController
 
   updateTrafficAndVehicles(dt, input, player, physics, world, audio);
   updateNpcsAndPolice(dt, player, physics, world, audio);
-  updateIronPit(dt, input, player, world, audio);
+  if (!spectatorBout_.active) {
+    updateIronPit(dt, input, player, world, audio);
+  }
+  updateSpectatorBout(dt, world, audio);
   updateActivitiesAndShops(dt, input, player, world, audio);
 }
 
@@ -1303,17 +1538,83 @@ std::vector<WorldMarkerBox> GameSession::gatherWorldMarkers(float elapsedSec) co
     });
   }
 
-  // Bullet tracers rendered as glowing elongated boxes
+  // Bullet tracers rendered as glowing 3D streaks (yaw + pitch oriented!)
   for (const auto& tr : tracers_) {
     const glm::vec3 delta = tr.end - tr.start;
     const float len = glm::length(delta);
     if (len < 0.05f) continue;
     const glm::vec3 mid = (tr.start + tr.end) * 0.5f;
     const float yaw = std::atan2(delta.x, delta.z);
-    out.push_back({mid, {0.06f, 0.06f, len}, yaw, tr.color});
+    const float horiz = std::hypot(delta.x, delta.z);
+    const float pitch = -std::atan2(delta.y, std::max(1e-4f, horiz));
+    out.push_back({mid, {0.06f, 0.06f, len}, yaw, tr.color, pitch});
+  }
+
+  // Dynamic spark particles (muzzle/bullet/vehicle/boxing impacts)
+  for (const auto& sp : sparks_) {
+    out.push_back({sp.pos, {sp.size, sp.size, sp.size * 2.2f}, 0.0f, sp.color, 0.0f});
   }
 
   return out;
+}
+
+std::vector<DynamicPointLight> GameSession::gatherDynamicLights(const WorldData& world, const PlayerController& player, float elapsedSec) const {
+  std::vector<DynamicPointLight> lights;
+  lights.reserve(24);
+
+  const SkyLightingState sky = skyLighting();
+  const float pitY = world.heightfield.sampleHeight(world.fightPitPos.x, world.fightPitPos.z);
+
+  // 1. Iron Pit overhead floodlights (4 corners)
+  const float floodIntensity = 1.15f + sky.nightFactor * 0.95f;
+  const glm::vec2 floodCorners[4] = {{-4.8f, -4.8f}, {4.8f, -4.8f}, {-4.8f, 4.8f}, {4.8f, 4.8f}};
+  for (const auto& c : floodCorners) {
+    lights.push_back({{world.fightPitPos.x + c.x, pitY + 5.8f, world.fightPitPos.z + c.y}, 22.0f, {0.98f, 0.93f, 0.84f}, floodIntensity});
+  }
+
+  // 2. Iron Pit flickering fire-drum braziers + Viktor's green bookmaker desk lamp
+  const float flickerA = 0.85f + 0.25f * std::sin(elapsedSec * 14.3f) + 0.15f * std::cos(elapsedSec * 23.1f);
+  const float flickerB = 0.85f + 0.25f * std::cos(elapsedSec * 12.7f) + 0.15f * std::sin(elapsedSec * 19.8f);
+  lights.push_back({{world.fightPitPos.x - 6.8f, pitY + 1.45f, world.fightPitPos.z - 6.8f}, 14.0f, {1.0f, 0.45f, 0.12f}, 2.1f * flickerA});
+  lights.push_back({{world.fightPitPos.x + 6.8f, pitY + 1.45f, world.fightPitPos.z + 6.8f}, 14.0f, {1.0f, 0.48f, 0.14f}, 2.1f * flickerB});
+  lights.push_back({{world.fightPitPos.x + 9.2f, pitY + 1.85f, world.fightPitPos.z - 2.6f}, 9.5f, {0.22f, 0.96f, 0.50f}, 1.55f});
+
+  // 3. Muzzle flash point light
+  if (muzzleFlashTimer_ > 0.0f) {
+    lights.push_back({muzzleFlashPos_, 16.0f, {1.0f, 0.78f, 0.35f}, 4.5f});
+  }
+
+  // 4. Active vehicle headlights & police cruiser red/blue strobe lights
+  const float strobe = std::sin(elapsedSec * 18.0f);
+  for (const auto& v : vehicles_) {
+    if (lights.size() >= 22) break;
+    const glm::vec3 fwd(std::sin(v.yawRad), 0.0f, std::cos(v.yawRad));
+    if (v.occupiedByPlayer && sky.nightFactor > 0.15f) {
+      lights.push_back({v.pos + fwd * 3.8f + glm::vec3(0.0f, 0.85f, 0.0f), 26.0f, {0.96f, 0.94f, 0.82f}, 2.2f});
+    } else if (v.isPolicePursuit || (v.kind == VehicleModelKind::PoliceCruiser && wantedStars_ > 0)) {
+      const bool redPhase = strobe >= 0.0f;
+      lights.push_back({
+        v.pos + glm::vec3(0.0f, 2.0f, 0.0f),
+        20.0f,
+        redPhase ? glm::vec3(1.0f, 0.12f, 0.12f) : glm::vec3(0.14f, 0.36f, 1.0f),
+        2.6f,
+      });
+    }
+  }
+
+  // 5. Nearest night streetlamps around player
+  if (sky.nightFactor > 0.15f) {
+    const glm::vec3 pPos = player.position();
+    for (const auto& prop : world.props) {
+      if (lights.size() >= 24) break;
+      if (prop.proto != "streetlamp") continue;
+      if (glm::distance(glm::vec2(prop.pos.x, prop.pos.z), glm::vec2(pPos.x, pPos.z)) < 85.0f) {
+        lights.push_back({prop.pos + glm::vec3(0.0f, 5.2f, 0.0f), 19.0f, {1.0f, 0.82f, 0.52f}, 1.45f * sky.nightFactor});
+      }
+    }
+  }
+
+  return lights;
 }
 
 bool GameSession::saveToFile(const std::string& path) const {

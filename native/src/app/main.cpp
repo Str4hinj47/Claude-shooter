@@ -196,19 +196,28 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  std::array<glm::mat4, westgate::kMaxSkinBones> palBody{}, palShorts{}, palHair{}, palOpp{};
+  std::array<glm::mat4, westgate::kMaxSkinBones> palBody{}, palShorts{}, palHair{};
+  std::array<glm::mat4, westgate::kMaxSkinBones> palOppBody{}, palOppShorts{}, palOppHair{};
+  std::array<glm::mat4, westgate::kMaxSkinBones> palSpecBody{}, palSpecShorts{}, palSpecHair{};
   std::vector<std::array<glm::mat4, westgate::kMaxSkinBones>> npcPalettes(westgate::kMaxSkinSlots);
   palBody.fill(glm::mat4(1.0f));
   palShorts.fill(glm::mat4(1.0f));
   palHair.fill(glm::mat4(1.0f));
-  palOpp.fill(glm::mat4(1.0f));
+  palOppBody.fill(glm::mat4(1.0f));
+  palOppShorts.fill(glm::mat4(1.0f));
+  palOppHair.fill(glm::mat4(1.0f));
+  palSpecBody.fill(glm::mat4(1.0f));
+  palSpecShorts.fill(glm::mat4(1.0f));
+  palSpecHair.fill(glm::mat4(1.0f));
 
   bool running = true;
   westgate::FrameTimer timer;
   float physicsAccum = 0.0f;
   float elapsedSec = 0.0f;
   float locoBlend = 0.0f;
+  float upperAtkWeight = 0.0f;
   std::vector<westgate::SkinnedRenderCharacter> renderChars;
+  std::vector<westgate::DynamicPropPose> dynamicProps;
 
   auto evalAnim = [&](const westgate::CharacterAnimator& anim, const std::string& name, float t, std::array<glm::mat4, westgate::kMaxSkinBones>& pal) {
     auto it = clips.find(name);
@@ -322,7 +331,7 @@ int main(int argc, char** argv) {
       physicsAccum -= kFixedStep;
     }
 
-    // Evaluate player skeletal parts (hidden when driving inside vehicle)
+    // Evaluate player skeletal parts with upper/lower-body layered combat blending
     const glm::vec3 pPos = player.position();
     renderChars.clear();
     if (!session.inVehicle()) {
@@ -331,12 +340,24 @@ int main(int argc, char** argv) {
       const std::string idleKey = session.activeWeapon().isMelee && clips.count("fight_idle") ? "fight_idle" : "Idle";
       const std::string moveKey = (player.sprinting() && clips.count("Run")) ? "Run" : "Walk";
       const std::string atk = session.playerAttackClip();
+      const bool blocking = gameInput.aimDown && session.activeWeapon().isMelee && clips.count("block");
+      const bool hasUpperOverlay = (!atk.empty() && clips.count(atk)) || blocking;
+      upperAtkWeight += ((hasUpperOverlay ? 1.0f : 0.0f) - upperAtkWeight) * std::min(1.0f, dt * 16.0f);
 
       auto evalPart = [&](const westgate::CharacterAnimator& anim, std::array<glm::mat4, westgate::kMaxSkinBones>& pal) {
-        if (!atk.empty() && clips.count(atk)) anim.evaluateClip(clips.at(atk), session.playerAttackTime(), pal);
-        else if (gameInput.aimDown && session.activeWeapon().isMelee && clips.count("block")) anim.evaluateClip(clips.at("block"), elapsedSec, pal);
-        else if (clips.count(idleKey) && clips.count(moveKey)) anim.evaluateBlended(clips.at(idleKey), elapsedSec, clips.at(moveKey), elapsedSec, locoBlend, pal);
-        else anim.evaluateRest(pal);
+        if (hasUpperOverlay && player.speed() > 0.35f && clips.count(moveKey)) {
+          const std::string& upperKey = (!atk.empty() && clips.count(atk)) ? atk : "block";
+          const float upperT = (!atk.empty()) ? session.playerAttackTime() : elapsedSec;
+          anim.evaluateLayered(clips.at(moveKey), elapsedSec, clips.at(upperKey), upperT, upperAtkWeight, pal);
+        } else if (!atk.empty() && clips.count(atk)) {
+          anim.evaluateClip(clips.at(atk), session.playerAttackTime(), pal);
+        } else if (blocking) {
+          anim.evaluateClip(clips.at("block"), elapsedSec, pal);
+        } else if (clips.count(idleKey) && clips.count(moveKey)) {
+          anim.evaluateBlended(clips.at(idleKey), elapsedSec, clips.at(moveKey), elapsedSec, locoBlend, pal);
+        } else {
+          anim.evaluateRest(pal);
+        }
       };
 
       const glm::vec4 playerTint = glm::mix(glm::vec4(1.0f), glm::vec4(1.55f, 0.42f, 0.42f, 1.0f), session.playerHitFlash());
@@ -354,12 +375,47 @@ int main(int argc, char** argv) {
       }
     }
 
-    // Iron Pit Opponent
-    if (hasBiz) {
+    // Iron Pit: Either Live AI-vs-AI Spectator Bout OR Player's Shirtless Championship Opponent
+    const auto& spec = session.spectatorBout();
+    if (spec.active && hasBody) {
+      const auto& roster = session.pitRoster();
+      const auto emitShirtlessFighter = [&](const westgate::SpectatorFighterState& fs,
+                                            std::array<glm::mat4, westgate::kMaxSkinBones>& pb,
+                                            std::array<glm::mat4, westgate::kMaxSkinBones>& ps,
+                                            std::array<glm::mat4, westgate::kMaxSkinBones>& ph) {
+        const auto& def = roster[static_cast<size_t>(fs.fighterIdx)];
+        evalAnim(bodyAnim, fs.animClip, fs.animTime, pb);
+        const glm::vec4 bodyTint = glm::mix(glm::vec4(def.skinTint, 1.0f), glm::vec4(1.6f, 0.4f, 0.4f, 1.0f), fs.hitFlash);
+        renderChars.push_back({fs.pos, fs.yawRad, bodyTint, westgate::SkinnedPartKind::PlayerBody, &pb});
+        if (hasShorts) {
+          evalAnim(shortsAnim, fs.animClip, fs.animTime, ps);
+          renderChars.push_back({fs.pos, fs.yawRad, glm::vec4(def.shortsTint, 1.0f), westgate::SkinnedPartKind::PlayerShorts, &ps});
+        }
+        if (hasHair) {
+          evalAnim(hairAnim, fs.animClip, fs.animTime, ph);
+          renderChars.push_back({fs.pos, fs.yawRad, glm::vec4(def.hairTint, 1.0f), westgate::SkinnedPartKind::PlayerHair, &ph});
+        }
+      };
+      emitShirtlessFighter(spec.red, palOppBody, palOppShorts, palOppHair);
+      emitShirtlessFighter(spec.blue, palSpecBody, palSpecShorts, palSpecHair);
+    } else if (hasBody) {
       const auto& pit = session.ironPit();
-      evalAnim(bizAnim, pit.animClip, pit.animTime, palOpp);
+      evalAnim(bodyAnim, pit.animClip, pit.animTime, palOppBody);
+      const glm::vec4 oppTint = glm::mix(glm::vec4(pit.skinTint, 1.0f), glm::vec4(1.6f, 0.4f, 0.4f, 1.0f), pit.hitFlash);
+      renderChars.push_back({pit.pos, pit.yawRad, oppTint, westgate::SkinnedPartKind::PlayerBody, &palOppBody});
+      if (hasShorts) {
+        evalAnim(shortsAnim, pit.animClip, pit.animTime, palOppShorts);
+        renderChars.push_back({pit.pos, pit.yawRad, glm::vec4(pit.shortsTint, 1.0f), westgate::SkinnedPartKind::PlayerShorts, &palOppShorts});
+      }
+      if (hasHair) {
+        evalAnim(hairAnim, pit.animClip, pit.animTime, palOppHair);
+        renderChars.push_back({pit.pos, pit.yawRad, glm::vec4(pit.hairTint, 1.0f), westgate::SkinnedPartKind::PlayerHair, &palOppHair});
+      }
+    } else if (hasBiz) {
+      const auto& pit = session.ironPit();
+      evalAnim(bizAnim, pit.animClip, pit.animTime, palOppBody);
       const glm::vec4 oppTint = glm::mix(glm::vec4(1.0f), glm::vec4(1.6f, 0.4f, 0.4f, 1.0f), pit.hitFlash);
-      renderChars.push_back({pit.pos, pit.yawRad, oppTint, westgate::SkinnedPartKind::Business, &palOpp});
+      renderChars.push_back({pit.pos, pit.yawRad, oppTint, westgate::SkinnedPartKind::Business, &palOppBody});
     }
 
     // Closest NPCs / Police / Contract Targets up to kMaxSkinSlots
@@ -416,6 +472,7 @@ int main(int argc, char** argv) {
       elapsedSec
     );
 
+    physics.gatherDynamicProps(dynamicProps);
     ImGui::Render();
     renderer.render(
       gpu,
@@ -430,6 +487,8 @@ int main(int argc, char** argv) {
       renderChars,
       session.vehicles(),
       session.gatherWorldMarkers(elapsedSec),
+      session.gatherDynamicLights(world, player, elapsedSec),
+      dynamicProps,
       true
     );
   }

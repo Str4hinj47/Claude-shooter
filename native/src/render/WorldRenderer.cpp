@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <sstream>
 #include <unordered_map>
 
@@ -15,6 +16,27 @@ namespace westgate {
 namespace {
 
 constexpr uint32_t kShadowMapSize = 2048;
+
+InstanceAttrib makeInst(
+  float x, float y, float z,
+  float sx, float sy, float sz,
+  const glm::quat& q,
+  float r, float g, float b,
+  float emissive = 0.0f
+) {
+  return InstanceAttrib{x, y, z, sx, sy, sz, q.x, q.y, q.z, q.w, r, g, b, emissive};
+}
+
+InstanceAttrib makeInstYaw(
+  float x, float y, float z,
+  float sx, float sy, float sz,
+  float yawRad,
+  float r, float g, float b,
+  float emissive = 0.0f
+) {
+  const glm::quat q = glm::angleAxis(yawRad, glm::vec3(0.0f, 1.0f, 0.0f));
+  return makeInst(x, y, z, sx, sy, sz, q, r, g, b, emissive);
+}
 
 struct StaticVertex {
   float px, py, pz;
@@ -390,8 +412,8 @@ bool WorldRenderer::init(
   WGPUVertexAttribute instAttrs[4]{};
   instAttrs[0] = {nullptr, WGPUVertexFormat_Float32x3, offsetof(InstanceAttrib, x), 4};
   instAttrs[1] = {nullptr, WGPUVertexFormat_Float32x3, offsetof(InstanceAttrib, sx), 5};
-  instAttrs[2] = {nullptr, WGPUVertexFormat_Float32, offsetof(InstanceAttrib, rotY), 6};
-  instAttrs[3] = {nullptr, WGPUVertexFormat_Float32x3, offsetof(InstanceAttrib, r), 7};
+  instAttrs[2] = {nullptr, WGPUVertexFormat_Float32x4, offsetof(InstanceAttrib, qx), 6};
+  instAttrs[3] = {nullptr, WGPUVertexFormat_Float32x4, offsetof(InstanceAttrib, r), 7};
   WGPUVertexBufferLayout instVbls[2]{};
   instVbls[0] = WGPU_VERTEX_BUFFER_LAYOUT_INIT;
   instVbls[0].stepMode = WGPUVertexStepMode_Vertex;
@@ -446,8 +468,34 @@ bool WorldRenderer::init(
     shadowSkinnedPipeline_ = wgpuDeviceCreateRenderPipeline(ctx.device(), &rp);
   }
 
-  // Forward pipelines
+  // Forward pipelines (including Procedural Atmospheric Sky Dome)
   {
+    WGPUFragmentState skyFrag = WGPU_FRAGMENT_STATE_INIT;
+    skyFrag.module = shader_;
+    skyFrag.entryPoint = {"fsSky", 5};
+    skyFrag.targetCount = 1;
+    skyFrag.targets = &colorTarget;
+
+    WGPUDepthStencilState skyDepth = WGPU_DEPTH_STENCIL_STATE_INIT;
+    skyDepth.format = ctx.depthFormat();
+    skyDepth.depthWriteEnabled = WGPUOptionalBool_False;
+    skyDepth.depthCompare = WGPUCompareFunction_LessEqual;
+
+    WGPURenderPipelineDescriptor skyRp = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
+    skyRp.layout = shadowStaticPipeLayout_;
+    skyRp.vertex.module = shader_;
+    skyRp.vertex.entryPoint = {"vsSky", 5};
+    skyRp.vertex.bufferCount = 0;
+    skyRp.vertex.buffers = nullptr;
+    skyRp.fragment = &skyFrag;
+    skyRp.depthStencil = &skyDepth;
+    skyRp.primitive.topology = WGPUPrimitiveTopology_TriangleList;
+    skyRp.primitive.cullMode = WGPUCullMode_None;
+    skyRp.primitive.frontFace = WGPUFrontFace_CCW;
+    skyRp.multisample.count = 1;
+    skyRp.multisample.mask = 0xFFFFFFFFu;
+    skyPipeline_ = wgpuDeviceCreateRenderPipeline(ctx.device(), &skyRp);
+
     WGPURenderPipelineDescriptor rp = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
     rp.layout = scenePipeLayout_;
     rp.vertex.module = shader_;
@@ -727,9 +775,13 @@ void WorldRenderer::buildPropAndVehicleBatches(WgpuContext& ctx, const WorldData
   buildingInstVbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, nullptr, buildingCapacity_ * sizeof(InstanceAttrib));
   buildingStaging_.reserve(buildingCapacity_);
 
-  markerCapacity_ = 256;
+  markerCapacity_ = 512;
   markerInstVbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, nullptr, markerCapacity_ * sizeof(InstanceAttrib));
   markerStaging_.reserve(markerCapacity_);
+
+  dynPropCapacity_ = 128;
+  dynPropInstVbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, nullptr, dynPropCapacity_ * sizeof(InstanceAttrib));
+  dynPropStaging_.reserve(dynPropCapacity_);
 
   static const std::unordered_map<std::string, std::pair<std::string, float>> protoGlbMap = {
     {"palm_tree", {"tree_palm.glb", 1.75f}},
@@ -750,15 +802,15 @@ void WorldRenderer::buildPropAndVehicleBatches(WgpuContext& ctx, const WorldData
     auto it = protoGlbMap.find(p.proto);
     if (it != protoGlbMap.end()) {
       const float s = p.scale * it->second.second;
-      grouped[p.proto].push_back(InstanceAttrib{p.pos.x, p.pos.y, p.pos.z, s, s, s, p.ry, 1.0f, 1.0f, 1.0f});
+      grouped[p.proto].push_back(makeInstYaw(p.pos.x, p.pos.y, p.pos.z, s, s, s, p.ry, 1.0f, 1.0f, 1.0f));
     } else if (p.proto == "streetlight") {
-      fallbackInst.push_back(InstanceAttrib{p.pos.x, p.pos.y + 3.6f, p.pos.z, 0.24f, 7.2f, 0.24f, p.ry, 0.34f, 0.37f, 0.42f});
-      fallbackInst.push_back(InstanceAttrib{p.pos.x, p.pos.y + 7.25f, p.pos.z, 0.85f, 0.22f, 0.35f, p.ry, 0.98f, 0.86f, 0.58f});
+      fallbackInst.push_back(makeInstYaw(p.pos.x, p.pos.y + 3.6f, p.pos.z, 0.24f, 7.2f, 0.24f, p.ry, 0.34f, 0.37f, 0.42f));
+      fallbackInst.push_back(makeInstYaw(p.pos.x, p.pos.y + 7.25f, p.pos.z, 0.85f, 0.22f, 0.35f, p.ry, 0.98f, 0.86f, 0.58f, 0.65f));
     } else if (p.proto == "traffic_light") {
-      fallbackInst.push_back(InstanceAttrib{p.pos.x, p.pos.y + 3.1f, p.pos.z, 0.28f, 6.2f, 0.28f, p.ry, 0.18f, 0.20f, 0.22f});
-      fallbackInst.push_back(InstanceAttrib{p.pos.x, p.pos.y + 5.9f, p.pos.z, 0.45f, 0.95f, 0.45f, p.ry, 0.95f, 0.22f, 0.18f});
+      fallbackInst.push_back(makeInstYaw(p.pos.x, p.pos.y + 3.1f, p.pos.z, 0.28f, 6.2f, 0.28f, p.ry, 0.18f, 0.20f, 0.22f));
+      fallbackInst.push_back(makeInstYaw(p.pos.x, p.pos.y + 5.9f, p.pos.z, 0.45f, 0.95f, 0.45f, p.ry, 0.95f, 0.22f, 0.18f, 0.85f));
     } else {
-      fallbackInst.push_back(InstanceAttrib{p.pos.x, p.pos.y + 0.48f, p.pos.z, 0.34f, 0.96f, 0.34f, p.ry, 0.82f, 0.18f, 0.14f});
+      fallbackInst.push_back(makeInstYaw(p.pos.x, p.pos.y + 0.48f, p.pos.z, 0.34f, 0.96f, 0.34f, p.ry, 0.82f, 0.18f, 0.14f));
     }
   }
 
@@ -772,7 +824,53 @@ void WorldRenderer::buildPropAndVehicleBatches(WgpuContext& ctx, const WorldData
       ++telemetry_.glbPropTypesLoaded;
     } else {
       for (const auto& inst : instList) {
-        fallbackInst.push_back(InstanceAttrib{inst.x, inst.y + 2.5f, inst.z, 1.2f, 5.0f, 1.2f, inst.rotY, 0.25f, 0.48f, 0.22f});
+        fallbackInst.push_back(makeInst(inst.x, inst.y + 2.5f, inst.z, 1.2f, 5.0f, 1.2f, glm::quat(inst.qw, inst.qx, inst.qy, inst.qz), 0.25f, 0.48f, 0.22f));
+      }
+    }
+  }
+
+  // Stage all 11+ CC0 Iron Pit GLB props & interior props around world.fightPitPos!
+  {
+    const float pitY = world.heightfield.sampleHeight(world.fightPitPos.x, world.fightPitPos.z);
+    const float px = world.fightPitPos.x;
+    const float pz = world.fightPitPos.z;
+    struct PitPropPlace { const char* file; float normLen; float dx; float dy; float dz; float yaw; };
+    const PitPropPlace pitPlaces[] = {
+      {"pit_floodlight.glb", 2.4f, -6.2f, 0.0f, -6.2f,  0.78f},
+      {"pit_floodlight.glb", 2.4f,  6.2f, 0.0f, -6.2f, -0.78f},
+      {"pit_floodlight.glb", 2.4f, -6.2f, 0.0f,  6.2f,  2.35f},
+      {"pit_floodlight.glb", 2.4f,  6.2f, 0.0f,  6.2f, -2.35f},
+      {"pit_speaker.glb",    1.3f, -5.9f, 0.55f, -1.8f,  1.57f},
+      {"pit_speaker.glb",    1.3f, -5.9f, 0.55f,  1.8f,  1.57f},
+      {"pit_speaker.glb",    1.3f,  5.9f, 0.55f,  0.0f, -1.57f},
+      {"pit_stool.glb",      0.75f, -4.4f, 0.65f, -4.4f,  0.0f},
+      {"pit_stool.glb",      0.75f,  4.4f, 0.65f,  4.4f,  3.14f},
+      {"pit_cash_register.glb", 0.65f, -9.1f, 0.85f,  3.2f, 1.57f},
+      {"pos_terminal.glb",   0.52f, -9.1f, 0.85f,  3.8f, 1.57f},
+      {"pit_chair.glb",      0.95f, -10.1f, 0.0f,  3.4f, 1.57f},
+      {"pit_trophy.glb",     0.72f, -9.1f, 0.85f,  2.6f, 1.57f},
+      {"pit_barrel.glb",     1.05f, -7.8f, 0.0f,  6.8f,  0.2f},
+      {"pit_barrel_open.glb",1.05f,  7.8f, 0.0f, -6.8f,  1.1f},
+      {"pit_crate_stack.glb",1.95f,  9.2f, 0.0f,  4.8f,  0.4f},
+      {"pit_pallet.glb",     1.80f, -9.0f, 0.0f, -7.4f,  0.0f},
+      {"pit_barrier.glb",    2.60f,  0.0f, 0.0f, -7.3f,  0.0f},
+      {"pit_barrier.glb",    2.60f,  0.0f, 0.0f,  7.3f,  3.14f},
+      {"medkit.glb",         0.62f, -8.8f, 0.85f, -2.5f, 0.4f},
+      {"stash_bag.glb",      0.78f, -9.6f, 0.0f,  4.4f,  0.8f},
+      {"int_table.glb",      1.65f,  9.4f, 0.0f, -2.2f,  0.0f},
+    };
+    std::unordered_map<std::string, std::pair<float, std::vector<InstanceAttrib>>> pitGrouped;
+    for (const auto& pp : pitPlaces) {
+      auto& entry = pitGrouped[pp.file];
+      entry.first = pp.normLen;
+      entry.second.push_back(makeInstYaw(px + pp.dx, pitY + pp.dy, pz + pp.dz, 1.0f, 1.0f, 1.0f, pp.yaw, 1.0f, 1.0f, 1.0f));
+    }
+    for (const auto& [fname, pairData] : pitGrouped) {
+      const std::string glbPath = (std::filesystem::path(assetsRoot) / "models" / fname).string();
+      InstancedGlbBatch batch;
+      if (loadGlbBatch(ctx, glbPath, pairData.second, batch, pairData.first)) {
+        glbPropBatches_.push_back(batch);
+        ++telemetry_.glbPropTypesLoaded;
       }
     }
   }
@@ -870,6 +968,8 @@ void WorldRenderer::render(
   const std::vector<SkinnedRenderCharacter>& characters,
   const std::vector<VehicleEntity>& vehicles,
   const std::vector<WorldMarkerBox>& markers,
+  const std::vector<DynamicPointLight>& pointLights,
+  const std::vector<DynamicPropPose>& dynamicProps,
   bool drawUiCallback
 ) {
   const float aspect = static_cast<float>(ctx.width()) / static_cast<float>(std::max(1u, ctx.height()));
@@ -888,27 +988,45 @@ void WorldRenderer::render(
     for (const auto& b : ch.buildings) {
       if (v.state == ChunkLodState::Lod && b.size.y < 8.0f) continue;
       if (buildingStaging_.size() >= buildingCapacity_) break;
-      buildingStaging_.push_back(InstanceAttrib{
+      buildingStaging_.push_back(makeInstYaw(
         b.center.x, b.center.y, b.center.z,
         b.size.x, b.size.y, b.size.z,
         0.0f,
         b.color.r, b.color.g, b.color.b
-      });
+      ));
     }
   }
   if (!buildingStaging_.empty()) {
     wgpuQueueWriteBuffer(ctx.queue(), buildingInstVbo_, 0, buildingStaging_.data(), buildingStaging_.size() * sizeof(InstanceAttrib));
   }
 
-  // Upload dynamic markers & tracers
+  // Upload dynamic markers, 3D pitched tracers & sparks (with emissive boost!)
   markerStaging_.clear();
   for (const auto& m : markers) {
     if (markerStaging_.size() >= markerCapacity_) break;
-    markerStaging_.push_back(InstanceAttrib{m.pos.x, m.pos.y, m.pos.z, m.scale.x, m.scale.y, m.scale.z, m.yawRad, m.color.r, m.color.g, m.color.b});
+    const glm::quat q = glm::angleAxis(m.yawRad, glm::vec3(0.0f, 1.0f, 0.0f)) *
+                        glm::angleAxis(m.pitchRad, glm::vec3(1.0f, 0.0f, 0.0f));
+    markerStaging_.push_back(makeInst(m.pos.x, m.pos.y, m.pos.z, m.scale.x, m.scale.y, m.scale.z, q, m.color.r, m.color.g, m.color.b, 2.2f));
   }
   if (!markerStaging_.empty()) {
     wgpuQueueWriteBuffer(ctx.queue(), markerInstVbo_, 0, markerStaging_.data(), markerStaging_.size() * sizeof(InstanceAttrib));
   }
+
+  // Upload dynamic Jolt rigid-body crates & barrels (full 6-DOF quaternion rotation!)
+  dynPropStaging_.clear();
+  for (const auto& dp : dynamicProps) {
+    if (dynPropStaging_.size() >= dynPropCapacity_) break;
+    dynPropStaging_.push_back(makeInst(
+      dp.position.x, dp.position.y, dp.position.z,
+      dp.halfExtents.x * 2.0f, dp.halfExtents.y * 2.0f, dp.halfExtents.z * 2.0f,
+      dp.rotation,
+      dp.color.r, dp.color.g, dp.color.b
+    ));
+  }
+  if (!dynPropStaging_.empty()) {
+    wgpuQueueWriteBuffer(ctx.queue(), dynPropInstVbo_, 0, dynPropStaging_.data(), dynPropStaging_.size() * sizeof(InstanceAttrib));
+  }
+  telemetry_.dynamicPhysicsProps = static_cast<uint32_t>(dynPropStaging_.size());
 
   // Upload dynamic vehicles across all 6 models
   uint32_t totalVehiclesDrawn = 0;
@@ -916,7 +1034,7 @@ void WorldRenderer::render(
   for (const auto& v : vehicles) {
     const size_t k = static_cast<size_t>(v.kind);
     if (k < 6 && vehicleStaging_[k].size() < vehicleBatches_[k].maxInstances) {
-      vehicleStaging_[k].push_back(InstanceAttrib{v.pos.x, v.pos.y, v.pos.z, 1.0f, 1.0f, 1.0f, v.yawRad, v.colorTint.r, v.colorTint.g, v.colorTint.b});
+      vehicleStaging_[k].push_back(makeInstYaw(v.pos.x, v.pos.y, v.pos.z, 1.0f, 1.0f, 1.0f, v.yawRad, v.colorTint.r, v.colorTint.g, v.colorTint.b));
     }
   }
   for (size_t k = 0; k < 6; ++k) {
@@ -939,13 +1057,21 @@ void WorldRenderer::render(
   const glm::mat4 lightProj = glm::orthoZO(-shadowExtent, shadowExtent, -shadowExtent, shadowExtent, 1.0f, 450.0f);
   const glm::mat4 lightView = glm::lookAt(snappedCenter + sunDir * 210.0f, snappedCenter, glm::vec3(0.0f, 1.0f, 0.0f));
 
+  const uint32_t lightCount = static_cast<uint32_t>(std::min<size_t>(pointLights.size(), kMaxPointLights));
+  telemetry_.activePointLights = lightCount;
+
   FrameUniforms ubo{};
   ubo.viewProj = vp;
+  ubo.invViewProj = glm::inverse(vp);
   ubo.lightViewProj = lightProj * lightView;
   ubo.camPos = glm::vec4(camPos, timeSec);
-  ubo.sunDir = glm::vec4(sunDir, 0.0f);
+  ubo.sunDir = glm::vec4(sunDir, static_cast<float>(lightCount));
   ubo.sunColor = glm::vec4(sky.sunColor * 1.32f, 1.0f);
   ubo.fogColor = glm::vec4(sky.fogColor, sky.nightFactor);
+  for (uint32_t li = 0; li < lightCount; ++li) {
+    ubo.pointLights[li].posAndRadius = glm::vec4(pointLights[li].pos, pointLights[li].radius);
+    ubo.pointLights[li].colorAndIntensity = glm::vec4(pointLights[li].color, pointLights[li].intensity);
+  }
   wgpuQueueWriteBuffer(ctx.queue(), frameUbo_, 0, &ubo, sizeof(ubo));
 
   // Upload skinned character uniform slots
@@ -1014,6 +1140,12 @@ void WorldRenderer::render(
       wgpuRenderPassEncoderSetVertexBuffer(spass, 1, buildingInstVbo_, 0, WGPU_WHOLE_SIZE);
       wgpuRenderPassEncoderSetIndexBuffer(spass, unitBoxIbo_, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
       wgpuRenderPassEncoderDrawIndexed(spass, unitBoxIndexCount_, static_cast<uint32_t>(buildingStaging_.size()), 0, 0, 0);
+    }
+    if (!dynPropStaging_.empty() && dynPropInstVbo_) {
+      wgpuRenderPassEncoderSetVertexBuffer(spass, 0, unitBoxVbo_, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderSetVertexBuffer(spass, 1, dynPropInstVbo_, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderSetIndexBuffer(spass, unitBoxIbo_, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderDrawIndexed(spass, unitBoxIndexCount_, static_cast<uint32_t>(dynPropStaging_.size()), 0, 0, 0);
     }
     for (const auto& batch : glbPropBatches_) {
       if (batch.instanceCount == 0) continue;
@@ -1085,6 +1217,13 @@ void WorldRenderer::render(
 
     WGPURenderPassEncoder pass = wgpuCommandEncoderBeginRenderPass(enc, &rpDesc);
 
+    // Sky Dome + Sun + Moon + Stars (fullscreen atmospheric pass)
+    if (skyPipeline_) {
+      wgpuRenderPassEncoderSetPipeline(pass, skyPipeline_);
+      wgpuRenderPassEncoderSetBindGroup(pass, 0, frameBg_, 0, nullptr);
+      wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
+    }
+
     wgpuRenderPassEncoderSetBindGroup(pass, 0, frameBg_, 0, nullptr);
     wgpuRenderPassEncoderSetBindGroup(pass, 1, skinSlots_[0].bindGroup, 0, nullptr);
     wgpuRenderPassEncoderSetBindGroup(pass, 2, defaultWhiteTex_.bindGroup, 0, nullptr);
@@ -1129,6 +1268,12 @@ void WorldRenderer::render(
       wgpuRenderPassEncoderSetVertexBuffer(pass, 1, markerInstVbo_, 0, WGPU_WHOLE_SIZE);
       wgpuRenderPassEncoderSetIndexBuffer(pass, unitBoxIbo_, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
       wgpuRenderPassEncoderDrawIndexed(pass, unitBoxIndexCount_, static_cast<uint32_t>(markerStaging_.size()), 0, 0, 0);
+    }
+    if (!dynPropStaging_.empty() && dynPropInstVbo_) {
+      wgpuRenderPassEncoderSetVertexBuffer(pass, 0, unitBoxVbo_, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderSetVertexBuffer(pass, 1, dynPropInstVbo_, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderSetIndexBuffer(pass, unitBoxIbo_, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderDrawIndexed(pass, unitBoxIndexCount_, static_cast<uint32_t>(dynPropStaging_.size()), 0, 0, 0);
     }
     for (size_t k = 0; k < 6; ++k) {
       const uint32_t cnt = static_cast<uint32_t>(vehicleStaging_[k].size());
@@ -1234,6 +1379,7 @@ void WorldRenderer::shutdown() {
   relBuf(buildingInstVbo_);
   relBuf(fallbackPropInstVbo_);
   relBuf(markerInstVbo_);
+  relBuf(dynPropInstVbo_);
   relBuf(frameUbo_);
   for (auto& s : skinSlots_) {
     relBuf(s.ubo);
@@ -1259,6 +1405,7 @@ void WorldRenderer::shutdown() {
   if (shadowTerrainPipeline_) { wgpuRenderPipelineRelease(shadowTerrainPipeline_); shadowTerrainPipeline_ = nullptr; }
   if (shadowInstancedPipeline_) { wgpuRenderPipelineRelease(shadowInstancedPipeline_); shadowInstancedPipeline_ = nullptr; }
   if (shadowSkinnedPipeline_) { wgpuRenderPipelineRelease(shadowSkinnedPipeline_); shadowSkinnedPipeline_ = nullptr; }
+  if (skyPipeline_) { wgpuRenderPipelineRelease(skyPipeline_); skyPipeline_ = nullptr; }
   if (terrainPipeline_) { wgpuRenderPipelineRelease(terrainPipeline_); terrainPipeline_ = nullptr; }
   if (instancedPipeline_) { wgpuRenderPipelineRelease(instancedPipeline_); instancedPipeline_ = nullptr; }
   if (skinnedPipeline_) { wgpuRenderPipelineRelease(skinnedPipeline_); skinnedPipeline_ = nullptr; }

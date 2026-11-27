@@ -176,30 +176,48 @@ void drawWestgateHud(
     bgDraw->AddText({bx + 16.0f, by + 8.0f}, IM_COL32(255, 232, 120, 255), session.contextPrompt().c_str());
   }
 
-  // Active Iron Pit Boss Bar (when nearby)
+  // Active Iron Pit Boss Bar or Live AI-vs-AI Spectator Cage Bout (when nearby)
   const float pitDist = glm::distance(glm::vec2(pPos.x, pPos.z), glm::vec2(world.fightPitPos.x, world.fightPitPos.z));
-  if (pitDist < 18.0f) {
-    const auto& pit = session.ironPit();
-    ImGui::SetNextWindowPos({disp.x * 0.5f - 210.0f, 64.0f}, ImGuiCond_Always);
-    ImGui::SetNextWindowSize({420.0f, 108.0f}, ImGuiCond_Always);
-    ImGui::SetNextWindowBgAlpha(0.84f);
-    ImGui::Begin("##IronPitBar", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
-    ImGui::Text("IRON PIT TIER %d: %s  (Purse $%d | Streak %d)", pit.tier, pit.opponentName.c_str(), pit.purse, pit.winStreak);
-    ImGui::ProgressBar(pit.hp / std::max(1.0f, pit.maxHp), {-1, 16}, pit.defeated ? "KO! Press [R]" : nullptr);
-    if (pit.betActive) {
-      ImGui::TextColored({0.3f, 0.95f, 0.45f, 1.0f}, "ACTIVE BET: $%d @ %.2fx (Net $%d)", pit.betWager, pit.betOdds, pit.betProfit);
-    } else if (!pit.defeated) {
-      if (ImGui::SmallButton("Bet $100")) session.placeIronPitBet(100);
-      ImGui::SameLine();
-      if (ImGui::SmallButton("Bet $250")) session.placeIronPitBet(250);
-      ImGui::SameLine();
-      if (ImGui::SmallButton("Bet $500")) session.placeIronPitBet(500);
-      ImGui::SameLine();
-      if (ImGui::SmallButton("Cutman +75HP ($50)")) session.buyCutmanHeal();
+  if (pitDist < 22.0f) {
+    const auto& spec = session.spectatorBout();
+    if (spec.active) {
+      const auto& roster = session.pitRoster();
+      const auto& rf = roster[static_cast<size_t>(spec.red.fighterIdx)];
+      const auto& bf = roster[static_cast<size_t>(spec.blue.fighterIdx)];
+      ImGui::SetNextWindowPos({disp.x * 0.5f - 230.0f, 64.0f}, ImGuiCond_Always);
+      ImGui::SetNextWindowSize({460.0f, 118.0f}, ImGuiCond_Always);
+      ImGui::SetNextWindowBgAlpha(0.86f);
+      ImGui::Begin("##SpectatorPitBar", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
+      ImGui::TextColored({1.0f, 0.78f, 0.25f, 1.0f}, "LIVE CAGE BOUT (%.1fs)  |  Ticket: %s $%d",
+                         spec.elapsed, spec.betCorner == 0 ? "RED" : "BLUE", spec.betWager);
+      ImGui::TextColored({1.0f, 0.35f, 0.35f, 1.0f}, "RED: %s", rf.name.c_str());
+      ImGui::ProgressBar(spec.red.hp / std::max(1.0f, spec.red.maxHp), {-1, 14});
+      ImGui::TextColored({0.35f, 0.65f, 1.0f, 1.0f}, "BLUE: %s", bf.name.c_str());
+      ImGui::ProgressBar(spec.blue.hp / std::max(1.0f, spec.blue.maxHp), {-1, 14});
+      ImGui::End();
     } else {
-      ImGui::Text("Bet Wins: %d | Net Profit: $%d", pit.betWins, pit.betProfit);
+      const auto& pit = session.ironPit();
+      ImGui::SetNextWindowPos({disp.x * 0.5f - 220.0f, 64.0f}, ImGuiCond_Always);
+      ImGui::SetNextWindowSize({440.0f, 112.0f}, ImGuiCond_Always);
+      ImGui::SetNextWindowBgAlpha(0.84f);
+      ImGui::Begin("##IronPitBar", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
+      ImGui::Text("IRON PIT TIER %d/5: %s  (Purse $%d | Streak %d)", pit.tier, pit.opponentName.c_str(), pit.purse, pit.winStreak);
+      ImGui::ProgressBar(pit.hp / std::max(1.0f, pit.maxHp), {-1, 16}, pit.defeated ? "KO! Press [R]" : nullptr);
+      if (pit.betActive) {
+        ImGui::TextColored({0.3f, 0.95f, 0.45f, 1.0f}, "ACTIVE BET: $%d @ %.2fx (Net $%d)", pit.betWager, pit.betOdds, pit.betProfit);
+      } else if (!pit.defeated) {
+        if (ImGui::SmallButton("Bet $100")) session.placeIronPitBet(100);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Bet $250")) session.placeIronPitBet(250);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Bet $500")) session.placeIronPitBet(500);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Cutman +75HP ($50)")) session.buyCutmanHeal();
+      } else {
+        ImGui::Text("Bet Wins: %d | Net Profit: $%d", pit.betWins, pit.betProfit);
+      }
+      ImGui::End();
     }
-    ImGui::End();
   }
 
   // -------------------------------------------------------------------------
@@ -214,7 +232,9 @@ void drawWestgateHud(
     ImGui::Text("Chunks: %u vis (%u near, %u lod) | Bldgs: %u | Props: %u | Veh: %u | NPCs: %u",
                 telemetry.visibleChunks, telemetry.nearChunks, telemetry.lodChunks,
                 telemetry.drawnBuildings, telemetry.drawnProps, telemetry.drawnVehicles, telemetry.drawnCharacters);
-    ImGui::Text("Jolt Bodies: %u | 2048px PCF Shadows | Sky: %s", physics.staticBodyCount(), session.timeOfDayLabel().c_str());
+    ImGui::Text("Jolt Static: %u | Dyn Rigid: %u | Lights: %u | GLB Types: %u | Sky: %s",
+                physics.staticBodyCount(), physics.dynamicBodyCount(), telemetry.activePointLights,
+                telemetry.glbPropTypesLoaded, session.timeOfDayLabel().c_str());
     ImGui::Separator();
     ImGui::Text("[TAB] Mouse Look: %s | [1-6] Weapons | [G] Enter/Exit Car | [P] Phone", ui.mouseCaptured ? "ON" : "OFF");
     if (ImGui::Button("Toggle Phone [P]")) ui.showPhone = !ui.showPhone;
@@ -251,10 +271,43 @@ void drawWestgateHud(
         }
 
         if (ImGui::BeginTabItem("Races & Pit")) {
-          ImGui::Text("Iron Pit Underground Boxing (Wins: %d | Current Tier: %d)", session.ironPit().wins, session.ironPit().tier);
+          ImGui::Text("Iron Pit Championship (Wins: %d | Tier: %d/5 | Bookie Net: $%d)",
+                      session.ironPit().wins, session.ironPit().tier, session.ironPit().betProfit);
           if (ImGui::Button("Teleport to Iron Pit (722, 115)")) {
             session.teleportTo({world.fightPitPos.x, world.fightPitPos.y + 1.0f, world.fightPitPos.z - 2.6f}, 0.0f, player);
             session.setGpsWaypoint(world.fightPitPos, "Iron Pit Arena");
+          }
+          ImGui::SameLine();
+          if (ImGui::Button("New Fight Card")) {
+            session.refreshFightCard();
+          }
+          ImGui::Separator();
+          ImGui::TextColored({1.0f, 0.78f, 0.28f, 1.0f}, "Viktor's 3-Match Underground Fight Card (AI-vs-AI Cage Bouts):");
+          const auto& roster = session.pitRoster();
+          const auto& card = session.pitCard();
+          for (size_t mi = 0; mi < card.size(); ++mi) {
+            const auto& m = card[mi];
+            if (static_cast<size_t>(m.redIdx) >= roster.size() || static_cast<size_t>(m.blueIdx) >= roster.size()) continue;
+            const auto& rf = roster[static_cast<size_t>(m.redIdx)];
+            const auto& bf = roster[static_cast<size_t>(m.blueIdx)];
+            ImGui::PushID(static_cast<int>(500 + mi));
+            ImGui::Text("Bout %zu: %s (%.2fx) vs %s (%.2fx) %s",
+                        mi + 1, rf.name.c_str(), m.redOdds, bf.name.c_str(), m.blueOdds,
+                        m.settled ? "[SETTLED]" : "");
+            if (!m.settled && !session.spectatorBout().active) {
+              if (ImGui::SmallButton("Bet Red $150")) {
+                session.startSpectatorBout(static_cast<int>(mi), 0, 150, false, world, audio);
+              }
+              ImGui::SameLine();
+              if (ImGui::SmallButton("Bet Blue $150")) {
+                session.startSpectatorBout(static_cast<int>(mi), 1, 150, false, world, audio);
+              }
+              ImGui::SameLine();
+              if (ImGui::SmallButton("Watch Free")) {
+                session.startSpectatorBout(static_cast<int>(mi), 0, 0, false, world, audio);
+              }
+            }
+            ImGui::PopID();
           }
           ImGui::Separator();
           for (size_t i = 0; i < session.races().size(); ++i) {
