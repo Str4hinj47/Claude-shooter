@@ -227,6 +227,8 @@ int main(int argc, char** argv) {
   float weaponHoldSmooth = 0.0f;
   float aimSmooth = 0.0f;
   float fistSmooth = 0.0f;
+  float crouchSmooth = 0.0f;
+  float airSmooth = 0.0f;
   westgate::CharacterAnimState playerAnimState{};
   westgate::CharacterAnimState pitOppAnimState{};
   westgate::CharacterAnimState specRedAnimState{};
@@ -387,11 +389,16 @@ int main(int argc, char** argv) {
       const float targetWeaponHold = (session.isRangedWeapon() && !hasAtk) ? 1.0f : 0.0f;
       const float targetAim = (session.isRangedWeapon() && session.isAiming() && !hasAtk) ? 1.0f : 0.0f;
       const float targetFist = (session.activeWeapon().isMelee && (!moving || hasAtk || blocking || locoClip == "fight_idle"))
-                                 ? 1.0f : 0.0f;
+                                 ? 1.0f
+                                 : (session.activeWeapon().isMelee ? 0.32f : 0.28f);
+      const float targetCrouch = player.crouching() ? 1.0f : 0.0f;
+      const float targetAir = player.grounded() ? 0.0f : 1.0f;
       const float smoothAlpha = std::min(1.0f, dt * 14.0f);
       weaponHoldSmooth += (targetWeaponHold - weaponHoldSmooth) * smoothAlpha;
       aimSmooth += (targetAim - aimSmooth) * smoothAlpha;
       fistSmooth += (targetFist - fistSmooth) * smoothAlpha;
+      crouchSmooth += (targetCrouch - crouchSmooth) * std::min(1.0f, dt * 12.0f);
+      airSmooth += (targetAir - airSmooth) * std::min(1.0f, dt * 16.0f);
 
       westgate::CharacterPoseOverlay playerOverlay{};
       playerOverlay.timeSec = elapsedSec;
@@ -406,6 +413,8 @@ int main(int argc, char** argv) {
       playerOverlay.recoilKick = session.recoilImpulse();
       playerOverlay.reloadProgress = session.reloadProgress();
       playerOverlay.fistWeight = fistSmooth;
+      playerOverlay.crouchWeight = crouchSmooth;
+      playerOverlay.airWeight = airSmooth;
 
       const glm::vec4 playerTint = glm::mix(glm::vec4(1.0f), glm::vec4(1.55f, 0.42f, 0.42f, 1.0f), session.playerHitFlash());
       if (hasBody) {
@@ -426,6 +435,7 @@ int main(int argc, char** argv) {
       if (clipId == "hit") return mapNormalizedTime(clipId, stateTime / 0.55f);
       if (clipId == "uppercut" || clipId == "kick") return mapNormalizedTime(clipId, stateTime / 0.82f);
       if (clipId == "jab" || clipId == "cross" || clipId == "hook") return mapNormalizedTime(clipId, stateTime / 0.64f);
+      if (clipId == "Walk") return stateTime * 1.45f;
       return stateTime;
     };
 

@@ -31,6 +31,8 @@ struct CharacterPoseOverlay {
   float reloadProgress = 0.0f;
   float fistWeight = 0.0f;
   float koProgress = 0.0f;
+  float crouchWeight = 0.0f;
+  float airWeight = 0.0f;
 };
 
 /**
@@ -44,9 +46,12 @@ struct CharacterAnimState {
   float blend = 1.0f;
   float blendDuration = 0.16f;
 
+  std::string prevUpperClip;
+  float prevUpperTime = 0.0f;
   std::string upperClip;
   float upperTime = 0.0f;
   float upperWeight = 0.0f;
+  float upperBlend = 1.0f;
 };
 
 /**
@@ -163,6 +168,19 @@ class CharacterAnimator {
 
  private:
   const AlignedTargetBind& getOrBuildAlignedBind(const SourceClip& src) const;
+
+  void evaluateLayeredBlended(
+    const SourceClip& lowerClip,
+    float lowerTime,
+    const SourceClip& prevUpperClip,
+    float prevUpperTime,
+    const SourceClip& upperClip,
+    float upperTime,
+    float upperBlend,
+    float upperWeight,
+    std::array<glm::mat4, kMaxSkinBones>& outPalette,
+    const CharacterPoseOverlay* overlay
+  ) const;
 
   void sampleSourcePose(
     const SourceClip& src,

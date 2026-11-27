@@ -1351,8 +1351,8 @@ void GameSession::updateIronPit(float dt, const GameInputFrame& input, PlayerCon
       }
     } else if (nearPit && dist > 1.75f && dist < 9.5f) {
       const glm::vec2 dir = glm::normalize(glm::vec2(toP.x, toP.z));
-      ironPit_.pos.x = std::clamp(ironPit_.pos.x + dir.x * 2.6f * dt, world.fightPitPos.x - 4.4f, world.fightPitPos.x + 4.4f);
-      ironPit_.pos.z = std::clamp(ironPit_.pos.z + dir.y * 2.6f * dt, world.fightPitPos.z - 4.4f, world.fightPitPos.z + 4.4f);
+      ironPit_.pos.x = std::clamp(ironPit_.pos.x + dir.x * 2.25f * dt, world.fightPitPos.x - 4.4f, world.fightPitPos.x + 4.4f);
+      ironPit_.pos.z = std::clamp(ironPit_.pos.z + dir.y * 2.25f * dt, world.fightPitPos.z - 4.4f, world.fightPitPos.z + 4.4f);
       ironPit_.animClip = "Walk";
     } else {
       ironPit_.animClip = "fight_idle";
@@ -1571,11 +1571,11 @@ void GameSession::update(float dt, const GameInputFrame& input, PlayerController
   muzzleFlashTimer_ = std::max(0.0f, muzzleFlashTimer_ - dt);
   lastCamFocus_ = cameraPosition(player);
 
-  // Sync foot stride clock with real ground velocity to prevent foot skate
+  // Sync foot stride clock with real ground velocity & clip cycle duration to prevent foot skate
   const float spd = player.speed();
   if (spd > 0.35f) {
-    const float nominalSpd = player.sprinting() ? 7.8f : 4.2f;
-    playerLocomotionClock_ += dt * std::clamp(spd / nominalSpd, 0.55f, 1.45f);
+    const float rate = player.sprinting() ? (spd / 5.30f) * 0.733f : (spd / 2.90f) * 1.20f;
+    playerLocomotionClock_ += dt * std::clamp(rate, 0.65f, 1.95f);
   } else {
     playerLocomotionClock_ += dt;
   }

@@ -311,9 +311,38 @@ int main() {
     if (!checkOrFail(bizKdHips.y < 0.45f && bizKdHips.y > -0.25f, "biz knockdown hips drop")) return 1;
     if (!checkOrFail(bizKdHead.y < 0.60f, "biz knockdown head collapses")) return 1;
 
-    std::printf("[PASS] Anatomical retarget checks: guardHandL=(%.2f,%.2f,%.2f), jabExtZ=%.2fm, kdPelvisY=%.2fm, walkStrideZ=%.2fm, bizKdY=%.2fm\n",
+    // 7. Crouch overlay: pelvis drops & knees bend forward
+    westgate::CharacterPoseOverlay crouchOv{};
+    crouchOv.crouchWeight = 1.0f;
+    crouchOv.fistWeight = 0.30f;
+    bodyAnim2.evaluateClip(scWalk, 0.0f, pal, &crouchOv);
+    const glm::vec3 crouchPelvis = jointWorldPos(fighter2, pal, "pelvis");
+    const glm::vec3 crouchKneeL = jointWorldPos(fighter2, pal, "calf_l");
+    const glm::vec3 crouchFootL = jointWorldPos(fighter2, pal, "foot_l");
+    if (!checkOrFail(crouchPelvis.y < 0.65f && crouchPelvis.y > 0.35f, "crouch pelvis lowers")) return 1;
+    if (!checkOrFail(crouchKneeL.z > crouchFootL.z + 0.08f, "crouch knee flexes forward")) return 1;
+
+    // 8. Upper-body combo crossfade while walking (Walk + jab -> cross)
+    westgate::GltfModel crossM;
+    if (!checkOrFail(westgate::GltfAssetLoader::loadGlb((publicDir / "animations" / "combat" / "cross.glb").string(), crossM, false, &err), "load crossM")) return 1;
+    westgate::CharacterAnimator::SourceClip scCross;
+    if (!checkOrFail(westgate::CharacterAnimator::buildSourceClip("cross", crossM, 0, false, scCross, 0.65f, 1.55f, false), "build cross")) return 1;
+    std::unordered_map<std::string, westgate::CharacterAnimator::SourceClip> comboBank;
+    comboBank["Walk"] = scWalk;
+    comboBank["jab"] = scJab;
+    comboBank["cross"] = scCross;
+    westgate::CharacterAnimState comboSt{};
+    comboSt.currClip = "Walk";
+    westgate::CharacterAnimator::advanceAnimState(comboSt, "Walk", 0.2f, "jab", 0.3f, 0.05f, 0.14f);
+    westgate::CharacterAnimator::advanceAnimState(comboSt, "Walk", 0.25f, "cross", 0.1f, 0.04f, 0.14f);
+    if (!checkOrFail(comboSt.prevUpperClip == "jab" && comboSt.upperBlend < 0.99f, "upper combo crossfade active")) return 1;
+    bodyAnim2.evaluateState(comboSt, comboBank, pal, &fistOv);
+    const glm::vec3 comboHandR = jointWorldPos(fighter2, pal, "hand_r");
+    if (!checkOrFail(std::isfinite(comboHandR.y) && comboHandR.y > 0.7f, "combo crossfade hand valid")) return 1;
+
+    std::printf("[PASS] Anatomical retarget checks: guardHandL=(%.2f,%.2f,%.2f), jabExtZ=%.2fm, kdPelvisY=%.2fm, crouchPelvisY=%.2fm, walkStrideZ=%.2fm, bizKdY=%.2fm\n",
                 guardHandL.x, guardHandL.y, guardHandL.z,
-                jabHandL.z - jabShoulderL.z, kdPelvis.y,
+                jabHandL.z - jabShoulderL.z, kdPelvis.y, crouchPelvis.y,
                 std::abs(walkFootL.z - walkFootR.z), bizKdHips.y);
   }
 

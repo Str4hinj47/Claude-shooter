@@ -560,6 +560,9 @@ void CharacterAnimator::evaluateClip(
       const float ks = k * k * (3.0f - 2.0f * k);
       const float koAngle = ks * 1.48f;
       dWorld.y -= 0.78f * std::sin(koAngle) * unitScale;
+    } else if (overlay) {
+      dWorld.y -= 0.34f * std::clamp(overlay->crouchWeight, 0.0f, 1.0f) * unitScale;
+      dWorld.y += 0.06f * std::clamp(overlay->airWeight, 0.0f, 1.0f) * unitScale;
     }
     dWorld.y = std::clamp(dWorld.y, -1.10f * unitScale, 0.35f * unitScale);
     dWorld.x = std::clamp(dWorld.x * 0.45f, -0.25f * unitScale, 0.25f * unitScale);
@@ -680,6 +683,9 @@ void CharacterAnimator::evaluateBlended(
       const float ks = k * k * (3.0f - 2.0f * k);
       const float koAngle = ks * 1.48f;
       dWorld.y -= 0.78f * std::sin(koAngle) * unitScale;
+    } else if (overlay) {
+      dWorld.y -= 0.34f * std::clamp(overlay->crouchWeight, 0.0f, 1.0f) * unitScale;
+      dWorld.y += 0.06f * std::clamp(overlay->airWeight, 0.0f, 1.0f) * unitScale;
     }
     dWorld.y = std::clamp(dWorld.y, -1.10f * unitScale, 0.35f * unitScale);
     dWorld.x = std::clamp(dWorld.x * 0.45f, -0.25f * unitScale, 0.25f * unitScale);
@@ -831,6 +837,9 @@ void CharacterAnimator::evaluateLayered(
       const float ks = k * k * (3.0f - 2.0f * k);
       const float koAngle = ks * 1.48f;
       dWorld.y -= 0.78f * std::sin(koAngle) * unitScale;
+    } else if (overlay) {
+      dWorld.y -= 0.34f * std::clamp(overlay->crouchWeight, 0.0f, 1.0f) * unitScale;
+      dWorld.y += 0.06f * std::clamp(overlay->airWeight, 0.0f, 1.0f) * unitScale;
     }
     dWorld.y = std::clamp(dWorld.y, -1.10f * unitScale, 0.35f * unitScale);
     dWorld.x = std::clamp(dWorld.x * 0.45f, -0.25f * unitScale, 0.25f * unitScale);
@@ -940,19 +949,28 @@ glm::quat CharacterAnimator::computeOverlayDeltaWorld(
     }
   }
 
+  const float crouch = std::clamp(ov.crouchWeight, 0.0f, 1.0f);
+  const float air = std::clamp(ov.airWeight, 0.0f, 1.0f);
+
   if (canon == "Spine" || canon == "Spine1") {
     const float w = (canon == "Spine") ? 0.5f : 0.65f;
-    pitchX += (lean * w + breath * 0.014f * (0.4f + 0.6f * ov.idleWeight) - recoil * 0.07f * w + reloadDip * 0.08f * w) * fSign;
+    pitchX += (lean * w + crouch * 0.20f * w + breath * 0.014f * (0.4f + 0.6f * ov.idleWeight) - recoil * 0.07f * w + reloadDip * 0.08f * w) * fSign;
     yawY += swayYaw * w - ov.weaponHoldWeight * (0.14f + 0.12f * ov.aimWeight) * w;
     rollZ += (swayRoll * w + bank * w) * fSign;
   } else if (canon == "Spine2") {
-    pitchX += (lean * 0.45f + breath * 0.020f * (0.45f + 0.55f * ov.idleWeight) - recoil * 0.11f + reloadDip * 0.10f) * fSign;
+    pitchX += (lean * 0.45f + crouch * 0.10f + breath * 0.020f * (0.45f + 0.55f * ov.idleWeight) - recoil * 0.11f + reloadDip * 0.10f) * fSign;
     yawY += swayYaw * 0.5f - ov.weaponHoldWeight * (0.12f + 0.10f * ov.aimWeight);
     rollZ += bank * 0.45f * fSign;
   } else if (canon == "Neck" || canon == "Head") {
     const float hw = (canon == "Neck") ? 0.42f : 0.65f;
-    pitchX += (-ov.headLookPitch * hw + scanPitch * hw - recoil * 0.04f * hw + reloadDip * 0.12f * hw) * fSign;
+    pitchX += (-ov.headLookPitch * hw - crouch * 0.14f * hw + scanPitch * hw - recoil * 0.04f * hw + reloadDip * 0.12f * hw) * fSign;
     yawY += ov.headLookYaw * hw + scanYaw * hw + ov.weaponHoldWeight * 0.18f * hw;
+  } else if (canon == "LeftUpLeg" || canon == "RightUpLeg") {
+    pitchX += (-0.68f * crouch - 0.34f * air) * fSign;
+  } else if (canon == "LeftLeg" || canon == "RightLeg") {
+    pitchX += (1.16f * crouch + 0.54f * air) * fSign;
+  } else if (canon == "LeftFoot" || canon == "RightFoot") {
+    pitchX += (-0.42f * crouch - 0.16f * air) * fSign;
   } else if (canon == "RightShoulder" || canon == "RightArm") {
     if (ov.weaponHoldWeight > 0.01f) {
       const float w = ov.weaponHoldWeight;
@@ -962,6 +980,7 @@ glm::quat CharacterAnimator::computeOverlayDeltaWorld(
       rollZ += (canon == "RightArm") ? (-0.28f * w * fSign) : 0.0f;
     } else {
       pitchX += breath * 0.012f * ov.idleWeight * fSign;
+      if (canon == "RightArm") rollZ += (-0.24f * air) * fSign;
     }
   } else if (canon == "RightForeArm") {
     if (ov.weaponHoldWeight > 0.01f) {
@@ -978,6 +997,7 @@ glm::quat CharacterAnimator::computeOverlayDeltaWorld(
       rollZ += (canon == "LeftArm") ? (0.32f * w * fSign) : 0.0f;
     } else {
       pitchX += breath * 0.012f * ov.idleWeight * fSign;
+      if (canon == "LeftArm") rollZ += (0.24f * air) * fSign;
     }
   } else if (canon == "LeftForeArm") {
     if (ov.weaponHoldWeight > 0.01f) {
@@ -995,6 +1015,148 @@ glm::quat CharacterAnimator::computeOverlayDeltaWorld(
     glm::angleAxis(pitchX, glm::vec3(1.0f, 0.0f, 0.0f)) *
     glm::angleAxis(rollZ, glm::vec3(0.0f, 0.0f, 1.0f))
   );
+}
+
+void CharacterAnimator::evaluateLayeredBlended(
+  const SourceClip& lowerClip,
+  float lowerTime,
+  const SourceClip& prevUpperClip,
+  float prevUpperTime,
+  const SourceClip& upperClip,
+  float upperTime,
+  float upperBlend,
+  float upperWeight,
+  std::array<glm::mat4, kMaxSkinBones>& outPalette,
+  const CharacterPoseOverlay* overlay
+) const {
+  const float rawUb = std::clamp(upperBlend, 0.0f, 1.0f);
+  const float ub = rawUb * rawUb * (3.0f - 2.0f * rawUb);
+  if (ub >= 0.999f) {
+    evaluateLayered(lowerClip, lowerTime, upperClip, upperTime, upperWeight, outPalette, overlay);
+    return;
+  }
+  if (ub <= 0.001f) {
+    evaluateLayered(lowerClip, lowerTime, prevUpperClip, prevUpperTime, upperWeight, outPalette, overlay);
+    return;
+  }
+  const float rawW = std::clamp(upperWeight, 0.0f, 1.0f);
+  const float w = rawW * rawW * (3.0f - 2.0f * rawW);
+  if (w <= 0.001f || !target_ || !target_->skin.valid) {
+    evaluateClip(lowerClip, lowerTime, outPalette, overlay);
+    return;
+  }
+
+  std::vector<glm::quat> srcLowerQ, srcPrevUQ, srcUpperQ;
+  glm::vec3 hipL(0.0f), hipPU(0.0f), hipU(0.0f);
+  sampleSourcePose(lowerClip, lowerTime, srcLowerQ, hipL);
+  sampleSourcePose(prevUpperClip, prevUpperTime, srcPrevUQ, hipPU);
+  sampleSourcePose(upperClip, upperTime, srcUpperQ, hipU);
+
+  const AlignedTargetBind& alignedL = getOrBuildAlignedBind(lowerClip);
+  const AlignedTargetBind& alignedPU = getOrBuildAlignedBind(prevUpperClip);
+  const AlignedTargetBind& alignedU = getOrBuildAlignedBind(upperClip);
+  const glm::quat relQL = glm::angleAxis(targetFacingYaw_ - lowerClip.srcFacingYaw, glm::vec3(0.0f, 1.0f, 0.0f));
+  const glm::quat invRelQL = glm::inverse(relQL);
+  const glm::quat relQPU = glm::angleAxis(targetFacingYaw_ - prevUpperClip.srcFacingYaw, glm::vec3(0.0f, 1.0f, 0.0f));
+  const glm::quat invRelQPU = glm::inverse(relQPU);
+  const glm::quat relQU = glm::angleAxis(targetFacingYaw_ - upperClip.srcFacingYaw, glm::vec3(0.0f, 1.0f, 0.0f));
+  const glm::quat invRelQU = glm::inverse(relQU);
+
+  auto boneUpperMask = [](const std::string& canon) -> float {
+    if (canon == "Spine") return 0.55f;
+    if (canon == "Spine1") return 0.85f;
+    if (canon == "Spine2" || canon == "Neck" || canon == "Head") return 1.0f;
+    if (canon.rfind("LeftShoulder", 0) == 0 || canon.rfind("LeftArm", 0) == 0 ||
+        canon.rfind("LeftForeArm", 0) == 0 || canon.rfind("LeftHand", 0) == 0 ||
+        canon.rfind("RightShoulder", 0) == 0 || canon.rfind("RightArm", 0) == 0 ||
+        canon.rfind("RightForeArm", 0) == 0 || canon.rfind("RightHand", 0) == 0) {
+      return 1.0f;
+    }
+    return 0.0f;
+  };
+
+  const size_t n = target_->nodes.size();
+  std::vector<glm::vec3> localT(n);
+  std::vector<glm::quat> localR(n);
+  std::vector<glm::vec3> localS(n);
+  for (size_t i = 0; i < n; ++i) {
+    localT[i] = target_->nodes[i].restT;
+    localR[i] = target_->nodes[i].restR;
+    localS[i] = target_->nodes[i].restS;
+  }
+
+  if (targetHipsNode_ >= 0) {
+    const float srcH = std::abs(lowerClip.srcRestHipWorldPos.y) > 0.1f ? std::abs(lowerClip.srcRestHipWorldPos.y) : targetHipHeight_;
+    const float hipScale = std::clamp(targetHipHeight_ / srcH, 0.25f, 4.0f);
+    glm::vec3 dWorld = relQL * (hipL - lowerClip.srcRestHipWorldPos) * hipScale;
+    const float unitScale = targetHipHeight_ / 0.95f;
+    if (overlay && overlay->koProgress > 0.001f) {
+      const float k = std::clamp(overlay->koProgress, 0.0f, 1.0f);
+      const float ks = k * k * (3.0f - 2.0f * k);
+      dWorld.y -= 0.78f * std::sin(ks * 1.48f) * unitScale;
+    } else if (overlay) {
+      dWorld.y -= 0.34f * std::clamp(overlay->crouchWeight, 0.0f, 1.0f) * unitScale;
+      dWorld.y += 0.06f * std::clamp(overlay->airWeight, 0.0f, 1.0f) * unitScale;
+    }
+    dWorld.y = std::clamp(dWorld.y, -1.10f * unitScale, 0.35f * unitScale);
+    dWorld.x = std::clamp(dWorld.x * 0.45f, -0.25f * unitScale, 0.25f * unitScale);
+    dWorld.z = std::clamp(dWorld.z * 0.45f, -0.35f * unitScale, 0.35f * unitScale);
+    localT[targetHipsNode_] += targetHipsParentInvRotScale_ * dWorld;
+  }
+
+  std::vector<glm::quat> targetWorldQ = targetRestWorldQ_;
+  for (int32_t idx : targetTopoOrder_) {
+    const int32_t p = target_->nodes[idx].parent;
+    const glm::quat parentWorldQ = (p >= 0) ? targetWorldQ[p] : glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+    const std::string& canon = targetCanonicalNames_[idx];
+
+    if (!canon.empty()) {
+      auto itL = lowerClip.canonicalToSrcNode.find(canon);
+      auto itPU = prevUpperClip.canonicalToSrcNode.find(canon);
+      auto itU = upperClip.canonicalToSrcNode.find(canon);
+      const float mask = w * boneUpperMask(canon);
+      if (itL != lowerClip.canonicalToSrcNode.end() && itU != upperClip.canonicalToSrcNode.end()) {
+        const glm::quat dL = relQL * (srcLowerQ[itL->second] * glm::inverse(lowerClip.srcRestWorldQ[itL->second])) * invRelQL;
+        const glm::quat wL = glm::normalize(dL * alignedL.worldQ[idx]);
+        const glm::quat dU = relQU * (srcUpperQ[itU->second] * glm::inverse(upperClip.srcRestWorldQ[itU->second])) * invRelQU;
+        glm::quat wU = glm::normalize(dU * alignedU.worldQ[idx]);
+        if (itPU != prevUpperClip.canonicalToSrcNode.end()) {
+          const glm::quat dPU = relQPU * (srcPrevUQ[itPU->second] * glm::inverse(prevUpperClip.srcRestWorldQ[itPU->second])) * invRelQPU;
+          const glm::quat wPU = glm::normalize(dPU * alignedPU.worldQ[idx]);
+          wU = glm::normalize(glm::slerp(wPU, wU, ub));
+        }
+        glm::quat desiredWorldQ = glm::normalize(glm::slerp(wL, wU, mask));
+        if (overlay) {
+          desiredWorldQ = glm::normalize(computeOverlayDeltaWorld(canon, *overlay) * desiredWorldQ);
+        }
+        targetWorldQ[idx] = desiredWorldQ;
+        localR[idx] = glm::normalize(glm::inverse(parentWorldQ) * desiredWorldQ);
+      } else if (itL != lowerClip.canonicalToSrcNode.end()) {
+        const glm::quat dL = relQL * (srcLowerQ[itL->second] * glm::inverse(lowerClip.srcRestWorldQ[itL->second])) * invRelQL;
+        glm::quat wL = glm::normalize(dL * alignedL.worldQ[idx]);
+        if (overlay) {
+          wL = glm::normalize(computeOverlayDeltaWorld(canon, *overlay) * wL);
+        }
+        targetWorldQ[idx] = wL;
+        localR[idx] = glm::normalize(glm::inverse(parentWorldQ) * wL);
+      } else {
+        targetWorldQ[idx] = glm::normalize(parentWorldQ * localR[idx]);
+      }
+    } else {
+      targetWorldQ[idx] = glm::normalize(parentWorldQ * localR[idx]);
+    }
+
+    if (overlay && overlay->fistWeight > 0.01f) {
+      auto fit = fingerCurlByNode_.find(idx);
+      if (fit != fingerCurlByNode_.end()) {
+        const float curlRad = 1.05f * fit->second.curlScale * std::clamp(overlay->fistWeight, 0.0f, 1.0f);
+        localR[idx] = glm::normalize(localR[idx] * glm::angleAxis(curlRad, fit->second.localAxis));
+        targetWorldQ[idx] = glm::normalize(parentWorldQ * localR[idx]);
+      }
+    }
+  }
+
+  buildPaletteFromTargetLocals(localT, localR, localS, outPalette);
 }
 
 void CharacterAnimator::advanceAnimState(
@@ -1024,16 +1186,29 @@ void CharacterAnimator::advanceAnimState(
 
   if (!desiredUpperClip.empty()) {
     if (desiredUpperClip != st.upperClip) {
+      if (!st.upperClip.empty() && st.upperWeight > 0.05f) {
+        st.prevUpperClip = st.upperClip;
+        st.prevUpperTime = st.upperTime;
+        st.upperBlend = 0.0f;
+      } else {
+        st.prevUpperClip.clear();
+        st.upperBlend = 1.0f;
+      }
       st.upperClip = desiredUpperClip;
     }
     st.upperTime = desiredUpperTime;
+    st.prevUpperTime += dt;
+    st.upperBlend = std::min(1.0f, st.upperBlend + dt / 0.09f);
     st.upperWeight = std::min(1.0f, st.upperWeight + dt * 16.0f);
   } else {
     st.upperTime += dt;
+    st.prevUpperTime += dt;
     st.upperWeight = std::max(0.0f, st.upperWeight - dt * 11.0f);
     if (st.upperWeight <= 0.005f) {
       st.upperWeight = 0.0f;
       st.upperClip.clear();
+      st.prevUpperClip.clear();
+      st.upperBlend = 1.0f;
     }
   }
 }
@@ -1052,7 +1227,18 @@ void CharacterAnimator::evaluateState(
 
   auto itUpper = (!st.upperClip.empty() && st.upperWeight > 0.01f) ? clips.find(st.upperClip) : clips.end();
   if (itUpper != clips.end()) {
-    evaluateLayered(itCurr->second, st.currTime, itUpper->second, st.upperTime, st.upperWeight, outPalette, overlay);
+    auto itPrevUpper = (!st.prevUpperClip.empty() && st.upperBlend < 0.999f) ? clips.find(st.prevUpperClip) : clips.end();
+    if (itPrevUpper != clips.end()) {
+      evaluateLayeredBlended(
+        itCurr->second, st.currTime,
+        itPrevUpper->second, st.prevUpperTime,
+        itUpper->second, st.upperTime,
+        st.upperBlend, st.upperWeight,
+        outPalette, overlay
+      );
+    } else {
+      evaluateLayered(itCurr->second, st.currTime, itUpper->second, st.upperTime, st.upperWeight, outPalette, overlay);
+    }
     return;
   }
 

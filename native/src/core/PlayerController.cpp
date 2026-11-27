@@ -50,6 +50,7 @@ void PlayerController::update(float dt, const PlayerInputState& input) {
   const float wishLen = glm::length(wishDir);
   if (wishLen > 1e-4f) wishDir /= wishLen;
 
+  crouching_ = input.crouch && grounded();
   sprinting_ = input.sprint && !input.crouch && wishLen > 0.2f;
   const float targetSpeed = wishLen > 0.05f ? (input.crouch ? 2.8f : (sprinting_ ? 8.6f : 4.8f)) : 0.0f;
   const float accel = targetSpeed > currentSpeed_ ? 14.0f : 18.0f;

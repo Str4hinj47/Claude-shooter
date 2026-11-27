@@ -30,6 +30,7 @@ class PlayerController {
   float pitch() const { return pitch_; }
   bool grounded() const;
   bool sprinting() const { return sprinting_; }
+  bool crouching() const { return crouching_; }
   bool steppedThisFrame() const { return steppedThisFrame_; }
   float stepIntensity() const { return stepIntensity_; }
 
@@ -41,6 +42,7 @@ class PlayerController {
   float currentSpeed_ = 0.0f;
   float stepAccum_ = 0.0f;
   bool sprinting_ = false;
+  bool crouching_ = false;
   bool steppedThisFrame_ = false;
   float stepIntensity_ = 0.0f;
   glm::vec3 cameraPos_{0.0f, 8.0f, -6.0f};

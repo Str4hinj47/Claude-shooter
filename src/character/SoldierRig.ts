@@ -901,6 +901,7 @@ export class SoldierRig {
   readonly combat = new HandToHandController();
   private combatTmpQ = new THREE.Quaternion();
   private combatBlendSnap: Record<string, THREE.Quaternion> = {};
+  private combatLastPose: Record<string, THREE.Quaternion> = {};
   private combatLastClipId: string | null = null;
   private combatCrossfadeT = 1;
   private combatCrossfadeDur = 0.11;
@@ -2206,22 +2207,27 @@ export class SoldierRig {
       this.combatLastClipId = null;
       this.combatLastActive = false;
       this.combatCrossfadeT = 1;
+      if (!dead && this.holstered && !this.carryingBody) {
+        // Relaxed natural hand curl while unarmed outside boxing stance
+        const relaxed = { Thumb: 0.24, Index: 0.28, Middle: 0.34, Ring: 0.42, Pinky: 0.50 };
+        this.curlHand("Left", relaxed);
+        this.curlHand("Right", relaxed);
+      }
     }
 
     this.model.updateMatrixWorld(true);
   }
 
-  private captureCombatPoseSnapshot() {
+  private captureCombatPoseSnapshot(fromLastPose = false) {
     const B = this.bones;
-    if (B[COMBAT_HIPS_BONE]) {
-      (this.combatBlendSnap[COMBAT_HIPS_BONE] ??= new THREE.Quaternion()).copy(B[COMBAT_HIPS_BONE].quaternion);
-    }
-    for (const bName of COMBAT_UPPER_BONES) {
-      if (B[bName]) (this.combatBlendSnap[bName] ??= new THREE.Quaternion()).copy(B[bName].quaternion);
-    }
-    for (const bName of COMBAT_LOWER_BONES) {
-      if (B[bName]) (this.combatBlendSnap[bName] ??= new THREE.Quaternion()).copy(B[bName].quaternion);
-    }
+    const copyBone = (bName: string) => {
+      const prev = fromLastPose ? this.combatLastPose[bName] : undefined;
+      const srcQ = prev ?? B[bName]?.quaternion;
+      if (srcQ) (this.combatBlendSnap[bName] ??= new THREE.Quaternion()).copy(srcQ);
+    };
+    copyBone(COMBAT_HIPS_BONE);
+    for (const bName of COMBAT_UPPER_BONES) copyBone(bName);
+    for (const bName of COMBAT_LOWER_BONES) copyBone(bName);
   }
 
   private applyCombatOverlay(pose: CombatVisualPose, dt: number) {
@@ -2237,10 +2243,11 @@ export class SoldierRig {
     // Cross-clip pose snapshot smoothing so combo transitions (jab->cross->hook->idle) have zero frame pops
     const curClipId = pose.clipId ?? null;
     if (this.combatLastActive && curClipId !== this.combatLastClipId) {
+      this.captureCombatPoseSnapshot(true);
       this.combatCrossfadeT = 0;
       this.combatCrossfadeDur = pose.activeMove ? 0.085 : 0.14;
     } else if (!this.combatLastActive) {
-      this.captureCombatPoseSnapshot();
+      this.captureCombatPoseSnapshot(false);
       this.combatCrossfadeT = 0;
       this.combatCrossfadeDur = 0.12;
     }
@@ -2260,7 +2267,7 @@ export class SoldierRig {
           q.copy(snap).slerp(b.quaternion, cf);
           b.quaternion.copy(q);
         }
-        (this.combatBlendSnap[bName] ??= new THREE.Quaternion()).copy(b.quaternion);
+        (this.combatLastPose[bName] ??= new THREE.Quaternion()).copy(b.quaternion);
       };
 
       const hipsW = Math.max(pose.lowerWeight, pose.upperWeight * 0.42);
