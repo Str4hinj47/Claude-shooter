@@ -229,7 +229,7 @@ export const MISSIONS: MissionDef[] = [
     briefing: [
       "Senator Arthur Sterling claims a former fixer hid his offshore ledgers across Highland Village. Mara suspects those accounts bankroll a far bigger ring.",
       "Infiltrate the storefronts for 2 Ledger Briefcases, wipe the Archive Terminal in the north-east barn, and trace who Sterling was really paying.",
-      "11 hired enforcers patrol the square. Ghost past them with silent takedowns [F] or suppressed shots, then extract back to the village road.",
+      "11 hired enforcers patrol the square. Ghost past them with silent takedowns [V] or suppressed shots, then extract back to the village road.",
     ],
     debrief: [
       "Sterling got his clean slate — and Mara pulled an urgent shipping seal from the barn server: Dock 4 manifests are about to be handed to City Hall by Port Auditor Marcus Bell.",
@@ -851,7 +851,7 @@ export const STORYLINE_CHAPTERS: StoryChapterDef[] = [
     location: "Private Subterranean Range",
     timeOfDay: "Daylight",
     accent: "#2dd4bf",
-    summary: "Zero suppressed rifles, practice rear silent takedowns [F], and verify ballistics before going live.",
+    summary: "Zero suppressed rifles, practice rear silent takedowns [V], and verify ballistics before going live.",
     tacticalFocus: "Training · Stealth Takedown & Marksmanship",
     introDialogue: [{ speaker: "Mara", text: "Safehouse range is hot. Zero your rifle and practice silent takedowns before we touch the Ledger.", audioUrl: "/audio/chapters/ch00_intro.mp3" }],
     debriefDialogue: [{ speaker: "Mara", text: "Calibration complete. Your first live file is Highland Estate — Sterling's offshore trail.", audioUrl: "/audio/chapters/ch00_debrief.mp3" }],

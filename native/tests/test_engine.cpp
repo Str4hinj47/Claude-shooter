@@ -569,6 +569,66 @@ int main() {
     exitHeli.interactPressed = true;
     session.update(1.0f / 60.0f, exitHeli, player, physics, world, nullptr);
 
+    // Verify native grappling (clinch lock -> body slam -> double-leg takedown) in Iron Pit
+    {
+      const glm::vec3 pitPos = session.ironPit().pos;
+      session.teleportTo(pitPos + glm::vec3(0.0f, 0.0f, -1.6f), 0.0f, player);
+      westgate::GameInputFrame grp{};
+      grp.selectWeaponSlot = 0;
+      grp.grapplePressed = true;
+      session.update(1.0f / 60.0f, grp, player, physics, world, nullptr);
+      if (!session.inClinch()) {
+        std::fprintf(stderr, "FAIL native clinch did not lock\n");
+        return 1;
+      }
+      const float hpBeforeSlam = session.ironPit().hp;
+      westgate::GameInputFrame slam{};
+      slam.grapplePressed = true;
+      session.update(1.0f / 60.0f, slam, player, physics, world, nullptr);
+      if (session.inClinch() || session.ironPit().hp >= hpBeforeSlam) {
+        std::fprintf(stderr, "FAIL native body slam did not resolve clinch\n");
+        return 1;
+      }
+      std::printf("[PASS] Native grappling & body slam verified (pitHp %.0f -> %.0f)\n",
+                  hpBeforeSlam, session.ironPit().hp);
+    }
+
+    // Verify rear silent takedown on an isolated NPC leaves wanted level at 0 and increments stealthKills
+    if (!session.npcs().empty()) {
+      size_t isoIdx = session.npcs().size();
+      for (size_t ni = 0; ni < session.npcs().size(); ++ni) {
+        const auto& cand = session.npcs()[ni];
+        if (!cand.alive) continue;
+        bool hasWitness = false;
+        for (size_t oj = 0; oj < session.npcs().size(); ++oj) {
+          if (oj != ni && session.npcs()[oj].alive && glm::distance(cand.pos, session.npcs()[oj].pos) < 18.0f) {
+            hasWitness = true;
+            break;
+          }
+        }
+        if (!hasWitness) { isoIdx = ni; break; }
+      }
+      if (isoIdx < session.npcs().size()) {
+        const auto& n = session.npcs()[isoIdx];
+        const glm::vec3 behindPos = n.pos - glm::vec3(std::sin(n.yawRad), 0.0f, std::cos(n.yawRad)) * 1.35f;
+        session.teleportTo(behindPos, glm::degrees(n.yawRad), player);
+        westgate::GameInputFrame probe{};
+        session.update(1.0f / 60.0f, probe, player, physics, world, nullptr);
+        if (!session.takedownReady()) {
+          std::fprintf(stderr, "FAIL silent takedown not ready behind isolated NPC\n");
+          return 1;
+        }
+        westgate::GameInputFrame td{};
+        td.takedownPressed = true;
+        session.update(1.0f / 60.0f, td, player, physics, world, nullptr);
+        if (session.stealthKills() < 1 || session.wantedStars() != 0) {
+          std::fprintf(stderr, "FAIL silent takedown stealthKills=%d wantedStars=%d\n", session.stealthKills(), session.wantedStars());
+          return 1;
+        }
+        std::printf("[PASS] Native silent takedown verified (stealthKills=%d, wantedStars=%d)\n", session.stealthKills(), session.wantedStars());
+      }
+    }
+
     // Save / load JSON persistence
     const std::string saveFile = "/tmp/westgate_test_save.json";
     if (!session.saveToFile(saveFile)) {

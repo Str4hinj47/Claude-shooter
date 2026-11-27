@@ -28,7 +28,12 @@ import {
   retargetAnimationClipForSkeleton,
   sampleCombatBone,
 } from "./CombatAnimations";
-import { HandToHandController, type CombatVisualPose, type MeleeMoveDef } from "./HandToHandCombat";
+import {
+  HandToHandController,
+  isGrappleMoveId,
+  type CombatVisualPose,
+  type MeleeMoveDef,
+} from "./HandToHandCombat";
 import {
   assembleShirtlessFighter,
   isFighterUrl,
@@ -1137,6 +1142,21 @@ export class SoldierRig {
     return started;
   }
 
+  /** Trigger a wrestling / grappling maneuver (clinch grab, double-leg, clinch knee, slam, choke). */
+  triggerGrappleMove(
+    moveId: "grapple_grab" | "takedown_double_leg" | "clinch_knee" | "suplex_slam" | "submission_choke",
+  ): MeleeMoveDef | null {
+    if (this.dead || this.carryingBody) return null;
+    this.reloadT = -1;
+    this.aimTimer = Math.max(this.aimTimer, 2.0);
+    const started = this.combat.requestGrappleMove(moveId);
+    if (started) {
+      this.events.onMeleeSwing?.(started);
+      this.applyMeleeLunge(started);
+    }
+    return started;
+  }
+
   /** Hold or release unarmed hand-to-hand boxing guard / timed parry. */
   setCombatBlock(held: boolean) {
     const active = held && this.holstered && !this.dead && !this.carryingBody;
@@ -2032,6 +2052,8 @@ export class SoldierRig {
 
     this.curTakedownPose = this.takedownAnim.update(dt);
     this.curDrawPose = this.drawAnim.update(dt);
+    this.rifle.group.visible =
+      this.root.visible && !this.holstered && !dead && this.curTakedownPose.weaponHideBlend <= 0.35;
 
     // ----- death: articulated multi-joint collapse simulation
     let deathBuckle = 0;
@@ -2315,6 +2337,87 @@ export class SoldierRig {
       const fist = { Thumb: 0.85 * f, Index: f, Middle: f, Ring: f, Pinky: f };
       this.curlHand("Left", fist);
       this.curlHand("Right", fist);
+    }
+
+    // Procedural wrestling & grappling silhouettes layered cleanly over combat animations
+    const mId = pose.activeMove?.id;
+    if (this.combat.state === "clinch" || this.combat.state === "grappled" || isGrappleMoveId(mId)) {
+      const yawNow = this.root.rotation.y;
+      const fwd = new THREE.Vector3(Math.sin(yawNow), 0, Math.cos(yawNow));
+      const rgt = new THREE.Vector3(-Math.cos(yawNow), 0, Math.sin(yawNow));
+      const yawQ = new THREE.Quaternion().setFromAxisAngle(AXIS_Y, yawNow);
+      const lShoulder = B.LeftArm.getWorldPosition(new THREE.Vector3());
+      const rShoulder = B.RightArm.getWorldPosition(new THREE.Vector3());
+
+      if (this.combat.state === "clinch" || mId === "grapple_grab" || mId === "clinch_knee") {
+        const pulse = Math.sin(this.combat.stateTime * 7.5) * 0.04;
+        const reach = mId === "grapple_grab" ? 0.56 : 0.44;
+        const tL = lShoulder
+          .clone()
+          .addScaledVector(fwd, reach + pulse)
+          .addScaledVector(rgt, 0.1)
+          .add(new THREE.Vector3(0, 0.08, 0));
+        const tR = rShoulder
+          .clone()
+          .addScaledVector(fwd, reach - pulse)
+          .addScaledVector(rgt, -0.1)
+          .add(new THREE.Vector3(0, 0.1, 0));
+        this.solveArm("Left", tL, fwd, rgt, V(0.6, -0.7, -0.2).applyQuaternion(yawQ));
+        this.solveArm("Right", tR, fwd, rgt.clone().negate(), V(-0.6, -0.7, -0.2).applyQuaternion(yawQ));
+        const leanQ = new THREE.Quaternion().setFromAxisAngle(rgt, 0.16);
+        this.rotateChain(["Spine", "Spine1", "Spine2"], leanQ, [0.35, 0.35, 0.3]);
+      } else if (mId === "takedown_double_leg") {
+        const u = pose.attackProgress;
+        const shoot = Math.sin(Math.min(1, u * 1.35) * Math.PI);
+        const tL = lShoulder
+          .clone()
+          .addScaledVector(fwd, 0.48 + shoot * 0.18)
+          .addScaledVector(rgt, 0.08)
+          .add(new THREE.Vector3(0, -0.34 * shoot, 0));
+        const tR = rShoulder
+          .clone()
+          .addScaledVector(fwd, 0.48 + shoot * 0.18)
+          .addScaledVector(rgt, -0.08)
+          .add(new THREE.Vector3(0, -0.34 * shoot, 0));
+        this.solveArm("Left", tL, fwd, rgt, V(0.75, -0.6, 0).applyQuaternion(yawQ));
+        this.solveArm("Right", tR, fwd, rgt.clone().negate(), V(-0.75, -0.6, 0).applyQuaternion(yawQ));
+        const diveQ = new THREE.Quaternion().setFromAxisAngle(rgt, 0.42 * shoot);
+        this.rotateChain(["Spine", "Spine1", "Spine2"], diveQ, [0.35, 0.35, 0.3]);
+      } else if (mId === "suplex_slam") {
+        const u = pose.attackProgress;
+        const lift = u < 0.5 ? u * 2 : 2 - u * 2;
+        const slamPitch = u < 0.45 ? -0.36 * (u / 0.45) : 0.48 * Math.min(1, (u - 0.45) / 0.35);
+        const tL = lShoulder
+          .clone()
+          .addScaledVector(fwd, 0.38)
+          .addScaledVector(rgt, 0.06)
+          .add(new THREE.Vector3(0, 0.28 * lift - (u > 0.55 ? 0.25 : 0), 0));
+        const tR = rShoulder
+          .clone()
+          .addScaledVector(fwd, 0.38)
+          .addScaledVector(rgt, -0.06)
+          .add(new THREE.Vector3(0, 0.28 * lift - (u > 0.55 ? 0.25 : 0), 0));
+        this.solveArm("Left", tL, fwd, rgt, V(0.5, -0.4, -0.4).applyQuaternion(yawQ));
+        this.solveArm("Right", tR, fwd, rgt.clone().negate(), V(-0.5, -0.4, -0.4).applyQuaternion(yawQ));
+        const archQ = new THREE.Quaternion().setFromAxisAngle(rgt, slamPitch);
+        this.rotateChain(["Spine", "Spine1", "Spine2"], archQ, [0.3, 0.35, 0.35]);
+      } else if (mId === "submission_choke") {
+        const squeeze = 0.5 + 0.5 * Math.sin(this.combat.stateTime * 14);
+        const tL = lShoulder
+          .clone()
+          .addScaledVector(fwd, 0.36)
+          .addScaledVector(rgt, -0.14)
+          .add(new THREE.Vector3(0, 0.04 + squeeze * 0.04, 0));
+        const tR = rShoulder
+          .clone()
+          .addScaledVector(fwd, 0.38)
+          .addScaledVector(rgt, 0.14)
+          .add(new THREE.Vector3(0, 0.06 + squeeze * 0.04, 0));
+        this.solveArm("Left", tL, fwd, rgt, V(0.85, -0.35, 0.15).applyQuaternion(yawQ));
+        this.solveArm("Right", tR, fwd, rgt.clone().negate(), V(-0.85, -0.35, 0.15).applyQuaternion(yawQ));
+        const crunchQ = new THREE.Quaternion().setFromAxisAngle(rgt, 0.26);
+        this.rotateChain(["Spine", "Spine1", "Spine2"], crunchQ, [0.35, 0.35, 0.3]);
+      }
     }
     this.model.updateMatrixWorld(true);
   }

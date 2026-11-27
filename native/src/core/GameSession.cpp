@@ -816,6 +816,71 @@ void GameSession::fireActiveWeapon(const PlayerController& player, PhysicsWorld&
   }
 }
 
+int GameSession::findTakedownNpcIndex(const glm::vec3& playerPos) const {
+  if (inVehicle()) return -1;
+  int bestIdx = -1;
+  float bestD = 2.4f;
+  for (size_t i = 0; i < npcs_.size(); ++i) {
+    const auto& n = npcs_[i];
+    if (!n.alive || n.fleeing) continue;
+    if (std::abs(n.pos.y - playerPos.y) > 1.35f) continue;
+    const float d = glm::distance(glm::vec2(playerPos.x, playerPos.z), glm::vec2(n.pos.x, n.pos.z));
+    if (d >= bestD) continue;
+    const float toPX = (playerPos.x - n.pos.x) / std::max(0.01f, d);
+    const float toPZ = (playerPos.z - n.pos.z) / std::max(0.01f, d);
+    const float nFwdX = std::sin(n.yawRad);
+    const float nFwdZ = std::cos(n.yawRad);
+    if (nFwdX * toPX + nFwdZ * toPZ > (n.isPolice && wantedStars_ > 0 ? 0.15f : 0.38f)) continue;
+    bestD = d;
+    bestIdx = static_cast<int>(i);
+  }
+  return bestIdx;
+}
+
+bool GameSession::trySilentTakedown(PlayerController& player, const WorldData& world, AudioEngine* audio) {
+  if (takedownCooldown_ > 0.0f || inVehicle()) return false;
+  const int idx = findTakedownNpcIndex(player.position());
+  if (idx < 0) return false;
+
+  auto& target = npcs_[static_cast<size_t>(idx)];
+  target.alive = false;
+  target.hp = 0.0f;
+  target.animClip = "knockdown";
+  target.animTime = 0.0f;
+
+  takedownCooldown_ = 0.55f;
+  playerAttackClip_ = "hook";
+  playerAttackTimer_ = 0.0f;
+  playerAttackHitDone_ = true;
+  hitmarkerTimer_ = 0.22f;
+  stealthKills_++;
+  playerCash_ += 65;
+
+  bool witnessed = false;
+  for (size_t i = 0; i < npcs_.size(); ++i) {
+    if (static_cast<int>(i) == idx) continue;
+    const auto& other = npcs_[i];
+    if (!other.alive) continue;
+    const float od = glm::distance(target.pos, other.pos);
+    if (od > 16.0f) continue;
+    const float toTX = (target.pos.x - other.pos.x) / std::max(0.01f, od);
+    const float toTZ = (target.pos.z - other.pos.z) / std::max(0.01f, od);
+    if (std::sin(other.yawRad) * toTX + std::cos(other.yawRad) * toTZ > 0.25f) {
+      witnessed = true;
+      break;
+    }
+  }
+
+  if (audio) audio->playSpatialImpact(target.pos, 0.45f);
+  if (witnessed) {
+    reportCrime(target.isPolice ? CrimeKind::CopHit : CrimeKind::Assault, target.pos, world);
+    pushToast("TAKEDOWN WITNESSED! +$65", 2.4f);
+  } else {
+    pushToast("SILENT TAKEDOWN +$65", 2.0f);
+  }
+  return true;
+}
+
 void GameSession::updateTrafficAndVehicles(float dt, const GameInputFrame& input, PlayerController& player, PhysicsWorld& physics, const WorldData& world, AudioEngine* audio) {
   // Enter / Exit nearest vehicle on G
   if (input.interactPressed) {
@@ -1244,21 +1309,103 @@ void GameSession::updateIronPit(float dt, const GameInputFrame& input, PlayerCon
   };
 
   if (!inVehicle() && unarmed) {
+    if (inClinch_) {
+      clinchTimer_ = std::max(0.0f, clinchTimer_ - dt);
+      if (clinchTimer_ <= 0.0f || ironPit_.defeated || glm::distance(pPos, ironPit_.pos) > 3.0f) {
+        inClinch_ = false;
+      }
+    }
     if (input.dodgePressed && playerAttackClip_.empty() && playerDodgeTimer_ <= 0.0f && playerStamina_ >= 14.0f) {
+      inClinch_ = false;
       playerStamina_ -= 14.0f;
       playerDodgeTimer_ = 0.52f;
       playerAttackClip_ = "dodge";
       playerAttackTimer_ = 0.0f;
       playerAttackHitDone_ = true;
+    } else if (input.grapplePressed) {
+      if (!inClinch_ && !ironPit_.defeated && glm::distance(pPos, ironPit_.pos) < 2.45f && playerStamina_ >= 10.0f) {
+        inClinch_ = true;
+        clinchTimer_ = 4.2f;
+        playerStamina_ -= 10.0f;
+        ironPit_.attackCooldown = std::max(ironPit_.attackCooldown, 0.9f);
+        if (audio) audio->playSpatialImpact(ironPit_.pos, 0.55f);
+        pushToast("CLINCH LOCKED! [Z] Body Slam | [U] Choke | [LMB] Knee", 2.5f);
+      } else if (inClinch_ && playerStamina_ >= 18.0f) {
+        inClinch_ = false;
+        tryStartMelee("uppercut", 18.0f);
+        if (!ironPit_.defeated && glm::distance(pPos, ironPit_.pos) < 2.65f) {
+          ironPit_.hp = std::max(0.0f, ironPit_.hp - 48.0f);
+          ironPit_.hitFlash = 1.0f;
+          ironPit_.attackCooldown = std::max(ironPit_.attackCooldown, 1.35f);
+          hitmarkerTimer_ = 0.24f;
+          spawnSparks(ironPit_.pos + glm::vec3(0.0f, 0.45f, 0.0f), {0.0f, 1.0f, 0.0f}, {0.95f, 0.82f, 0.52f}, 10);
+          if (audio) audio->playSpatialImpact(ironPit_.pos, 1.6f);
+          pushToast("BODY SLAM!", 1.8f);
+          if (ironPit_.hp <= 0.0f) {
+            ironPit_.defeated = true;
+            ironPit_.animClip = "knockdown";
+            ironPit_.animTime = 0.0f;
+            ironPit_.wins++;
+            const int streakPct = std::min(60, ironPit_.winStreak * 15);
+            ironPit_.winStreak++;
+            const int purseWon = static_cast<int>(std::round(static_cast<float>(ironPit_.purse) * (1.0f + static_cast<float>(streakPct) / 100.0f)));
+            playerCash_ += purseWon;
+            if (audio) {
+              audio->playPitBell(true);
+              audio->playCrowdCheer(0.95f);
+              audio->playCashChime();
+            }
+            pushToast("SLAM KNOCKOUT! +$" + std::to_string(purseWon), 4.2f);
+          } else {
+            ironPit_.animClip = "hit";
+            ironPit_.animTime = 0.0f;
+          }
+        }
+      }
+    } else if (input.takedownShootPressed && playerStamina_ >= 16.0f) {
+      const bool wasClinch = inClinch_;
+      inClinch_ = false;
+      tryStartMelee("kick", 16.0f);
+      if (!ironPit_.defeated && glm::distance(pPos, ironPit_.pos) < 2.65f) {
+        const float wrestleDmg = wasClinch ? 44.0f : 36.0f;
+        ironPit_.hp = std::max(0.0f, ironPit_.hp - wrestleDmg);
+        ironPit_.hitFlash = 1.0f;
+        ironPit_.attackCooldown = std::max(ironPit_.attackCooldown, 1.25f);
+        hitmarkerTimer_ = 0.22f;
+        spawnSparks(ironPit_.pos + glm::vec3(0.0f, 0.55f, 0.0f), {0.0f, 1.0f, 0.0f}, {0.88f, 0.85f, 0.78f}, 8);
+        if (audio) audio->playSpatialImpact(ironPit_.pos, 1.35f);
+        pushToast(wasClinch ? "GUILLOTINE CHOKE!" : "DOUBLE-LEG TAKEDOWN!", 1.8f);
+        if (ironPit_.hp <= 0.0f) {
+          ironPit_.defeated = true;
+          ironPit_.animClip = "knockdown";
+          ironPit_.animTime = 0.0f;
+          ironPit_.wins++;
+          const int streakPct = std::min(60, ironPit_.winStreak * 15);
+          ironPit_.winStreak++;
+          const int purseWon = static_cast<int>(std::round(static_cast<float>(ironPit_.purse) * (1.0f + static_cast<float>(streakPct) / 100.0f)));
+          playerCash_ += purseWon;
+          if (audio) {
+            audio->playPitBell(true);
+            audio->playCrowdCheer(0.95f);
+            audio->playCashChime();
+          }
+          pushToast((wasClinch ? "SUBMISSION! +$" : "TAKEDOWN KO! +$") + std::to_string(purseWon), 4.2f);
+        } else {
+          ironPit_.animClip = "hit";
+          ironPit_.animTime = 0.0f;
+        }
+      }
     } else if (input.firePressed) {
       const char* seq[3] = {"jab", "cross", "hook"};
-      tryStartMelee(seq[comboStep_ % 3], 11.0f);
+      tryStartMelee(inClinch_ ? "kick" : seq[comboStep_ % 3], 11.0f);
       ++comboStep_;
     } else if (input.uppercutPressed) {
       tryStartMelee("uppercut", 17.0f);
     } else if (input.kickPressed) {
       tryStartMelee("kick", 19.0f);
     }
+  } else {
+    inClinch_ = false;
   }
 
   if (!playerAttackClip_.empty()) {
@@ -1554,7 +1701,9 @@ void GameSession::updateActivitiesAndShops(float dt, const GameInputFrame& input
   }
 
   if (contextPrompt_.empty() && glm::distance(glm::vec2(pPos.x, pPos.z), glm::vec2(722.0f, 115.0f)) < 12.0f) {
-    contextPrompt_ = "[LMB/F] Punch | [Q] Uppercut | [E] Kick | [X] Dodge | [RMB/V] Block | [R] Next Tier";
+    contextPrompt_ = inClinch_
+      ? "[Z] Body Slam | [U] Guillotine Choke | [LMB] Clinch Knee | [X] Break"
+      : "[LMB/F] Punch | [Z] Clinch/Slam | [U] Double-Leg | [Q] Uppercut | [E] Kick | [X] Dodge | [RMB/V] Block";
   }
 }
 
@@ -1564,6 +1713,7 @@ void GameSession::update(float dt, const GameInputFrame& input, PlayerController
   playerHitFlash_ = std::max(0.0f, playerHitFlash_ - dt * 4.0f);
   playerDodgeTimer_ = std::max(0.0f, playerDodgeTimer_ - dt);
   playerHitAnimTimer_ = std::max(0.0f, playerHitAnimTimer_ - dt);
+  takedownCooldown_ = std::max(0.0f, takedownCooldown_ - dt);
   recoilImpulse_ = std::max(0.0f, recoilImpulse_ - dt * 6.5f);
   hitmarkerTimer_ = std::max(0.0f, hitmarkerTimer_ - dt);
   toastTimer_ = std::max(0.0f, toastTimer_ - dt);
@@ -1675,11 +1825,18 @@ void GameSession::update(float dt, const GameInputFrame& input, PlayerController
 
   updateTrafficAndVehicles(dt, input, player, physics, world, audio);
   updateNpcsAndPolice(dt, player, physics, world, audio);
+  if (input.takedownPressed) {
+    trySilentTakedown(player, world, audio);
+  }
   if (!spectatorBout_.active) {
     updateIronPit(dt, input, player, world, audio);
   }
   updateSpectatorBout(dt, world, audio);
   updateActivitiesAndShops(dt, input, player, world, audio);
+  takedownReady_ = (takedownCooldown_ <= 0.0f) && (findTakedownNpcIndex(player.position()) >= 0);
+  if (takedownReady_ && contextPrompt_.empty()) {
+    contextPrompt_ = "[V] Silent Takedown";
+  }
 }
 
 glm::vec3 GameSession::cameraPosition(const PlayerController& player) const {

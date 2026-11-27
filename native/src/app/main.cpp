@@ -304,6 +304,12 @@ int main(int argc, char** argv) {
           gameInput.kickPressed = true;
         } else if (sc == SDL_SCANCODE_X) {
           gameInput.dodgePressed = true;
+        } else if (sc == SDL_SCANCODE_V) {
+          gameInput.takedownPressed = true;
+        } else if (sc == SDL_SCANCODE_Z) {
+          gameInput.grapplePressed = true;
+        } else if (sc == SDL_SCANCODE_U) {
+          gameInput.takedownShootPressed = true;
         } else if (sc == SDL_SCANCODE_R) {
           gameInput.reloadPressed = true;
           gameInput.rematchPressed = true;

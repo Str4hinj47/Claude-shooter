@@ -297,6 +297,9 @@ struct GameInputFrame {
   bool kickPressed = false;       // E
   bool dodgePressed = false;      // X
   bool rematchPressed = false;    // R (when unarmed near pit)
+  bool takedownPressed = false;   // V (silent takedown on unaware/flanked NPC)
+  bool grapplePressed = false;    // Z (collar-tie clinch / body slam)
+  bool takedownShootPressed = false; // U (double-leg takedown / guillotine choke)
   int selectWeaponSlot = -1;      // 0..5 or -1
 };
 
@@ -391,6 +394,9 @@ public:
   const std::string& contextPrompt() const { return contextPrompt_; }
   const std::string& toastText() const { return toastText_; }
   float toastTimer() const { return toastTimer_; }
+  bool takedownReady() const { return takedownReady_; }
+  int stealthKills() const { return stealthKills_; }
+  bool inClinch() const { return inClinch_; }
 
   // Camera resolved for either on-foot or driving
   glm::vec3 cameraPosition(const PlayerController& player) const;
@@ -438,6 +444,8 @@ private:
   void spawnIronPitTier(int tier, const WorldData& world);
   void fireActiveWeapon(const PlayerController& player, PhysicsWorld& physics, const WorldData& world, AudioEngine* audio);
   void damagePlayer(float amount, const WorldData& world, PlayerController& player, AudioEngine* audio);
+  int findTakedownNpcIndex(const glm::vec3& playerPos) const;
+  bool trySilentTakedown(PlayerController& player, const WorldData& world, AudioEngine* audio);
   void updateTrafficAndVehicles(float dt, const GameInputFrame& input, PlayerController& player, PhysicsWorld& physics, const WorldData& world, AudioEngine* audio);
   void updateNpcsAndPolice(float dt, PlayerController& player, PhysicsWorld& physics, const WorldData& world, AudioEngine* audio);
   void updateIronPit(float dt, const GameInputFrame& input, PlayerController& player, const WorldData& world, AudioEngine* audio);
@@ -465,6 +473,11 @@ private:
   bool playerAttackHitDone_ = false;
   float playerDodgeTimer_ = 0.0f;
   float playerHitAnimTimer_ = 0.0f;
+  float takedownCooldown_ = 0.0f;
+  bool takedownReady_ = false;
+  int stealthKills_ = 0;
+  bool inClinch_ = false;
+  float clinchTimer_ = 0.0f;
   float recoilImpulse_ = 0.0f;
   float animClock_ = 0.0f;
   float playerLocomotionClock_ = 0.0f;

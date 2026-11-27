@@ -127,7 +127,12 @@ export class PedestrianSystem {
   readonly bodyWitnessIndicators: PedWitnessIndicator[] = [];
   onPedestrianHitByPlayer?: (ped: PedestrianAgent) => void;
   onPedestrianWounded?: (ped: PedestrianAgent, hitPoint: THREE.Vector3) => void;
-  onPedestrianKilled?: (ped: PedestrianAgent, hitPoint: THREE.Vector3, model: THREE.Group | null) => void;
+  onPedestrianKilled?: (
+    ped: PedestrianAgent,
+    hitPoint: THREE.Vector3,
+    model: THREE.Group | null,
+    silent?: boolean,
+  ) => void;
   onWeaponBrandishedAtCop?: (ped: PedestrianAgent) => void;
   onBodyWitnessed?: (ped: PedestrianAgent) => void;
 
@@ -631,6 +636,75 @@ export class PedestrianSystem {
     a.root.visible = false;
     this.voices.speak(a.roleId, "hit", a.voiceSeed, 6, true);
     this.onPedestrianKilled?.(a, hitPt, model);
+  }
+
+  /** Finds an isolated or rear-approached pedestrian eligible for a silent takedown. */
+  getStealthTakedownCandidate(
+    playerPos: THREE.Vector3,
+    crouching = false,
+  ): { agent: PedestrianAgent; x: number; y: number; z: number } | null {
+    const maxAngleDot = crouching ? 0.45 : 0.25;
+    let best: PedestrianAgent | null = null;
+    let bestD = 2.2;
+    for (const a of this.agents) {
+      if (a.dead || a.state === "knocked" || a.state === "flee") continue;
+      if (Math.abs(a.y - playerPos.y) > 1.35) continue;
+      const d = Math.hypot(playerPos.x - a.x, playerPos.z - a.z);
+      if (d >= bestD) continue;
+      const toPX = (playerPos.x - a.x) / Math.max(0.01, d);
+      const toPZ = (playerPos.z - a.z) / Math.max(0.01, d);
+      const fX = Math.sin(a.yaw);
+      const fZ = Math.cos(a.yaw);
+      if (fX * toPX + fZ * toPZ > maxAngleDot) continue;
+      bestD = d;
+      best = a;
+    }
+    return best ? { agent: best, x: best.x, y: best.y, z: best.z } : null;
+  }
+
+  /**
+   * Executes a silent sleeper takedown on an unaware pedestrian (no gunshot panic radius).
+   * Returns whether another nearby pedestrian visually witnessed the takedown.
+   */
+  tryStealthTakedown(
+    playerPos: THREE.Vector3,
+    crouching = false,
+  ): { agent: PedestrianAgent; witnessed: boolean; pos: THREE.Vector3 } | null {
+    const cand = this.getStealthTakedownCandidate(playerPos, crouching);
+    if (!cand) return null;
+    const a = cand.agent;
+    const hitPt = new THREE.Vector3(a.x, a.y + 1.1, a.z);
+
+    // Check if another pedestrian within 16m is facing the takedown
+    let witnessed = false;
+    for (const other of this.agents) {
+      if (other === a || other.dead || other.state === "knocked") continue;
+      if (Math.abs(other.y - a.y) > 2.2) continue;
+      const od = Math.hypot(a.x - other.x, a.z - other.z);
+      if (od > 16) continue;
+      const toAX = (a.x - other.x) / Math.max(0.01, od);
+      const toAZ = (a.z - other.z) / Math.max(0.01, od);
+      if (Math.sin(other.yaw) * toAX + Math.cos(other.yaw) * toAZ > 0.25) {
+        witnessed = true;
+        break;
+      }
+    }
+
+    a.dead = true;
+    a.hp = 0;
+    a.respawnTimer = 18.0;
+    const model = a.model;
+    if (model) a.root.remove(model);
+    a.model = null;
+    a.mixer = null;
+    a.actions = null;
+    a.shadowMeshes = undefined;
+    a.root.visible = false;
+    this.onPedestrianKilled?.(a, hitPt, model, true);
+    if (witnessed) {
+      this.alertPanic({ x: a.x, z: a.z }, 16);
+    }
+    return { agent: a, witnessed, pos: hitPt };
   }
 
   /** Checks if a gunshot hit a pedestrian near (x, y, z); wounds or kills them with blood & dying collapse */

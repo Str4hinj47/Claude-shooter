@@ -124,6 +124,8 @@ function prepareNpcModel(scene: THREE.Group, id: TrafficId): void {
     scene.traverse((o) => {
       const mesh = o as THREE.Mesh;
       if (!mesh.isMesh || Array.isArray(mesh.material)) return;
+      const matName = mesh.material.name || "";
+      if (/^(paint|glass|headlight|taillight|tire|rim|brake|trim|plate|chrome)__/i.test(matName)) return;
       const cloned = mesh.material.clone();
       cloned.name = /^wheel-/.test(mesh.name) ? `tire__${id}` : `trim__${id}_livery`;
       mesh.material = cloned;

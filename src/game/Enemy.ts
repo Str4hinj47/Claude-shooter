@@ -386,6 +386,92 @@ export class Fighter {
     return { killed: this.dead, blocked: false, damageDealt: res.damageTaken };
   }
 
+  /**
+   * Apply a wrestling throw, double-leg slam, or submission choke damage.
+   * Non-fatal throws force a knockdown; fatal chokes on non-bosses finish cleanly without alerting comms.
+   */
+  takeGrappleSlam(
+    dmg: number,
+    dirX: number,
+    dirZ: number,
+    knockdown = true,
+    silentChoke = false,
+    hitPoint?: THREE.Vector3,
+  ): { killed: boolean; damageDealt: number } {
+    if (this.dead) return { killed: false, damageDealt: 0 };
+    const hitPt = hitPoint ?? this.rig.root.position.clone().add(new THREE.Vector3(0, 1.1, 0));
+    this.rig.combat.exitClinch();
+    this.rig.combat.setBlocking(false);
+    this.burstTimer = Math.max(this.burstTimer, knockdown ? 1.45 : 0.9);
+    this.meleeCooldown = Math.max(this.meleeCooldown, knockdown ? 1.45 : 0.9);
+    this.rig.applyKnockback(dirX * (knockdown ? 5.2 : 2.6), dirZ * (knockdown ? 5.2 : 2.6));
+
+    if (silentChoke && !this.boss && dmg >= this.hp) {
+      const dealt = Math.max(1, this.hp);
+      this.hp = 0;
+      this.dead = true;
+      this.state = "dead";
+      this.suspicion = 0;
+      if (this.flashlightBeam) this.flashlightBeam.visible = false;
+      if (this.sniperLaser) this.sniperLaser.visible = false;
+      this.rig.die("front");
+      this.hitbox.visible = false;
+      this.hitbox.position.y = -50;
+      this.host.onKilled(this, true);
+      return { killed: true, damageDealt: dealt };
+    }
+
+    if (dmg < this.hp) {
+      this.rig.combat.inflictStagger(knockdown ? 1.32 : 0.85, knockdown);
+    }
+    this.takeDamage(dmg, silentChoke, hitPt);
+    return { killed: this.dead, damageDealt: Math.round(dmg) };
+  }
+
+  /**
+   * Instant silent sleeper/choke takedown on an unaware or flanked enemy.
+   * Produces no gunshot blood burst and never broadcasts a "man_down" radio callout.
+   */
+  takeSilentTakedown(attackerPos: THREE.Vector3): { killed: boolean; damageDealt: number } {
+    if (this.dead) return { killed: false, damageDealt: 0 };
+    const dx = this.rig.root.position.x - attackerPos.x;
+    const dz = this.rig.root.position.z - attackerPos.z;
+    const d = Math.hypot(dx, dz) || 1;
+    const nx = dx / d;
+    const nz = dz / d;
+
+    if (this.boss) {
+      const dmg = Math.max(380, Math.round(this.maxHp * 0.55));
+      this.hp -= dmg;
+      if (this.hp > 0) {
+        this.rig.combat.inflictStagger(1.15, false);
+        this.rig.applyKnockback(nx * 2.2, nz * 2.2);
+        this.burstTimer = Math.max(this.burstTimer, 1.15);
+        this.meleeCooldown = Math.max(this.meleeCooldown, 1.15);
+        this.suspicion = 1.0;
+        this.alertFrom(attackerPos, 0.25, 1.0);
+        return { killed: false, damageDealt: dmg };
+      }
+    }
+
+    const dealt = Math.max(1, this.hp);
+    this.hp = 0;
+    this.dead = true;
+    this.state = "dead";
+    this.suspicion = 0;
+    if (this.flashlightBeam) this.flashlightBeam.visible = false;
+    if (this.sniperLaser) this.sniperLaser.visible = false;
+    if (this.flashlightLens) {
+      (this.flashlightLens.material as THREE.MeshStandardMaterial).emissiveIntensity = 0;
+    }
+    this.rig.applyKnockback(nx * 1.4, nz * 1.4);
+    this.rig.die("front");
+    this.hitbox.visible = false;
+    this.hitbox.position.y = -50;
+    this.host.onKilled(this, true);
+    return { killed: true, damageDealt: dealt };
+  }
+
   takeDamage(dmg: number, suppressed = false, hitPoint?: THREE.Vector3) {
     if (this.dead) return;
     const unaware = this.isUnaware || (this.state === "alert" && this.suspicion < 0.85);
@@ -1045,16 +1131,33 @@ export class Fighter {
       }
 
       // close-quarters hand-to-hand engagement when player closes within 2.3m
-      const inMeleeZone = sees && dist < (this.unarmedOnly ? 2.55 : 2.35) && Math.abs(p.y - my.y) < 1.35 && !(this instanceof Ally);
-      if (this.unarmedOnly) {
+      const inGrapple = rig.combat.state === "clinch" || rig.combat.state === "grappled";
+      if (inGrapple) {
+        mvx = 0;
+        mvz = 0;
+        rig.setCombatBlock(false);
+      }
+      const inMeleeZone =
+        !inGrapple &&
+        sees &&
+        dist < (this.unarmedOnly ? 2.55 : 2.35) &&
+        Math.abs(p.y - my.y) < 1.35 &&
+        !(this instanceof Ally);
+      if (this.unarmedOnly && !inGrapple) {
         this.pitBlockTimer = Math.max(0, this.pitBlockTimer - dt);
         this.pitDodgeCooldown = Math.max(0, this.pitDodgeCooldown - dt);
         rig.setCombatBlock(this.pitBlockTimer > 0 && !rig.combat.isBusy);
       }
       if (inMeleeZone && !rig.dead && rig.combat.canMoveFreely) {
         if (this.meleeCooldown <= 0 && !rig.combat.isBusy && this.pitBlockTimer <= 0) {
-          const heavy = Math.random() < (this.unarmedOnly ? 0.34 : 0.3);
-          const m = rig.triggerMelee(heavy);
+          const grappleRoll = Math.random();
+          let m = null as ReturnType<SoldierRig["triggerMelee"]>;
+          if (this.unarmedOnly && this.meleeAggroScale >= 0.85 && grappleRoll < 0.24) {
+            m = rig.triggerGrappleMove(grappleRoll < 0.14 ? "takedown_double_leg" : "suplex_slam");
+          } else {
+            const heavy = Math.random() < (this.unarmedOnly ? 0.34 : 0.3);
+            m = rig.triggerMelee(heavy);
+          }
           if (m) {
             this.host.sfx.meleeWhoosh(m.heavy);
             const aggro = Math.max(0.6, this.meleeAggroScale || 1);

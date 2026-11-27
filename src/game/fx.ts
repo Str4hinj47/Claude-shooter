@@ -488,6 +488,31 @@ export class CombatFX {
     }
   }
 
+  /** Ground impact dust burst for slams & takedowns */
+  slamDust(p: THREE.Vector3, radius = 1.4) {
+    for (let i = 0; i < 16; i++) {
+      const ang = (i / 16) * Math.PI * 2 + Math.random() * 0.25;
+      const spd = (2.4 + Math.random() * 2.2) * radius;
+      const v = new THREE.Vector3(Math.cos(ang) * spd, 0.35 + Math.random() * 0.95, Math.sin(ang) * spd);
+      this.smoke.emit(
+        new THREE.Vector3(p.x + Math.cos(ang) * 0.35, p.y + 0.08, p.z + Math.sin(ang) * 0.35),
+        v,
+        0.42 + Math.random() * 0.25,
+        0.16 * radius,
+        0.52 * radius,
+        new THREE.Color(0.76, 0.72, 0.66),
+      );
+    }
+    this.flashes.emit(
+      new THREE.Vector3(p.x, p.y + 0.14, p.z),
+      new THREE.Vector3(),
+      0.1,
+      0.24 * radius,
+      0.04,
+      new THREE.Color(0.95, 0.82, 0.55),
+    );
+  }
+
   /** Arterial crimson splatter + mist on bullet/vehicle impact */
   bloodBurst(p: THREE.Vector3, dir?: THREE.Vector3, intensity = 1) {
     const count = Math.round(14 * intensity);
@@ -1053,8 +1078,11 @@ export class Sfx {
     this.burst({ dur: 0.042, freq: 1150, q: 1.5, type: "bandpass", gain: 0.2, delay: 0.03 });
   }
   takedown() {
-    this.burst({ dur: 0.09, freq: 520, sweepTo: 180, type: "lowpass", gain: 0.55, pink: true });
-    this.tone(95, 42, 0.11, 0.35, "sine");
+    // Muffled fabric grab -> low-frequency sleeper/choke KO thud -> subtle stealth confirm
+    this.burst({ dur: 0.065, freq: 620, sweepTo: 240, type: "lowpass", gain: 0.38, pink: true });
+    this.tone(92, 38, 0.13, 0.42, "sine", 0.035);
+    this.burst({ dur: 0.055, freq: 340, sweepTo: 120, type: "lowpass", gain: 0.34, pink: true, delay: 0.045 });
+    this.tone(660, 880, 0.09, 0.08, "sine", 0.08);
   }
   meleeWhoosh(heavy = false) {
     const pitch = heavy ? 0.82 : 1.0 + (Math.random() - 0.5) * 0.14;
@@ -1092,6 +1120,19 @@ export class Sfx {
     this.tone(1320, 680, 0.12, 0.28, "triangle");
     this.tone(185, 58, 0.12, 0.45, "sine");
     this.burst({ dur: 0.09, freq: 3400, sweepTo: 1100, q: 1.8, type: "bandpass", gain: 0.48 });
+  }
+  grappleGrab() {
+    this.burst({ dur: 0.08, freq: 520, sweepTo: 220, type: "lowpass", gain: 0.42, pink: true });
+    this.tone(125, 76, 0.08, 0.32, "triangle");
+  }
+  bodySlam() {
+    this.tone(110, 26, 0.24, 0.85, "sine");
+    this.tone(180, 42, 0.14, 0.48, "triangle", 0.01);
+    this.burst({ dur: 0.18, freq: 680, sweepTo: 120, type: "lowpass", gain: 0.72, drive: true, pink: true });
+  }
+  submissionLock() {
+    this.tone(160, 92, 0.16, 0.36, "sine");
+    this.burst({ dur: 0.12, freq: 380, sweepTo: 160, type: "lowpass", gain: 0.34, pink: true });
   }
   statUp() {
     this.tone(523.25, 523.25, 0.08, 0.14, "sine");

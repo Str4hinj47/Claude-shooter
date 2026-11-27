@@ -174,7 +174,7 @@ export const FIGHT_PIT_TIERS: FightPitTierDef[] = [
     tier: 4,
     name: "Boris Volkov",
     alias: '"Anvil" Boris',
-    style: "Iron Bruiser",
+    style: "Sambo Grappler",
     record: "17-1 (14 KO)",
     purse: 2750,
     hp: 285,
@@ -198,7 +198,7 @@ export const FIGHT_PIT_TIERS: FightPitTierDef[] = [
     tier: 5,
     name: "Mateo Cruz",
     alias: '"El Diablo" Cruz',
-    style: "Undisputed Pit King",
+    style: "MMA Pit Champion",
     record: "24-0 (19 KO)",
     purse: 4500,
     hp: 350,
@@ -263,7 +263,7 @@ export const PIT_ROSTER: PitRosterFighter[] = [
     id: "boris",
     name: "Boris Volkov",
     alias: '"Anvil" Boris',
-    style: "Iron Bruiser",
+    style: "Sambo Grappler",
     record: "17-1 (14 KO)",
     hp: 205,
     power: 9,
@@ -1504,10 +1504,16 @@ export class UndergroundFightPit {
     }
     self.rig.setCombatBlock(self.blockTimer > 0);
 
-    // Offensive swings
+    // Offensive swings & wrestling shoots
     if (dist < 2.25 && self.attackCooldown <= 0 && !self.rig.combat.isBusy && self.blockTimer <= 0) {
-      const heavy = Math.random() < 0.32;
-      const m = self.rig.triggerMelee(heavy);
+      const roll = Math.random();
+      let m = null as ReturnType<SoldierRig["triggerMelee"]>;
+      if (roll < 0.20) {
+        m = self.rig.triggerGrappleMove(roll < 0.11 ? "takedown_double_leg" : "suplex_slam");
+      } else {
+        const heavy = Math.random() < 0.32;
+        m = self.rig.triggerMelee(heavy);
+      }
       if (m) {
         self.hitProcessed = false;
         host.sfx.meleeWhoosh(m.heavy);

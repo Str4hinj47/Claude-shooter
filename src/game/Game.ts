@@ -207,6 +207,7 @@ export interface HudState {
   stealthKills: number;
   alerts: number;
   takedownReady: boolean;
+  takedownLabel: string | null;
   interact: { label: string; kind: string; progress: number; holding: boolean } | null;
   extractReady: boolean;
   extractDist: number | null;
@@ -258,6 +259,12 @@ export interface HudState {
     blocking: boolean;
     moveLabel: string | null;
     callout: string | null;
+    grapple: {
+      targetName: string;
+      knees: number;
+      maxKnees: number;
+      timeLeft: number;
+    } | null;
   };
   weaponWheelOpen: boolean;
   mapOpen: boolean;
@@ -617,6 +624,13 @@ export class Game {
   private hitstopTimer = 0;
   private meleeCallout: string | null = null;
   private meleeCalloutTimer = 0;
+  private takedownCooldown = 0;
+  private activeGrapple: {
+    enemy: Enemy;
+    timer: number;
+    knees: number;
+    name: string;
+  } | null = null;
   private holstered = false;
   private weaponWheelOpen = false;
   private mapOpen = false;
@@ -1894,11 +1908,15 @@ export class Game {
         case "KeyQ":
           if (this.level?.vehicles?.activeVehicle && this.phase === "ready" && !this.paused && !this.mapOpen && !this.phoneOpen) {
             this.toggleVehicleSignal("left");
+          } else if (this.holstered) {
+            this.tryGrappleAction("primary");
           }
           break;
         case "KeyE":
           if (this.level?.vehicles?.activeVehicle && this.phase === "ready" && !this.paused && !this.mapOpen && !this.phoneOpen) {
             this.toggleVehicleSignal("right");
+          } else if (this.holstered) {
+            this.tryGrappleAction("secondary");
           }
           break;
         case "KeyN":
@@ -2134,6 +2152,9 @@ export class Game {
       }
       if (e.button === 2) {
         this.mouseR = true;
+        if (this.activeGrapple) {
+          this.releaseActiveGrapple(true);
+        }
       }
     });
     on(window, "mouseup", (e: MouseEvent) => {
@@ -3690,11 +3711,65 @@ export class Game {
     this.emitHud();
   }
 
-  private findTakedownTarget(): Enemy | null {
-    if (!this.rig || this.rig.dead || this.phase !== "ready") return null;
+  private canPerformTakedown(): boolean {
+    return (
+      !!this.rig &&
+      !this.rig.dead &&
+      this.phase === "ready" &&
+      !this.paused &&
+      !this.cinematicState &&
+      !this.binocularsOpen &&
+      !this.weaponWheelOpen &&
+      !this.mapOpen &&
+      !this.phoneOpen &&
+      !this.level?.vehicles?.activeVehicle &&
+      !this.level?.aircraft?.activeAircraft &&
+      !this.level?.boats?.activeBoat &&
+      !this.level?.bodyCarry?.isCarrying
+    );
+  }
+
+  private hasClearTakedownLos(from: THREE.Vector3, tx: number, ty: number, tz: number): boolean {
+    if (!this.level) return true;
+    const dist = Math.hypot(tx - from.x, tz - from.z);
+    if (dist <= 0.4) return true;
+    this.camPivotTmp.set(from.x, from.y + 1.15, from.z);
+    this.camDesiredTmp.set(tx, ty + 1.15, tz).sub(this.camPivotTmp);
+    const segLen = this.camDesiredTmp.length();
+    if (segLen <= 0.25) return true;
+    const dir = this.camDirTmp.copy(this.camDesiredTmp).divideScalar(segLen);
+    this.raycaster.set(this.camPivotTmp, dir);
+    this.raycaster.far = segLen - 0.2;
+    const losTargets = this.level.spatialColliders
+      ? this.level.spatialColliders.queryRay(this.camPivotTmp, dir, segLen, this.rayScratch)
+      : this.level.colliders;
+    const wallHits = this.raycaster.intersectObjects(losTargets, false);
+    return !wallHits.some((h) => h.object.visible && !h.object.userData.fighter);
+  }
+
+  private findTakedownCandidate(): {
+    kind: "enemy" | "contract" | "police" | "pedestrian";
+    enemy?: Enemy;
+    pos: THREE.Vector3;
+    label: string;
+  } | null {
+    if (!this.canPerformTakedown() || !this.rig) return null;
     const p = this.rig.root.position;
-    let best: Enemy | null = null;
-    let bestD = 2.4;
+    const crouching = !!(this.keys.has("KeyC") || this.keys.has("ControlLeft") || this.uiHeld.crouch);
+
+    // 1. Contract surveillance target / isolated colleagues
+    const contractCand = this.level?.contracts?.getStealthTakedownCandidate(p);
+    if (contractCand && this.hasClearTakedownLos(p, contractCand.x, contractCand.y, contractCand.z)) {
+      return {
+        kind: "contract",
+        pos: new THREE.Vector3(contractCand.x, contractCand.y, contractCand.z),
+        label: contractCand.name,
+      };
+    }
+
+    // 2. Mission / contract guards & syndicate enemies
+    let bestEnemy: Enemy | null = null;
+    let bestD = 2.45;
     for (const e of this.enemies) {
       if (e.isDead || e.state === "attack") continue;
       const ep = e.rig.root.position;
@@ -3702,60 +3777,119 @@ export class Game {
       const d = p.distanceTo(ep);
       if (d >= bestD) continue;
 
-      // Require unawareness or flanking/rear approach if guard is already alerted
       if (e.state === "alert") {
         const toPlayerX = (p.x - ep.x) / Math.max(0.01, d);
         const toPlayerZ = (p.z - ep.z) / Math.max(0.01, d);
         const eFwdX = Math.sin(e.rig.aimYaw);
         const eFwdZ = Math.cos(e.rig.aimYaw);
-        if (eFwdX * toPlayerX + eFwdZ * toPlayerZ > 0.35) continue;
+        if (eFwdX * toPlayerX + eFwdZ * toPlayerZ > (crouching ? 0.45 : 0.35)) continue;
       }
 
-      // Clear line-of-sight between player chest & guard chest (no takedowns through walls)
-      if (d > 0.4 && this.level) {
-        this.camPivotTmp.set(p.x, p.y + 1.15, p.z);
-        this.camDesiredTmp.set(ep.x, ep.y + 1.15, ep.z).sub(this.camPivotTmp);
-        const segLen = this.camDesiredTmp.length();
-        const dir = this.camDirTmp.copy(this.camDesiredTmp).divideScalar(segLen);
-        this.raycaster.set(this.camPivotTmp, dir);
-        this.raycaster.far = segLen - 0.2;
-        const losTargets = this.level.spatialColliders
-          ? this.level.spatialColliders.queryRay(this.camPivotTmp, dir, segLen, this.rayScratch)
-          : this.level.colliders;
-        const wallHits = this.raycaster.intersectObjects(losTargets, false);
-        if (wallHits.some((h) => h.object.visible && !h.object.userData.fighter)) continue;
-      }
-
+      if (!this.hasClearTakedownLos(p, ep.x, ep.y, ep.z)) continue;
       bestD = d;
-      best = e;
+      bestEnemy = e;
     }
-    return best;
+    if (bestEnemy) {
+      const label = bestEnemy.boss ? `${bestEnemy.name || "Boss"} (Stealth Strike)` : "Hostile Guard";
+      return {
+        kind: "enemy",
+        enemy: bestEnemy,
+        pos: bestEnemy.rig.root.position.clone(),
+        label,
+      };
+    }
+
+    // 3. Flanked / unaware police officers in open world
+    const copCand = this.level?.wanted?.getStealthTakedownCandidate(p);
+    if (copCand && this.hasClearTakedownLos(p, copCand.x, copCand.y, copCand.z)) {
+      return {
+        kind: "police",
+        pos: new THREE.Vector3(copCand.x, copCand.y, copCand.z),
+        label: "Police Officer",
+      };
+    }
+
+    // 4. Open-world pedestrians approached from behind/flank
+    const pedCand = this.level?.pedestrians?.getStealthTakedownCandidate(p, crouching);
+    if (pedCand && this.hasClearTakedownLos(p, pedCand.x, pedCand.y, pedCand.z)) {
+      return {
+        kind: "pedestrian",
+        pos: new THREE.Vector3(pedCand.x, pedCand.y, pedCand.z),
+        label: "Civilian",
+      };
+    }
+
+    return null;
   }
 
-  tryTakedown() {
-    if (this.mission?.id === -1 && this.rig && !this.rig.dead && this.phase === "ready") {
-      if (this.level?.contracts?.tryStealthTakedown(this.rig.root.position)) {
-        this.rig.triggerTakedown();
-        this.sfx.takedown();
-        this.hitMarker = 0.28;
-        this.hitKill = true;
-        this.camKick.kick(0.9);
-        this.trainBodyStat("stealth", 18);
-        this.trainBodyStat("strength", 8);
-        this.emitHud();
-        return true;
+  tryTakedown(): boolean {
+    if (this.takedownCooldown > 0 || !this.rig) return false;
+    const cand = this.findTakedownCandidate();
+    if (!cand) return false;
+
+    const p = this.rig.root.position;
+    const dx = cand.pos.x - p.x;
+    const dz = cand.pos.z - p.z;
+    const dist = Math.hypot(dx, dz);
+    if (dist > 0.05) {
+      const targetYaw = Math.atan2(dx, dz);
+      this.yaw = targetYaw;
+      this.rig.aimYaw = targetYaw;
+      // Subtle close-in step so the grab visibly connects without clipping through walls
+      if (dist > 1.05) {
+        const step = Math.min(0.42, dist - 0.92);
+        const nx = p.x + (dx / dist) * step;
+        const nz = p.z + (dz / dist) * step;
+        if (this.hasClearTakedownLos(p, nx, p.y, nz)) {
+          p.x = nx;
+          p.z = nz;
+        }
       }
     }
-    const target = this.findTakedownTarget();
-    if (!target) return false;
+
+    this.takedownCooldown = 0.55;
     this.rig.triggerTakedown();
     this.sfx.takedown();
+    this.hitstopTimer = 0.06;
     this.hitMarker = 0.28;
     this.hitKill = true;
-    this.camKick.kick(0.9);
-    target.takeDamage(1000, true);
-    this.trainBodyStat("stealth", 16);
-    this.trainBodyStat("strength", 8);
+    this.camKick.kick(0.75);
+
+    const crouching = !!(this.keys.has("KeyC") || this.keys.has("ControlLeft") || this.uiHeld.crouch);
+    if (cand.kind === "contract") {
+      if (!this.level?.contracts?.tryStealthTakedown(p)) return false;
+      this.stealthKills++;
+      this.meleeCallout = "SILENT TAKEDOWN";
+      this.meleeCalloutTimer = 1.05;
+      this.trainBodyStat("stealth", 18);
+      this.trainBodyStat("strength", 8);
+    } else if (cand.kind === "enemy" && cand.enemy) {
+      const res = cand.enemy.takeSilentTakedown(p);
+      this.meleeCallout = res.killed ? "SILENT TAKEDOWN" : "STEALTH AMBUSH";
+      this.meleeCalloutTimer = 1.05;
+      this.trainBodyStat("stealth", res.killed ? 16 : 10);
+      this.trainBodyStat("strength", 8);
+    } else if (cand.kind === "police") {
+      const res = this.level?.wanted?.tryStealthTakedown(p);
+      if (!res) return false;
+      this.stealthKills++;
+      this.meleeCallout = res.witnessed ? "TAKEDOWN · SPOTTED" : "SILENT TAKEDOWN";
+      this.meleeCalloutTimer = 1.05;
+      this.trainBodyStat("stealth", 15);
+      this.trainBodyStat("strength", 8);
+    } else if (cand.kind === "pedestrian") {
+      const res = this.level?.pedestrians?.tryStealthTakedown(p, crouching);
+      if (!res) return false;
+      this.stealthKills++;
+      if (res.witnessed) {
+        this.level?.wanted?.reportCrime("assault", { x: res.pos.x, z: res.pos.z });
+      }
+      this.meleeCallout = res.witnessed ? "TAKEDOWN · WITNESSED" : "SILENT TAKEDOWN";
+      this.meleeCalloutTimer = 1.05;
+      this.trainBodyStat("stealth", 12);
+      this.trainBodyStat("strength", 6);
+    }
+
     this.emitHud();
     return true;
   }
@@ -3778,11 +3912,141 @@ export class Game {
     ) {
       return false;
     }
+    if (this.activeGrapple) {
+      const m = this.rig.triggerGrappleMove("clinch_knee");
+      if (m) {
+        this.consumeStamina(7, 0.35);
+        this.sfx.meleeWhoosh(false);
+        return true;
+      }
+      return false;
+    }
     const started = this.rig.triggerMelee(heavy);
     if (started) {
       this.consumeStamina(heavy ? 12 : 5, 0.4);
     }
     return true;
+  }
+
+  tryGrappleAction(kind: "primary" | "secondary"): boolean {
+    if (
+      !this.rig ||
+      this.rig.dead ||
+      this.phase !== "ready" ||
+      this.paused ||
+      this.cinematicState ||
+      this.binocularsOpen ||
+      this.weaponWheelOpen ||
+      this.mapOpen ||
+      this.phoneOpen ||
+      this.level?.vehicles?.activeVehicle ||
+      this.level?.aircraft?.activeAircraft ||
+      this.level?.boats?.activeBoat ||
+      this.level?.bodyCarry?.isCarrying ||
+      !this.holstered
+    ) {
+      return false;
+    }
+
+    if (this.activeGrapple) {
+      const moveId = kind === "primary" ? "suplex_slam" : "submission_choke";
+      const cost = kind === "primary" ? 18 : 15;
+      if (this.staminaExhausted || this.stamina < cost) return false;
+      const started = this.rig.triggerGrappleMove(moveId);
+      if (started) {
+        this.consumeStamina(cost, 0.55);
+        if (kind === "secondary") this.sfx.submissionLock();
+        else this.sfx.meleeWhoosh(true);
+        return true;
+      }
+      return false;
+    }
+
+    const moveId = kind === "primary" ? "grapple_grab" : "takedown_double_leg";
+    const cost = kind === "primary" ? 10 : 16;
+    if (this.staminaExhausted || this.stamina < cost) return false;
+    const started = this.rig.triggerGrappleMove(moveId);
+    if (started) {
+      this.consumeStamina(cost, 0.45);
+      if (kind === "primary") this.sfx.grappleGrab();
+      else this.sfx.meleeWhoosh(true);
+      return true;
+    }
+    return false;
+  }
+
+  private releaseActiveGrapple(sprawlBreak = false) {
+    if (!this.activeGrapple) return;
+    const g = this.activeGrapple;
+    this.activeGrapple = null;
+    this.rig?.combat.exitClinch();
+    g.enemy.rig?.combat.exitClinch();
+    if (sprawlBreak && this.rig && !g.enemy.isDead) {
+      const p = this.rig.root.position;
+      const ep = g.enemy.rig.root.position;
+      const dx = ep.x - p.x;
+      const dz = ep.z - p.z;
+      const d = Math.hypot(dx, dz) || 1;
+      g.enemy.rig.applyKnockback((dx / d) * 3.8, (dz / d) * 3.8);
+      this.rig.applyKnockback(-(dx / d) * 2.2, -(dz / d) * 2.2);
+      this.sfx.meleeWhoosh(false);
+      this.meleeCallout = "SPRAWL · BREAK";
+      this.meleeCalloutTimer = 0.7;
+    }
+    this.emitHud();
+  }
+
+  private updateActiveGrapple(dt: number) {
+    const g = this.activeGrapple;
+    if (!g) return;
+    if (
+      !this.rig ||
+      this.rig.dead ||
+      !this.holstered ||
+      this.phase !== "ready" ||
+      g.enemy.isDead ||
+      !g.enemy.rig ||
+      g.enemy.rig.dead
+    ) {
+      this.releaseActiveGrapple(false);
+      return;
+    }
+    g.timer -= dt;
+    if (g.timer <= 0) {
+      this.releaseActiveGrapple(true);
+      return;
+    }
+    // Keep player and clinched opponent facing each other at 1.08m clinch distance unless executing a throw
+    const executingThrow =
+      this.rig.combat.state === "attack" &&
+      (this.rig.combat.currentMove?.id === "suplex_slam" || this.rig.combat.currentMove?.id === "submission_choke");
+    if (!executingThrow) {
+      const p = this.rig.root.position;
+      const ep = g.enemy.rig.root.position;
+      const dx = ep.x - p.x;
+      const dz = ep.z - p.z;
+      const d = Math.hypot(dx, dz);
+      if (d > 2.8) {
+        this.releaseActiveGrapple(false);
+        return;
+      }
+      if (d > 0.05) {
+        const yawToEnemy = Math.atan2(dx, dz);
+        this.yaw = yawToEnemy;
+        this.rig.aimYaw = yawToEnemy;
+        g.enemy.rig.aimYaw = Math.atan2(-dx, -dz);
+        const targetDist = 1.08;
+        if (Math.abs(d - targetDist) > 0.06) {
+          const nx = dx / d;
+          const nz = dz / d;
+          const lerpAlpha = Math.min(1, dt * 14);
+          const desiredEx = p.x + nx * targetDist;
+          const desiredEz = p.z + nz * targetDist;
+          ep.x += (desiredEx - ep.x) * lerpAlpha;
+          ep.z += (desiredEz - ep.z) * lerpAlpha;
+        }
+      }
+    }
   }
 
   tryMeleeDodge(): boolean {
@@ -3872,9 +4136,17 @@ export class Game {
 
     this.sfx.meleeHit(move.heavy, false);
     this.fx.meleeImpact(contactPt, false, move.heavy);
+    const isWrestlingAttack = move.id === "takedown_double_leg" || move.id === "suplex_slam";
+    if (isWrestlingAttack) {
+      this.sfx.bodySlam();
+      this.fx.slamDust(p, 1.25);
+      this.rig.combat.inflictStagger(0.95, true);
+      this.meleeCallout = "TAKEN DOWN!";
+      this.meleeCalloutTimer = 0.9;
+    }
     this.rig.applyKnockback(nx * move.knockback * 0.55, nz * move.knockback * 0.55);
     this.damage(res.damageTaken, Math.atan2(ap.x - p.x, ap.z - p.z));
-    if (res.guardBroken) {
+    if (res.guardBroken && !isWrestlingAttack) {
       this.meleeCallout = "GUARD BROKEN!";
       this.meleeCalloutTimer = 0.85;
     }
@@ -3929,6 +4201,91 @@ export class Game {
       const stealthRear = bestEnemy.isUnaware && eFwdX * nx + eFwdZ * nz > 0.25;
       const hitPt = new THREE.Vector3((p.x + ep.x) * 0.5, ep.y + 1.28, (p.z + ep.z) * 0.5);
 
+      // Collar-tie clinch grab locks both fighters face-to-face into active grappling
+      if (move.id === "grapple_grab") {
+        rig.combat.markHitConnected();
+        rig.combat.enterClinch("attacker", 4.4);
+        bestEnemy.rig.combat.enterClinch("defender", 4.4);
+        this.activeGrapple = {
+          enemy: bestEnemy,
+          timer: 4.4,
+          knees: 0,
+          name: bestEnemy.name || "Opponent",
+        };
+        this.sfx.grappleGrab();
+        this.fx.meleeImpact(hitPt, false, false);
+        this.hitstopTimer = 0.045;
+        this.camKick.kick(0.32);
+        this.trainBodyStat("strength", 6);
+        this.trainBodyStat("agility", 4);
+        this.meleeCallout = "CLINCH LOCKED!";
+        this.meleeCalloutTimer = 0.85;
+        this.emitHud();
+        return;
+      }
+
+      // Inside clinch: knee strikes keep the lock; suplex_slam or submission_choke finish the grapple!
+      if (move.id === "clinch_knee" && this.activeGrapple?.enemy === bestEnemy) {
+        const res = bestEnemy.takeMeleeHit(dmg, scaledMove, nx * 0.25, nz * 0.25, false, hitPt);
+        rig.combat.markHitConnected();
+        this.sfx.meleeHit(false, res.blocked);
+        this.hitstopTimer = move.hitstopSec;
+        this.hitMarker = 0.22;
+        this.hitKill = res.killed;
+        this.camKick.kick(0.45);
+        this.trainBodyStat("strength", 8);
+        if (res.killed) {
+          this.releaseActiveGrapple(false);
+          this.meleeCallout = "CLINCH KO!";
+          this.meleeCalloutTimer = 0.95;
+        } else {
+          this.activeGrapple.knees++;
+          this.activeGrapple.timer = Math.max(this.activeGrapple.timer, 2.2);
+          rig.combat.enterClinch("attacker", this.activeGrapple.timer);
+          bestEnemy.rig.combat.enterClinch("defender", this.activeGrapple.timer);
+          this.meleeCallout = `CLINCH KNEE ×${this.activeGrapple.knees}`;
+          this.meleeCalloutTimer = 0.75;
+          if (this.activeGrapple.knees >= 3) {
+            this.releaseActiveGrapple(true);
+          }
+        }
+        this.emitHud();
+        return;
+      }
+
+      if (
+        move.id === "takedown_double_leg" ||
+        move.id === "suplex_slam" ||
+        move.id === "submission_choke"
+      ) {
+        const isChoke = move.id === "submission_choke";
+        const slamDmg = stealthRear ? Math.round(dmg * 1.45) : dmg;
+        this.activeGrapple = null;
+        const res = bestEnemy.takeGrappleSlam(slamDmg, nx, nz, !isChoke, isChoke || stealthRear, hitPt);
+        rig.combat.markHitConnected();
+        if (isChoke) {
+          this.sfx.submissionLock();
+        } else {
+          this.sfx.bodySlam();
+          this.fx.slamDust(ep, move.id === "suplex_slam" ? 1.55 : 1.25);
+        }
+        this.hitstopTimer = move.hitstopSec;
+        this.hitMarker = 0.28;
+        this.hitKill = res.killed;
+        this.camKick.kick(move.id === "suplex_slam" ? 1.05 : 0.85);
+        this.trainBodyStat("strength", res.killed ? 20 : 14);
+        this.trainBodyStat("toughness", 6);
+        this.trainBodyStat("stamina", 4);
+        if (res.killed) {
+          this.meleeCallout = isChoke ? "TAP OUT!" : move.id === "suplex_slam" ? "SLAM KO!" : "TAKEDOWN KO!";
+        } else {
+          this.meleeCallout = move.label;
+        }
+        this.meleeCalloutTimer = 1.05;
+        this.emitHud();
+        return;
+      }
+
       const res = bestEnemy.takeMeleeHit(dmg, scaledMove, nx, nz, stealthRear, hitPt);
       rig.combat.markHitConnected();
       this.sfx.meleeHit(move.heavy, res.blocked);
@@ -3962,10 +4319,29 @@ export class Game {
     const hitPt = new THREE.Vector3(probeX, probeY, probeZ);
 
     if (this.mission?.id === -1) {
-      if (this.level?.contracts?.hitAtPoint(probeX, probeY, probeZ, dmg, true, p)) {
+      const isWrestling =
+        move.id === "takedown_double_leg" ||
+        move.id === "suplex_slam" ||
+        move.id === "submission_choke" ||
+        move.id === "grapple_grab";
+      const playOpenWorldFeedback = (groundPt: THREE.Vector3) => {
+        if (move.id === "takedown_double_leg" || move.id === "suplex_slam") {
+          this.sfx.bodySlam();
+          this.fx.slamDust(new THREE.Vector3(groundPt.x, p.y, groundPt.z), 1.3);
+          this.meleeCallout = move.label;
+          this.meleeCalloutTimer = 0.9;
+        } else if (move.id === "submission_choke") {
+          this.sfx.submissionLock();
+          this.meleeCallout = move.label;
+          this.meleeCalloutTimer = 0.9;
+        } else {
+          this.sfx.meleeHit(move.heavy, false);
+          this.fx.meleeImpact(hitPt, false, move.heavy);
+        }
+      };
+      if (this.level?.contracts?.hitAtPoint(probeX, probeY, probeZ, isWrestling ? Math.round(dmg * 1.25) : dmg, true, p)) {
         rig.combat.markHitConnected();
-        this.sfx.meleeHit(move.heavy, false);
-        this.fx.meleeImpact(hitPt, false, move.heavy);
+        playOpenWorldFeedback(hitPt);
         this.hitstopTimer = move.hitstopSec;
         this.hitMarker = 0.24;
         this.camKick.kick(move.heavy ? 0.65 : 0.35);
@@ -3973,10 +4349,9 @@ export class Game {
         this.emitHud();
         return;
       }
-      if (this.level?.wanted?.hitAtPoint(probeX, probeY, probeZ, dmg)) {
+      if (this.level?.wanted?.hitAtPoint(probeX, probeY, probeZ, isWrestling ? Math.round(dmg * 1.25) : dmg)) {
         rig.combat.markHitConnected();
-        this.sfx.meleeHit(move.heavy, false);
-        this.fx.meleeImpact(hitPt, false, move.heavy);
+        playOpenWorldFeedback(hitPt);
         this.hitstopTimer = move.hitstopSec;
         this.hitMarker = 0.22;
         this.camKick.kick(move.heavy ? 0.65 : 0.35);
@@ -3984,11 +4359,10 @@ export class Game {
         this.emitHud();
         return;
       }
-      const ped = this.level?.pedestrians?.hitAtPoint(probeX, probeY, probeZ, 0.95, dmg);
+      const ped = this.level?.pedestrians?.hitAtPoint(probeX, probeY, probeZ, isWrestling ? 1.15 : 0.95, dmg);
       if (ped) {
         rig.combat.markHitConnected();
-        this.sfx.meleeHit(move.heavy, false);
-        this.fx.meleeImpact(hitPt, false, move.heavy);
+        playOpenWorldFeedback(hitPt);
         this.hitstopTimer = move.hitstopSec;
         this.hitMarker = 0.22;
         this.hitKill = ped.dead;
@@ -4331,6 +4705,9 @@ export class Game {
     if (this.meleeCalloutTimer > 0) {
       this.meleeCalloutTimer = Math.max(0, this.meleeCalloutTimer - rawDt);
       if (this.meleeCalloutTimer <= 0) this.meleeCallout = null;
+    }
+    if (this.takedownCooldown > 0) {
+      this.takedownCooldown = Math.max(0, this.takedownCooldown - rawDt);
     }
     const dt = rawDt * this.timeScale * (this.hitstopTimer > 0 ? 0.08 : 1);
 
@@ -4681,7 +5058,8 @@ export class Game {
         const canCombatInput = !inIntroCine && !this.binocularsOpen && !this.weaponWheelOpen && !this.mapOpen && !this.phoneOpen && !this.fightPitBookieOpen;
         rig.input.ads = canCombatInput && !this.holstered && (this.mouseR || this.uiHeld.ads);
         rig.setCombatBlock(canCombatInput && this.holstered && (this.mouseR || this.uiHeld.ads));
-        rig.input.lean = inIntroCine ? 0 : (k.has("KeyQ") ? 1 : 0) - (k.has("KeyE") ? 1 : 0);
+        rig.input.lean =
+          inIntroCine || this.holstered ? 0 : (k.has("KeyQ") ? 1 : 0) - (k.has("KeyE") ? 1 : 0);
         rig.aimYaw = this.yaw;
         rig.aimPitch = this.pitch;
 
@@ -4860,6 +5238,7 @@ export class Game {
         this.level?.updateWeatherFx?.(dt, this.camera.position, this.camera, rig.speed);
 
         /* ---- firing & melee hit resolution ---- */
+        this.updateActiveGrapple(dt);
         this.resolvePlayerMeleeHits();
         const wantFire = !this.cinematicState && !this.holstered && !this.binocularsOpen && !this.weaponWheelOpen && !this.mapOpen && !this.phoneOpen && (this.mouseL || this.uiHeld.fire);
         if (wantFire && !dead) {
@@ -5852,8 +6231,10 @@ export class Game {
           this.fx.attachWoundToCharacter(ped.model, Math.max(0.55, Math.min(1.55, hitPt.y - ped.y)));
         }
       };
-      pedestrians.onPedestrianKilled = (ped, hitPt, detachedModel) => {
-        this.fx.bloodBurst(hitPt, undefined, 1.35);
+      pedestrians.onPedestrianKilled = (ped, hitPt, detachedModel, silent) => {
+        if (!silent) {
+          this.fx.bloodBurst(hitPt, undefined, 1.35);
+        }
         if (detachedModel && bodyCarry) {
           bodyCarry.registerDeadBody({
             roleId: ped.roleId,
@@ -5863,7 +6244,7 @@ export class Game {
             yaw: ped.yaw,
             model: detachedModel,
           });
-        } else {
+        } else if (!silent) {
           this.fx.spawnBloodPool(ped.x, ped.y, ped.z, 0.92);
         }
       };
@@ -5975,9 +6356,11 @@ export class Game {
           this.fx.bloodBurst(hitPos, undefined, 1.0);
           if (model) this.fx.attachWoundToCharacter(model, 1.18);
         },
-        onOfficerDown: (pos, reward, model, yaw) => {
+        onOfficerDown: (pos, reward, model, yaw, silent) => {
           awardDrivingCredits(reward);
-          this.fx.bloodBurst(pos.clone().add(new THREE.Vector3(0, 0.95, 0)), undefined, 1.25);
+          if (!silent) {
+            this.fx.bloodBurst(pos.clone().add(new THREE.Vector3(0, 0.95, 0)), undefined, 1.25);
+          }
           if (model && bodyCarry) {
             bodyCarry.registerDeadBody({
               roleId: "police",
@@ -5987,7 +6370,7 @@ export class Game {
               yaw,
               model,
             });
-          } else {
+          } else if (!silent) {
             this.fx.spawnBloodPool(pos.x, pos.y, pos.z, 0.92);
           }
           this.level?.collectibles?.spawnDrop(
@@ -7260,7 +7643,9 @@ export class Game {
     stealthIndicators.sort((a, b) => b.suspicion - a.suspicion);
     if (stealthIndicators.length > 5) stealthIndicators.length = 5;
     const stealthState: HudState["stealthState"] = compromised ? "compromised" : caution || maxSusp >= 0.12 ? "caution" : "hidden";
-    const takedownReady = this.findTakedownTarget() !== null;
+    const takedownCand = this.takedownCooldown <= 0 ? this.findTakedownCandidate() : null;
+    const takedownReady = takedownCand !== null;
+    const takedownLabel = takedownCand?.label ?? null;
     const interact = this.activeInteract && !this.activeInteract.done
       ? {
           label: this.activeInteract.def.label,
@@ -7517,6 +7902,7 @@ export class Game {
       stealthKills: this.stealthKills,
       alerts: this.alerts,
       takedownReady,
+      takedownLabel,
       interact,
       extractReady,
       extractDist,
@@ -7543,8 +7929,16 @@ export class Game {
         active: this.holstered && !this.level?.vehicles?.activeVehicle && !this.level?.aircraft?.activeAircraft && !this.level?.boats?.activeBoat,
         combo: this.rig?.combat.comboCount ?? 0,
         blocking: this.rig?.combat.blocking ?? false,
-        moveLabel: this.rig?.combat.currentMove?.label ?? null,
+        moveLabel: this.rig?.combat.currentMove?.label ?? (this.activeGrapple ? "CLINCH LOCK" : null),
         callout: this.meleeCallout,
+        grapple: this.activeGrapple
+          ? {
+              targetName: this.activeGrapple.name,
+              knees: this.activeGrapple.knees,
+              maxKnees: 3,
+              timeLeft: Number(this.activeGrapple.timer.toFixed(1)),
+            }
+          : null,
       },
       weaponWheelOpen: this.weaponWheelOpen,
       mapOpen: this.mapOpen,

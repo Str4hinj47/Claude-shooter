@@ -54,7 +54,7 @@ export interface PoliceOfficer {
 export interface WantedEvents {
   onOfficerShot?: (from: THREE.Vector3, to: THREE.Vector3, hitPlayer: boolean, damage: number) => void;
   onOfficerHit?: (pos: THREE.Vector3, model: THREE.Group | null) => void;
-  onOfficerDown?: (pos: THREE.Vector3, reward: number, model: THREE.Group | null, yaw: number) => void;
+  onOfficerDown?: (pos: THREE.Vector3, reward: number, model: THREE.Group | null, yaw: number, silent?: boolean) => void;
   onChopperDown?: (pos: THREE.Vector3, reward: number) => void;
   onWantedCleared?: (starsCleared: number, bonus: number) => void;
   onStarsChanged?: (stars: number) => void;
@@ -549,6 +549,73 @@ export class WantedSystem {
         officer.root.add(cloned);
       })
       .catch(() => {});
+  }
+
+  /** Finds a flanked or unaware police officer eligible for a silent takedown. */
+  getStealthTakedownCandidate(playerPos: THREE.Vector3): { x: number; y: number; z: number } | null {
+    let bestD = 2.3;
+    let best: { x: number; y: number; z: number } | null = null;
+    const maxDot = this.stars > 0 ? 0.12 : 0.38;
+    for (const o of this.officers) {
+      if (o.dead) continue;
+      if (Math.abs(o.y - playerPos.y) > 1.35) continue;
+      const d = Math.hypot(playerPos.x - o.x, playerPos.z - o.z);
+      if (d >= bestD) continue;
+      const toPX = (playerPos.x - o.x) / Math.max(0.01, d);
+      const toPZ = (playerPos.z - o.z) / Math.max(0.01, d);
+      if (Math.sin(o.yaw) * toPX + Math.cos(o.yaw) * toPZ > maxDot) continue;
+      bestD = d;
+      best = { x: o.x, y: o.y, z: o.z };
+    }
+    return best;
+  }
+
+  /** Executes a silent takedown on an isolated/flanked police officer. */
+  tryStealthTakedown(playerPos: THREE.Vector3): { killed: boolean; witnessed: boolean; pos: THREE.Vector3 } | null {
+    const maxDot = this.stars > 0 ? 0.12 : 0.38;
+    let target = null as (typeof this.officers)[number] | null;
+    let bestD = 2.3;
+    for (const o of this.officers) {
+      if (o.dead) continue;
+      if (Math.abs(o.y - playerPos.y) > 1.35) continue;
+      const d = Math.hypot(playerPos.x - o.x, playerPos.z - o.z);
+      if (d >= bestD) continue;
+      const toPX = (playerPos.x - o.x) / Math.max(0.01, d);
+      const toPZ = (playerPos.z - o.z) / Math.max(0.01, d);
+      if (Math.sin(o.yaw) * toPX + Math.cos(o.yaw) * toPZ > maxDot) continue;
+      bestD = d;
+      target = o;
+    }
+    if (!target) return null;
+
+    let witnessed = false;
+    for (const other of this.officers) {
+      if (other === target || other.dead) continue;
+      const od = Math.hypot(target.x - other.x, target.z - other.z);
+      if (od > 20) continue;
+      const toTX = (target.x - other.x) / Math.max(0.01, od);
+      const toTZ = (target.z - other.z) / Math.max(0.01, od);
+      if (Math.sin(other.yaw) * toTX + Math.cos(other.yaw) * toTZ > 0.25) {
+        witnessed = true;
+        break;
+      }
+    }
+
+    const pos = new THREE.Vector3(target.x, target.y, target.z);
+    target.dead = true;
+    target.hp = 0;
+    const detached = target.model;
+    if (detached) target.root.remove(detached);
+    target.model = null;
+    target.mixer = null;
+    target.actions = null;
+    target.deadTimer = detached ? 0.1 : 4.5;
+    target.root.visible = !detached;
+    this.events.onOfficerDown?.(pos, 65, detached, target.yaw, true);
+    if (witnessed) {
+      this.reportCrime("cop_hit", { x: target.x, z: target.z });
+    }
+    return { killed: true, witnessed, pos };
   }
 
   /** Hit-check player gunfire against pursuing police officers or cruisers */

@@ -1,8 +1,36 @@
 import type { CombatClipId } from "./CombatAnimations";
 
-export type MeleeMoveId = "jab" | "cross" | "hook" | "uppercut" | "kick";
+export type MeleeMoveId =
+  | "jab"
+  | "cross"
+  | "hook"
+  | "uppercut"
+  | "kick"
+  | "grapple_grab"
+  | "takedown_double_leg"
+  | "clinch_knee"
+  | "suplex_slam"
+  | "submission_choke";
 
-export type HandToHandState = "idle" | "attack" | "block" | "dodge" | "hitstun" | "knockdown";
+export type HandToHandState =
+  | "idle"
+  | "attack"
+  | "block"
+  | "dodge"
+  | "clinch"
+  | "grappled"
+  | "hitstun"
+  | "knockdown";
+
+export function isGrappleMoveId(id: MeleeMoveId | undefined | null): boolean {
+  return (
+    id === "grapple_grab" ||
+    id === "takedown_double_leg" ||
+    id === "clinch_knee" ||
+    id === "suplex_slam" ||
+    id === "submission_choke"
+  );
+}
 
 export interface MeleeMoveDef {
   id: MeleeMoveId;
@@ -142,6 +170,111 @@ export const MELEE_MOVES: Record<MeleeMoveId, MeleeMoveDef> = {
     fullBody: true,
     heavy: true,
   },
+  grapple_grab: {
+    id: "grapple_grab",
+    label: "COLLAR-TIE CLINCH",
+    clip: "block",
+    startup: 0.09,
+    active: 0.14,
+    recovery: 0.24,
+    cancelAt: 0.35,
+    damage: 8,
+    chipDamage: 0,
+    hitstun: 0.45,
+    blockstun: 0.35,
+    knockback: 0.4,
+    lungeSpeed: 5.2,
+    range: 2.0,
+    arcDot: 0.35,
+    hitstopSec: 0.035,
+    guardBreak: true,
+    fullBody: false,
+    heavy: false,
+  },
+  takedown_double_leg: {
+    id: "takedown_double_leg",
+    label: "DOUBLE-LEG SLAM",
+    clip: "kick",
+    startup: 0.13,
+    active: 0.17,
+    recovery: 0.34,
+    cancelAt: 0.56,
+    damage: 42,
+    chipDamage: 16,
+    hitstun: 0.9,
+    blockstun: 0.4,
+    knockback: 4.8,
+    lungeSpeed: 6.8,
+    range: 2.35,
+    arcDot: 0.40,
+    hitstopSec: 0.072,
+    guardBreak: true,
+    fullBody: true,
+    heavy: true,
+  },
+  clinch_knee: {
+    id: "clinch_knee",
+    label: "CLINCH KNEE",
+    clip: "kick",
+    startup: 0.08,
+    active: 0.12,
+    recovery: 0.18,
+    cancelAt: 0.26,
+    damage: 24,
+    chipDamage: 8,
+    hitstun: 0.42,
+    blockstun: 0.22,
+    knockback: 0.6,
+    lungeSpeed: 1.5,
+    range: 1.85,
+    arcDot: 0.15,
+    hitstopSec: 0.042,
+    guardBreak: false,
+    fullBody: true,
+    heavy: false,
+  },
+  suplex_slam: {
+    id: "suplex_slam",
+    label: "BODY SLAM",
+    clip: "uppercut",
+    startup: 0.20,
+    active: 0.16,
+    recovery: 0.38,
+    cancelAt: 0.66,
+    damage: 64,
+    chipDamage: 24,
+    hitstun: 1.25,
+    blockstun: 0.5,
+    knockback: 5.6,
+    lungeSpeed: 2.2,
+    range: 2.05,
+    arcDot: 0.0,
+    hitstopSec: 0.085,
+    guardBreak: true,
+    fullBody: true,
+    heavy: true,
+  },
+  submission_choke: {
+    id: "submission_choke",
+    label: "GUILLOTINE CHOKE",
+    clip: "block",
+    startup: 0.15,
+    active: 0.32,
+    recovery: 0.30,
+    cancelAt: 0.68,
+    damage: 58,
+    chipDamage: 22,
+    hitstun: 1.15,
+    blockstun: 0.45,
+    knockback: 2.4,
+    lungeSpeed: 1.4,
+    range: 1.95,
+    arcDot: 0.0,
+    hitstopSec: 0.065,
+    guardBreak: true,
+    fullBody: true,
+    heavy: true,
+  },
 };
 
 export interface IncomingMeleeResult {
@@ -188,6 +321,7 @@ export class HandToHandController {
 
   /** Stance active timer (keeps fighter in boxing guard briefly after strikes/blocks) */
   combatStanceTimer = 0;
+  clinchRole: "attacker" | "defender" | null = null;
   private idleClock = 0;
   private blendWeight = 0;
 
@@ -195,13 +329,20 @@ export class HandToHandController {
     return (
       this.state === "attack" ||
       this.state === "dodge" ||
+      this.state === "clinch" ||
+      this.state === "grappled" ||
       this.state === "hitstun" ||
       this.state === "knockdown"
     );
   }
 
   get canMoveFreely(): boolean {
-    return this.state !== "hitstun" && this.state !== "knockdown";
+    return (
+      this.state !== "hitstun" &&
+      this.state !== "knockdown" &&
+      this.state !== "clinch" &&
+      this.state !== "grappled"
+    );
   }
 
   get isInvulnerable(): boolean {
@@ -235,7 +376,58 @@ export class HandToHandController {
     this.invulnTimer = 0;
     this.dodgeCooldown = 0;
     this.combatStanceTimer = 0;
+    this.clinchRole = null;
     this.blendWeight = 0;
+  }
+
+  /** Lock this fighter into an active collar-tie clinch (as attacker or defender). */
+  enterClinch(role: "attacker" | "defender", duration = 4.2) {
+    this.blocking = false;
+    this.currentMove = null;
+    this.bufferedHeavy = null;
+    this.hitDidConnect = false;
+    this.clinchRole = role;
+    this.state = "clinch";
+    this.stateTime = 0;
+    this.stateDuration = duration;
+    this.combatStanceTimer = Math.max(this.combatStanceTimer, 3.5);
+  }
+
+  /** Release clinch back into active combat stance. */
+  exitClinch() {
+    if (this.state === "clinch" || this.state === "grappled") {
+      this.clinchRole = null;
+      this.state = "idle";
+      this.stateTime = 0;
+      this.stateDuration = 0;
+      this.combatStanceTimer = Math.max(this.combatStanceTimer, 2.5);
+    }
+  }
+
+  /** Enter brief grappled/thrown state while opponent finishes a throw. */
+  enterGrappled(duration = 0.72) {
+    this.blocking = false;
+    this.currentMove = null;
+    this.bufferedHeavy = null;
+    this.clinchRole = null;
+    this.state = "grappled";
+    this.stateTime = 0;
+    this.stateDuration = duration;
+    this.combatStanceTimer = Math.max(this.combatStanceTimer, 3.0);
+  }
+
+  /** Trigger a specific grappling or wrestling maneuver (grab, double-leg, clinch knee, slam, choke). */
+  requestGrappleMove(
+    moveId: "grapple_grab" | "takedown_double_leg" | "clinch_knee" | "suplex_slam" | "submission_choke",
+  ): MeleeMoveDef | null {
+    if (this.state === "hitstun" || this.state === "knockdown" || this.state === "dodge" || this.state === "grappled") {
+      return null;
+    }
+    if (this.state === "attack" && this.currentMove) {
+      return null;
+    }
+    this.clinchRole = null;
+    return this.startMove(moveId);
   }
 
   setBlocking(held: boolean) {
@@ -421,6 +613,12 @@ export class HandToHandController {
         this.stateTime = 0;
         this.state = this.blocking ? "block" : "idle";
       }
+    } else if (this.state === "clinch" || this.state === "grappled") {
+      if (this.stateTime >= this.stateDuration) {
+        this.clinchRole = null;
+        this.stateTime = 0;
+        this.state = this.blocking ? "block" : "idle";
+      }
     } else if (this.state === "dodge" || this.state === "hitstun" || this.state === "knockdown") {
       if (this.stateTime >= this.stateDuration) {
         this.stateTime = 0;
@@ -517,6 +715,32 @@ export class HandToHandController {
         upperWeight: fade,
         lowerWeight: fade,
         fistWeight: 0.4,
+        activeMove: null,
+        attackProgress: 0,
+      };
+    }
+
+    if (this.state === "clinch") {
+      const u = (this.stateTime / 0.9) % 1;
+      return {
+        clipId: "block",
+        clipTimeNorm: u,
+        upperWeight: 0.85,
+        lowerWeight: 0.72,
+        fistWeight: 0.55,
+        activeMove: null,
+        attackProgress: 0,
+      };
+    }
+
+    if (this.state === "grappled") {
+      const u = Math.max(0, Math.min(1, this.stateTime / Math.max(0.05, this.stateDuration)));
+      return {
+        clipId: "hit",
+        clipTimeNorm: u,
+        upperWeight: 0.92,
+        lowerWeight: 0.82,
+        fistWeight: 0.25,
         activeMove: null,
         attackProgress: 0,
       };

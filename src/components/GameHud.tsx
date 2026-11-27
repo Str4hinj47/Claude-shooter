@@ -291,6 +291,20 @@ export function GameHud({
                 {hud.melee.callout}
               </div>
             )}
+            {hud.melee?.grapple && !hud.dead && (
+              <div className="mt-3 flex flex-col items-center gap-1 border border-[#f59e0b]/70 bg-[#080a0f]/90 px-3.5 py-2 shadow-[0_0_24px_rgba(245,158,11,0.22)]">
+                <div className="flex items-center gap-2 font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-[#fbbf24]">
+                  <span>CLINCH LOCK · {hud.melee.grapple.targetName}</span>
+                  <span className="text-[#94a3b8]">{hud.melee.grapple.timeLeft.toFixed(1)}s</span>
+                </div>
+                <div className="flex items-center gap-2 font-mono text-[9px] uppercase tracking-wider text-[#e2e8f0]">
+                  <span><kbd className="bg-white/15 px-1 text-white">LMB</kbd> Knee ({hud.melee.grapple.knees}/{hud.melee.grapple.maxKnees})</span>
+                  <span><kbd className="bg-[#f59e0b] px-1 font-bold text-[#07080b]">Q</kbd> Body Slam</span>
+                  <span><kbd className="bg-[#2dd4bf] px-1 font-bold text-[#07080b]">E</kbd> Choke</span>
+                  <span><kbd className="bg-white/15 px-1 text-white">RMB</kbd> Break</span>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -955,9 +969,11 @@ export function GameHud({
       {/* TAKEDOWN / INTERACT / VEHICLE / CONTRACT PROMPTS (Bottom-center, cleanly spaced) */}
       {hud.takedownReady && !hud.dead && (
         <div className="pointer-events-none absolute bottom-44 left-1/2 -translate-x-1/2">
-          <div className="flex items-center gap-2 border border-[#2dd4bf] bg-[#071513]/90 px-4 py-1.5 font-mono text-xs font-bold uppercase tracking-[0.2em] text-[#2dd4bf]">
+          <div className="flex items-center gap-2 border border-[#2dd4bf] bg-[#071513]/90 px-4 py-1.5 font-mono text-xs font-bold uppercase tracking-[0.2em] text-[#2dd4bf] shadow-[0_0_24px_rgba(45,212,191,0.22)]">
             <kbd className="bg-[#2dd4bf] px-1.5 py-0.5 text-[#07080b]">V</kbd>
-            <span>Silent Takedown</span>
+            <span>
+              {hud.takedownLabel ? `Silent Takedown · ${hud.takedownLabel}` : "Silent Takedown"}
+            </span>
           </div>
         </div>
       )}
@@ -1557,7 +1573,9 @@ export function GameHud({
                     )}
                   </div>
                   <div className="font-mono text-[9px] uppercase tracking-wider text-[#8a909e]">
-                    LMB STRIKE · RMB BLOCK/PARRY · [V] KICK · [ALT] SLIP
+                    {hud.melee?.grapple
+                      ? "LMB CLINCH KNEE · [Q] BODY SLAM · [E] CHOKE · RMB BREAK"
+                      : "LMB STRIKE · RMB BLOCK/PARRY · [Q] CLINCH · [E] TAKEDOWN · [V] KICK · [ALT] SLIP"}
                   </div>
                 </div>
               ) : (

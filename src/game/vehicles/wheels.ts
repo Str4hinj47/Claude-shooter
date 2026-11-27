@@ -20,9 +20,9 @@ function rotates(id: TrafficId, mesh: THREE.Mesh): boolean {
   if (id === "r8") return name === "tire__r8" || name === "rim__r8" || name === "rim__r8_cap" || name === "brake__r8_Disc" || /^metal_2(?:_(?:[1-5]|1[1-6]))?$/.test(mesh.name);
   if (id === "rangerover") return /^(tire__RangeRover|rim__RangeRover|brake__RangeRover_Disc)$/i.test(name);
   if (id === "sedan" || id === "offroad") return /^(tire|rim)__(sedan|offroad)$/.test(name) || /^tire_wheel_/.test(mesh.name) || /^rim_wheel_/.test(mesh.name);
-  if (isQuaterniusNpc(id)) return /^(tire|rim)__/.test(name) || mesh.name === "Black" || mesh.name === "Grey";
-  if (id === "semi") return /^(tire__TireRubber|tire__TireTreads|chrome__Chrome)$/.test(name);
-  if (id === "kraz") return /^(tire__tire|chrome__wheel)$/.test(name);
+  if (isQuaterniusNpc(id)) return /^(tire|rim)__/.test(name) || /^brake__.*_Disc$/.test(name) || mesh.name === "Black" || mesh.name === "Grey";
+  if (id === "semi") return /^(tire__TireRubber|tire__TireTreads|chrome__Chrome|brake__semi_Disc)$/.test(name);
+  if (id === "kraz") return /^(tire__tire|chrome__wheel|brake__kraz_Disc)$/.test(name);
   if (id === "challenger") {
     if (name === "tire__challenger" || name === "brake__challenger_Disc") return true;
     if (name === "rim__challenger" || name === "trim__challenger") {

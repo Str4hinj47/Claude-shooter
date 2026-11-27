@@ -1839,14 +1839,79 @@ export class ContractSurveillanceSystem {
     return false;
   }
 
-  tryStealthTakedown(playerPos: THREE.Vector3): boolean {
-    if (!this.activeDef || this.stage !== "surveil" || !this.targetActor || this.targetActor.dead || this.inVehicle) {
-      return false;
+  getStealthTakedownCandidate(
+    playerPos: THREE.Vector3,
+  ): { x: number; y: number; z: number; yaw: number; name: string; isTarget: boolean } | null {
+    if (!this.activeDef || this.stage !== "surveil") return null;
+    if (this.targetActor && !this.targetActor.dead && !this.inVehicle) {
+      const dist = Math.hypot(playerPos.x - this.targetActor.x, playerPos.z - this.targetActor.z);
+      if (dist <= 2.5 && Math.abs(playerPos.y - this.targetActor.y) <= 2.0) {
+        return {
+          x: this.targetActor.x,
+          y: this.targetActor.y,
+          z: this.targetActor.z,
+          yaw: this.targetActor.yaw,
+          name: this.activeDef.targetName,
+          isTarget: true,
+        };
+      }
     }
-    const dist = Math.hypot(playerPos.x - this.targetActor.x, playerPos.z - this.targetActor.z);
-    if (dist > 2.5 || Math.abs(playerPos.y - this.targetActor.y) > 2.0) return false;
-    this.killTarget(new THREE.Vector3(this.targetActor.x, this.targetActor.y + 1.0, this.targetActor.z), true);
-    return true;
+    for (const c of this.colleagues) {
+      if (c.dead || c.panicked) continue;
+      const dist = Math.hypot(playerPos.x - c.x, playerPos.z - c.z);
+      if (dist > 2.35 || Math.abs(playerPos.y - c.y) > 1.6) continue;
+      const toPX = (playerPos.x - c.x) / Math.max(0.01, dist);
+      const toPZ = (playerPos.z - c.z) / Math.max(0.01, dist);
+      const fX = Math.sin(c.yaw);
+      const fZ = Math.cos(c.yaw);
+      if (fX * toPX + fZ * toPZ <= 0.35) {
+        return { x: c.x, y: c.y, z: c.z, yaw: c.yaw, name: c.name || "Associate", isTarget: false };
+      }
+    }
+    return null;
+  }
+
+  tryStealthTakedown(playerPos: THREE.Vector3): boolean {
+    if (!this.activeDef || this.stage !== "surveil") return false;
+    if (this.targetActor && !this.targetActor.dead && !this.inVehicle) {
+      const dist = Math.hypot(playerPos.x - this.targetActor.x, playerPos.z - this.targetActor.z);
+      if (dist <= 2.5 && Math.abs(playerPos.y - this.targetActor.y) <= 2.0) {
+        this.killTarget(new THREE.Vector3(this.targetActor.x, this.targetActor.y + 1.0, this.targetActor.z), true);
+        return true;
+      }
+    }
+    for (const c of this.colleagues) {
+      if (c.dead || c.panicked) continue;
+      const dist = Math.hypot(playerPos.x - c.x, playerPos.z - c.z);
+      if (dist > 2.35 || Math.abs(playerPos.y - c.y) > 1.6) continue;
+      const toPX = (playerPos.x - c.x) / Math.max(0.01, dist);
+      const toPZ = (playerPos.z - c.z) / Math.max(0.01, dist);
+      if (Math.sin(c.yaw) * toPX + Math.cos(c.yaw) * toPZ > 0.35) continue;
+      c.dead = true;
+      c.hp = 0;
+      c.root.visible = false;
+      const m = c.model;
+      if (m) {
+        c.root.remove(m);
+        c.model = null;
+      }
+      this.bodyCarry.registerDeadBody({
+        roleId: c.id,
+        x: c.x,
+        y: c.y,
+        z: c.z,
+        yaw: c.yaw,
+        model: m ?? buildFallbackCorpseGroup(),
+      });
+      const cctvCaught = this.cctvNodes.some(
+        (cam) => !cam.destroyed && Math.hypot(cam.x - c.x, cam.z - c.z) < 34,
+      );
+      if (cctvCaught) {
+        this.wanted.reportCrime("assault", { x: c.x, z: c.z });
+      }
+      return true;
+    }
+    return false;
   }
 
   handleOceanDisposed(body: DeadBodyRecord, deepSea: boolean): boolean {
