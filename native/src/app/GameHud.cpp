@@ -144,8 +144,15 @@ void drawWestgateHud(
     ImGui::ProgressBar(session.playerHp() / session.playerMaxHp(), {-1, 14}, "HP");
     ImGui::ProgressBar(session.playerArmor() / 100.0f, {-1, 14}, "ARMOR");
     if (session.inVehicle() && session.currentVehicle()) {
-      const float kmh = std::abs(session.currentVehicle()->speed) * 3.6f;
-      ImGui::Text("DRIVING: %.0f KM/H  ([G] Exit)", kmh);
+      const auto* cv = session.currentVehicle();
+      const float kmh = glm::length(glm::vec3(cv->speed, cv->verticalSpeed, 0.0f)) * 3.6f;
+      if (cv->isAircraft) {
+        ImGui::Text("HELI: %.0f KM/H | ALT %.0fm  ([Space/C] Alt, [G] Exit)", kmh, std::max(0.0f, cv->pos.y));
+      } else if (cv->isBoat) {
+        ImGui::Text("BOAT: %.0f KTS  ([W/A/S/D] Steer, [G] Exit)", kmh * 0.54f);
+      } else {
+        ImGui::Text("DRIVING: %.0f KM/H  ([G] Exit)", std::abs(cv->speed) * 3.6f);
+      }
     } else {
       const auto& w = session.activeWeapon();
       if (w.isMelee) {
@@ -232,14 +239,16 @@ void drawWestgateHud(
     ImGui::Text("Chunks: %u vis (%u near, %u lod) | Bldgs: %u | Props: %u | Veh: %u | NPCs: %u",
                 telemetry.visibleChunks, telemetry.nearChunks, telemetry.lodChunks,
                 telemetry.drawnBuildings, telemetry.drawnProps, telemetry.drawnVehicles, telemetry.drawnCharacters);
-    ImGui::Text("Jolt Static: %u | Dyn Rigid: %u | Lights: %u | GLB Types: %u | Sky: %s",
+    ImGui::Text("Jolt Static: %u | Dyn Rigid: %u | Lights: %u | GLB Types: %u | Sky: %s | Wx: %s",
                 physics.staticBodyCount(), physics.dynamicBodyCount(), telemetry.activePointLights,
-                telemetry.glbPropTypesLoaded, session.timeOfDayLabel().c_str());
+                telemetry.glbPropTypesLoaded, session.timeOfDayLabel().c_str(), session.weatherLabel().c_str());
     ImGui::Separator();
-    ImGui::Text("[TAB] Mouse Look: %s | [1-6] Weapons | [G] Enter/Exit Car | [P] Phone", ui.mouseCaptured ? "ON" : "OFF");
+    ImGui::Text("[TAB] Mouse Look: %s | [1-6] Weapons | [G] Vehicle | [T] Sky | [Y] Weather | [P] Phone", ui.mouseCaptured ? "ON" : "OFF");
     if (ImGui::Button("Toggle Phone [P]")) ui.showPhone = !ui.showPhone;
     ImGui::SameLine();
     if (ImGui::Button("Cycle Sky [T]")) session.cycleTimeOfDay();
+    ImGui::SameLine();
+    if (ImGui::Button("Weather [Y]")) session.cycleWeather();
     ImGui::SameLine();
     if (ImGui::Button("Iron Pit [F1]")) session.teleportTo({world.fightPitPos.x, world.fightPitPos.y + 1.0f, world.fightPitPos.z - 2.6f}, 0.0f, player);
     ImGui::End();
@@ -358,6 +367,14 @@ void drawWestgateHud(
           if (ImGui::Button("Night")) session.setTimeOfDayPreset(TimeOfDayPreset::Night);
           ImGui::SameLine();
           if (ImGui::Button("Dawn")) session.setTimeOfDayPreset(TimeOfDayPreset::Dawn);
+          ImGui::Text("Weather: %s", session.weatherLabel().c_str());
+          if (ImGui::Button("Clear")) session.setWeatherPreset(WeatherPreset::Clear);
+          ImGui::SameLine();
+          if (ImGui::Button("Overcast")) session.setWeatherPreset(WeatherPreset::Overcast);
+          ImGui::SameLine();
+          if (ImGui::Button("Rain")) session.setWeatherPreset(WeatherPreset::Rain);
+          ImGui::SameLine();
+          if (ImGui::Button("Storm")) session.setWeatherPreset(WeatherPreset::Thunderstorm);
           ImGui::Separator();
           if (ImGui::Button("Save Progress")) session.saveToFile(ui.savePath);
           ImGui::SameLine();

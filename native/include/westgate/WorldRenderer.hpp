@@ -14,8 +14,9 @@
 
 namespace westgate {
 
-constexpr size_t kMaxSkinSlots = 48;
+constexpr size_t kMaxSkinSlots = 128;
 constexpr size_t kMaxPointLights = 24;
+constexpr size_t kNumHouseGlbs = 12;
 
 struct RenderTelemetry {
   uint32_t visibleChunks = 0;
@@ -112,6 +113,7 @@ private:
     glm::vec4 sunDir;   // w = pointLightCount
     glm::vec4 sunColor;
     glm::vec4 fogColor; // w = nightFactor
+    glm::vec4 weatherParams; // x = rainIntensity, y = wetness, z = lightningFlash
     std::array<GpuPointLight, kMaxPointLights> pointLights;
   };
 
@@ -159,6 +161,7 @@ private:
   void buildRoadAndArenaBuffers(WgpuContext& ctx, const WorldData& world);
   void buildPropAndVehicleBatches(WgpuContext& ctx, const WorldData& world, const std::string& assetsRoot);
   bool loadGlbBatch(WgpuContext& ctx, const std::string& glbPath, const std::vector<InstanceAttrib>& instances, InstancedGlbBatch& outBatch, float normalizeTargetLength = 0.0f);
+  bool loadGlbUnitBoxBatch(WgpuContext& ctx, const std::string& glbPath, uint32_t maxInstances, InstancedGlbBatch& outBatch);
   void buildSkinnedMesh(WgpuContext& ctx, const GltfModel& model, SkinnedMeshGpu& outMesh);
   GpuTextureBinding createRgbaTexture(WgpuContext& ctx, uint32_t w, uint32_t h, const uint8_t* rgba8);
 
@@ -218,8 +221,10 @@ private:
   std::vector<InstanceAttrib> dynPropStaging_;
 
   std::vector<InstancedGlbBatch> glbPropBatches_;
-  std::array<InstancedGlbBatch, 6> vehicleBatches_{};
-  std::array<std::vector<InstanceAttrib>, 6> vehicleStaging_{};
+  std::array<InstancedGlbBatch, kNumHouseGlbs> houseBatches_{};
+  std::array<std::vector<InstanceAttrib>, kNumHouseGlbs> houseStaging_{};
+  std::array<InstancedGlbBatch, kVehicleModelCount> vehicleBatches_{};
+  std::array<std::vector<InstanceAttrib>, kVehicleModelCount> vehicleStaging_{};
 
   SkinnedMeshGpu playerBodyGpu_;
   SkinnedMeshGpu playerShortsGpu_;

@@ -58,49 +58,79 @@ void GameSession::init(const WorldData& world, PlayerController* player, Physics
     if (world.roads[ri].samples.size() >= 6) longRoads.push_back(ri);
   }
 
-  // 16 ambient traffic vehicles
+  // 64 ambient traffic vehicles across 14 road vehicle models (dense Westgate Bay traffic!)
   if (!longRoads.empty()) {
-    const VehicleModelKind trafficKinds[4] = {
+    const VehicleModelKind trafficKinds[14] = {
       VehicleModelKind::Sedan,
       VehicleModelKind::Taxi,
       VehicleModelKind::RangeRover,
       VehicleModelKind::PoliceCruiser,
+      VehicleModelKind::Audi,
+      VehicleModelKind::Challenger,
+      VehicleModelKind::Delivery,
+      VehicleModelKind::R8,
+      VehicleModelKind::Sedan,
+      VehicleModelKind::Ambulance,
+      VehicleModelKind::Firetruck,
+      VehicleModelKind::Semi,
+      VehicleModelKind::Mustang,
+      VehicleModelKind::Taxi,
     };
-    for (int i = 0; i < 16; ++i) {
+    const glm::vec3 trafficTints[6] = {
+      {1.0f, 1.0f, 1.0f}, {0.20f, 0.45f, 0.85f}, {0.82f, 0.18f, 0.20f},
+      {0.25f, 0.65f, 0.42f}, {0.86f, 0.72f, 0.18f}, {0.42f, 0.44f, 0.48f},
+    };
+    for (int i = 0; i < 64; ++i) {
       VehicleEntity v;
       v.id = nextVehicleId_++;
-      v.kind = trafficKinds[i % 4];
+      v.kind = trafficKinds[i % 14];
       v.isAmbientTraffic = true;
       v.roadIdx = longRoads[static_cast<size_t>(i) % longRoads.size()];
       const float maxS = static_cast<float>(world.roads[v.roadIdx].samples.size() - 1);
-      v.samplePos = std::fmod(static_cast<float>(i) * 3.7f, std::max(1.0f, maxS - 0.1f));
-      v.speed = 10.5f + static_cast<float>((i * 5) % 6);
+      v.samplePos = std::fmod(static_cast<float>(i) * 2.13f, std::max(1.0f, maxS - 0.1f));
+      v.speed = (v.kind == VehicleModelKind::Semi || v.kind == VehicleModelKind::Firetruck)
+        ? 9.0f + static_cast<float>(i % 4)
+        : 11.0f + static_cast<float>((i * 5) % 8);
       v.forward = (i % 2) == 0;
-      v.maxSpeed = (v.kind == VehicleModelKind::PoliceCruiser) ? 38.0f : 33.0f;
-      v.colorTint = glm::vec3(1.0f);
+      v.maxSpeed = (v.kind == VehicleModelKind::PoliceCruiser || v.kind == VehicleModelKind::R8) ? 44.0f : 34.0f;
+      v.colorTint = (v.kind == VehicleModelKind::PoliceCruiser || v.kind == VehicleModelKind::Taxi ||
+                     v.kind == VehicleModelKind::Ambulance || v.kind == VehicleModelKind::Firetruck)
+        ? glm::vec3(1.0f)
+        : trafficTints[i % 6];
       vehicles_.push_back(v);
     }
   }
 
-  // 10 parked hero & street vehicles at key Westgate locations (including right near Safehouse!)
-  struct ParkedSpec { VehicleModelKind kind; float x; float z; float yaw; glm::vec3 tint; float maxSpd; float acc; };
+  // 10 parked hero & street vehicles + 4 docked Boats + 2 flyable Helicopters
+  struct ParkedSpec { VehicleModelKind kind; float x; float z; float yaw; glm::vec3 tint; float maxSpd; float acc; bool boat; bool heli; };
   const ParkedSpec parked[] = {
-    {VehicleModelKind::Mustang, world.spawnPos.x + 7.0f, world.spawnPos.z + 5.5f, 0.35f, {0.85f, 0.14f, 0.18f}, 44.0f, 24.0f},
-    {VehicleModelKind::RangeRover, world.spawnPos.x - 9.0f, world.spawnPos.z + 6.5f, -0.4f, {0.16f, 0.18f, 0.22f}, 36.0f, 20.0f},
-    {VehicleModelKind::Ferrari, 34.0f, -86.0f, 1.57f, {0.92f, 0.16f, 0.12f}, 50.0f, 28.0f},
-    {VehicleModelKind::PoliceCruiser, 196.0f, 44.0f, 1.57f, {1.0f, 1.0f, 1.0f}, 42.0f, 23.0f},
-    {VehicleModelKind::Taxi, -402.0f, -74.0f, 0.0f, {1.0f, 1.0f, 1.0f}, 35.0f, 19.0f},
-    {VehicleModelKind::Sedan, -692.0f, 36.0f, -1.57f, {0.25f, 0.45f, 0.78f}, 36.0f, 19.0f},
-    {VehicleModelKind::Mustang, world.fightPitPos.x - 16.0f, world.fightPitPos.z - 8.0f, 0.7f, {0.12f, 0.48f, 0.88f}, 44.0f, 24.0f},
-    {VehicleModelKind::Ferrari, 625.0f, 425.0f, 0.0f, {0.95f, 0.78f, 0.12f}, 50.0f, 28.0f},
-    {VehicleModelKind::Sedan, -120.0f, 835.0f, 0.0f, {0.82f, 0.84f, 0.88f}, 36.0f, 19.0f},
-    {VehicleModelKind::RangeRover, -122.0f, -960.0f, 3.14f, {0.18f, 0.36f, 0.28f}, 38.0f, 21.0f},
+    {VehicleModelKind::Mustang, world.spawnPos.x + 7.0f, world.spawnPos.z + 5.5f, 0.35f, {0.85f, 0.14f, 0.18f}, 44.0f, 24.0f, false, false},
+    {VehicleModelKind::RangeRover, world.spawnPos.x - 9.0f, world.spawnPos.z + 6.5f, -0.4f, {0.16f, 0.18f, 0.22f}, 36.0f, 20.0f, false, false},
+    {VehicleModelKind::R8, 34.0f, -86.0f, 1.57f, {0.92f, 0.88f, 0.90f}, 54.0f, 31.0f, false, false},
+    {VehicleModelKind::PoliceCruiser, 196.0f, 44.0f, 1.57f, {1.0f, 1.0f, 1.0f}, 42.0f, 23.0f, false, false},
+    {VehicleModelKind::Taxi, -402.0f, -74.0f, 0.0f, {1.0f, 1.0f, 1.0f}, 35.0f, 19.0f, false, false},
+    {VehicleModelKind::Challenger, -692.0f, 36.0f, -1.57f, {0.18f, 0.42f, 0.88f}, 46.0f, 25.0f, false, false},
+    {VehicleModelKind::Mustang, world.fightPitPos.x - 16.0f, world.fightPitPos.z - 8.0f, 0.7f, {0.12f, 0.48f, 0.88f}, 44.0f, 24.0f, false, false},
+    {VehicleModelKind::Ferrari, 625.0f, 425.0f, 0.0f, {0.95f, 0.78f, 0.12f}, 52.0f, 29.0f, false, false},
+    {VehicleModelKind::Audi, -120.0f, 835.0f, 0.0f, {0.82f, 0.84f, 0.88f}, 45.0f, 25.0f, false, false},
+    {VehicleModelKind::RangeRover, -955.0f, 365.0f, 0.8f, {0.18f, 0.42f, 0.30f}, 38.0f, 21.0f, false, false}, // Pelican Key SUV!
+    // Docked Speedboats & Cruisers
+    {VehicleModelKind::Speedboat, -748.0f, 42.0f, -1.57f, {0.95f, 0.95f, 0.98f}, 38.0f, 22.0f, true, false},
+    {VehicleModelKind::CruiserBoat, -752.0f, -12.0f, -1.45f, {0.92f, 0.94f, 0.96f}, 30.0f, 16.0f, true, false},
+    {VehicleModelKind::Speedboat, 655.0f, 465.0f, 1.2f, {0.92f, 0.22f, 0.20f}, 38.0f, 22.0f, true, false},
+    {VehicleModelKind::Speedboat, -912.0f, 305.0f, -0.7f, {0.20f, 0.65f, 0.95f}, 38.0f, 22.0f, true, false},
+    // Flyable Helicopters (Downtown Helipad & Westgate Airport)
+    {VehicleModelKind::Helicopter, 32.0f, -108.0f, 0.0f, {0.20f, 0.24f, 0.30f}, 48.0f, 24.0f, false, true},
+    {VehicleModelKind::Helicopter, 24.0f, 935.0f, 3.14f, {0.85f, 0.22f, 0.18f}, 52.0f, 26.0f, false, true},
   };
   for (const auto& ps : parked) {
     VehicleEntity v;
     v.id = nextVehicleId_++;
     v.kind = ps.kind;
-    v.pos = glm::vec3(ps.x, world.heightfield.sampleHeight(ps.x, ps.z) + 0.05f, ps.z);
+    v.isBoat = ps.boat;
+    v.isAircraft = ps.heli;
+    const float y = ps.boat ? 0.05f : (world.heightfield.sampleHeight(ps.x, ps.z) + 0.05f);
+    v.pos = glm::vec3(ps.x, y, ps.z);
     v.yawRad = ps.yaw;
     v.colorTint = ps.tint;
     v.maxSpeed = ps.maxSpd;
@@ -108,17 +138,17 @@ void GameSession::init(const WorldData& world, PlayerController* player, Physics
     vehicles_.push_back(v);
   }
 
-  // 28 ambient city pedestrians walking sidewalks & plazas
+  // 96 ambient city pedestrians walking sidewalks, plazas, Del Sol & Pelican Key
   if (!longRoads.empty()) {
     const NpcModelKind pedKinds[3] = {NpcModelKind::Civilian, NpcModelKind::Business, NpcModelKind::Security};
-    for (int i = 0; i < 28; ++i) {
+    for (int i = 0; i < 96; ++i) {
       NpcEntity ped;
       ped.id = nextNpcId_++;
       ped.kind = pedKinds[i % 3];
       ped.roadIdx = longRoads[static_cast<size_t>(i * 3 + 1) % longRoads.size()];
       const auto& seg = world.roads[ped.roadIdx];
       const float maxS = static_cast<float>(seg.samples.size() - 1);
-      ped.samplePos = std::fmod(static_cast<float>(i) * 2.9f, std::max(1.0f, maxS - 0.1f));
+      ped.samplePos = std::fmod(static_cast<float>(i) * 1.43f, std::max(1.0f, maxS - 0.1f));
       ped.forward = (i % 2) == 0;
       ped.animClip = "Walk";
       ped.maxHp = 80.0f;
@@ -364,6 +394,32 @@ std::string GameSession::timeOfDayLabel() const {
   return "Night";
 }
 
+void GameSession::setWeatherPreset(WeatherPreset preset) {
+  weatherPreset_ = preset;
+  pushToast("Weather: " + weatherLabel(), 2.5f);
+}
+
+void GameSession::cycleWeather() {
+  const int next = (static_cast<int>(weatherPreset_) + 1) % 4;
+  setWeatherPreset(static_cast<WeatherPreset>(next));
+}
+
+std::string GameSession::weatherLabel() const {
+  switch (weatherPreset_) {
+    case WeatherPreset::Clear: return "Clear";
+    case WeatherPreset::Overcast: return "Overcast";
+    case WeatherPreset::Rain: return "Rain";
+    case WeatherPreset::Thunderstorm: return "Thunderstorm";
+  }
+  return "Clear";
+}
+
+float GameSession::oceanWaveHeight(float x, float z, float timeSec) {
+  const float w1 = std::sin(x * 0.14f + timeSec * 1.55f) * std::cos(z * 0.13f - timeSec * 1.05f);
+  const float w2 = std::sin(x * 0.31f - timeSec * 2.05f + z * 0.27f);
+  return (w1 * 0.16f + w2 * 0.08f);
+}
+
 SkyLightingState GameSession::skyLighting() const {
   SkyLightingState s;
   const float h = timeOfDayHours_;
@@ -396,6 +452,20 @@ SkyLightingState GameSession::skyLighting() const {
     s.sunDir = glm::normalize(glm::vec3(-0.35f, 0.65f, -0.45f));
     s.nightFactor = 1.0f;
   }
+
+  // Apply dynamic weather cloud darkening, storm haze, wetness & lightning flash
+  const float cloudCover = (weatherPreset_ == WeatherPreset::Overcast) ? 0.45f
+                         : (weatherPreset_ == WeatherPreset::Rain) ? 0.70f
+                         : (weatherPreset_ == WeatherPreset::Thunderstorm) ? 0.90f : 0.0f;
+  const glm::vec3 stormGrey(0.18f, 0.21f, 0.26f);
+  s.clearColor = glm::mix(s.clearColor, stormGrey * (1.0f - 0.6f * s.nightFactor), cloudCover);
+  s.fogColor = glm::mix(s.fogColor, stormGrey * (1.0f - 0.55f * s.nightFactor), cloudCover * 0.85f);
+  s.sunColor *= (1.0f - cloudCover * 0.58f);
+  s.sunColor += glm::vec3(0.85f, 0.92f, 1.0f) * (lightningFlash_ * 2.4f);
+  s.clearColor += glm::vec3(0.45f, 0.52f, 0.68f) * lightningFlash_;
+  s.rainIntensity = rainIntensity_;
+  s.wetness = wetness_;
+  s.lightningFlash = lightningFlash_;
   return s;
 }
 
@@ -774,7 +844,13 @@ void GameSession::updateTrafficAndVehicles(float dt, const GameInputFrame& input
         v.isPolicePursuit = false;
         v.occupiedByPlayer = true;
         activeVehicleIdx_ = bestIdx;
-        pushToast("Driving vehicle — [WASD] Drive | [Space] Brake | [H] Horn/Siren | [G] Exit", 3.0f);
+        if (v.isAircraft) {
+          pushToast("HELICOPTER: [WASD] Fly/Yaw | [Space] Climb | [C] Descend | [G] Exit", 4.0f);
+        } else if (v.isBoat) {
+          pushToast("BOAT: [WASD] Throttle/Steer | [Space] Reverse Brake | [G] Exit", 3.5f);
+        } else {
+          pushToast("Driving vehicle — [WASD] Drive | [Space] Brake | [H] Horn/Siren | [G] Exit", 3.0f);
+        }
       }
     }
   }
@@ -784,7 +860,69 @@ void GameSession::updateTrafficAndVehicles(float dt, const GameInputFrame& input
   for (size_t vi = 0; vi < vehicles_.size(); ++vi) {
     auto& v = vehicles_[vi];
     if (v.occupiedByPlayer) {
-      // Player driving physics
+      if (v.isAircraft) {
+        // Flyable Helicopter 6-DOF Physics ([Space] climb, [C] descend, [WASD] forward/yaw)
+        const float collective = (input.moveInput.jump ? 1.0f : 0.0f) - (input.moveInput.crouch ? 1.0f : 0.0f);
+        const float thrust = input.moveInput.moveForward;
+        const float yawInput = -input.moveInput.moveRight;
+        v.yawRad = wrapAnglePi(v.yawRad + yawInput * 1.95f * dt);
+        v.speed = std::clamp(v.speed + thrust * v.accel * dt, -14.0f, v.maxSpeed);
+        v.speed *= (1.0f - std::min(1.0f, 0.85f * dt));
+        v.verticalVel = std::clamp(v.verticalVel + (collective * 16.0f - v.verticalVel * 2.2f) * dt, -18.0f, 22.0f);
+
+        v.pitchRad = thrust * 0.20f;
+        v.rollRad = yawInput * -0.22f;
+
+        const glm::vec3 fwd(std::sin(v.yawRad), 0.0f, std::cos(v.yawRad));
+        v.pos += fwd * (v.speed * dt);
+        v.pos.x = std::clamp(v.pos.x, world.worldMin + 20.0f, world.worldMax - 20.0f);
+        v.pos.z = std::clamp(v.pos.z, world.worldMin + 20.0f, world.worldMax - 20.0f);
+        const float floorY = std::max(0.2f, world.heightfield.sampleHeight(v.pos.x, v.pos.z)) + 0.05f;
+        v.pos.y = std::clamp(v.pos.y + v.verticalVel * dt, floorY, 320.0f);
+        if (v.pos.y <= floorY + 0.02f && v.verticalVel < 0.0f) {
+          v.verticalVel = 0.0f;
+          v.pitchRad *= 0.2f;
+          v.rollRad *= 0.2f;
+        }
+        player.teleport(v.pos + glm::vec3(0.0f, 1.0f, 0.0f), glm::degrees(v.yawRad));
+        continue;
+      }
+
+      if (v.isBoat) {
+        // Wave-buoyant Speedboat / Cruiser Physics
+        const float throttle = input.moveInput.moveForward;
+        const float steer = -input.moveInput.moveRight;
+        if (input.moveInput.jump) {
+          v.speed *= (1.0f - std::min(1.0f, 4.5f * dt));
+        } else if (std::abs(throttle) > 0.01f) {
+          v.speed = std::clamp(v.speed + throttle * v.accel * dt, -10.0f, v.maxSpeed);
+        } else {
+          v.speed *= (1.0f - std::min(1.0f, 1.4f * dt));
+        }
+        const float turnAmt = std::clamp(std::abs(v.speed) / 4.0f, 0.25f, 1.0f) * (v.speed >= 0.0f ? 1.0f : -1.0f);
+        v.yawRad = wrapAnglePi(v.yawRad + steer * 1.85f * turnAmt * dt);
+        const glm::vec3 fwd(std::sin(v.yawRad), 0.0f, std::cos(v.yawRad));
+        const glm::vec3 nextXZ = v.pos + fwd * (v.speed * dt);
+        const float terrainNext = world.heightfield.sampleHeight(nextXZ.x, nextXZ.z);
+        if (terrainNext < -0.25f) {
+          v.pos.x = std::clamp(nextXZ.x, world.worldMin + 15.0f, world.worldMax - 15.0f);
+          v.pos.z = std::clamp(nextXZ.z, world.worldMin + 15.0f, world.worldMax - 15.0f);
+        } else {
+          v.speed *= -0.25f;
+        }
+        const float wH = oceanWaveHeight(v.pos.x, v.pos.z, animClock_);
+        const float wFwd = oceanWaveHeight(v.pos.x + fwd.x * 2.0f, v.pos.z + fwd.z * 2.0f, animClock_);
+        v.pos.y = wH + 0.05f;
+        v.pitchRad = std::atan2(wFwd - wH, 2.0f) - std::clamp(v.speed / v.maxSpeed, 0.0f, 1.0f) * 0.08f;
+        v.rollRad = steer * -0.14f * std::clamp(std::abs(v.speed) / 18.0f, 0.0f, 1.0f);
+        if (std::abs(v.speed) > 9.0f && static_cast<int>(animClock_ * 20.0f) % 2 == 0) {
+          spawnSparks(v.pos - fwd * 2.3f + glm::vec3(0.0f, 0.2f, 0.0f), {0.0f, 0.8f, 0.0f}, {0.82f, 0.94f, 1.0f}, 2);
+        }
+        player.teleport(v.pos + glm::vec3(0.0f, 0.65f, 0.0f), glm::degrees(v.yawRad));
+        continue;
+      }
+
+      // Player ground car driving physics
       const float throttle = input.moveInput.moveForward;
       const float steer = -input.moveInput.moveRight; // +yaw is left
       if (input.moveInput.jump) {
@@ -829,7 +967,12 @@ void GameSession::updateTrafficAndVehicles(float dt, const GameInputFrame& input
         }
       }
 
-      const float groundY = world.heightfield.sampleHeight(v.pos.x, v.pos.z);
+      // Check elevated bridge decks via Jolt raycast before falling back to terrain heightfield
+      float groundY = world.heightfield.sampleHeight(v.pos.x, v.pos.z);
+      const RaycastHit deckHit = physics.raycast(glm::vec3(v.pos.x, v.pos.y + 3.2f, v.pos.z), glm::vec3(0.0f, -1.0f, 0.0f), 18.0f);
+      if (deckHit.hit && deckHit.position.y > groundY + 0.35f) {
+        groundY = deckHit.position.y;
+      }
       // Stunt jump ramp check & airtime tracking
       if (!v.airborne) {
         for (auto& sj : stuntJumps_) {
@@ -909,9 +1052,12 @@ void GameSession::updateTrafficAndVehicles(float dt, const GameInputFrame& input
         const glm::vec3 dir = (dLen > 1e-4f) ? ((v.forward ? 1.0f : -1.0f) * (delta / dLen)) : glm::vec3(0.0f, 0.0f, 1.0f);
         const glm::vec3 laneOffset = glm::vec3(s0.rx, 0.0f, s0.rz) * (v.forward ? 2.2f : -2.2f);
         const glm::vec3 wp = p + laneOffset;
-        v.pos = glm::vec3(wp.x, world.heightfield.sampleHeight(wp.x, wp.z) + 0.05f, wp.z);
+        const float roadY = seg.isBridge ? wp.y : world.heightfield.sampleHeight(wp.x, wp.z);
+        v.pos = glm::vec3(wp.x, roadY + 0.05f, wp.z);
         v.yawRad = std::atan2(dir.x, dir.z);
       }
+    } else if (v.isBoat) {
+      v.pos.y = oceanWaveHeight(v.pos.x, v.pos.z, animClock_) + 0.05f;
     }
   }
 }
@@ -1392,9 +1538,28 @@ void GameSession::update(float dt, const GameInputFrame& input, PlayerController
   toastTimer_ = std::max(0.0f, toastTimer_ - dt);
   fireCooldown_ = std::max(0.0f, fireCooldown_ - dt);
   muzzleFlashTimer_ = std::max(0.0f, muzzleFlashTimer_ - dt);
+  lastCamFocus_ = cameraPosition(player);
 
   if (autoAdvanceTime_) {
     timeOfDayHours_ = std::fmod(timeOfDayHours_ + dt * 0.015f, 24.0f);
+  }
+
+  // Dynamic weather transitions (rain streaks, wet asphalt sheen, lightning & thunder)
+  const float targetRain = (weatherPreset_ == WeatherPreset::Rain) ? 0.68f
+                         : (weatherPreset_ == WeatherPreset::Thunderstorm) ? 1.0f : 0.0f;
+  rainIntensity_ += (targetRain - rainIntensity_) * std::min(1.0f, dt * 1.4f);
+  const float targetWet = (weatherPreset_ == WeatherPreset::Rain || weatherPreset_ == WeatherPreset::Thunderstorm) ? 1.0f
+                        : (weatherPreset_ == WeatherPreset::Overcast) ? 0.35f : 0.0f;
+  wetness_ += (targetWet - wetness_) * std::min(1.0f, dt * 0.35f);
+  lightningFlash_ = std::max(0.0f, lightningFlash_ - dt * 3.8f);
+  if (weatherPreset_ == WeatherPreset::Thunderstorm) {
+    thunderCooldown_ -= dt;
+    if (thunderCooldown_ <= 0.0f) {
+      rng_ = rng_ * 1664525u + 1013904223u;
+      thunderCooldown_ = 5.5f + static_cast<float>(rng_ % 700) * 0.01f;
+      lightningFlash_ = 1.0f;
+      if (audio) audio->playExplosion(player.position() + glm::vec3(30.0f, 35.0f, 20.0f));
+    }
   }
 
   // Update 3D spatial audio listener + engine RPM rumble
@@ -1555,6 +1720,20 @@ std::vector<WorldMarkerBox> GameSession::gatherWorldMarkers(float elapsedSec) co
     out.push_back({sp.pos, {sp.size, sp.size, sp.size * 2.2f}, 0.0f, sp.color, 0.0f});
   }
 
+  // 3D Falling Rain Streaks around the camera when Weather = Rain or Thunderstorm
+  if (rainIntensity_ > 0.05f) {
+    const int drops = static_cast<int>(rainIntensity_ * 110.0f);
+    for (int i = 0; i < drops; ++i) {
+      const float h1 = std::fmod(static_cast<float>(i * 73 + 19) * 0.6180339f, 1.0f);
+      const float h2 = std::fmod(static_cast<float>(i * 137 + 41) * 0.381966f, 1.0f);
+      const float h3 = std::fmod(static_cast<float>(i * 211 + 7) * 0.754877f + animClock_ * 1.45f, 1.0f);
+      const float rx = lastCamFocus_.x + (h1 - 0.5f) * 34.0f;
+      const float rz = lastCamFocus_.z + (h2 - 0.5f) * 34.0f;
+      const float ry = lastCamFocus_.y + 14.0f - h3 * 22.0f;
+      out.push_back({{rx, ry, rz}, {0.025f, 0.55f, 0.025f}, 0.0f, {0.68f, 0.80f, 0.96f}, 0.14f});
+    }
+  }
+
   return out;
 }
 
@@ -1612,6 +1791,19 @@ std::vector<DynamicPointLight> GameSession::gatherDynamicLights(const WorldData&
         lights.push_back({prop.pos + glm::vec3(0.0f, 5.2f, 0.0f), 19.0f, {1.0f, 0.82f, 0.52f}, 1.45f * sky.nightFactor});
       }
     }
+  }
+
+  // 6. Walk-in Interior Warm Overhead Lights (Safehouse, 24/7 Mart, Customs Garage, Iron Pit Armory)
+  const glm::vec2 interiors[4] = {
+    {world.spawnPos.x - 13.0f, world.spawnPos.z - 11.0f},
+    {-38.0f, -125.0f},
+    {112.0f, -135.0f},
+    {704.0f, 108.0f},
+  };
+  for (const auto& ir : interiors) {
+    if (lights.size() >= 24) break;
+    const float gy = world.heightfield.sampleHeight(ir.x, ir.y);
+    lights.push_back({{ir.x, gy + 3.0f, ir.y}, 11.0f, {1.0f, 0.86f, 0.64f}, 1.35f});
   }
 
   return lights;

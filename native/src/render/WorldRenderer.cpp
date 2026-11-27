@@ -539,11 +539,12 @@ bool WorldRenderer::init(
 }
 
 void WorldRenderer::buildTerrainAndOceanBuffers(WgpuContext& ctx, const WorldData& world) {
-  constexpr uint32_t N = 240;
+  constexpr uint32_t N = 384;
+  constexpr uint32_t WN = 96;
   std::vector<StaticVertex> verts;
   std::vector<uint32_t> indices;
-  verts.reserve(N * N + 4);
-  indices.reserve((N - 1) * (N - 1) * 6 + 6);
+  verts.reserve(N * N + WN * WN);
+  indices.reserve((N - 1) * (N - 1) * 6 + (WN - 1) * (WN - 1) * 6);
 
   for (uint32_t iz = 0; iz < N; ++iz) {
     const float tz = static_cast<float>(iz) / static_cast<float>(N - 1);
@@ -578,19 +579,32 @@ void WorldRenderer::buildTerrainAndOceanBuffers(WgpuContext& ctx, const WorldDat
     }
   }
 
-  // Ocean water plane at y = 0 (kind = 1.0)
+  // Subdivided Ocean Water Grid at y = 0 (kind = 1.0, animated in vsTerrain)
   const uint32_t wBase = static_cast<uint32_t>(verts.size());
   const float wExt = 1800.0f;
-  verts.push_back(StaticVertex{-wExt, 0.0f, -wExt, 0.0f, 1.0f, 0.0f, 0.06f, 0.22f, 0.34f, 0.0f, 0.0f, 1.0f});
-  verts.push_back(StaticVertex{wExt, 0.0f, -wExt, 0.0f, 1.0f, 0.0f, 0.06f, 0.22f, 0.34f, 1.0f, 0.0f, 1.0f});
-  verts.push_back(StaticVertex{-wExt, 0.0f, wExt, 0.0f, 1.0f, 0.0f, 0.06f, 0.22f, 0.34f, 0.0f, 1.0f, 1.0f});
-  verts.push_back(StaticVertex{wExt, 0.0f, wExt, 0.0f, 1.0f, 0.0f, 0.06f, 0.22f, 0.34f, 1.0f, 1.0f, 1.0f});
-  indices.push_back(wBase + 0);
-  indices.push_back(wBase + 2);
-  indices.push_back(wBase + 1);
-  indices.push_back(wBase + 1);
-  indices.push_back(wBase + 2);
-  indices.push_back(wBase + 3);
+  for (uint32_t iz = 0; iz < WN; ++iz) {
+    const float tz = static_cast<float>(iz) / static_cast<float>(WN - 1);
+    const float z = -wExt + tz * (2.0f * wExt);
+    for (uint32_t ix = 0; ix < WN; ++ix) {
+      const float tx = static_cast<float>(ix) / static_cast<float>(WN - 1);
+      const float x = -wExt + tx * (2.0f * wExt);
+      verts.push_back(StaticVertex{x, 0.0f, z, 0.0f, 1.0f, 0.0f, 0.06f, 0.22f, 0.34f, tx, tz, 1.0f});
+    }
+  }
+  for (uint32_t iz = 0; iz < WN - 1; ++iz) {
+    for (uint32_t ix = 0; ix < WN - 1; ++ix) {
+      const uint32_t i0 = wBase + iz * WN + ix;
+      const uint32_t i1 = i0 + 1;
+      const uint32_t i2 = i0 + WN;
+      const uint32_t i3 = i2 + 1;
+      indices.push_back(i0);
+      indices.push_back(i2);
+      indices.push_back(i1);
+      indices.push_back(i1);
+      indices.push_back(i2);
+      indices.push_back(i3);
+    }
+  }
 
   terrainIndexCount_ = static_cast<uint32_t>(indices.size());
   telemetry_.terrainTriangles = terrainIndexCount_ / 3;
@@ -626,6 +640,32 @@ void WorldRenderer::buildRoadAndArenaBuffers(WgpuContext& ctx, const WorldData& 
         indices.push_back(r0 + 1);
         indices.push_back(r1 + 1);
         indices.push_back(r1);
+      }
+    }
+
+    // Concrete Sidewalks / Bridge Guardrails flanking road edges (kind = 3.0)
+    const float swW = seg.isBridge ? 1.1f : 2.1f;
+    const float swY = seg.isBridge ? 0.42f : 0.14f;
+    const glm::vec3 swCol = seg.isBridge ? glm::vec3(0.45f, 0.48f, 0.52f) : glm::vec3(0.50f, 0.52f, 0.54f);
+    for (float side : {-1.0f, 1.0f}) {
+      const uint32_t sBase = static_cast<uint32_t>(verts.size());
+      for (size_t i = 0; i < seg.samples.size(); ++i) {
+        const auto& sp = seg.samples[i];
+        const glm::vec3 inner = sp.pos + glm::vec3(sp.rx * hw * side, 0.0f, sp.rz * hw * side);
+        const glm::vec3 outer = sp.pos + glm::vec3(sp.rx * (hw + swW) * side, 0.0f, sp.rz * (hw + swW) * side);
+        verts.push_back(StaticVertex{inner.x, inner.y + swY, inner.z, 0.0f, 1.0f, 0.0f, swCol.r, swCol.g, swCol.b, 0.0f, 0.0f, 3.0f});
+        verts.push_back(StaticVertex{outer.x, outer.y + swY, outer.z, 0.0f, 1.0f, 0.0f, swCol.r, swCol.g, swCol.b, 1.0f, 0.0f, 3.0f});
+        if (i > 0) {
+          const uint32_t r0 = sBase + static_cast<uint32_t>((i - 1) * 2);
+          const uint32_t r1 = sBase + static_cast<uint32_t>(i * 2);
+          if (side > 0.0f) {
+            indices.push_back(r0); indices.push_back(r0 + 1); indices.push_back(r1);
+            indices.push_back(r0 + 1); indices.push_back(r1 + 1); indices.push_back(r1);
+          } else {
+            indices.push_back(r0); indices.push_back(r1); indices.push_back(r0 + 1);
+            indices.push_back(r0 + 1); indices.push_back(r1); indices.push_back(r1 + 1);
+          }
+        }
       }
     }
   }
@@ -678,6 +718,44 @@ void WorldRenderer::buildRoadAndArenaBuffers(WgpuContext& ctx, const WorldData& 
       appendBox(bPos, bNorm, bCol, bIdx, center + glm::vec3(-7.6f, 0.48f, bz), glm::vec3(0.62f, 0.96f, 0.62f), glm::vec3(0.32f, 0.24f, 0.19f));
       appendBox(bPos, bNorm, bCol, bIdx, center + glm::vec3(-7.6f, 1.00f, bz), glm::vec3(0.44f, 0.12f, 0.44f), glm::vec3(0.95f, 0.45f, 0.12f));
     }
+
+    // 3. Pelican Key Suspension Bridge Towers, Piers & Lighthouse
+    for (float t : {0.30f, 0.70f}) {
+      const float bx = -706.0f + (-920.0f - -706.0f) * t;
+      const float bz = 65.0f + (345.0f - 65.0f) * t;
+      const float deckY = std::max(world.heightfield.sampleHeight(bx, bz), 2.2f + std::sin(t * 3.14159f) * 14.5f);
+      // Concrete submerged piers + twin crimson suspension towers + crossbeam
+      appendBox(bPos, bNorm, bCol, bIdx, {bx, deckY * 0.5f - 1.5f, bz}, {12.5f, deckY + 3.0f, 3.2f}, {0.42f, 0.44f, 0.46f});
+      appendBox(bPos, bNorm, bCol, bIdx, {bx - 4.8f, deckY + 11.0f, bz + 3.8f}, {1.4f, 22.0f, 1.4f}, {0.78f, 0.22f, 0.18f});
+      appendBox(bPos, bNorm, bCol, bIdx, {bx + 4.8f, deckY + 11.0f, bz - 3.8f}, {1.4f, 22.0f, 1.4f}, {0.78f, 0.22f, 0.18f});
+      appendBox(bPos, bNorm, bCol, bIdx, {bx, deckY + 19.5f, bz}, {11.0f, 1.6f, 1.2f}, {0.78f, 0.22f, 0.18f});
+    }
+    // Pelican Key Island Lighthouse
+    {
+      const float lx = -965.0f, lz = 415.0f;
+      const float ly = world.heightfield.sampleHeight(lx, lz);
+      appendBox(bPos, bNorm, bCol, bIdx, {lx, ly + 8.0f, lz}, {3.6f, 16.0f, 3.6f}, {0.92f, 0.90f, 0.86f});
+      appendBox(bPos, bNorm, bCol, bIdx, {lx, ly + 17.2f, lz}, {2.6f, 2.4f, 2.6f}, {0.98f, 0.84f, 0.34f});
+      appendBox(bPos, bNorm, bCol, bIdx, {lx, ly + 19.2f, lz}, {3.2f, 1.2f, 3.2f}, {0.76f, 0.18f, 0.16f});
+    }
+
+    // 4. Walk-In Interior Architecture (Safehouse, Civic 24/7 Mart, Customs Garage, Iron Pit Armory)
+    auto appendWalkInRoom = [&](float rx, float rz, float halfW, float halfD, float wallH, const glm::vec3& wallCol, const glm::vec3& floorCol) {
+      const float gy = world.heightfield.sampleHeight(rx, rz);
+      appendBox(bPos, bNorm, bCol, bIdx, {rx, gy + 0.08f, rz}, {halfW * 2.0f, 0.16f, halfD * 2.0f}, floorCol);
+      appendBox(bPos, bNorm, bCol, bIdx, {rx, gy + wallH + 0.12f, rz}, {halfW * 2.0f + 0.4f, 0.24f, halfD * 2.0f + 0.4f}, {0.26f, 0.28f, 0.32f});
+      appendBox(bPos, bNorm, bCol, bIdx, {rx - halfW, gy + wallH * 0.5f, rz}, {0.36f, wallH, halfD * 2.0f}, wallCol);
+      appendBox(bPos, bNorm, bCol, bIdx, {rx + halfW, gy + wallH * 0.5f, rz}, {0.36f, wallH, halfD * 2.0f}, wallCol);
+      appendBox(bPos, bNorm, bCol, bIdx, {rx, gy + wallH * 0.5f, rz - halfD}, {halfW * 2.0f, wallH, 0.36f}, wallCol);
+      const float wingW = std::max(0.5f, (halfW * 2.0f - 3.4f) * 0.25f);
+      appendBox(bPos, bNorm, bCol, bIdx, {rx - halfW + wingW, gy + wallH * 0.5f, rz + halfD}, {wingW * 2.0f, wallH, 0.36f}, wallCol);
+      appendBox(bPos, bNorm, bCol, bIdx, {rx + halfW - wingW, gy + wallH * 0.5f, rz + halfD}, {wingW * 2.0f, wallH, 0.36f}, wallCol);
+      appendBox(bPos, bNorm, bCol, bIdx, {rx, gy + wallH - 0.35f, rz + halfD}, {3.6f, 0.7f, 0.40f}, {0.18f, 0.42f, 0.72f});
+    };
+    appendWalkInRoom(world.spawnPos.x - 13.0f, world.spawnPos.z - 11.0f, 4.8f, 4.2f, 3.4f, {0.72f, 0.68f, 0.62f}, {0.42f, 0.32f, 0.24f});
+    appendWalkInRoom(-38.0f, -125.0f, 5.2f, 4.5f, 3.6f, {0.82f, 0.84f, 0.86f}, {0.58f, 0.60f, 0.64f});
+    appendWalkInRoom(112.0f, -135.0f, 6.2f, 5.6f, 4.2f, {0.46f, 0.48f, 0.52f}, {0.30f, 0.32f, 0.35f});
+    appendWalkInRoom(704.0f, 108.0f, 4.4f, 4.0f, 3.4f, {0.38f, 0.34f, 0.32f}, {0.24f, 0.24f, 0.26f});
 
     const uint32_t vBase = static_cast<uint32_t>(verts.size());
     for (size_t i = 0; i < bPos.size(); ++i) {
@@ -750,6 +828,53 @@ bool WorldRenderer::loadGlbBatch(
   return true;
 }
 
+bool WorldRenderer::loadGlbUnitBoxBatch(
+  WgpuContext& ctx,
+  const std::string& path,
+  uint32_t maxInstances,
+  InstancedGlbBatch& outBatch
+) {
+  if (!std::filesystem::exists(path)) return false;
+  GltfModel model;
+  if (!GltfAssetLoader::loadGlb(path, model, false, nullptr) || model.primitives.empty()) return false;
+
+  std::vector<ModelVertex> verts;
+  std::vector<uint32_t> indices;
+  const glm::vec3 sz = glm::max(model.boundsMax - model.boundsMin, glm::vec3(0.01f));
+  const glm::vec3 ctr = (model.boundsMin + model.boundsMax) * 0.5f;
+
+  for (const auto& prim : model.primitives) {
+    const uint32_t base = static_cast<uint32_t>(verts.size());
+    glm::vec3 matCol(1.0f);
+    if (prim.materialIndex >= 0 && static_cast<size_t>(prim.materialIndex) < model.materials.size()) {
+      matCol = glm::vec3(model.materials[prim.materialIndex].baseColor);
+    }
+    for (const auto& v : prim.vertices) {
+      const glm::vec3 col = glm::vec3(v.color) * matCol;
+      verts.push_back(ModelVertex{
+        (v.position.x - ctr.x) / sz.x,
+        (v.position.y - ctr.y) / sz.y,
+        (v.position.z - ctr.z) / sz.z,
+        v.normal.x, v.normal.y, v.normal.z,
+        std::max(0.0f, v.uv.x), std::max(0.0f, v.uv.y),
+        col.r, col.g, col.b
+      });
+    }
+    for (uint32_t idx : prim.indices) {
+      indices.push_back(base + idx);
+    }
+  }
+  if (indices.empty()) return false;
+
+  outBatch.indexCount = static_cast<uint32_t>(indices.size());
+  outBatch.vbo = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, verts.data(), verts.size() * sizeof(ModelVertex));
+  outBatch.ibo = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Index, indices.data(), indices.size() * sizeof(uint32_t));
+  outBatch.maxInstances = std::max(64u, maxInstances);
+  outBatch.instanceCount = 0;
+  outBatch.instVbo = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, nullptr, outBatch.maxInstances * sizeof(InstanceAttrib));
+  return true;
+}
+
 void WorldRenderer::buildPropAndVehicleBatches(WgpuContext& ctx, const WorldData& world, const std::string& assetsRoot) {
   // Unit 1x1x1 cube for buildings & fallback props (uv = (-1, -1) flags building window grid in WGSL)
   const ModelVertex boxVerts[24] = {
@@ -775,11 +900,11 @@ void WorldRenderer::buildPropAndVehicleBatches(WgpuContext& ctx, const WorldData
   buildingInstVbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, nullptr, buildingCapacity_ * sizeof(InstanceAttrib));
   buildingStaging_.reserve(buildingCapacity_);
 
-  markerCapacity_ = 512;
+  markerCapacity_ = 1024;
   markerInstVbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, nullptr, markerCapacity_ * sizeof(InstanceAttrib));
   markerStaging_.reserve(markerCapacity_);
 
-  dynPropCapacity_ = 128;
+  dynPropCapacity_ = 256;
   dynPropInstVbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, nullptr, dynPropCapacity_ * sizeof(InstanceAttrib));
   dynPropStaging_.reserve(dynPropCapacity_);
 
@@ -865,6 +990,48 @@ void WorldRenderer::buildPropAndVehicleBatches(WgpuContext& ctx, const WorldData
       entry.first = pp.normLen;
       entry.second.push_back(makeInstYaw(px + pp.dx, pitY + pp.dy, pz + pp.dz, 1.0f, 1.0f, 1.0f, pp.yaw, 1.0f, 1.0f, 1.0f));
     }
+
+    // Walk-in Interior Furniture (Safehouse, Civic 24/7 Mart, Customs Garage, Iron Pit Armory) & Bay/Airport Landmarks
+    const float shX = world.spawnPos.x - 13.0f, shZ = world.spawnPos.z - 11.0f;
+    const float shY = world.heightfield.sampleHeight(shX, shZ) + 0.16f;
+    const float martY = world.heightfield.sampleHeight(-38.0f, -125.0f) + 0.16f;
+    const float garY = world.heightfield.sampleHeight(112.0f, -135.0f) + 0.16f;
+    const float armY = world.heightfield.sampleHeight(704.0f, 108.0f) + 0.16f;
+    const struct LandmarkProp { const char* file; float normLen; float x; float y; float z; float yaw; } landmarks[] = {
+      // Safehouse Studio interior
+      {"int_bed.glb",       2.2f, shX - 2.6f, shY, shZ - 2.2f, 0.0f},
+      {"int_couch_l.glb",   2.4f, shX + 2.2f, shY, shZ - 1.5f, 3.14f},
+      {"int_tv.glb",        1.2f, shX + 2.2f, shY, shZ - 3.6f, 0.0f},
+      {"kk_rug.glb",        2.8f, shX + 0.0f, shY, shZ + 0.2f, 0.0f},
+      {"int_fridge.glb",    1.0f, shX - 3.8f, shY, shZ + 1.2f, 1.57f},
+      {"stash_bag.glb",     0.8f, shX - 3.0f, shY, shZ - 0.5f, 0.4f},
+      {"medkit.glb",        0.6f, shX + 3.4f, shY, shZ + 1.4f, 0.0f},
+      // Civic 24/7 Mart interior
+      {"store_shelf.glb",   2.2f, -40.5f, martY, -126.5f, 0.0f},
+      {"store_shelf.glb",   2.2f, -35.5f, martY, -126.5f, 0.0f},
+      {"int_fridge.glb",    1.1f, -42.0f, martY, -123.5f, 1.57f},
+      {"pos_terminal.glb",  0.55f,-38.0f, martY + 0.85f, -122.2f, 0.0f},
+      // Westgate Customs Garage interior
+      {"ph_steel_shelves.glb", 2.0f, 107.0f, garY, -138.0f, 1.57f},
+      {"pit_barrel.glb",       1.0f, 116.5f, garY, -138.0f, 0.0f},
+      {"pit_crate_stack.glb",  1.8f, 116.2f, garY, -133.0f, 0.5f},
+      // Iron Pit Armory interior
+      {"ph_steel_shelves.glb", 2.0f, 701.2f, armY, 105.0f, 0.0f},
+      {"int_table.glb",        1.6f, 705.5f, armY, 107.0f, 0.0f},
+      {"medkit.glb",           0.65f,705.5f, armY + 0.78f, 107.0f, 0.3f},
+      // Bay & Airport Landmarks
+      {"cruise_ship.glb",  62.0f, -890.0f, -0.4f, 130.0f, 0.35f},
+      {"airliner_737.glb", 38.0f, 18.0f, world.heightfield.sampleHeight(18.0f, 975.0f), 975.0f, 1.57f},
+      {"plane.glb",        11.0f, -24.0f, world.heightfield.sampleHeight(-24.0f, 945.0f), 945.0f, 1.57f},
+      {"fuel_tank.glb",    6.5f,  612.0f, world.heightfield.sampleHeight(612.0f, 448.0f), 448.0f, 0.0f},
+      {"fuel_tank.glb",    6.5f,  622.0f, world.heightfield.sampleHeight(622.0f, 448.0f), 448.0f, 0.0f},
+    };
+    for (const auto& lm : landmarks) {
+      auto& entry = pitGrouped[lm.file];
+      entry.first = lm.normLen;
+      entry.second.push_back(makeInstYaw(lm.x, lm.y, lm.z, 1.0f, 1.0f, 1.0f, lm.yaw, 1.0f, 1.0f, 1.0f));
+    }
+
     for (const auto& [fname, pairData] : pitGrouped) {
       const std::string glbPath = (std::filesystem::path(assetsRoot) / "models" / fname).string();
       InstancedGlbBatch batch;
@@ -875,23 +1042,53 @@ void WorldRenderer::buildPropAndVehicleBatches(WgpuContext& ctx, const WorldData
     }
   }
 
+  // Real 3D GLB House & Storefront Prototypes (normalized to unit 1x1x1 box so they match Jolt colliders 1:1!)
+  const char* houseFiles[kNumHouseGlbs] = {
+    "houses/kenney-suburban/building-type-a.glb",
+    "houses/kenney-suburban/building-type-c.glb",
+    "houses/kenney-suburban/building-type-e.glb",
+    "houses/kenney-suburban/building-type-g.glb",
+    "houses/quaternius-buildings-2/House1.glb",
+    "houses/quaternius-buildings-2/House2.glb",
+    "houses/quaternius-buildings-3/2Story_Balcony_Mat.glb",
+    "houses/quaternius-buildings-3/2Story_Wide_Mat.glb",
+    "houses/quaternius-buildings-3/3Story_Balcony_Mat.glb",
+    "houses/quaternius-buildings-3/3Story_Slim_Mat.glb",
+    "houses/quaternius-buildings-2/Building1_Large.glb",
+    "houses/quaternius-buildings-2/Building2_Large.glb",
+  };
+  for (size_t hi = 0; hi < kNumHouseGlbs; ++hi) {
+    loadGlbUnitBoxBatch(ctx, (std::filesystem::path(assetsRoot) / "models" / houseFiles[hi]).string(), 1024, houseBatches_[hi]);
+    houseStaging_[hi].reserve(512);
+  }
+
   fallbackPropCount_ = static_cast<uint32_t>(fallbackInst.size());
   if (fallbackPropCount_ > 0) {
     fallbackPropInstVbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, fallbackInst.data(), fallbackInst.size() * sizeof(InstanceAttrib));
   }
 
-  // Real GLB vehicles normalized to real-world ~4.4m car lengths & ground minY = 0
-  const char* vehicleFiles[6] = {
-    "police_cruiser.glb",
-    "taxi.glb",
-    "sedan.glb",
-    "mustang.glb",
-    "ferrari.glb",
-    "rangerover.glb",
+  // All 16 Real GLB Vehicles (Cars, Emergency, Trucks, Speedboats, Cruisers & Helicopter!)
+  const std::pair<const char*, float> vehicleSpecs[kVehicleModelCount] = {
+    {"police_cruiser.glb", 4.45f},
+    {"taxi.glb", 4.45f},
+    {"sedan.glb", 4.45f},
+    {"mustang.glb", 4.55f},
+    {"ferrari.glb", 4.50f},
+    {"rangerover.glb", 4.75f},
+    {"speedboat.glb", 6.20f},
+    {"cruiser_boat.glb", 8.80f},
+    {"heli.glb", 9.40f},
+    {"ambulance.glb", 5.40f},
+    {"firetruck.glb", 8.20f},
+    {"delivery.glb", 5.80f},
+    {"semi.glb", 9.60f},
+    {"audi.glb", 4.50f},
+    {"challenger.glb", 4.70f},
+    {"r8.glb", 4.45f},
   };
-  std::vector<InstanceAttrib> dummyVeh(48);
-  for (size_t vi = 0; vi < 6; ++vi) {
-    loadGlbBatch(ctx, (std::filesystem::path(assetsRoot) / "models" / vehicleFiles[vi]).string(), dummyVeh, vehicleBatches_[vi], 4.45f);
+  std::vector<InstanceAttrib> dummyVeh(64);
+  for (size_t vi = 0; vi < kVehicleModelCount; ++vi) {
+    loadGlbBatch(ctx, (std::filesystem::path(assetsRoot) / "models" / vehicleSpecs[vi].first).string(), dummyVeh, vehicleBatches_[vi], vehicleSpecs[vi].second);
   }
 }
 
@@ -980,24 +1177,49 @@ void WorldRenderer::render(
   const Frustum frustum = Frustum::fromViewProj(vp);
   streamer.update(focusPos, frustum);
 
-  // Gather streamed buildings
+  // Gather streamed buildings: route low/mid-rise buildings to real 3D GLB houses/storefronts, keep tall towers in unitBox
   buildingStaging_.clear();
+  for (auto& hs : houseStaging_) hs.clear();
+  uint32_t totalBuildingsDrawn = 0;
   for (const auto& v : streamer.views()) {
     if (!v.visibleInFrustum) continue;
     const auto& ch = world.chunks[v.chunkIndex];
     for (const auto& b : ch.buildings) {
       if (v.state == ChunkLodState::Lod && b.size.y < 8.0f) continue;
-      if (buildingStaging_.size() >= buildingCapacity_) break;
-      buildingStaging_.push_back(makeInstYaw(
-        b.center.x, b.center.y, b.center.z,
-        b.size.x, b.size.y, b.size.z,
-        0.0f,
-        b.color.r, b.color.g, b.color.b
-      ));
+      const bool useHouseGlb = (b.size.y < 24.0f && std::max(b.size.x, b.size.z) < 28.0f);
+      if (useHouseGlb) {
+        const uint32_t hIdx = static_cast<uint32_t>(std::abs(static_cast<int>(b.center.x * 13.0f + b.center.z * 7.0f))) % kNumHouseGlbs;
+        if (houseBatches_[hIdx].vbo && houseStaging_[hIdx].size() < houseBatches_[hIdx].maxInstances) {
+          const float yaw = (static_cast<int>(std::abs(b.center.x + b.center.z)) % 4) * 1.5707963f;
+          houseStaging_[hIdx].push_back(makeInstYaw(
+            b.center.x, b.center.y, b.center.z,
+            b.size.x, b.size.y, b.size.z,
+            yaw,
+            0.88f + 0.12f * b.color.r, 0.88f + 0.12f * b.color.g, 0.88f + 0.12f * b.color.b
+          ));
+          ++totalBuildingsDrawn;
+          continue;
+        }
+      }
+      if (buildingStaging_.size() < buildingCapacity_) {
+        buildingStaging_.push_back(makeInstYaw(
+          b.center.x, b.center.y, b.center.z,
+          b.size.x, b.size.y, b.size.z,
+          0.0f,
+          b.color.r, b.color.g, b.color.b
+        ));
+        ++totalBuildingsDrawn;
+      }
     }
   }
   if (!buildingStaging_.empty()) {
     wgpuQueueWriteBuffer(ctx.queue(), buildingInstVbo_, 0, buildingStaging_.data(), buildingStaging_.size() * sizeof(InstanceAttrib));
+  }
+  for (size_t hi = 0; hi < kNumHouseGlbs; ++hi) {
+    const uint32_t cnt = static_cast<uint32_t>(houseStaging_[hi].size());
+    if (cnt > 0 && houseBatches_[hi].instVbo) {
+      wgpuQueueWriteBuffer(ctx.queue(), houseBatches_[hi].instVbo, 0, houseStaging_[hi].data(), cnt * sizeof(InstanceAttrib));
+    }
   }
 
   // Upload dynamic markers, 3D pitched tracers & sparks (with emissive boost!)
@@ -1008,11 +1230,24 @@ void WorldRenderer::render(
                         glm::angleAxis(m.pitchRad, glm::vec3(1.0f, 0.0f, 0.0f));
     markerStaging_.push_back(makeInst(m.pos.x, m.pos.y, m.pos.z, m.scale.x, m.scale.y, m.scale.z, q, m.color.r, m.color.g, m.color.b, 2.2f));
   }
+  // Spinning helicopter main & tail rotor blades
+  for (const auto& v : vehicles) {
+    if (v.kind != VehicleModelKind::Helicopter) continue;
+    if (markerStaging_.size() + 2 > markerCapacity_) break;
+    const glm::quat vq = glm::angleAxis(v.yawRad, glm::vec3(0.0f, 1.0f, 0.0f)) *
+                         glm::angleAxis(v.pitchRad, glm::vec3(1.0f, 0.0f, 0.0f)) *
+                         glm::angleAxis(v.rollRad, glm::vec3(0.0f, 0.0f, 1.0f));
+    const glm::vec3 rotorHub = v.pos + vq * glm::vec3(0.0f, 3.05f, 0.25f);
+    const glm::quat rq1 = vq * glm::angleAxis(v.rotorAngleRad, glm::vec3(0.0f, 1.0f, 0.0f));
+    const glm::quat rq2 = vq * glm::angleAxis(v.rotorAngleRad + 1.5707963f, glm::vec3(0.0f, 1.0f, 0.0f));
+    markerStaging_.push_back(makeInst(rotorHub.x, rotorHub.y, rotorHub.z, 9.6f, 0.06f, 0.22f, rq1, 0.16f, 0.17f, 0.20f, 0.0f));
+    markerStaging_.push_back(makeInst(rotorHub.x, rotorHub.y, rotorHub.z, 9.6f, 0.06f, 0.22f, rq2, 0.16f, 0.17f, 0.20f, 0.0f));
+  }
   if (!markerStaging_.empty()) {
     wgpuQueueWriteBuffer(ctx.queue(), markerInstVbo_, 0, markerStaging_.data(), markerStaging_.size() * sizeof(InstanceAttrib));
   }
 
-  // Upload dynamic Jolt rigid-body crates & barrels (full 6-DOF quaternion rotation!)
+  // Upload dynamic Jolt rigid-body crates, barrels & knockable street props (full 6-DOF quaternion rotation!)
   dynPropStaging_.clear();
   for (const auto& dp : dynamicProps) {
     if (dynPropStaging_.size() >= dynPropCapacity_) break;
@@ -1028,16 +1263,19 @@ void WorldRenderer::render(
   }
   telemetry_.dynamicPhysicsProps = static_cast<uint32_t>(dynPropStaging_.size());
 
-  // Upload dynamic vehicles across all 6 models
+  // Upload dynamic vehicles across all 16 GLB models with pitch & roll (wave buoyancy / heli banking)
   uint32_t totalVehiclesDrawn = 0;
   for (auto& vs : vehicleStaging_) vs.clear();
   for (const auto& v : vehicles) {
     const size_t k = static_cast<size_t>(v.kind);
-    if (k < 6 && vehicleStaging_[k].size() < vehicleBatches_[k].maxInstances) {
-      vehicleStaging_[k].push_back(makeInstYaw(v.pos.x, v.pos.y, v.pos.z, 1.0f, 1.0f, 1.0f, v.yawRad, v.colorTint.r, v.colorTint.g, v.colorTint.b));
+    if (k < kVehicleModelCount && vehicleStaging_[k].size() < vehicleBatches_[k].maxInstances) {
+      const glm::quat q = glm::angleAxis(v.yawRad, glm::vec3(0.0f, 1.0f, 0.0f)) *
+                          glm::angleAxis(v.pitchRad, glm::vec3(1.0f, 0.0f, 0.0f)) *
+                          glm::angleAxis(v.rollRad, glm::vec3(0.0f, 0.0f, 1.0f));
+      vehicleStaging_[k].push_back(makeInst(v.pos.x, v.pos.y, v.pos.z, 1.0f, 1.0f, 1.0f, q, v.colorTint.r, v.colorTint.g, v.colorTint.b));
     }
   }
-  for (size_t k = 0; k < 6; ++k) {
+  for (size_t k = 0; k < kVehicleModelCount; ++k) {
     const uint32_t cnt = static_cast<uint32_t>(vehicleStaging_[k].size());
     if (cnt > 0 && vehicleBatches_[k].instVbo) {
       wgpuQueueWriteBuffer(ctx.queue(), vehicleBatches_[k].instVbo, 0, vehicleStaging_[k].data(), cnt * sizeof(InstanceAttrib));
@@ -1068,6 +1306,7 @@ void WorldRenderer::render(
   ubo.sunDir = glm::vec4(sunDir, static_cast<float>(lightCount));
   ubo.sunColor = glm::vec4(sky.sunColor * 1.32f, 1.0f);
   ubo.fogColor = glm::vec4(sky.fogColor, sky.nightFactor);
+  ubo.weatherParams = glm::vec4(sky.rainIntensity, sky.wetness, sky.lightningFlash, 0.0f);
   for (uint32_t li = 0; li < lightCount; ++li) {
     ubo.pointLights[li].posAndRadius = glm::vec4(pointLights[li].pos, pointLights[li].radius);
     ubo.pointLights[li].colorAndIntensity = glm::vec4(pointLights[li].color, pointLights[li].intensity);
@@ -1093,7 +1332,7 @@ void WorldRenderer::render(
   telemetry_.visibleChunks = streamer.visibleCount();
   telemetry_.nearChunks = streamer.nearCount();
   telemetry_.lodChunks = streamer.lodCount();
-  telemetry_.drawnBuildings = static_cast<uint32_t>(buildingStaging_.size());
+  telemetry_.drawnBuildings = totalBuildingsDrawn;
   telemetry_.drawnProps = static_cast<uint32_t>(world.props.size());
   telemetry_.drawnVehicles = totalVehiclesDrawn;
   telemetry_.drawnCharacters = charCount;
@@ -1141,6 +1380,15 @@ void WorldRenderer::render(
       wgpuRenderPassEncoderSetIndexBuffer(spass, unitBoxIbo_, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
       wgpuRenderPassEncoderDrawIndexed(spass, unitBoxIndexCount_, static_cast<uint32_t>(buildingStaging_.size()), 0, 0, 0);
     }
+    for (size_t hi = 0; hi < kNumHouseGlbs; ++hi) {
+      const uint32_t cnt = static_cast<uint32_t>(houseStaging_[hi].size());
+      if (cnt > 0 && houseBatches_[hi].vbo) {
+        wgpuRenderPassEncoderSetVertexBuffer(spass, 0, houseBatches_[hi].vbo, 0, WGPU_WHOLE_SIZE);
+        wgpuRenderPassEncoderSetVertexBuffer(spass, 1, houseBatches_[hi].instVbo, 0, WGPU_WHOLE_SIZE);
+        wgpuRenderPassEncoderSetIndexBuffer(spass, houseBatches_[hi].ibo, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
+        wgpuRenderPassEncoderDrawIndexed(spass, houseBatches_[hi].indexCount, cnt, 0, 0, 0);
+      }
+    }
     if (!dynPropStaging_.empty() && dynPropInstVbo_) {
       wgpuRenderPassEncoderSetVertexBuffer(spass, 0, unitBoxVbo_, 0, WGPU_WHOLE_SIZE);
       wgpuRenderPassEncoderSetVertexBuffer(spass, 1, dynPropInstVbo_, 0, WGPU_WHOLE_SIZE);
@@ -1154,7 +1402,7 @@ void WorldRenderer::render(
       wgpuRenderPassEncoderSetIndexBuffer(spass, batch.ibo, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
       wgpuRenderPassEncoderDrawIndexed(spass, batch.indexCount, batch.instanceCount, 0, 0, 0);
     }
-    for (size_t k = 0; k < 6; ++k) {
+    for (size_t k = 0; k < kVehicleModelCount; ++k) {
       const uint32_t cnt = static_cast<uint32_t>(vehicleStaging_[k].size());
       if (cnt > 0 && vehicleBatches_[k].vbo) {
         wgpuRenderPassEncoderSetVertexBuffer(spass, 0, vehicleBatches_[k].vbo, 0, WGPU_WHOLE_SIZE);
@@ -1250,6 +1498,15 @@ void WorldRenderer::render(
       wgpuRenderPassEncoderSetIndexBuffer(pass, unitBoxIbo_, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
       wgpuRenderPassEncoderDrawIndexed(pass, unitBoxIndexCount_, static_cast<uint32_t>(buildingStaging_.size()), 0, 0, 0);
     }
+    for (size_t hi = 0; hi < kNumHouseGlbs; ++hi) {
+      const uint32_t cnt = static_cast<uint32_t>(houseStaging_[hi].size());
+      if (cnt > 0 && houseBatches_[hi].vbo) {
+        wgpuRenderPassEncoderSetVertexBuffer(pass, 0, houseBatches_[hi].vbo, 0, WGPU_WHOLE_SIZE);
+        wgpuRenderPassEncoderSetVertexBuffer(pass, 1, houseBatches_[hi].instVbo, 0, WGPU_WHOLE_SIZE);
+        wgpuRenderPassEncoderSetIndexBuffer(pass, houseBatches_[hi].ibo, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
+        wgpuRenderPassEncoderDrawIndexed(pass, houseBatches_[hi].indexCount, cnt, 0, 0, 0);
+      }
+    }
     if (fallbackPropCount_ > 0 && fallbackPropInstVbo_) {
       wgpuRenderPassEncoderSetVertexBuffer(pass, 0, unitBoxVbo_, 0, WGPU_WHOLE_SIZE);
       wgpuRenderPassEncoderSetVertexBuffer(pass, 1, fallbackPropInstVbo_, 0, WGPU_WHOLE_SIZE);
@@ -1275,7 +1532,7 @@ void WorldRenderer::render(
       wgpuRenderPassEncoderSetIndexBuffer(pass, unitBoxIbo_, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
       wgpuRenderPassEncoderDrawIndexed(pass, unitBoxIndexCount_, static_cast<uint32_t>(dynPropStaging_.size()), 0, 0, 0);
     }
-    for (size_t k = 0; k < 6; ++k) {
+    for (size_t k = 0; k < kVehicleModelCount; ++k) {
       const uint32_t cnt = static_cast<uint32_t>(vehicleStaging_[k].size());
       if (cnt > 0 && vehicleBatches_[k].vbo) {
         wgpuRenderPassEncoderSetVertexBuffer(pass, 0, vehicleBatches_[k].vbo, 0, WGPU_WHOLE_SIZE);
@@ -1387,6 +1644,7 @@ void WorldRenderer::shutdown() {
   }
   for (auto& b : glbPropBatches_) relBatch(b);
   glbPropBatches_.clear();
+  for (auto& hb : houseBatches_) relBatch(hb);
   for (auto& vb : vehicleBatches_) relBatch(vb);
   relSkin(playerBodyGpu_);
   relSkin(playerShortsGpu_);

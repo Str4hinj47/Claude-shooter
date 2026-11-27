@@ -11,6 +11,7 @@ struct FrameUniforms {
   sunDir          : vec4<f32>, // xyz = sunDir, w = f32(pointLightCount)
   sunColor        : vec4<f32>,
   fogColor        : vec4<f32>, // rgb = fogColor, w = nightFactor
+  weatherParams   : vec4<f32>, // x = rainIntensity, y = wetness, z = lightningFlash, w = unused
   pointLights     : array<PointLight, 24>,
 };
 
@@ -187,10 +188,17 @@ fn vsShadowSkinned(in : SkinnedVSIn) -> @builtin(position) vec4<f32> {
 // ---------------------------------------------------------------------------
 @vertex
 fn vsTerrain(in : TerrainVSIn) -> VSOut {
+  var pos = in.pos;
+  let tSec = uFrame.camPos.w;
+  if (in.uvKind.z > 0.5 && in.uvKind.z < 1.5) {
+    let w1 = sin(pos.x * 0.14 + tSec * 1.55) * cos(pos.z * 0.13 - tSec * 1.05);
+    let w2 = sin(pos.x * 0.31 - tSec * 2.05 + pos.z * 0.27);
+    pos.y += (w1 * 0.16 + w2 * 0.08);
+  }
   var out : VSOut;
-  out.clipPos = uFrame.viewProj * vec4<f32>(in.pos, 1.0);
-  out.worldPos = in.pos;
-  out.shadowPos = computeShadowPos(in.pos);
+  out.clipPos = uFrame.viewProj * vec4<f32>(pos, 1.0);
+  out.worldPos = pos;
+  out.shadowPos = computeShadowPos(pos);
   out.normal = normalize(in.normal);
   out.color = in.color;
   out.uv = in.uvKind.xy;
@@ -275,6 +283,7 @@ fn fsMain(in : VSOut) -> @location(0) vec4<f32> {
   var specStrength = 0.16;
   var emissive = in.color * in.emissiveBoost;
   let nightFactor = clamp(uFrame.fogColor.w, 0.0, 1.0);
+  let wetness = clamp(uFrame.weatherParams.y, 0.0, 1.0);
 
   if (in.surfaceKind > 5.5) {
     // Matte fibrous hair (zero plastic specular glare)
@@ -284,8 +293,8 @@ fn fsMain(in : VSOut) -> @location(0) vec4<f32> {
   } else if (in.surfaceKind > 4.5) {
     // Textured skinned character
     albedo = in.color * texColor.rgb;
-    specPower = 24.0;
-    specStrength = 0.22;
+    specPower = 24.0 + wetness * 28.0;
+    specStrength = 0.22 + wetness * 0.18;
   } else if (in.surfaceKind > 3.5) {
     // Instanced buildings & GLB props: window facade grid ONLY on architectural box faces (uv < -0.5)
     if (abs(N.y) < 0.35 && in.worldPos.y > 4.5 && in.uv.x < -0.5) {
@@ -294,22 +303,32 @@ fn fsMain(in : VSOut) -> @location(0) vec4<f32> {
       let gridX = fract(in.worldPos.x * 0.28 + in.worldPos.z * 0.28);
       let gridY = fract(in.worldPos.y * 0.26);
       if (gridX > 0.16 && gridX < 0.84 && gridY > 0.22 && gridY < 0.82) {
-        albedo = mix(albedo, vec3<f32>(0.12, 0.22, 0.32), 0.62);
-        specPower = 64.0;
-        specStrength = 0.45;
+        albedo = mix(albedo, vec3<f32>(0.10, 0.20, 0.30), 0.68);
+        specPower = 72.0;
+        specStrength = 0.52;
         let winHash = fract(sin(dot(vec2<f32>(cellX, cellY), vec2<f32>(12.9898, 78.233))) * 43758.5453);
         if (winHash > 0.52 && nightFactor > 0.05) {
           let warm = mix(vec3<f32>(0.45, 0.78, 0.96), vec3<f32>(1.0, 0.78, 0.40), step(0.68, winHash));
-          emissive += warm * (nightFactor * 0.85);
+          emissive += warm * (nightFactor * 0.92);
         }
       }
+    } else if (wetness > 0.05) {
+      specPower = mix(28.0, 76.0, wetness);
+      specStrength = mix(0.18, 0.48, wetness);
     }
+  } else if (in.surfaceKind > 2.5 && in.surfaceKind < 3.5) {
+    // Sidewalks, bridge steel, concrete plazas & walk-in interior masonry (tiled micro-concrete)
+    let tile = fract(in.worldPos.x * 0.5) * fract(in.worldPos.z * 0.5);
+    let slabSeam = step(0.03, fract(in.worldPos.x * 0.35)) * step(0.03, fract(in.worldPos.z * 0.35));
+    albedo = albedo * (0.90 + 0.08 * tile) * mix(0.82, 1.0, slabSeam);
+    specPower = mix(18.0, 64.0, wetness);
+    specStrength = mix(0.08, 0.36, wetness);
   } else if (in.surfaceKind > 1.5 && in.surfaceKind < 2.5) {
-    // Asphalt road ribbons with double yellow center line & white shoulder lines
+    // Asphalt road ribbons with double yellow center line, white shoulder lines & wet-puddle reflections
     let roadU = in.uv.x;
     let roadDist = in.uv.y;
-    let grain = fract(sin(dot(floor(in.worldPos.xz * 3.0), vec2<f32>(12.9898, 78.233))) * 43758.5453);
-    albedo = albedo * (0.94 + 0.12 * grain);
+    let grain = fract(sin(dot(floor(in.worldPos.xz * 3.5), vec2<f32>(12.9898, 78.233))) * 43758.5453);
+    albedo = albedo * (0.93 + 0.14 * grain) * mix(1.0, 0.56, wetness);
     if (abs(roadU - 0.5) > 0.012 && abs(roadU - 0.5) < 0.032) {
       albedo = vec3<f32>(0.88, 0.68, 0.14);
     } else if (roadU < 0.045 || roadU > 0.955) {
@@ -319,23 +338,29 @@ fn fsMain(in : VSOut) -> @location(0) vec4<f32> {
         albedo = vec3<f32>(0.82, 0.84, 0.86);
       }
     }
-    specPower = 22.0;
-    specStrength = 0.12;
+    let puddle = smoothstep(0.35, 0.80, sin(in.worldPos.x * 0.18) * cos(in.worldPos.z * 0.19) * 0.5 + 0.5) * wetness;
+    let roadFresnel = pow(1.0 - max(dot(N, V), 0.0), 4.0);
+    albedo = mix(albedo, uFrame.fogColor.rgb * 0.65, puddle * roadFresnel * 0.65);
+    specPower = mix(22.0, 110.0, wetness);
+    specStrength = mix(0.12, 0.78, puddle);
   } else if (in.surfaceKind > 0.5 && in.surfaceKind < 1.5) {
     // Ocean water ripples + Fresnel sky reflection
     let w1 = sin(in.worldPos.x * 0.18 + tSec * 1.6) * cos(in.worldPos.z * 0.15 - tSec * 1.1);
     let w2 = sin(in.worldPos.x * 0.42 - tSec * 2.1 + in.worldPos.z * 0.37);
-    N = normalize(vec3<f32>((w1 + w2 * 0.5) * 0.08, 1.0, (w2 - w1 * 0.5) * 0.08));
+    N = normalize(vec3<f32>((w1 + w2 * 0.5) * 0.09, 1.0, (w2 - w1 * 0.5) * 0.09));
     let fresnel = pow(1.0 - max(dot(N, V), 0.0), 4.0);
-    albedo = mix(vec3<f32>(0.04, 0.18, 0.29), vec3<f32>(0.36, 0.58, 0.76), fresnel * 0.75);
+    albedo = mix(vec3<f32>(0.04, 0.18, 0.29), vec3<f32>(0.36, 0.58, 0.76), fresnel * 0.78);
     specPower = 96.0;
-    specStrength = 0.75;
+    specStrength = 0.78;
   } else if (in.surfaceKind < 0.5) {
-    // Terrain subtle micro-variation
-    let micro = sin(in.worldPos.x * 0.35) * cos(in.worldPos.z * 0.35) * 0.04;
-    albedo = clamp(albedo + vec3<f32>(micro), vec3<f32>(0.02), vec3<f32>(1.0));
-    specPower = 12.0;
-    specStrength = 0.04;
+    // Multi-band procedural terrain micro-detail (sand ripples, grass blades, rock strata)
+    let microA = sin(in.worldPos.x * 0.45) * cos(in.worldPos.z * 0.45) * 0.045;
+    let microB = sin(in.worldPos.x * 1.9 + in.worldPos.z * 1.4) * 0.025;
+    let strata = sin(in.worldPos.y * 1.6 + in.worldPos.x * 0.08) * 0.05 * (1.0 - smoothstep(0.70, 0.92, N.y));
+    albedo = clamp(albedo + vec3<f32>(microA + microB + strata), vec3<f32>(0.02), vec3<f32>(1.0));
+    albedo *= mix(1.0, 0.76, wetness * 0.6);
+    specPower = mix(12.0, 48.0, wetness);
+    specStrength = mix(0.04, 0.28, wetness);
   }
 
   let ndotl = max(dot(N, L), 0.0);

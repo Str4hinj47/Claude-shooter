@@ -275,6 +275,8 @@ int main(int argc, char** argv) {
           session.teleportTo({world.fightPitPos.x, world.fightPitPos.y + 1.0f, world.fightPitPos.z - 2.6f}, 0.0f, player);
         } else if (sc == SDL_SCANCODE_T) {
           session.cycleTimeOfDay();
+        } else if (sc == SDL_SCANCODE_Y) {
+          session.cycleWeather();
         } else if (sc == SDL_SCANCODE_SPACE) {
           jumpPressed = true;
         } else if (sc == SDL_SCANCODE_G) {

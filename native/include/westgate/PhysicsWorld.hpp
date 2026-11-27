@@ -19,6 +19,9 @@ struct RaycastHit {
 enum class DynamicPropKind : uint8_t {
   Crate = 0,
   Barrel = 1,
+  Cone = 2,
+  TrashBin = 3,
+  Bench = 4,
 };
 
 struct DynamicPropPose {

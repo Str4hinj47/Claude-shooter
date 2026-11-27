@@ -19,6 +19,7 @@
 #include <atomic>
 #include <cmath>
 #include <thread>
+#include <tuple>
 
 namespace westgate {
 
@@ -200,11 +201,11 @@ bool PhysicsWorld::initFromWorld(const WorldData& world, std::string* err) {
     }
   }
 
-  // 3. Static prop colliders (trees, dumpsters, benches) so player/cars/rigid bodies collide realistically
+  // 3. Static prop colliders (trees, dumpsters) + breakable/knockable dynamic street furniture!
+  std::vector<std::tuple<DynamicPropKind, glm::vec3, glm::vec3, glm::vec3, float>> streetDynamics;
   {
     JPH::ShapeRefC trunkShape = JPH::CylinderShapeSettings(2.1f, 0.35f).Create().Get();
     JPH::ShapeRefC dumpsterShape = JPH::BoxShapeSettings(JPH::Vec3(1.0f, 0.72f, 0.65f)).Create().Get();
-    JPH::ShapeRefC benchShape = JPH::BoxShapeSettings(JPH::Vec3(0.95f, 0.45f, 0.38f)).Create().Get();
 
     for (const auto& p : world.props) {
       JPH::ShapeRefC shape;
@@ -215,9 +216,12 @@ bool PhysicsWorld::initFromWorld(const WorldData& world, std::string* err) {
       } else if (p.proto == "dumpster") {
         shape = dumpsterShape;
         yOff = 0.72f;
-      } else if (p.proto == "park_bench") {
-        shape = benchShape;
-        yOff = 0.45f;
+      } else if (p.proto == "trashcan" && streetDynamics.size() < 48) {
+        streetDynamics.emplace_back(DynamicPropKind::TrashBin, p.pos, glm::vec3(0.28f, 0.45f, 0.28f), glm::vec3(0.22f, 0.48f, 0.34f), 14.0f);
+        continue;
+      } else if (p.proto == "park_bench" && streetDynamics.size() < 84) {
+        streetDynamics.emplace_back(DynamicPropKind::Bench, p.pos, glm::vec3(0.90f, 0.42f, 0.35f), glm::vec3(0.46f, 0.32f, 0.20f), 28.0f);
+        continue;
       }
       if (!shape) continue;
       const JPH::Quat rot = JPH::Quat::sRotation(JPH::Vec3::sAxisY(), p.ry);
@@ -231,6 +235,56 @@ bool PhysicsWorld::initFromWorld(const WorldData& world, std::string* err) {
       bodyInterface.CreateAndAddBody(bcs, JPH::EActivation::DontActivate);
       ++staticBodyCount_;
     }
+  }
+
+  // 3b. Bridge road deck colliders (so elevated causeway bridges over ocean have solid driveable decks)
+  for (const auto& road : world.roads) {
+    if (!road.isBridge || road.samples.size() < 2) continue;
+    for (size_t i = 0; i + 1 < road.samples.size(); ++i) {
+      const glm::vec3 a = road.samples[i].pos;
+      const glm::vec3 b = road.samples[i + 1].pos;
+      const glm::vec3 mid = (a + b) * 0.5f;
+      const glm::vec3 d = b - a;
+      const float segLen = std::max(0.5f, std::hypot(d.x, d.z));
+      const float yaw = std::atan2(d.x, d.z);
+      const float pitch = -std::atan2(d.y, segLen);
+      JPH::ShapeRefC deckShape = JPH::BoxShapeSettings(JPH::Vec3(road.width * 0.52f, 0.35f, segLen * 0.56f)).Create().Get();
+      const JPH::Quat rot = JPH::Quat::sRotation(JPH::Vec3::sAxisY(), yaw) * JPH::Quat::sRotation(JPH::Vec3::sAxisX(), pitch);
+      bodyInterface.CreateAndAddBody(
+        JPH::BodyCreationSettings(deckShape, JPH::RVec3(mid.x, mid.y - 0.30f, mid.z), rot, JPH::EMotionType::Static, Layers::NON_MOVING),
+        JPH::EActivation::DontActivate
+      );
+      ++staticBodyCount_;
+    }
+  }
+
+  // 3c. Walk-In Interior Room Walls & Roofs (Safehouse, Downtown 24/7 Mart, Customs Garage, Iron Pit Armory)
+  {
+    auto addWall = [&](const glm::vec3& c, const glm::vec3& halfExt) {
+      JPH::ShapeRefC s = JPH::BoxShapeSettings(JPH::Vec3(halfExt.x, halfExt.y, halfExt.z)).Create().Get();
+      bodyInterface.CreateAndAddBody(
+        JPH::BodyCreationSettings(s, JPH::RVec3(c.x, c.y, c.z), JPH::Quat::sIdentity(), JPH::EMotionType::Static, Layers::NON_MOVING),
+        JPH::EActivation::DontActivate
+      );
+      ++staticBodyCount_;
+    };
+    auto addWalkInRoom = [&](float rx, float rz, float halfW, float halfD, float wallH) {
+      const float gy = world.heightfield.sampleHeight(rx, rz);
+      addWall({rx, gy + 0.08f, rz}, {halfW, 0.08f, halfD}); // floor slab
+      addWall({rx, gy + wallH + 0.12f, rz}, {halfW + 0.2f, 0.12f, halfD + 0.2f}); // roof
+      addWall({rx - halfW, gy + wallH * 0.5f, rz}, {0.18f, wallH * 0.5f, halfD}); // west
+      addWall({rx + halfW, gy + wallH * 0.5f, rz}, {0.18f, wallH * 0.5f, halfD}); // east
+      addWall({rx, gy + wallH * 0.5f, rz - halfD}, {halfW, wallH * 0.5f, 0.18f}); // north back wall
+      // South wall has a wide 3.4m walk/drive doorway gap!
+      const float wingW = std::max(0.5f, (halfW * 2.0f - 3.4f) * 0.25f);
+      addWall({rx - halfW + wingW, gy + wallH * 0.5f, rz + halfD}, {wingW, wallH * 0.5f, 0.18f});
+      addWall({rx + halfW - wingW, gy + wallH * 0.5f, rz + halfD}, {wingW, wallH * 0.5f, 0.18f});
+    };
+
+    addWalkInRoom(world.spawnPos.x - 13.0f, world.spawnPos.z - 11.0f, 4.8f, 4.2f, 3.4f); // Safehouse
+    addWalkInRoom(-38.0f, -125.0f, 5.2f, 4.5f, 3.6f);                                   // Civic 24/7 Mart
+    addWalkInRoom(112.0f, -135.0f, 6.2f, 5.6f, 4.2f);                                   // Customs Garage
+    addWalkInRoom(704.0f, 108.0f, 4.4f, 4.0f, 3.4f);                                    // Iron Pit Armory
   }
 
   // 4. Iron Pit Arena Platform + Bleachers + Cage Posts colliders
@@ -256,7 +310,7 @@ bool PhysicsWorld::initFromWorld(const WorldData& world, std::string* err) {
   // 5. Dynamic Jolt Rigid Bodies (smashable wooden crates & steel barrels around Safehouse, Iron Pit & Seaport)
   {
     auto addDynamic = [&](DynamicPropKind kind, const glm::vec3& pos, const glm::vec3& halfExt, const glm::vec3& color, float mass) {
-      JPH::ShapeSettings::ShapeResult res = (kind == DynamicPropKind::Barrel)
+      JPH::ShapeSettings::ShapeResult res = (kind == DynamicPropKind::Barrel || kind == DynamicPropKind::Cone || kind == DynamicPropKind::TrashBin)
         ? JPH::CylinderShapeSettings(halfExt.y, halfExt.x).Create()
         : JPH::BoxShapeSettings(JPH::Vec3(halfExt.x, halfExt.y, halfExt.z)).Create();
       if (!res.IsValid()) return;
@@ -314,6 +368,21 @@ bool PhysicsWorld::initFromWorld(const WorldData& world, std::string* err) {
           addDynamic(DynamicPropKind::Barrel, {px, py, pz}, {0.33f, 0.46f, 0.33f}, {0.22f, 0.46f, 0.72f}, 28.0f);
         }
       }
+    }
+
+    // Breakable/knockable street furniture (trash bins, benches, road cones)
+    for (const auto& sd : streetDynamics) {
+      addDynamic(std::get<0>(sd), std::get<1>(sd), std::get<2>(sd), std::get<3>(sd), std::get<4>(sd));
+    }
+    const glm::vec2 coneLines[] = {
+      {12.0f, -68.0f}, {12.0f, -72.0f}, {12.0f, -76.0f},
+      {-704.0f, 60.0f}, {-708.0f, 64.0f},
+      {world.fightPitPos.x - 12.0f, world.fightPitPos.z + 2.0f},
+      {world.fightPitPos.x - 12.0f, world.fightPitPos.z - 2.0f},
+    };
+    for (const auto& cl : coneLines) {
+      const float cy = world.heightfield.sampleHeight(cl.x, cl.y);
+      addDynamic(DynamicPropKind::Cone, {cl.x, cy, cl.y}, {0.22f, 0.38f, 0.22f}, {0.98f, 0.44f, 0.08f}, 7.0f);
     }
   }
 

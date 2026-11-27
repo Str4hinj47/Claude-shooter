@@ -18,6 +18,13 @@ enum class TimeOfDayPreset : uint8_t {
   Dawn = 3,
 };
 
+enum class WeatherPreset : uint8_t {
+  Clear = 0,
+  Overcast = 1,
+  Rain = 2,
+  Thunderstorm = 3,
+};
+
 enum class VehicleModelKind : uint8_t {
   PoliceCruiser = 0,
   Taxi = 1,
@@ -25,7 +32,19 @@ enum class VehicleModelKind : uint8_t {
   Mustang = 3,
   Ferrari = 4,
   RangeRover = 5,
+  Speedboat = 6,
+  CruiserBoat = 7,
+  Helicopter = 8,
+  Ambulance = 9,
+  Firetruck = 10,
+  Delivery = 11,
+  Semi = 12,
+  Audi = 13,
+  Challenger = 14,
+  R8 = 15,
 };
+
+constexpr size_t kVehicleModelCount = 16;
 
 enum class NpcModelKind : uint8_t {
   Business = 0,
@@ -48,6 +67,9 @@ struct SkyLightingState {
   glm::vec3 sunColor{1.0f, 0.96f, 0.88f};
   glm::vec3 fogColor{0.58f, 0.73f, 0.86f};
   float nightFactor = 0.0f; // 0 = day, 1 = night (drives building window glow)
+  float rainIntensity = 0.0f;
+  float wetness = 0.0f;
+  float lightningFlash = 0.0f;
 };
 
 struct WeaponSlotState {
@@ -78,6 +100,9 @@ struct VehicleEntity {
   VehicleModelKind kind = VehicleModelKind::Sedan;
   glm::vec3 pos{0.0f};
   float yawRad = 0.0f;
+  float pitchRad = 0.0f;
+  float rollRad = 0.0f;
+  float verticalVel = 0.0f;
   float speed = 0.0f;      // m/s signed
   float steerAngle = 0.0f; // visual/turn state
   glm::vec3 colorTint{1.0f};
@@ -88,6 +113,8 @@ struct VehicleEntity {
   bool isAmbientTraffic = false;
   bool isPolicePursuit = false;
   bool isRacer = false;
+  bool isBoat = false;
+  bool isAircraft = false;
   int racerRank = 0;
   int racerCheckpoint = 0;
   size_t roadIdx = 0;
@@ -288,6 +315,13 @@ public:
   // Actions callable from HUD / Tactical Phone
   void setTimeOfDayPreset(TimeOfDayPreset preset);
   void cycleTimeOfDay();
+  void setWeatherPreset(WeatherPreset preset);
+  void cycleWeather();
+  WeatherPreset weatherPreset() const { return weatherPreset_; }
+  std::string weatherLabel() const;
+  float rainIntensity() const { return rainIntensity_; }
+  float wetness() const { return wetness_; }
+  static float oceanWaveHeight(float x, float z, float timeSec);
   void acceptContract(int idx, const WorldData& world);
   void startStreetRace(int idx, PlayerController& player, const WorldData& world);
   void cancelRace();
@@ -448,6 +482,12 @@ private:
 
   float timeOfDayHours_ = 14.5f; // 2:30 PM sunny afternoon
   bool autoAdvanceTime_ = true;
+  WeatherPreset weatherPreset_ = WeatherPreset::Clear;
+  float rainIntensity_ = 0.0f;
+  float wetness_ = 0.0f;
+  float lightningFlash_ = 0.0f;
+  float thunderCooldown_ = 6.0f;
+  glm::vec3 lastCamFocus_{0.0f};
 
   std::string contextPrompt_;
   std::string toastText_;

@@ -30,13 +30,21 @@ int main() {
     return 1;
   }
   assert(world.chunks.size() == 225);
+  assert(world.heightfield.gridSize() == 1024);
   assert(!world.roads.empty());
   assert(!world.props.empty());
+  bool foundBridge = false, foundSwitchback = false;
+  for (const auto& r : world.roads) {
+    if (r.id == "pelican_bridge" && r.isBridge) foundBridge = true;
+    if (r.id == "canyon_switchback") foundSwitchback = true;
+  }
+  assert(foundBridge && foundSwitchback);
+  assert(world.heightfield.sampleHeight(-925.0f, 360.0f) > 5.0f); // Pelican Key island elevation
 
   const float pitY = world.heightfield.sampleHeight(world.fightPitPos.x, world.fightPitPos.z);
   assert(std::isfinite(pitY) && std::abs(pitY - 2.8f) < 0.8f);
-  std::printf("[PASS] WorldData loaded: %zu chunks, %zu roads, %zu props, fightPitY=%.2fm\n",
-              world.chunks.size(), world.roads.size(), world.props.size(), pitY);
+  std::printf("[PASS] WorldData loaded: %ux%u heightfield, %zu chunks, %zu roads, %zu props, fightPitY=%.2fm\n",
+              world.heightfield.gridSize(), world.heightfield.gridSize(), world.chunks.size(), world.roads.size(), world.props.size(), pitY);
 
   // 2. Multi-threaded JobSystem & Frustum/ChunkStreamer
   westgate::JobSystem jobs(2);
@@ -225,6 +233,29 @@ int main() {
     std::printf("[PASS] GltfAssetLoader (10 repaired vehicle GLBs): all bounds, grounding, and geometry valid\n");
   }
 
+  // 4c. Verify 12 real 3D house GLBs, boat/heli/truck GLBs, and interior/landmark GLBs
+  {
+    const char* extraGlbs[] = {
+      "houses/kenney-suburban/building-type-a.glb",
+      "houses/kenney-suburban/building-type-c.glb",
+      "houses/quaternius-buildings-2/House1.glb",
+      "houses/quaternius-buildings-3/2Story_Balcony_Mat.glb",
+      "houses/quaternius-buildings-3/3Story_Slim_Mat.glb",
+      "houses/quaternius-buildings-2/Building1_Large.glb",
+      "speedboat.glb", "cruiser_boat.glb", "heli.glb", "ambulance.glb",
+      "firetruck.glb", "delivery.glb", "semi.glb",
+      "cruise_ship.glb", "airliner_737.glb", "int_bed.glb", "int_couch_l.glb", "store_shelf.glb"
+    };
+    for (const char* ef : extraGlbs) {
+      westgate::GltfModel em;
+      if (!westgate::GltfAssetLoader::loadGlb((publicDir / "models" / ef).string(), em, false, &err) || em.primitives.empty()) {
+        std::fprintf(stderr, "FAIL extra GLB %s: %s\n", ef, err.c_str());
+        return 1;
+      }
+    }
+    std::printf("[PASS] GltfAssetLoader (18 house/boat/heli/landmark/interior GLBs): all valid\n");
+  }
+
   // 5. Full GameSession gameplay loop: vehicles, weapons, Iron Pit, contracts, races, sky & save/load
   {
     westgate::GameSession session;
@@ -331,6 +362,44 @@ int main() {
         return 1;
       }
     }
+
+    // Verify Weather presets (Rain & Thunderstorm) + Rain streak markers
+    session.setWeatherPreset(westgate::WeatherPreset::Thunderstorm);
+    for (int f = 0; f < 40; ++f) {
+      westgate::GameInputFrame idle{};
+      session.update(1.0f / 60.0f, idle, player, physics, world, nullptr);
+    }
+    const auto stormSky = session.skyLighting();
+    assert(stormSky.rainIntensity > 0.7f && stormSky.wetness > 0.3f);
+    const auto stormMarkers = session.gatherWorldMarkers(1.0f);
+    assert(stormMarkers.size() > 50); // includes rain streak markers
+    session.setWeatherPreset(westgate::WeatherPreset::Clear);
+
+    // Verify Flyable Helicopter & Wave-Buoyant Boat exist and function
+    const westgate::VehicleEntity* heliPtr = nullptr;
+    const westgate::VehicleEntity* boatPtr = nullptr;
+    for (const auto& v : session.vehicles()) {
+      if (v.isAircraft && !heliPtr) heliPtr = &v;
+      if (v.isBoat && !boatPtr) boatPtr = &v;
+    }
+    assert(heliPtr != nullptr && boatPtr != nullptr);
+    const glm::vec3 heliStart = heliPtr->pos;
+    player.teleport(heliStart + glm::vec3(2.0f, 0.5f, 0.0f), 0.0f);
+    westgate::GameInputFrame boardHeli{};
+    boardHeli.interactPressed = true;
+    session.update(1.0f / 60.0f, boardHeli, player, physics, world, nullptr);
+    assert(session.inVehicle() && session.currentVehicle() && session.currentVehicle()->isAircraft);
+    westgate::GameInputFrame flyUp{};
+    flyUp.moveInput.jump = true;
+    flyUp.moveInput.moveForward = 1.0f;
+    for (int f = 0; f < 60; ++f) {
+      session.update(1.0f / 60.0f, flyUp, player, physics, world, nullptr);
+    }
+    assert(session.currentVehicle()->pos.y > heliStart.y + 3.0f);
+    assert(session.currentVehicle()->rotorAngleRad > 1.0f);
+    westgate::GameInputFrame exitHeli{};
+    exitHeli.interactPressed = true;
+    session.update(1.0f / 60.0f, exitHeli, player, physics, world, nullptr);
 
     // Save / load JSON persistence
     const std::string saveFile = "/tmp/westgate_test_save.json";
