@@ -136,6 +136,7 @@ interface AutoDetailMaps {
   treadRoughness: THREE.DataTexture;
   carbonRoughness: THREE.DataTexture;
   contactShadowTex: THREE.DataTexture;
+  plateTex: THREE.Texture;
 }
 
 let cachedAutoMaps: AutoDetailMaps | null = null;
@@ -212,7 +213,68 @@ function getAutoDetailMaps(): AutoDetailMaps {
   contactShadowTex.anisotropy = 16;
   contactShadowTex.needsUpdate = true;
 
-  cachedAutoMaps = { flakeRoughness, treadRoughness, carbonRoughness, contactShadowTex };
+  // Crisp embossed "WESTGATE" Bay State license plate texture
+  let plateTex: THREE.Texture;
+  if (typeof document !== "undefined") {
+    const c = document.createElement("canvas");
+    c.width = 512;
+    c.height = 256;
+    const ctx = c.getContext("2d")!;
+    const bgGrad = ctx.createLinearGradient(0, 0, 0, 256);
+    bgGrad.addColorStop(0, "#eef2f6");
+    bgGrad.addColorStop(0.55, "#e2e8f0");
+    bgGrad.addColorStop(1, "#cbd5e1");
+    ctx.fillStyle = bgGrad;
+    ctx.fillRect(0, 0, 512, 256);
+
+    // Subtle recessed outer frame bevel
+    ctx.strokeStyle = "#1e293b";
+    ctx.lineWidth = 10;
+    ctx.strokeRect(8, 8, 496, 240);
+
+    // Top navy Westgate header bar
+    ctx.fillStyle = "#0f274c";
+    ctx.fillRect(14, 14, 484, 54);
+    ctx.fillStyle = "#f59e0b";
+    ctx.font = "900 30px system-ui, -apple-system, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("WESTGATE", 256, 42);
+
+    // Corner mounting bolts
+    for (const [bx, by] of [[38, 40], [474, 40], [38, 218], [474, 218]]) {
+      ctx.fillStyle = "#94a3b8";
+      ctx.beginPath();
+      ctx.arc(bx, by, 9, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "#334155";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+
+    // Embossed plate registration characters
+    ctx.font = "900 108px ui-monospace, SFMono-Regular, Menlo, monospace";
+    ctx.fillStyle = "rgba(15, 23, 42, 0.22)";
+    ctx.fillText("WGT•742", 259, 149);
+    ctx.fillStyle = "#0f2240";
+    ctx.fillText("WGT•742", 256, 145);
+
+    // Bottom state strip
+    ctx.fillStyle = "#b91c1c";
+    ctx.font = "800 20px system-ui, -apple-system, sans-serif";
+    ctx.fillText("BAY STATE", 256, 224);
+
+    const canvasTex = new THREE.CanvasTexture(c);
+    canvasTex.colorSpace = THREE.SRGBColorSpace;
+    canvasTex.anisotropy = 16;
+    canvasTex.needsUpdate = true;
+    plateTex = canvasTex;
+  } else {
+    plateTex = new THREE.DataTexture(new Uint8Array([228, 232, 238, 255]), 1, 1, THREE.RGBAFormat);
+    plateTex.needsUpdate = true;
+  }
+
+  cachedAutoMaps = { flakeRoughness, treadRoughness, carbonRoughness, contactShadowTex, plateTex };
   return cachedAutoMaps;
 }
 
@@ -333,16 +395,18 @@ function tuneAutomotiveMaterial(orig: THREE.Material, id: TrafficId): THREE.Mate
     std.envMapIntensity = 1.45;
     if (id === "r8") std.side = THREE.DoubleSide;
   } else if (name.startsWith("brake__")) {
-    std.metalness = 0.82;
-    std.roughness = 0.28;
-    std.envMapIntensity = 1.25;
+    const isDisc = /disc|disk|pad2|brake-discs/i.test(name);
+    std.metalness = isDisc ? 0.90 : 0.55;
+    std.roughness = isDisc ? 0.22 : 0.32;
+    std.envMapIntensity = isDisc ? 1.40 : 1.25;
   } else if (name.startsWith("plate__")) {
-    if (!std.map && std.color && std.color.r > 0.92 && std.color.g > 0.92 && std.color.b > 0.92) {
-      std.color.setHex(0xbec4cc);
+    if (!std.map) {
+      std.map = maps.plateTex;
+      std.color.setHex(0xffffff);
     }
-    std.metalness = 0.32;
-    std.roughness = 0.36;
-    std.envMapIntensity = 1.1;
+    std.metalness = 0.34;
+    std.roughness = 0.28;
+    std.envMapIntensity = 1.15;
   } else if (name.startsWith("trim__") || name.startsWith("carbon__")) {
     if (!std.map && !name.endsWith("_livery") && std.color) {
       const lum = std.color.r * 0.299 + std.color.g * 0.587 + std.color.b * 0.114;
@@ -375,7 +439,8 @@ function tuneAutomotiveMaterial(orig: THREE.Material, id: TrafficId): THREE.Mate
 
 function separateLampLenses(scene: THREE.Group) {
   scene.updateMatrixWorld(true);
-  const lenses = new Map<THREE.Material, THREE.Material>();
+  const frontLenses = new Map<THREE.Material, THREE.Material>();
+  const rearLenses = new Map<THREE.Material, THREE.Material>();
   const point = new THREE.Vector3();
   scene.traverse((o) => {
     const mesh = o as THREE.Mesh;
@@ -394,35 +459,81 @@ function separateLampLenses(scene: THREE.Group) {
         z += point.z / 3;
         y += point.y / 3;
       }
-      classes.push(y < 0.96 && (z < -1.5 || z > 2.25) ? 1 : 0);
+      if (y < 0.96 && z < -1.5) classes.push(1);
+      else if (y < 0.88 && z > 1.85) classes.push(2);
+      else classes.push(0);
     }
-    if (!classes.includes(1)) return;
-    let lens = lenses.get(mesh.material);
-    if (!lens) {
-      lens = mesh.material.clone();
-      const material = lens as THREE.MeshStandardMaterial;
-      material.name = mesh.material.name + "__lamp_lens";
-      material.color.set(0x999fa6);
-      material.transparent = true;
-      material.opacity = 0.18;
-      material.depthWrite = false;
-      material.depthTest = true;
-      material.side = THREE.DoubleSide;
-      lenses.set(mesh.material, lens);
+    const hasFront = classes.includes(1);
+    const hasRear = classes.includes(2);
+    if (!hasFront && !hasRear) return;
+
+    let frontLens = frontLenses.get(mesh.material);
+    if (hasFront && !frontLens) {
+      const m = new THREE.MeshPhysicalMaterial({
+        name: mesh.material.name + "__headlight_lens",
+        color: new THREE.Color(0xe6eff8),
+        metalness: 0.04,
+        roughness: 0.03,
+        clearcoat: 1.0,
+        clearcoatRoughness: 0.03,
+        ior: 1.52,
+        transparent: true,
+        opacity: 0.22,
+        depthWrite: false,
+        depthTest: true,
+        side: THREE.DoubleSide,
+        envMapIntensity: 1.75,
+      });
+      frontLenses.set(mesh.material, m);
+      frontLens = m;
     }
+
+    let rearLens = rearLenses.get(mesh.material);
+    if (hasRear && !rearLens) {
+      const m = new THREE.MeshPhysicalMaterial({
+        name: mesh.material.name + "__taillight_lens",
+        color: new THREE.Color(0x9e0a10),
+        metalness: 0.08,
+        roughness: 0.05,
+        clearcoat: 1.0,
+        clearcoatRoughness: 0.04,
+        ior: 1.5,
+        transparent: true,
+        opacity: 0.40,
+        depthWrite: false,
+        depthTest: true,
+        side: THREE.DoubleSide,
+        envMapIntensity: 1.65,
+      });
+      rearLenses.set(mesh.material, m);
+      rearLens = m;
+    }
+
+    const mats: THREE.Material[] = [mesh.material];
+    const slotOf = [0, 0, 0];
+    if (hasFront && frontLens) {
+      slotOf[1] = mats.length;
+      mats.push(frontLens);
+    }
+    if (hasRear && rearLens) {
+      slotOf[2] = mats.length;
+      mats.push(rearLens);
+    }
+
     const copy = geometry.clone();
     copy.clearGroups();
     let start = 0;
-    let previous = classes[0];
+    let previous = slotOf[classes[0]];
     for (let i = 1; i <= classes.length; i++) {
-      if (i === classes.length || classes[i] !== previous) {
+      const cur = i < classes.length ? slotOf[classes[i]] : -1;
+      if (i === classes.length || cur !== previous) {
         copy.addGroup(start * 3, (i - start) * 3, previous);
         start = i;
-        previous = classes[i];
+        previous = cur;
       }
     }
     mesh.geometry = copy;
-    mesh.material = [mesh.material, lens];
+    mesh.material = mats;
   });
 }
 
@@ -623,9 +734,6 @@ export class ModelLibrary {
             mesh.castShadow = true;
             mesh.receiveShadow = true;
             mesh.frustumCulled = true;
-            if (id === "ferrari" && !Array.isArray(mesh.material) && mesh.material.name.startsWith("plate__")) {
-              mesh.visible = false;
-            }
             const tuneOne = (m: THREE.Material) => {
               let out = tuned.get(m);
               if (!out) {
@@ -699,6 +807,7 @@ export class ModelLibrary {
     const paintCopies = new Map<THREE.Material, THREE.MeshPhysicalMaterial>();
     const rimCopies = new Map<THREE.Material, THREE.MeshStandardMaterial>();
     const caliperCopies = new Map<THREE.Material, THREE.MeshStandardMaterial>();
+    const brakeDiscCopies = new Map<THREE.Material, THREE.MeshStandardMaterial>();
     const glassCopies = new Map<THREE.Material, THREE.MeshStandardMaterial>();
     const trimCopies = new Map<THREE.Material, THREE.MeshStandardMaterial>();
     const headlightIndicators: THREE.MeshStandardMaterial[] = [];
@@ -772,12 +881,23 @@ export class ModelLibrary {
           }
           return copy;
         }
-        if (opts.player && /brake__.*(?:caliper|pad1)/i.test(mat.name)) {
+        if (opts.player && /brake__(?:.*(?:caliper|pad1)|Brakes|Brake Kit|Breaks)/i.test(mat.name)) {
           let copy = caliperCopies.get(mat);
           if (!copy) {
             copy = mat.clone() as THREE.MeshStandardMaterial;
             copy.userData.defaultColor = copy.color.getHex();
             caliperCopies.set(mat, copy);
+          }
+          return copy;
+        }
+        if (
+          opts.player &&
+          (/brake__.*(?:disc|disk|pad2|brake-discs)/i.test(mat.name) || /carbon disk brake/i.test(mat.name))
+        ) {
+          let copy = brakeDiscCopies.get(mat);
+          if (!copy) {
+            copy = mat.clone() as THREE.MeshStandardMaterial;
+            brakeDiscCopies.set(mat, copy);
           }
           return copy;
         }
@@ -865,6 +985,7 @@ export class ModelLibrary {
     wrapper.userData.paintMaterials = [...paintCopies.values()];
     wrapper.userData.rimMaterials = [...rimCopies.values()];
     wrapper.userData.caliperMaterials = [...caliperCopies.values()];
+    wrapper.userData.brakeDiscMaterials = [...brakeDiscCopies.values()];
     wrapper.userData.glassMaterials = [...glassCopies.values()];
     wrapper.userData.trimMaterials = [...trimCopies.values()];
     if (opts.custom) {

@@ -107,6 +107,8 @@ export interface DriveableVehicle {
   suspension: VehicleSuspensionState;
   deformer: VehicleCrashDeformer;
   trunkBodies?: DeadBodyRecord[];
+  brakeHeat?: number;
+  lastGear?: number;
 }
 
 const TRUCK_SPECS: Record<"semi" | "kraz", CarSpec> = {
@@ -1509,6 +1511,59 @@ export class WestgateVehicleManager {
         v === this.activeVehicle
           ? input.handbrake || (input.throttle < -0.1 && v.speed > 0.5)
           : v.crashTimer > 0 || !!v.npcBraking;
+
+      // Thermal brake disc glow under hard braking at speed + high-RPM gearshift exhaust pop
+      if (v === this.activeVehicle) {
+        const hardBraking = braking && Math.abs(v.speed) > 9.0 && !v.airborne;
+        const targetHeat = hardBraking ? clamp((Math.abs(v.speed) - 9.0) / 24.0, 0.2, 1.0) : 0;
+        const curHeat = v.brakeHeat ?? 0;
+        v.brakeHeat = targetHeat > curHeat
+          ? clamp(curHeat + safeDt * 1.45, 0, targetHeat)
+          : Math.max(0, curHeat - safeDt * 0.48);
+        const discMats = v.modelRoot?.userData?.brakeDiscMaterials as THREE.MeshStandardMaterial[] | undefined;
+        if (discMats && discMats.length > 0) {
+          const heat = v.brakeHeat;
+          for (let dmi = 0; dmi < discMats.length; dmi++) {
+            const dm = discMats[dmi];
+            if (heat > 0.03) {
+              dm.emissive.setHex(0xff4210);
+              dm.emissiveIntensity = heat * heat * 1.65;
+            } else {
+              dm.emissiveIntensity = 0;
+            }
+          }
+        }
+        const curGear = v.physState?.gear ?? 1;
+        if (
+          v.lastGear !== undefined &&
+          curGear !== v.lastGear &&
+          v.lastGear > 0 &&
+          curGear > 0 &&
+          Math.abs(v.speed) > 10 &&
+          !v.airborne &&
+          this.onSmoke
+        ) {
+          const fx = Math.sin(v.yaw);
+          const fz = Math.cos(v.yaw);
+          const rx = Math.cos(v.yaw);
+          const rz = -Math.sin(v.yaw);
+          const rearZ = -v.length * 0.48;
+          const exhaustX = v.width * 0.24;
+          this.onSmoke(
+            new THREE.Vector3(v.pos.x + fx * rearZ - rx * exhaustX, v.pos.y + 0.28, v.pos.z + fz * rearZ - rz * exhaustX),
+            false,
+          );
+        }
+        v.lastGear = curGear;
+      } else if ((v.brakeHeat ?? 0) > 0) {
+        v.brakeHeat = Math.max(0, (v.brakeHeat ?? 0) - safeDt * 0.65);
+        const discMats = v.modelRoot?.userData?.brakeDiscMaterials as THREE.MeshStandardMaterial[] | undefined;
+        if (discMats) {
+          for (let dmi = 0; dmi < discMats.length; dmi++) {
+            discMats[dmi].emissiveIntensity = (v.brakeHeat ?? 0) * 1.2;
+          }
+        }
+      }
 
       // Door open/close pulse animation on enter/exit (for models with hinged doors like Range Rover)
       if (v.doorTimer > 0) {

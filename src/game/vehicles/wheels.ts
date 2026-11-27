@@ -13,18 +13,18 @@ function rotates(id: TrafficId, mesh: THREE.Mesh): boolean {
   if (Array.isArray(mesh.material)) return false;
   const name = mesh.material.name;
   if (id === "golf") return /^(tire__New-Tyre|rim__Alloys|brake__Brake-discs|other__Wheel-nuts)$/.test(name);
-  if (id === "mercedes") return /^(tire__W222 - Wheel|rim__W222 - Rims(?:#2)?)$/.test(name);
+  if (id === "mercedes") return /^(tire__W222 - Wheel|rim__W222 - Rims(?:#2)?|brake__W222_Disc)$/.test(name);
   if (id === "audi") return /^(tire__tire\.001|rim__RIM BRIGHT|rim__RIM DARK|carbon__carbon disk brake)$/.test(name);
   if (id === "mustang") return /^(tire__M_Tire1|rim__M_Rim[12]|brake__M_BrakePad2)$/.test(name);
   if (id === "ferrari") return /^(tire__Tire\.00[02]|rim__Rims\.000|brake__Break_Discs\.000)$/.test(name);
-  if (id === "r8") return name === "tire__r8" || name === "rim__r8" || name === "rim__r8_cap" || /^metal_2(?:_(?:[1-5]|1[1-6]))?$/.test(mesh.name);
+  if (id === "r8") return name === "tire__r8" || name === "rim__r8" || name === "rim__r8_cap" || name === "brake__r8_Disc" || /^metal_2(?:_(?:[1-5]|1[1-6]))?$/.test(mesh.name);
   if (id === "rangerover") return /^(tire__RangeRover|rim__RangeRover|brake__RangeRover_Disc)$/i.test(name);
   if (id === "sedan" || id === "offroad") return /^(tire|rim)__(sedan|offroad)$/.test(name) || /^tire_wheel_/.test(mesh.name) || /^rim_wheel_/.test(mesh.name);
   if (isQuaterniusNpc(id)) return /^(tire|rim)__/.test(name) || mesh.name === "Black" || mesh.name === "Grey";
   if (id === "semi") return /^(tire__TireRubber|tire__TireTreads|chrome__Chrome)$/.test(name);
   if (id === "kraz") return /^(tire__tire|chrome__wheel)$/.test(name);
   if (id === "challenger") {
-    if (name === "tire__challenger") return true;
+    if (name === "tire__challenger" || name === "brake__challenger_Disc") return true;
     if (name === "rim__challenger" || name === "trim__challenger") {
       // Measure in world/root space because challenger nodes carry a root scale transform
       const bb = new THREE.Box3().setFromObject(mesh);

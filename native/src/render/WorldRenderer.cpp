@@ -1140,8 +1140,21 @@ bool WorldRenderer::loadGlbBatch(
             metallic = 0.88f;
             roughness = 0.18f;
           } else if (startsWith(mn, "brake__")) {
-            metallic = 0.82f;
+            const bool isDisc = containsCI(mn, "disc") || containsCI(mn, "disk") || containsCI(mn, "pad2") || containsCI(mn, "brake-discs");
+            if (isDisc) {
+              metallic = 0.90f;
+              roughness = 0.22f;
+            } else {
+              metallic = 0.52f;
+              roughness = 0.30f;
+              if (!hasTexture) matCol = glm::vec3(0.76f, 0.09f, 0.09f);
+            }
+          } else if (startsWith(mn, "plate__")) {
+            metallic = 0.34f;
             roughness = 0.28f;
+            if (!hasTexture && matCol.r > 0.88f && matCol.g > 0.88f && matCol.b > 0.88f) {
+              matCol = glm::vec3(0.84f, 0.87f, 0.91f);
+            }
           } else if (startsWith(mn, "tire__")) {
             metallic = 0.02f;
             roughness = 0.86f;
