@@ -2271,6 +2271,18 @@ export class SoldierRig {
       if (pose.lowerWeight > 0.01) {
         for (const bName of COMBAT_LOWER_BONES) applyBone(bName, pose.lowerWeight);
       }
+      // Keep subtle head/neck aim-tracking during guard/stance so fighters track their target
+      if (!pose.activeMove && pose.clipId !== "hit" && pose.clipId !== "knockdown" && pose.clipId !== "dodge") {
+        const lookYaw = clamp(wrapAngle(this.aimYaw - this.bodyYaw), -0.65, 0.65);
+        const lookPitch = clamp(this.aimPitch, -0.45, 0.45);
+        const headTrackW = pose.upperWeight * 0.65;
+        if (Math.abs(lookYaw) > 0.01 || Math.abs(lookPitch) > 0.01) {
+          const headQ = new THREE.Quaternion().setFromEuler(
+            new THREE.Euler(-lookPitch * 0.45 * headTrackW, lookYaw * 0.55 * headTrackW, 0, "YXZ"),
+          );
+          if (B.Head) this.rotateWorld(B.Head, headQ);
+        }
+      }
     } else {
       // Crisp procedural combat fallback while Mixamo GLBs finish streaming
       const yawNow = this.root.rotation.y;

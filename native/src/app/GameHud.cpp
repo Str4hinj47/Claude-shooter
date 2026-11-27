@@ -145,7 +145,7 @@ void drawWestgateHud(
     ImGui::ProgressBar(session.playerArmor() / 100.0f, {-1, 14}, "ARMOR");
     if (session.inVehicle() && session.currentVehicle()) {
       const auto* cv = session.currentVehicle();
-      const float kmh = glm::length(glm::vec3(cv->speed, cv->verticalSpeed, 0.0f)) * 3.6f;
+      const float kmh = glm::length(glm::vec3(cv->speed, cv->verticalVel, 0.0f)) * 3.6f;
       if (cv->isAircraft) {
         ImGui::Text("HELI: %.0f KM/H | ALT %.0fm  ([Space/C] Alt, [G] Exit)", kmh, std::max(0.0f, cv->pos.y));
       } else if (cv->isBoat) {

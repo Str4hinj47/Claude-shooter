@@ -29,6 +29,8 @@ struct CharacterPoseOverlay {
   float aimWeight = 0.0f;
   float recoilKick = 0.0f;
   float reloadProgress = 0.0f;
+  float fistWeight = 0.0f;
+  float koProgress = 0.0f;
 };
 
 /**
@@ -56,11 +58,19 @@ class CharacterAnimator {
   struct SourceClip {
     std::string id;
     float duration = 0.0f;
+    float rawDuration = 0.0f;
+    float tStart = 0.0f;
+    float tEnd = 0.0f;
     bool loop = true;
+    bool pingPong = false;
+    float srcFacingYaw = 0.0f;
     std::vector<GltfNodeInfo> srcNodes;
+    std::vector<int32_t> srcTopoOrder;
     std::vector<glm::quat> srcRestWorldQ;
+    std::vector<glm::vec3> srcRestWorldPos;
     std::unordered_map<std::string, int32_t> canonicalToSrcNode;
     glm::vec3 srcRestHipPos{0.0f, 0.95f, 0.0f};
+    glm::vec3 srcRestHipWorldPos{0.0f, 0.95f, 0.0f};
     GltfAnimationClip clip;
   };
 
@@ -70,7 +80,10 @@ class CharacterAnimator {
     const GltfModel& animModel,
     size_t clipIndex,
     bool loop,
-    SourceClip& outClip
+    SourceClip& outClip,
+    float tStart = 0.0f,
+    float tEnd = -1.0f,
+    bool pingPong = false
   );
 
   /** Bind this animator to a skinned target model (e.g. base_body.glb, clothing_shorts.glb, business.glb). */
@@ -139,12 +152,23 @@ class CharacterAnimator {
 
   static std::string canonicalizeBoneName(const std::string& rawName);
 
+  struct AlignedTargetBind {
+    std::vector<glm::quat> worldQ;
+  };
+
+  struct FingerCurlInfo {
+    glm::vec3 localAxis{1.0f, 0.0f, 0.0f};
+    float curlScale = 1.0f;
+  };
+
  private:
+  const AlignedTargetBind& getOrBuildAlignedBind(const SourceClip& src) const;
+
   void sampleSourcePose(
     const SourceClip& src,
     float timeSec,
     std::vector<glm::quat>& outSrcWorldQ,
-    glm::vec3& outSrcHipPos
+    glm::vec3& outSrcHipWorldPos
   ) const;
 
   glm::quat computeOverlayDeltaWorld(
@@ -162,9 +186,15 @@ class CharacterAnimator {
   const GltfModel* target_ = nullptr;
   std::vector<int32_t> targetTopoOrder_;
   std::vector<glm::quat> targetRestWorldQ_;
+  std::vector<glm::vec3> targetRestWorldPos_;
   std::vector<std::string> targetCanonicalNames_;
+  std::unordered_map<std::string, int32_t> canonicalToTargetNode_;
+  std::unordered_map<int32_t, FingerCurlInfo> fingerCurlByNode_;
+  mutable std::unordered_map<std::string, AlignedTargetBind> alignedBindCache_;
   int32_t targetHipsNode_ = -1;
   float targetHipHeight_ = 0.95f;
+  float targetFacingYaw_ = 0.0f;
+  glm::mat3 targetHipsParentInvRotScale_{1.0f};
 };
 
 } // namespace westgate

@@ -1133,7 +1133,7 @@ void GameSession::updateNpcsAndPolice(float dt, PlayerController& player, Physic
         const glm::vec2 dir = glm::normalize(glm::vec2(toP.x, toP.z));
         n.pos.x += dir.x * 4.4f * dt;
         n.pos.z += dir.y * 4.4f * dt;
-        n.pos.y = world.heightfield.sampleHeight(n.pos.x, n.pos.z) + 0.05f;
+        n.pos.y = world.heightfield.sampleHeight(n.pos.x, n.pos.z);
         n.animClip = "Run";
       } else {
         n.animClip = "Idle";
@@ -1162,7 +1162,7 @@ void GameSession::updateNpcsAndPolice(float dt, PlayerController& player, Physic
         const glm::vec2 dir = glm::normalize(glm::vec2(away.x, away.z));
         n.pos.x = std::clamp(n.pos.x + dir.x * 5.2f * dt, world.worldMin + 15.0f, world.worldMax - 15.0f);
         n.pos.z = std::clamp(n.pos.z + dir.y * 5.2f * dt, world.worldMin + 15.0f, world.worldMax - 15.0f);
-        n.pos.y = world.heightfield.sampleHeight(n.pos.x, n.pos.z) + 0.05f;
+        n.pos.y = world.heightfield.sampleHeight(n.pos.x, n.pos.z);
         n.yawRad = std::atan2(dir.x, dir.y);
         n.animClip = "Run";
       } else {
@@ -1173,7 +1173,10 @@ void GameSession::updateNpcsAndPolice(float dt, PlayerController& player, Physic
       const auto& seg = world.roads[n.roadIdx];
       if (seg.samples.size() >= 2) {
         const float maxS = static_cast<float>(seg.samples.size() - 1);
-        n.samplePos += (n.forward ? 1.0f : -1.0f) * 0.15f * dt;
+        const size_t curI = std::min<size_t>(static_cast<size_t>(n.samplePos), seg.samples.size() - 2);
+        const float segLen = std::max(1.5f, glm::length(seg.samples[curI + 1].pos - seg.samples[curI].pos));
+        const float walkMetersPerSec = 1.55f;
+        n.samplePos += (n.forward ? 1.0f : -1.0f) * (walkMetersPerSec / segLen) * dt;
         if (n.samplePos >= maxS) { n.samplePos = maxS - 0.01f; n.forward = false; }
         if (n.samplePos <= 0.0f) { n.samplePos = 0.01f; n.forward = true; }
         const size_t i0 = std::min<size_t>(static_cast<size_t>(n.samplePos), seg.samples.size() - 2);
@@ -1185,7 +1188,7 @@ void GameSession::updateNpcsAndPolice(float dt, PlayerController& player, Physic
         const float dLen = glm::length(delta);
         const glm::vec3 dir = (dLen > 1e-4f) ? ((n.forward ? 1.0f : -1.0f) * (delta / dLen)) : glm::vec3(0.0f, 0.0f, 1.0f);
         const glm::vec3 wp = p + glm::vec3(s0.rx, 0.0f, s0.rz) * (n.forward ? 6.5f : -6.5f);
-        n.pos = glm::vec3(wp.x, world.heightfield.sampleHeight(wp.x, wp.z) + 0.05f, wp.z);
+        n.pos = glm::vec3(wp.x, world.heightfield.sampleHeight(wp.x, wp.z), wp.z);
         n.yawRad = std::atan2(dir.x, dir.z);
         n.animClip = "Walk";
       }

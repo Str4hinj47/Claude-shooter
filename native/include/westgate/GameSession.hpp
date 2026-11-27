@@ -403,6 +403,17 @@ public:
   float playerLocomotionTime() const { return playerLocomotionClock_; }
   std::string playerAttackClip() const { return playerAttackClip_; }
   float playerAttackTime() const { return playerAttackTimer_; }
+  float playerAttackDuration() const {
+    if (playerAttackClip_ == "uppercut" || playerAttackClip_ == "kick") return 0.85f;
+    if (playerAttackClip_ == "dodge") return 0.52f;
+    return 0.58f;
+  }
+  float playerAttackProgress() const {
+    return playerAttackClip_.empty() ? 0.0f : std::clamp(playerAttackTimer_ / playerAttackDuration(), 0.0f, 1.0f);
+  }
+  float playerHitAnimProgress() const {
+    return (playerHitAnimTimer_ > 0.0f) ? std::clamp(1.0f - playerHitAnimTimer_ / 0.45f, 0.0f, 1.0f) : 0.0f;
+  }
   bool isAiming() const { return aiming_; }
   bool isRangedWeapon() const { return !weapons_[static_cast<size_t>(activeWeapon_)].isMelee; }
   bool isTwoHandedWeapon() const {

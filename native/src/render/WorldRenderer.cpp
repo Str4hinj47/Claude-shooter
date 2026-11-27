@@ -1673,8 +1673,15 @@ void WorldRenderer::render(
   for (uint32_t ci = 0; ci < charCount; ++ci) {
     const auto& ch = characters[ci];
     SkinUniforms su{};
+    float modelYaw = ch.yawRad;
+    if (ch.part == SkinnedPartKind::Business ||
+        ch.part == SkinnedPartKind::Civilian ||
+        ch.part == SkinnedPartKind::Police ||
+        ch.part == SkinnedPartKind::Security) {
+      modelYaw += 3.14159265f;
+    }
     su.model = glm::translate(glm::mat4(1.0f), ch.position) *
-               glm::rotate(glm::mat4(1.0f), ch.yawRad, glm::vec3(0.0f, 1.0f, 0.0f));
+               glm::rotate(glm::mat4(1.0f), modelYaw, glm::vec3(0.0f, 1.0f, 0.0f));
     su.tint = ch.tint;
     if (ch.part == SkinnedPartKind::PlayerHair) {
       su.tint.a = 2.0f;

@@ -84,23 +84,31 @@ int main(int argc, char** argv) {
       }
     }
   }
-  struct CombatClipDef { const char* id; const char* file; bool loop; };
+  struct CombatClipDef {
+    const char* id;
+    const char* file;
+    bool loop;
+    float tStart;
+    float tEnd;
+    bool pingPong;
+  };
   const CombatClipDef combatDefs[] = {
-    {"fight_idle", "animations/combat/fight_idle.glb", true},
-    {"jab", "animations/combat/jab.glb", false},
-    {"cross", "animations/combat/cross.glb", false},
-    {"hook", "animations/combat/hook.glb", false},
-    {"uppercut", "animations/combat/uppercut.glb", false},
-    {"kick", "animations/combat/kick.glb", false},
-    {"block", "animations/combat/block.glb", true},
-    {"hit", "animations/combat/hit.glb", false},
-    {"knockdown", "animations/combat/knockdown.glb", false},
+    {"fight_idle", "animations/combat/fight_idle.glb", true,  0.00f, -1.00f, false},
+    {"jab",        "animations/combat/jab.glb",        false, 0.22f,  1.05f, false},
+    {"cross",      "animations/combat/cross.glb",      false, 0.65f,  1.55f, false},
+    {"hook",       "animations/combat/hook.glb",       false, 0.72f,  1.72f, false},
+    {"uppercut",   "animations/combat/uppercut.glb",   false, 0.16f,  0.96f, false},
+    {"kick",       "animations/combat/kick.glb",       false, 0.22f,  1.28f, false},
+    {"block",      "animations/combat/block.glb",      true,  0.44f,  0.86f, true},
+    {"dodge",      "animations/combat/dodge.glb",      false, 0.04f,  0.78f, false},
+    {"hit",        "animations/combat/hit.glb",        false, 0.05f,  0.78f, false},
+    {"knockdown",  "animations/combat/knockdown.glb",  false, 0.05f,  2.15f, false},
   };
   for (const auto& def : combatDefs) {
     westgate::GltfModel am;
     if (westgate::GltfAssetLoader::loadGlb(resolveAsset(def.file).string(), am, false, nullptr)) {
       westgate::CharacterAnimator::SourceClip sc;
-      if (westgate::CharacterAnimator::buildSourceClip(def.id, am, 0, def.loop, sc)) {
+      if (westgate::CharacterAnimator::buildSourceClip(def.id, am, 0, def.loop, sc, def.tStart, def.tEnd, def.pingPong)) {
         clips[def.id] = std::move(sc);
       }
     }
@@ -216,6 +224,9 @@ int main(int argc, char** argv) {
   float elapsedSec = 0.0f;
   float prevPlayerYaw = player.yaw();
   float turnBankSmooth = 0.0f;
+  float weaponHoldSmooth = 0.0f;
+  float aimSmooth = 0.0f;
+  float fistSmooth = 0.0f;
   westgate::CharacterAnimState playerAnimState{};
   westgate::CharacterAnimState pitOppAnimState{};
   westgate::CharacterAnimState specRedAnimState{};
@@ -341,24 +352,46 @@ int main(int argc, char** argv) {
     turnBankSmooth += (yawRate * 0.25f - turnBankSmooth) * std::min(1.0f, dt * 10.0f);
 
     renderChars.clear();
+    const auto mapNormalizedTime = [&](const std::string& clipId, float norm01) -> float {
+      auto it = clips.find(clipId);
+      if (it == clips.end()) return 0.0f;
+      return std::clamp(norm01, 0.0f, 1.0f) * it->second.duration;
+    };
+
     if (!session.inVehicle()) {
       const bool blocking = gameInput.aimDown && session.activeWeapon().isMelee && clips.count("block");
       const std::string atk = session.playerAttackClip();
       const bool moving = player.speed() > 0.35f;
       const std::string locoClip = session.playerAnimClip(player, false);
-      const std::string desiredBase = (!moving && !atk.empty() && clips.count(atk)) ? atk : locoClip;
-      const float desiredBaseTime = (!moving && !atk.empty() && clips.count(atk))
-                                      ? session.playerAttackTime()
-                                      : session.playerLocomotionTime();
-      const std::string desiredUpper = (moving && !atk.empty() && clips.count(atk))
+      const bool hasAtk = !atk.empty() && clips.count(atk);
+      const float atkTime = hasAtk ? mapNormalizedTime(atk, session.playerAttackProgress()) : 0.0f;
+      const float locoTime = (locoClip == "hit")
+                               ? mapNormalizedTime("hit", session.playerHitAnimProgress())
+                               : session.playerLocomotionTime();
+      const std::string desiredBase = (!moving && hasAtk) ? atk
+                                    : (moving && atk == "dodge" && hasAtk) ? atk
+                                    : locoClip;
+      const float desiredBaseTime = ((!moving && hasAtk) || (moving && atk == "dodge" && hasAtk))
+                                      ? atkTime
+                                      : locoTime;
+      const std::string desiredUpper = (moving && hasAtk && atk != "dodge")
                                          ? atk
                                          : (moving && blocking ? std::string("block") : std::string());
-      const float desiredUpperTime = (!atk.empty()) ? session.playerAttackTime() : elapsedSec;
-      const float crossfadeSec = (!atk.empty() || blocking) ? 0.11f : 0.20f;
+      const float desiredUpperTime = (hasAtk && atk != "dodge") ? atkTime : elapsedSec;
+      const float crossfadeSec = (hasAtk || blocking) ? 0.10f : 0.20f;
 
       westgate::CharacterAnimator::advanceAnimState(
         playerAnimState, desiredBase, desiredBaseTime, desiredUpper, desiredUpperTime, dt, crossfadeSec
       );
+
+      const float targetWeaponHold = (session.isRangedWeapon() && !hasAtk) ? 1.0f : 0.0f;
+      const float targetAim = (session.isRangedWeapon() && session.isAiming() && !hasAtk) ? 1.0f : 0.0f;
+      const float targetFist = (session.activeWeapon().isMelee && (!moving || hasAtk || blocking || locoClip == "fight_idle"))
+                                 ? 1.0f : 0.0f;
+      const float smoothAlpha = std::min(1.0f, dt * 14.0f);
+      weaponHoldSmooth += (targetWeaponHold - weaponHoldSmooth) * smoothAlpha;
+      aimSmooth += (targetAim - aimSmooth) * smoothAlpha;
+      fistSmooth += (targetFist - fistSmooth) * smoothAlpha;
 
       westgate::CharacterPoseOverlay playerOverlay{};
       playerOverlay.timeSec = elapsedSec;
@@ -367,13 +400,12 @@ int main(int argc, char** argv) {
       playerOverlay.sprintLean = player.sprinting() ? std::clamp(player.speed() / 8.6f, 0.0f, 1.0f) : 0.0f;
       playerOverlay.turnBank = moving ? turnBankSmooth : 0.0f;
       playerOverlay.headLookPitch = std::clamp(player.pitch(), -0.55f, 0.55f);
-      if (session.isRangedWeapon()) {
-        playerOverlay.weaponHoldWeight = 1.0f;
-        playerOverlay.twoHandedWeapon = session.isTwoHandedWeapon();
-        playerOverlay.aimWeight = session.isAiming() ? 1.0f : 0.0f;
-        playerOverlay.recoilKick = session.recoilImpulse();
-        playerOverlay.reloadProgress = session.reloadProgress();
-      }
+      playerOverlay.weaponHoldWeight = weaponHoldSmooth;
+      playerOverlay.twoHandedWeapon = session.isTwoHandedWeapon();
+      playerOverlay.aimWeight = aimSmooth;
+      playerOverlay.recoilKick = session.recoilImpulse();
+      playerOverlay.reloadProgress = session.reloadProgress();
+      playerOverlay.fistWeight = fistSmooth;
 
       const glm::vec4 playerTint = glm::mix(glm::vec4(1.0f), glm::vec4(1.55f, 0.42f, 0.42f, 1.0f), session.playerHitFlash());
       if (hasBody) {
@@ -390,6 +422,13 @@ int main(int argc, char** argv) {
       }
     }
 
+    auto mapPitClipTime = [&](const std::string& clipId, float stateTime) -> float {
+      if (clipId == "hit") return mapNormalizedTime(clipId, stateTime / 0.55f);
+      if (clipId == "uppercut" || clipId == "kick") return mapNormalizedTime(clipId, stateTime / 0.82f);
+      if (clipId == "jab" || clipId == "cross" || clipId == "hook") return mapNormalizedTime(clipId, stateTime / 0.64f);
+      return stateTime;
+    };
+
     // Iron Pit: Either Live AI-vs-AI Spectator Bout OR Player's Shirtless Championship Opponent (smooth crossfades!)
     const auto& spec = session.spectatorBout();
     if (spec.active && hasBody) {
@@ -402,11 +441,14 @@ int main(int argc, char** argv) {
                                             std::array<glm::mat4, westgate::kMaxSkinBones>& ph) {
         const auto& def = roster[static_cast<size_t>(fs.fighterIdx)];
         const float xf = (fs.animClip == "Walk" || fs.animClip == "fight_idle") ? 0.18f : 0.10f;
-        westgate::CharacterAnimator::advanceAnimState(animSt, fs.animClip, fs.animTime, "", 0.0f, dt, xf);
+        const float mappedT = mapPitClipTime(fs.animClip, fs.animTime);
+        westgate::CharacterAnimator::advanceAnimState(animSt, fs.animClip, mappedT, "", 0.0f, dt, xf);
         westgate::CharacterPoseOverlay ov{};
         ov.timeSec = elapsedSec;
         ov.seed = seed;
         ov.idleWeight = (fs.animClip == "fight_idle") ? 1.0f : 0.15f;
+        ov.fistWeight = (fs.animClip == "knockdown") ? 0.25f : 0.95f;
+        ov.koProgress = fs.downed ? std::clamp(fs.animTime / 0.55f, 0.0f, 1.0f) : 0.0f;
         bodyAnim.evaluateState(animSt, clips, pb, &ov);
         const glm::vec4 bodyTint = glm::mix(glm::vec4(def.skinTint, 1.0f), glm::vec4(1.6f, 0.4f, 0.4f, 1.0f), fs.hitFlash);
         renderChars.push_back({fs.pos, fs.yawRad, bodyTint, westgate::SkinnedPartKind::PlayerBody, &pb});
@@ -424,11 +466,14 @@ int main(int argc, char** argv) {
     } else if (hasBody) {
       const auto& pit = session.ironPit();
       const float xf = (pit.animClip == "Walk" || pit.animClip == "fight_idle") ? 0.18f : 0.10f;
-      westgate::CharacterAnimator::advanceAnimState(pitOppAnimState, pit.animClip, pit.animTime, "", 0.0f, dt, xf);
+      const float mappedT = mapPitClipTime(pit.animClip, pit.animTime);
+      westgate::CharacterAnimator::advanceAnimState(pitOppAnimState, pit.animClip, mappedT, "", 0.0f, dt, xf);
       westgate::CharacterPoseOverlay ov{};
       ov.timeSec = elapsedSec;
       ov.seed = 7.0f;
       ov.idleWeight = (pit.animClip == "fight_idle") ? 1.0f : 0.15f;
+      ov.fistWeight = (pit.animClip == "knockdown") ? 0.25f : 0.95f;
+      ov.koProgress = pit.defeated ? std::clamp(pit.animTime / 0.55f, 0.0f, 1.0f) : 0.0f;
       bodyAnim.evaluateState(pitOppAnimState, clips, palOppBody, &ov);
       const glm::vec4 oppTint = glm::mix(glm::vec4(pit.skinTint, 1.0f), glm::vec4(1.6f, 0.4f, 0.4f, 1.0f), pit.hitFlash);
       renderChars.push_back({pit.pos, pit.yawRad, oppTint, westgate::SkinnedPartKind::PlayerBody, &palOppBody});
@@ -486,6 +531,7 @@ int main(int argc, char** argv) {
       npcOv.timeSec = elapsedSec;
       npcOv.seed = static_cast<float>(npc.id) * 1.73f;
       npcOv.idleWeight = (npc.animClip == "Idle") ? 1.0f : 0.1f;
+      npcOv.koProgress = !npc.alive ? std::clamp(npc.deadTimer / 0.50f, 0.0f, 1.0f) : 0.0f;
       if ((npc.isPolice || npc.isContractGuard) && npc.alive && dist < 36.0f && session.wantedStars() > 0) {
         npcOv.weaponHoldWeight = 1.0f;
         npcOv.aimWeight = 0.8f;

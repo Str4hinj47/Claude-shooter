@@ -218,6 +218,103 @@ int main() {
     }
     std::printf("[PASS] GltfAssetLoader (KHR_mesh_quantization): business.glb verts=%zu, idx=%zu, anims=%zu, height=%.2fm\n",
                 biz.totalVertices(), biz.totalIndices(), biz.animations.size(), h);
+
+    auto checkOrFail = [](bool cond, const char* msg) -> bool {
+      if (!cond) {
+        std::fprintf(stderr, "FAIL: %s\n", msg);
+        return false;
+      }
+      return true;
+    };
+
+    // Verify anatomical joint positions across -Z <-> +Z retargeting & ALIGN_PAIRS
+    auto jointWorldPos = [](const westgate::GltfModel& model,
+                            const std::array<glm::mat4, westgate::kMaxSkinBones>& pal,
+                            const std::string& boneName) -> glm::vec3 {
+      for (size_t ji = 0; ji < model.skin.jointNodeIndices.size(); ++ji) {
+        const int32_t jn = model.skin.jointNodeIndices[ji];
+        if (jn >= 0 && model.nodes[static_cast<size_t>(jn)].name == boneName) {
+          const glm::mat4 worldM = pal[ji] * glm::inverse(model.skin.inverseBindMatrices[ji]);
+          return glm::vec3(worldM[3]);
+        }
+      }
+      return glm::vec3(0.0f);
+    };
+
+    westgate::GltfModel fighter2;
+    if (!checkOrFail(westgate::GltfAssetLoader::loadGlb(fighterGlb.string(), fighter2, false, &err), "load fighter2")) return 1;
+    westgate::CharacterAnimator bodyAnim2;
+    bodyAnim2.initForTarget(fighter2);
+
+    // 1. fight_idle guard height (ALIGN_PAIRS must lift 48-deg A-pose arms up to chest/chin guard!)
+    westgate::GltfModel idleM, jabM, dodgeM, kdM;
+    if (!checkOrFail(westgate::GltfAssetLoader::loadGlb((publicDir / "animations" / "combat" / "fight_idle.glb").string(), idleM, false, &err), "load idleM")) return 1;
+    if (!checkOrFail(westgate::GltfAssetLoader::loadGlb((publicDir / "animations" / "combat" / "jab.glb").string(), jabM, false, &err), "load jabM")) return 1;
+    if (!checkOrFail(westgate::GltfAssetLoader::loadGlb((publicDir / "animations" / "combat" / "dodge.glb").string(), dodgeM, false, &err), "load dodgeM")) return 1;
+    if (!checkOrFail(westgate::GltfAssetLoader::loadGlb((publicDir / "animations" / "combat" / "knockdown.glb").string(), kdM, false, &err), "load kdM")) return 1;
+
+    westgate::CharacterAnimator::SourceClip scIdle, scJab, scDodge, scKd, scWalk;
+    if (!checkOrFail(westgate::CharacterAnimator::buildSourceClip("fight_idle", idleM, 0, true, scIdle, 0.0f, -1.0f, false), "build fight_idle")) return 1;
+    if (!checkOrFail(westgate::CharacterAnimator::buildSourceClip("jab", jabM, 0, false, scJab, 0.22f, 1.05f, false), "build jab")) return 1;
+    if (!checkOrFail(westgate::CharacterAnimator::buildSourceClip("dodge", dodgeM, 0, false, scDodge, 0.04f, 0.78f, false), "build dodge")) return 1;
+    if (!checkOrFail(westgate::CharacterAnimator::buildSourceClip("knockdown", kdM, 0, false, scKd, 0.05f, 2.15f, false), "build knockdown")) return 1;
+    size_t walkIdx = 0;
+    for (size_t ai = 0; ai < biz.animations.size(); ++ai) {
+      if (biz.animations[ai].name == "Walk") { walkIdx = ai; break; }
+    }
+    if (!checkOrFail(westgate::CharacterAnimator::buildSourceClip("Walk", biz, walkIdx, true, scWalk), "build Walk")) return 1;
+
+    std::array<glm::mat4, westgate::kMaxSkinBones> pal{};
+    westgate::CharacterPoseOverlay fistOv{};
+    fistOv.fistWeight = 1.0f;
+    bodyAnim2.evaluateClip(scIdle, 0.25f, pal, &fistOv);
+    const glm::vec3 guardHandL = jointWorldPos(fighter2, pal, "hand_l");
+    const glm::vec3 guardHandR = jointWorldPos(fighter2, pal, "hand_r");
+    const glm::vec3 guardShoulderL = jointWorldPos(fighter2, pal, "upperarm_l");
+    if (!checkOrFail(guardHandL.y > 0.90f && guardHandR.y > 0.90f && guardHandL.y < 1.35f, "guard hands in boxing crouch height")) return 1;
+    if (!checkOrFail(guardHandL.z > guardShoulderL.z + 0.30f && guardHandR.z > 0.12f, "guard hands forward in +Z")) return 1;
+
+    // 2. jab peak extension in +Z forward
+    bodyAnim2.evaluateClip(scJab, 0.22f, pal, &fistOv);
+    const glm::vec3 jabHandL = jointWorldPos(fighter2, pal, "hand_l");
+    const glm::vec3 jabShoulderL = jointWorldPos(fighter2, pal, "upperarm_l");
+    if (!checkOrFail(jabHandL.z > jabShoulderL.z + 0.35f, "jab extends forward +Z")) return 1;
+
+    // 3. dodge clip valid
+    bodyAnim2.evaluateClip(scDodge, 0.35f, pal, &fistOv);
+    const glm::vec3 dodgeHead = jointWorldPos(fighter2, pal, "head");
+    if (!checkOrFail(std::isfinite(dodgeHead.y) && dodgeHead.y > 1.0f && dodgeHead.y < 1.9f, "dodge head valid")) return 1;
+
+    // 4. knockdown vertical hip drop on base_body (pelvis & head drop to mat with koProgress=1!)
+    westgate::CharacterPoseOverlay koOv{};
+    koOv.koProgress = 1.0f;
+    bodyAnim2.evaluateClip(scKd, 1.85f, pal, &koOv);
+    const glm::vec3 kdPelvis = jointWorldPos(fighter2, pal, "pelvis");
+    const glm::vec3 kdHead = jointWorldPos(fighter2, pal, "head");
+    if (!checkOrFail(kdPelvis.y < 0.45f && kdPelvis.y > -0.25f, "knockdown pelvis drops vertically")) return 1;
+    if (!checkOrFail(kdHead.y < 0.55f, "knockdown head collapses toward mat")) return 1;
+
+    // 5. Cross-rig -Z business.glb Walk -> +Z base_body.glb: grounded feet & real Z stride
+    bodyAnim2.evaluateClip(scWalk, 0.30f, pal);
+    const glm::vec3 walkFootL = jointWorldPos(fighter2, pal, "foot_l");
+    const glm::vec3 walkFootR = jointWorldPos(fighter2, pal, "foot_r");
+    if (!checkOrFail(walkFootL.y > -0.10f && walkFootL.y < 0.42f, "walkFootL grounded")) return 1;
+    if (!checkOrFail(walkFootR.y > -0.10f && walkFootR.y < 0.42f, "walkFootR grounded")) return 1;
+    if (!checkOrFail(std::abs(walkFootL.z - walkFootR.z) > 0.20f, "walk Z stride")) return 1;
+
+    // 6. Reverse cross-rig +Z Mixamo knockdown -> -Z business.glb
+    westgate::CharacterAnimator bizAnim;
+    bizAnim.initForTarget(biz);
+    bizAnim.evaluateClip(scKd, 1.85f, pal, &koOv);
+    const glm::vec3 bizKdHips = jointWorldPos(biz, pal, "mixamorig:Hips");
+    const glm::vec3 bizKdHead = jointWorldPos(biz, pal, "mixamorig:Head");
+    if (!checkOrFail(bizKdHips.y < 0.45f && bizKdHips.y > -0.25f, "biz knockdown hips drop")) return 1;
+    if (!checkOrFail(bizKdHead.y < 0.60f, "biz knockdown head collapses")) return 1;
+
+    std::printf("[PASS] Anatomical retarget checks: guardHandL=(%.2f,%.2f,%.2f), jabExtZ=%.2fm, kdPelvisY=%.2fm, walkStrideZ=%.2fm, bizKdY=%.2fm\n",
+                guardHandL.x, guardHandL.y, guardHandL.z,
+                jabHandL.z - jabShoulderL.z, kdPelvis.y,
+                std::abs(walkFootL.z - walkFootR.z), bizKdHips.y);
   }
 
   const std::filesystem::path palmGlb = publicDir / "models" / "tree_palm.glb";

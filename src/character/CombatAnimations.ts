@@ -225,13 +225,15 @@ export function preloadCombatAnimations(): Promise<void> {
   });
 }
 
-const ALIGN_PAIRS: [CombatBoneName, CombatBoneName][] = [
+const ALIGN_PAIRS: [CombatBoneName, string, string?][] = [
   ["LeftShoulder", "LeftArm"],
   ["LeftArm", "LeftForeArm"],
   ["LeftForeArm", "LeftHand"],
+  ["LeftHand", "LeftHandMiddle1", "LeftHandMiddle"],
   ["RightShoulder", "RightArm"],
   ["RightArm", "RightForeArm"],
   ["RightForeArm", "RightHand"],
+  ["RightHand", "RightHandMiddle1", "RightHandMiddle"],
   ["LeftUpLeg", "LeftLeg"],
   ["LeftLeg", "LeftFoot"],
   ["RightUpLeg", "RightLeg"],
@@ -268,11 +270,11 @@ export function bakeClipForTargetSkeleton(
   const vB = new THREE.Vector3();
   const vC = new THREE.Vector3();
 
-  for (const [bName, cName] of ALIGN_PAIRS) {
+  for (const [bName, cName, cFallback] of ALIGN_PAIRS) {
     const tb = targetBones[bName];
-    const tc = targetBones[cName];
+    const tc = targetBones[cName] ?? (cFallback ? targetBones[cFallback] : undefined);
     const sb = src.bones[bName];
-    const sc = src.bones[cName];
+    const sc = src.bones[cName] ?? (cFallback ? src.bones[cFallback] : undefined);
     if (!tb || !tc || !sb || !sc || !tb.parent) continue;
     const tDir = tc.getWorldPosition(vA).sub(tb.getWorldPosition(vB)).normalize();
     const sDir = sc.getWorldPosition(vC).sub(sb.getWorldPosition(new THREE.Vector3())).normalize();
