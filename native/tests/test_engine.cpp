@@ -156,6 +156,35 @@ int main() {
                 palm.totalVertices(), h, palm.boundsMin.y);
   }
 
+  // 4b. Verify repaired vehicle GLBs (r8, ferrari, sedan, offroad, challenger, mustang, audi, golf, mercedes, rangerover)
+  {
+    const char* carFiles[] = {
+      "r8.glb", "audi.glb", "challenger.glb", "ferrari.glb", "golf.glb",
+      "mercedes.glb", "mustang.glb", "offroad.glb", "rangerover.glb", "sedan.glb"
+    };
+    for (const char* cf : carFiles) {
+      const std::filesystem::path carGlb = publicDir / "models" / cf;
+      westgate::GltfModel car;
+      if (!westgate::GltfAssetLoader::loadGlb(carGlb.string(), car, false, &err)) {
+        std::fprintf(stderr, "FAIL vehicle GLB %s load: %s\n", cf, err.c_str());
+        return 1;
+      }
+      const glm::vec3 sz = car.boundsMax - car.boundsMin;
+      if (car.totalVertices() < 500 || car.totalIndices() < 500 ||
+          std::abs(car.boundsMin.y) > 0.05f || sz.y < 1.0f || sz.y > 2.1f ||
+          sz.x < 1.6f || sz.x > 2.5f || sz.z < 3.8f || sz.z > 5.6f) {
+        std::fprintf(stderr, "FAIL vehicle GLB %s invalid bounds: size=(%.2f,%.2f,%.2f) minY=%.2f\n",
+                     cf, sz.x, sz.y, sz.z, car.boundsMin.y);
+        return 1;
+      }
+      if (std::string(cf) == "r8.glb" && sz.y > 1.32f) {
+        std::fprintf(stderr, "FAIL r8.glb still has oversized roof artifact height=%.2f\n", sz.y);
+        return 1;
+      }
+    }
+    std::printf("[PASS] GltfAssetLoader (10 repaired vehicle GLBs): all bounds, grounding, and geometry valid\n");
+  }
+
   // 5. Full GameSession gameplay loop: vehicles, weapons, Iron Pit, contracts, races, sky & save/load
   {
     westgate::GameSession session;

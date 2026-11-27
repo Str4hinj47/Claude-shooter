@@ -23,7 +23,7 @@ export interface CarModel {
   height: number;
 }
 
-const FERRARI_SKEW = (13.5 * Math.PI) / 180;
+const FERRARI_SKEW = 0;
 const ORIENTATION: Record<TrafficId, number> = {
   golf: 0,
   mercedes: 0,
@@ -51,26 +51,6 @@ const ORIENTATION: Record<TrafficId, number> = {
 
 function prepareNpcModel(scene: THREE.Group, id: TrafficId): void {
   if (id === "sedan" || id === "offroad") {
-    const wheels: Record<string, [number, number, number]> =
-      id === "sedan"
-        ? {
-            FL: [0.74, -0.22, 1.354],
-            FR: [-0.739, -0.22, 1.354],
-            RL: [0.74, -0.22, -1.236],
-            RR: [-0.739, -0.22, -1.236],
-          }
-        : {
-            FL: [0.784, -0.24, 1.429],
-            FR: [-0.784, -0.24, 1.429],
-            RL: [0.784, -0.24, -1.191],
-            RR: [-0.784, -0.24, -1.191],
-          };
-    for (const [corner, pos] of Object.entries(wheels)) {
-      const tire = scene.getObjectByName(`tire_${corner}`);
-      if (tire) tire.position.set(pos[0], pos[1], pos[2]);
-      const cal = scene.getObjectByName(`caliper_${corner}`);
-      if (cal) cal.position.set(pos[0], pos[1], pos[2]);
-    }
     scene.traverse((o) => {
       const mesh = o as THREE.Mesh;
       if (!mesh.isMesh) return;
@@ -456,7 +436,6 @@ const LOW_POLY_SUBDIVIDE_VEHICLES = new Set<TrafficId>([
   "garbage_truck",
   "ambulance",
   "firetruck",
-  "rangerover",
 ]);
 
 function upgradeVehicleMeshResolution(mesh: THREE.Mesh, id: TrafficId): void {

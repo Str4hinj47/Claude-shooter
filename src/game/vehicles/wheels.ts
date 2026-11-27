@@ -185,11 +185,6 @@ export function rigWheels(root: THREE.Group, id: TrafficId): void {
     empty.setIndex(stationary);
     mesh.geometry = empty;
   }
-
-  if (id === "golf") {
-    pivots[0].rotation.y = THREE.MathUtils.degToRad(10.89);
-    pivots[1].rotation.y = THREE.MathUtils.degToRad(12.7);
-  }
 }
 
 export function spinWheels(
