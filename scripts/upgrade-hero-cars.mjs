@@ -502,10 +502,19 @@ function createCaliperGeometry(discR) {
 }
 
 function addDiscsAndCalipers(scene, tag, opts = { addDiscs: true, addCalipers: true, discR: 0.195 }) {
-  // Remove any previously injected synthetic discs/calipers for idempotency
+  // Remove any previously injected synthetic discs/calipers for idempotency (even after gltfpack node renaming)
   const stale = [];
   scene.traverse((o) => {
-    if (o.isMesh && (o.name.startsWith(`${tag}_disc_`) || o.name.startsWith(`${tag}_caliper_`))) stale.push(o);
+    const mn = o.material?.name || "";
+    if (
+      o.isMesh &&
+      (o.name.startsWith(`${tag}_disc_`) ||
+        o.name.startsWith(`${tag}_caliper_`) ||
+        (opts.addDiscs && mn === `brake__${tag}_Disc`) ||
+        (opts.addCalipers && mn === `brake__${tag}_Caliper`))
+    ) {
+      stale.push(o);
+    }
   });
   for (const s of stale) s.parent?.remove(s);
   const wheels = getWheelCentersFromTiresAndRims(scene);
@@ -546,7 +555,21 @@ function addDiscsAndCalipers(scene, tag, opts = { addDiscs: true, addCalipers: t
 
 // Compute the world-space transform that ModelLibrary applies (`ORIENTATION` + centerXZ + minY=0),
 // then invert it to place a normalized-space license plate cleanly into raw GLB space!
-function addRearLicensePlate(scene, id, tag, normY, normZ, tiltX = 0) {
+function addRearLicensePlate(scene, id, tag, normY, normZ, tiltX = 0, plateW = 0.326, plateH = 0.144) {
+  const stalePlates = [];
+  scene.traverse((o) => {
+    const mn = o.material?.name || "";
+    if (
+      o.name === `${tag}_rear_plate` ||
+      o.name === `${tag}_plate_bezel` ||
+      o.name === `${tag}_plate_face` ||
+      mn === `plate__${tag}` ||
+      mn === `trim__${tag}_plate_frame`
+    ) {
+      stalePlates.push(o);
+    }
+  });
+  for (const s of stalePlates) s.parent?.remove(s);
   scene.updateMatrixWorld(true);
   const rotY = ORIENTATION[id];
   const tempRoot = new THREE.Group();
@@ -590,12 +613,12 @@ function addRearLicensePlate(scene, id, tag, normY, normZ, tiltX = 0) {
     roughness: 0.34,
   });
 
-  const bezel = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.165, 0.010), frameMat);
+  const bezel = new THREE.Mesh(new THREE.BoxGeometry(plateW + 0.024, plateH + 0.021, 0.010), frameMat);
   bezel.name = `${tag}_plate_bezel`;
   plateGroup.add(bezel);
 
   // Front-facing plane facing +Z in normalized car rear space with clean [0..1] UVs
-  const faceGeo = new THREE.PlaneGeometry(0.326, 0.144);
+  const faceGeo = new THREE.PlaneGeometry(plateW, plateH);
   faceGeo.translate(0, 0, 0.006);
   const face = new THREE.Mesh(faceGeo, plateMat);
   face.name = `${tag}_plate_face`;
@@ -604,8 +627,14 @@ function addRearLicensePlate(scene, id, tag, normY, normZ, tiltX = 0) {
   scene.add(plateGroup);
 }
 
+const onlyArg = process.argv.find((a) => a.startsWith("--only="));
+const onlySet = onlyArg
+  ? new Set(onlyArg.slice("--only=".length).split(",").map((s) => s.trim()).filter(Boolean))
+  : null;
+const shouldRun = (id) => !onlySet || onlySet.has(id);
+
 // 1. MERCEDES W222
-{
+if (shouldRun("mercedes")) {
   const p = path.join(MODELS_DIR, "mercedes.glb");
   const { scene, rawImages } = await loadGlb(p);
   scene.traverse((o) => {
@@ -616,15 +645,18 @@ function addRearLicensePlate(scene, id, tag, normY, normZ, tiltX = 0) {
     }
   });
   addDiscsAndCalipers(scene, "W222", { addDiscs: true, addCalipers: true, discR: 0.195 });
-  addRearLicensePlate(scene, "mercedes", "W222", 0.77, 2.456);
+  addRearLicensePlate(scene, "mercedes", "W222", 0.832, 2.510, 0, 0.50, 0.115);
   await exportAndPack(scene, rawImages, p);
   console.log(`[HERO] mercedes.glb -> ${(fs.statSync(p).size / 1024).toFixed(1)} KB`);
 }
 
 // 2. R8
-{
+if (shouldRun("r8")) {
   const p = path.join(MODELS_DIR, "r8.glb");
   const { scene, rawImages } = await loadGlb(p);
+  const staleFloor = [];
+  scene.traverse((o) => { if (o.name === "r8_underbody_floor") staleFloor.push(o); });
+  for (const s of staleFloor) s.parent?.remove(s);
   const extraAdd = [];
   scene.traverse((o) => {
     if (!o.isMesh || Array.isArray(o.material)) return;
@@ -660,13 +692,13 @@ function addRearLicensePlate(scene, id, tag, normY, normZ, tiltX = 0) {
   for (const m of extraAdd) scene.add(m);
 
   addDiscsAndCalipers(scene, "r8", { addDiscs: true, addCalipers: true, discR: 0.195 });
-  addRearLicensePlate(scene, "r8", "r8", 0.60, 2.093);
+  addRearLicensePlate(scene, "r8", "r8", 0.59, 2.138);
   await exportAndPack(scene, rawImages, p);
   console.log(`[HERO] r8.glb -> ${(fs.statSync(p).size / 1024).toFixed(1)} KB`);
 }
 
 // 3. CHALLENGER
-{
+if (shouldRun("challenger")) {
   const p = path.join(MODELS_DIR, "challenger.glb");
   const { scene, rawImages } = await loadGlb(p);
   const discMat = new THREE.MeshStandardMaterial({
@@ -752,7 +784,7 @@ function addRearLicensePlate(scene, id, tag, normY, normZ, tiltX = 0) {
 }
 
 // 4. MUSTANG
-{
+if (shouldRun("mustang")) {
   const p = path.join(MODELS_DIR, "mustang.glb");
   const { scene, rawImages } = await loadGlb(p);
   scene.traverse((o) => {
@@ -773,6 +805,7 @@ for (const spec of [
   { id: "ferrari", tag: "ferrari", y: 0.54, z: 2.072 },
   { id: "rangerover", tag: "RangeRover", y: 0.75, z: 2.456 },
 ]) {
+  if (!shouldRun(spec.id)) continue;
   const p = path.join(MODELS_DIR, `${spec.id}.glb`);
   const { scene, rawImages } = await loadGlb(p);
   addRearLicensePlate(scene, spec.id, spec.tag, spec.y, spec.z);

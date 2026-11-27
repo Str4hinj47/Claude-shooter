@@ -912,7 +912,7 @@ function buildHighResRangeRover() {
 // ---------------------------------------------------------------------------
 // Main Upgrade Pipeline
 // ---------------------------------------------------------------------------
-const TARGET_CARS = [
+const ALL_TARGET_CARS = [
   "rangerover",
   "sedan",
   "offroad",
@@ -924,6 +924,47 @@ const TARGET_CARS = [
   "semi",
   "kraz",
 ];
+const onlyArg = process.argv.find((a) => a.startsWith("--only="));
+const TARGET_CARS = onlyArg
+  ? onlyArg.slice("--only=".length).split(",").map((s) => s.trim()).filter(Boolean)
+  : ALL_TARGET_CARS;
+
+function bakeSceneToMeters(srcScene) {
+  srcScene.updateMatrixWorld(true);
+  const isDoorPivot = (name) => /^door_(fl|fr|rl|rr)$/i.test(name || "");
+  const outRoot = new THREE.Group();
+  const walk = (obj, parentOut, invParentWorld) => {
+    for (const ch of obj.children) {
+      if (ch.isMesh) {
+        if (ch.visible === false) continue;
+        const g = ch.geometry.clone();
+        const matToParent = new THREE.Matrix4().multiplyMatrices(invParentWorld, ch.matrixWorld);
+        g.applyMatrix4(matToParent);
+        g.computeBoundingBox();
+        g.computeBoundingSphere();
+        const m = new THREE.Mesh(g, ch.material);
+        m.name = ch.name;
+        parentOut.add(m);
+      } else if (isDoorPivot(ch.name)) {
+        const wp = new THREE.Vector3();
+        const wq = new THREE.Quaternion();
+        const ws = new THREE.Vector3();
+        ch.matrixWorld.decompose(wp, wq, ws);
+        const grp = new THREE.Group();
+        grp.name = ch.name;
+        grp.position.copy(wp);
+        parentOut.add(grp);
+        const invPivot = new THREE.Matrix4().makeTranslation(-wp.x, -wp.y, -wp.z);
+        walk(ch, grp, invPivot);
+      } else {
+        walk(ch, parentOut, invParentWorld);
+      }
+    }
+  };
+  walk(srcScene, outRoot, new THREE.Matrix4());
+  outRoot.updateMatrixWorld(true);
+  return outRoot;
+}
 
 for (const id of TARGET_CARS) {
   const filePath = path.join(MODELS_DIR, `${id}.glb`);
@@ -942,8 +983,7 @@ for (const id of TARGET_CARS) {
   }
 
   const { gltf, raw } = await loadCarGlb(filePath);
-  const scene = gltf.scene;
-  scene.traverse((o) => {
+  gltf.scene.traverse((o) => {
     if (!o.isMesh || !o.geometry) return;
     const g = o.geometry;
     for (const k of Object.keys(g.attributes)) {
@@ -962,7 +1002,7 @@ for (const id of TARGET_CARS) {
       }
     }
   });
-  scene.updateMatrixWorld(true);
+  const scene = bakeSceneToMeters(gltf.scene);
 
   if (id === "sedan" || id === "offroad") {
     const paintMat = new THREE.MeshStandardMaterial({
@@ -1223,49 +1263,7 @@ for (const id of TARGET_CARS) {
   }
   scene.updateMatrixWorld(true);
 
-  // Bake root node transforms so GLB is clean meters while keeping door/wheel/caliper pivot groups
-  const isPivotGroup = (name) => /^(door|tire|caliper)_(fl|fr|rl|rr)$/i.test(name || "");
-  const outRoot = new THREE.Group();
-  const bake = (obj, parentOut, insidePivot = false) => {
-    for (const ch of obj.children) {
-      if (ch.isMesh) {
-        if (ch.visible === false) continue;
-        const g = ch.geometry.clone();
-        if (insidePivot) {
-          const m = new THREE.Mesh(g, ch.material);
-          m.name = ch.name;
-          m.position.copy(ch.position);
-          m.quaternion.copy(ch.quaternion);
-          m.scale.copy(ch.scale);
-          parentOut.add(m);
-        } else {
-          g.applyMatrix4(ch.matrixWorld);
-          const m = new THREE.Mesh(g, ch.material);
-          m.name = ch.name;
-          parentOut.add(m);
-        }
-      } else {
-        if (isPivotGroup(ch.name)) {
-          const grp = new THREE.Group();
-          grp.name = ch.name;
-          // Preserve world position of pivot relative to scene root
-          const wp = new THREE.Vector3();
-          const wq = new THREE.Quaternion();
-          const ws = new THREE.Vector3();
-          ch.matrixWorld.decompose(wp, wq, ws);
-          grp.position.copy(wp);
-          grp.quaternion.copy(wq);
-          grp.scale.copy(ws);
-          parentOut.add(grp);
-          bake(ch, grp, true);
-        } else {
-          bake(ch, parentOut, insidePivot);
-        }
-      }
-    }
-  };
-  bake(scene, outRoot, false);
-
+  const outRoot = bakeSceneToMeters(scene);
   saveAndPackGlb(outRoot, raw.images, filePath);
   const szKb = (fs.statSync(filePath).size / 1024).toFixed(1);
   console.log(`  wrote ${id}.glb (${szKb} KB)`);
