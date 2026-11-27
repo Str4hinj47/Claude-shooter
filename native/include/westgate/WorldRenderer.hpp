@@ -174,7 +174,16 @@ private:
   void buildTerrainAndOceanBuffers(WgpuContext& ctx, const WorldData& world);
   void buildRoadAndArenaBuffers(WgpuContext& ctx, const WorldData& world);
   void buildPropAndVehicleBatches(WgpuContext& ctx, const WorldData& world, const std::string& assetsRoot);
-  bool loadGlbBatch(WgpuContext& ctx, const std::string& glbPath, const std::vector<InstanceAttrib>& instances, InstancedGlbBatch& outBatch, float normalizeTargetLength = 0.0f);
+  bool loadGlbBatch(
+    WgpuContext& ctx,
+    const std::string& glbPath,
+    const std::vector<InstanceAttrib>& instances,
+    InstancedGlbBatch& outBatch,
+    float normalizeTargetLength = 0.0f,
+    bool decodeTextures = false,
+    bool isVehicle = false,
+    float yawOffsetRad = 0.0f
+  );
   bool loadGlbUnitBoxBatch(WgpuContext& ctx, const std::string& glbPath, uint32_t maxInstances, InstancedGlbBatch& outBatch);
   void buildSkinnedMesh(WgpuContext& ctx, const GltfModel& model, SkinnedMeshGpu& outMesh);
   GpuTextureBinding createRgbaTexture(WgpuContext& ctx, uint32_t w, uint32_t h, const uint8_t* rgba8);

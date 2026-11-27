@@ -285,11 +285,42 @@ fn vsInstanced(in : InstancedVSIn) -> VSOut {
   out.shadowPosNear = computeShadowCoord(uFrame.lightViewProjNear, worldPos);
   out.shadowPosFar = computeShadowCoord(uFrame.lightViewProjFar, worldPos);
   out.normal = rotNorm;
-  out.color = in.vtxCol * in.instColEm.rgb;
+
+  // Vehicle material submesh tags encoded in pbrParams.x without changing vertex stride:
+  //   [-3.5..-2.5]: automotive glass/covers (13.0)
+  //   [-2.5..-1.5]: taillight LED emitter (12.0)
+  //   [-1.5..-0.5]: headlight LED emitter (11.0)
+  //   [ 1.5.. 3.5]: paint__ clearcoat body (10.0, tinted by instColEm.rgb)
+  //   [ 3.5.. 5.5]: non-paint vehicle parts (4.0, untinted by instColEm.rgb)
+  let mx = in.pbrParams.x;
+  if (mx < -2.5) {
+    out.color = in.vtxCol;
+    out.surfaceKind = 13.0;
+    out.pbrParams = vec2<f32>(0.22, in.pbrParams.y);
+  } else if (mx < -1.5) {
+    out.color = in.vtxCol;
+    out.surfaceKind = 12.0;
+    out.pbrParams = vec2<f32>(0.10, in.pbrParams.y);
+  } else if (mx < -0.5) {
+    out.color = in.vtxCol;
+    out.surfaceKind = 11.0;
+    out.pbrParams = vec2<f32>(0.10, in.pbrParams.y);
+  } else if (mx >= 3.5) {
+    out.color = in.vtxCol;
+    out.surfaceKind = 4.0;
+    out.pbrParams = vec2<f32>(mx - 4.0, in.pbrParams.y);
+  } else if (mx >= 1.5) {
+    out.color = in.vtxCol * in.instColEm.rgb;
+    out.surfaceKind = 10.0;
+    out.pbrParams = vec2<f32>(mx - 2.0, in.pbrParams.y);
+  } else {
+    out.color = in.vtxCol * in.instColEm.rgb;
+    out.surfaceKind = 4.0;
+    out.pbrParams = in.pbrParams;
+  }
+
   out.uv = in.uv;
-  out.surfaceKind = 4.0;
   out.emissiveBoost = in.instColEm.w;
-  out.pbrParams = in.pbrParams;
   return out;
 }
 
@@ -411,7 +442,29 @@ fn fsMain(in : VSOut) -> @location(0) vec4<f32> {
   let nightFactor = clamp(uFrame.fogColor.w, 0.0, 1.0);
   let wetness = clamp(uFrame.weatherParams.y, 0.0, 1.0);
 
-  if (in.surfaceKind > 5.5) {
+  if (in.surfaceKind > 12.5) {
+    // Automotive tinted glass & polycarbonate lamp lenses
+    albedo = mix(vtxLin * texLin, vec3<f32>(0.014, 0.024, 0.042), 0.72);
+    metallic = 0.28;
+    roughness = 0.05;
+  } else if (in.surfaceKind > 11.5) {
+    // Taillight LED emitter
+    albedo = vtxLin * texLin;
+    metallic = 0.12;
+    roughness = 0.12;
+    emissive += vec3<f32>(2.35, 0.07, 0.06) * (0.45 + nightFactor * 1.15);
+  } else if (in.surfaceKind > 10.5) {
+    // Headlight LED emitter
+    albedo = vtxLin * texLin;
+    metallic = 0.12;
+    roughness = 0.10;
+    emissive += vec3<f32>(2.25, 2.20, 2.05) * (0.35 + nightFactor * 1.35);
+  } else if (in.surfaceKind > 9.5) {
+    // Automotive metallic clearcoat paint
+    albedo = vtxLin * texLin;
+    metallic = clamp(in.pbrParams.x, 0.0, 1.0);
+    roughness = mix(clamp(in.pbrParams.y, 0.08, 0.98), 0.06, 0.45 + wetness * 0.35);
+  } else if (in.surfaceKind > 5.5) {
     // Matte fibrous hair (zero plastic specular glare)
     albedo = vtxLin * texLin;
     metallic = 0.0;
@@ -517,6 +570,12 @@ fn fsMain(in : VSOut) -> @location(0) vec4<f32> {
 
   var lit = albedo * skyAmbient * (1.0 - metallic * 0.5) + envColor * envF;
   lit += cookTorranceDirect(N, V, L, albedo, metallic, roughness, sunLin * 1.85) * shadow;
+  if (in.surfaceKind > 9.5 && in.surfaceKind < 10.5) {
+    // Dual-lobe automotive clearcoat highlight
+    let clearF = fresnelSchlick(max(dot(N, V), 0.0), vec3<f32>(0.04));
+    lit += envColor * clearF * 0.55;
+    lit += cookTorranceDirect(N, V, L, vec3<f32>(0.04), 0.0, 0.045, sunLin * 1.15) * shadow;
+  }
   lit += emissive;
 
   // Dynamic Local Point Lights with Cook-Torrance GGX specular highlights

@@ -17,18 +17,29 @@ function rotates(id: TrafficId, mesh: THREE.Mesh): boolean {
   if (id === "audi") return /^(tire__tire\.001|rim__RIM BRIGHT|rim__RIM DARK|carbon__carbon disk brake)$/.test(name);
   if (id === "mustang") return /^(tire__M_Tire1|rim__M_Rim[12]|brake__M_BrakePad2)$/.test(name);
   if (id === "ferrari") return /^(tire__Tire\.00[02]|rim__Rims\.000|brake__Break_Discs\.000)$/.test(name);
-  if (id === "r8") return name === "tire__r8" || name === "rim__r8" || /^metal_2(?:_(?:[1-5]|1[1-6]))?$/.test(mesh.name);
-  if (id === "rangerover") return /^(tire__RangeRover|rim__RangeRover)$/i.test(name) || /wheel|tire|rim/i.test(mesh.name);
-  if (id === "sedan" || id === "offroad") return /^tire_/.test(mesh.name) || /^caliper_/.test(mesh.name);
+  if (id === "r8") return name === "tire__r8" || name === "rim__r8" || name === "rim__r8_cap" || /^metal_2(?:_(?:[1-5]|1[1-6]))?$/.test(mesh.name);
+  if (id === "rangerover") return /^(tire__RangeRover|rim__RangeRover|brake__RangeRover_Disc)$/i.test(name);
+  if (id === "sedan" || id === "offroad") return /^(tire|rim)__(sedan|offroad)$/.test(name) || /^tire_wheel_/.test(mesh.name) || /^rim_wheel_/.test(mesh.name);
   if (isQuaterniusNpc(id)) return mesh.name === "Black" || mesh.name === "Grey";
   if (id === "semi") return /^(tire__TireRubber|tire__TireTreads|chrome__Chrome)$/.test(name);
   if (id === "kraz") return /^(tire__tire|chrome__wheel)$/.test(name);
   if (id === "challenger") {
-    return (
-      name === "tire__challenger" ||
-      (name === "rim__challenger" && /^mesh_(?:40|44|48|52)(?:_1)?$/.test(mesh.name)) ||
-      /^Volkswagen_Touareg_Hybrid_Wheel_OBJ(?:004|007|014|015|010|011|002|005)(?:_|$)/.test(mesh.name)
-    );
+    if (name === "tire__challenger") return true;
+    if (name === "rim__challenger" || name === "trim__challenger") {
+      // Measure in world/root space because challenger nodes carry a root scale transform
+      const bb = new THREE.Box3().setFromObject(mesh);
+      if (!bb.isEmpty()) {
+        const sx = bb.max.x - bb.min.x;
+        const sy = bb.max.y - bb.min.y;
+        const sz = bb.max.z - bb.min.z;
+        const cx = (bb.max.x + bb.min.x) * 0.5;
+        const cy = (bb.max.y + bb.min.y) * 0.5;
+        if (name === "rim__challenger") return sy < 0.85 && sz < 0.85 && sx < 0.45 && Math.abs(cx) > 0.4;
+        // Match circular brake discs (~0.38m) and wheel center caps (~0.15m) at axle height; exclude mirrors/trim
+        return cy < 0.55 && sx < 0.14 && sy > 0.12 && sy < 0.46 && Math.abs(sy - sz) < 0.04 && Math.abs(cx) > 0.55;
+      }
+    }
+    return /^Volkswagen_Touareg_Hybrid_Wheel_OBJ(?:004|007|014|015|010|011|002|005)(?:_|$)/.test(mesh.name);
   }
   return false;
 }

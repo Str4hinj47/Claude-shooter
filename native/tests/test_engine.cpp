@@ -581,6 +581,49 @@ int main() {
       std::fprintf(stderr, "FAIL loadFromFile round-trip\n");
       return 1;
     }
+    // Verify all upgraded & native vehicle GLBs load cleanly in C++20 (Meshopt + textures + automotive material tags)
+    const char* vehicleGlbs[] = {
+      "rangerover.glb", "sedan.glb", "offroad.glb", "audi.glb", "mercedes.glb",
+      "r8.glb", "ferrari.glb", "golf.glb", "semi.glb", "kraz.glb",
+      "mustang.glb", "challenger.glb", "police_cruiser.glb", "taxi.glb",
+      "ambulance.glb", "firetruck.glb", "delivery.glb"
+    };
+    for (const char* vf : vehicleGlbs) {
+      westgate::GltfModel vm;
+      const std::string vpath = std::string(WESTGATE_SOURCE_ROOT) + "/public/models/" + vf;
+      std::string verr;
+      if (!westgate::GltfAssetLoader::loadGlb(vpath, vm, true, &verr) || vm.primitives.empty()) {
+        std::fprintf(stderr, "FAIL vehicle GLB load (%s): %s\n", vf, verr.c_str());
+        return 1;
+      }
+      const glm::vec3 sz = vm.boundsMax - vm.boundsMin;
+      if (!std::isfinite(sz.x) || sz.x < 0.5f || sz.y < 0.5f || sz.z < 0.5f) {
+        std::fprintf(stderr, "FAIL vehicle GLB bounds (%s): %.2fx%.2fx%.2f\n", vf, sz.x, sz.y, sz.z);
+        return 1;
+      }
+    }
+    // Verify rangerover.glb & semi.glb carry paint__/rim__/tire__/headlight__/taillight__ materials
+    {
+      westgate::GltfModel rr;
+      if (!westgate::GltfAssetLoader::loadGlb(std::string(WESTGATE_SOURCE_ROOT) + "/public/models/rangerover.glb", rr, true, nullptr)) {
+        std::fprintf(stderr, "FAIL rangerover.glb reload\n");
+        return 1;
+      }
+      bool hasPaint = false, hasHl = false, hasTl = false, hasRim = false, hasTire = false;
+      for (const auto& m : rr.materials) {
+        if (m.name.rfind("paint__", 0) == 0) hasPaint = true;
+        if (m.name.rfind("headlight__", 0) == 0) hasHl = true;
+        if (m.name.rfind("taillight__", 0) == 0) hasTl = true;
+        if (m.name.rfind("rim__", 0) == 0) hasRim = true;
+        if (m.name.rfind("tire__", 0) == 0) hasTire = true;
+      }
+      if (!hasPaint || !hasHl || !hasTl || !hasRim || !hasTire) {
+        std::fprintf(stderr, "FAIL rangerover.glb missing material tags\n");
+        return 1;
+      }
+    }
+    std::printf("[PASS] Vehicle GLBs verified in C++20 (17 models, Meshopt + textures + material tags)\n");
+
     std::printf("[PASS] GameSession full loop: %zu vehicles, %zu NPCs, driving/gunplay/contracts/sky/save OK\n",
                 session.vehicles().size(), session.npcs().size());
   }

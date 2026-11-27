@@ -55,6 +55,8 @@ function prepareNpcModel(scene: THREE.Group, id: TrafficId): void {
       const mesh = o as THREE.Mesh;
       if (!mesh.isMesh) return;
       const matName = Array.isArray(mesh.material) ? "" : mesh.material.name || "";
+      // Upgraded GLBs already carry prefixed material names (paint__, tire__, rim__, headlight__, taillight__, brake__, glass__, trim__, plate__)
+      if (/^(paint|glass|headlight|taillight|tire|rim|brake|trim|plate)__/i.test(matName)) return;
       const objName = `${mesh.parent?.name ?? ""}/${mesh.name}`;
       if (matName === "paint") {
         const cloned = (mesh.material as THREE.Material).clone();
@@ -275,20 +277,44 @@ function tuneAutomotiveMaterial(orig: THREE.Material, id: TrafficId): THREE.Mate
     std.roughness = 0.08;
     std.envMapIntensity = 1.65;
   } else if (name.startsWith("headlight__")) {
-    if (id === "golf" && name === "headlight__Glass-light-cover") {
-      std.color.set(0xb9cbd2);
-      std.transparent = true;
-      std.opacity = 0.22;
-      std.depthWrite = false;
-      std.depthTest = true;
-      std.side = THREE.DoubleSide;
-      std.emissive.set(0x000000);
-      std.emissiveIntensity = 0;
+    if (/cover|glass/i.test(name)) {
+      const glassCover = new THREE.MeshPhysicalMaterial({
+        name,
+        color: new THREE.Color(id === "golf" ? 0xb9cbd2 : 0xdbe7f3),
+        metalness: 0.08,
+        roughness: 0.04,
+        clearcoat: 1.0,
+        clearcoatRoughness: 0.03,
+        transparent: true,
+        opacity: 0.22,
+        depthWrite: false,
+        depthTest: true,
+        side: THREE.DoubleSide,
+        envMapIntensity: 1.85,
+      });
+      return glassCover;
     } else {
       std.emissive = new THREE.Color(0xf6f9ff);
       std.emissiveIntensity = id === "golf" ? 0.35 : 0.85;
     }
   } else if (name.startsWith("taillight__")) {
+    if (/cover/i.test(name)) {
+      const rubyCover = new THREE.MeshPhysicalMaterial({
+        name,
+        color: new THREE.Color(0x9e0a10),
+        metalness: 0.08,
+        roughness: 0.06,
+        clearcoat: 1.0,
+        clearcoatRoughness: 0.04,
+        transparent: true,
+        opacity: 0.42,
+        depthWrite: false,
+        depthTest: true,
+        side: THREE.DoubleSide,
+        envMapIntensity: 1.6,
+      });
+      return rubyCover;
+    }
     std.emissive = new THREE.Color(0xff2020);
     std.emissiveIntensity = 0.85;
   } else if (name.startsWith("rim__")) {
@@ -300,7 +326,18 @@ function tuneAutomotiveMaterial(orig: THREE.Material, id: TrafficId): THREE.Mate
     std.metalness = 0.82;
     std.roughness = 0.28;
     std.envMapIntensity = 1.25;
+  } else if (name.startsWith("plate__")) {
+    if (!std.map && std.color && std.color.r > 0.92 && std.color.g > 0.92 && std.color.b > 0.92) {
+      std.color.setHex(0xbec4cc);
+    }
+    std.metalness = 0.32;
+    std.roughness = 0.36;
+    std.envMapIntensity = 1.1;
   } else if (name.startsWith("trim__") || name.startsWith("carbon__")) {
+    if (!std.map && !name.endsWith("_livery") && std.color) {
+      const lum = std.color.r * 0.299 + std.color.g * 0.587 + std.color.b * 0.114;
+      if (lum > 0.72) std.color.setHex(0x181a20);
+    }
     std.roughness = 0.42;
     std.metalness = 0.16;
     if (!std.roughnessMap) std.roughnessMap = maps.carbonRoughness;
@@ -381,7 +418,13 @@ function separateLampLenses(scene: THREE.Group) {
 
 function exposeMustangValanceSignals(root: THREE.Group) {
   root.updateMatrixWorld(true);
-  const mesh = root.getObjectByName("mustang_mesh_13") as THREE.Mesh | undefined;
+  let mesh: THREE.Mesh | undefined;
+  root.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (!mesh && m.isMesh && !Array.isArray(m.material) && m.material.name === "headlight__M_HeadLight2") {
+      mesh = m;
+    }
+  });
   if (!mesh?.isMesh) return;
   const geo = mesh.geometry;
   const pos = geo.getAttribute("position");
@@ -478,8 +521,39 @@ function upgradeVehicleMeshResolution(mesh: THREE.Mesh, id: TrafficId): void {
   if (norm && (norm.array instanceof Int8Array || norm.array instanceof Int16Array)) {
     try {
       mesh.geometry = toCreasedNormals(geo, (44 * Math.PI) / 180);
+      geo = mesh.geometry;
     } catch {
       geo.computeVertexNormals();
+    }
+  }
+
+  // Generate clean triplanar/box-projected UVs for meshes lacking TEXCOORD_0
+  // so procedural paint micro-flake, tire tread grain, and carbon weave maps render properly
+  if (!geo.getAttribute("uv") && /^(paint|tire|trim|carbon)__/i.test(matName)) {
+    const pos = geo.getAttribute("position");
+    const nrm = geo.getAttribute("normal");
+    if (pos) {
+      const uvs = new Float32Array(pos.count * 2);
+      const scale = matName.startsWith("tire__") ? 1.8 : 0.75;
+      for (let i = 0; i < pos.count; i++) {
+        const x = pos.getX(i);
+        const y = pos.getY(i);
+        const z = pos.getZ(i);
+        const nx = nrm ? Math.abs(nrm.getX(i)) : 0;
+        const ny = nrm ? Math.abs(nrm.getY(i)) : 1;
+        const nz = nrm ? Math.abs(nrm.getZ(i)) : 0;
+        if (ny >= nx && ny >= nz) {
+          uvs[i * 2] = x * scale;
+          uvs[i * 2 + 1] = z * scale;
+        } else if (nx >= nz) {
+          uvs[i * 2] = z * scale;
+          uvs[i * 2 + 1] = y * scale;
+        } else {
+          uvs[i * 2] = x * scale;
+          uvs[i * 2 + 1] = y * scale;
+        }
+      }
+      geo.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
     }
   }
 }
@@ -657,7 +731,7 @@ export class ModelLibrary {
           }
           return light;
         }
-        if (mat.name.startsWith("taillight__")) {
+        if (mat.name.startsWith("taillight__") && !/cover/i.test(mat.name)) {
           let light = lightCopies.get(mat);
           if (!light) {
             light = mat.clone() as THREE.MeshStandardMaterial;

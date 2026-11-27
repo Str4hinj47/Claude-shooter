@@ -2,6 +2,7 @@
 #include "imgui.h"
 #include "imgui_impl_wgpu.h"
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -1014,11 +1015,14 @@ bool WorldRenderer::loadGlbBatch(
   const std::string& path,
   const std::vector<InstanceAttrib>& instances,
   InstancedGlbBatch& outBatch,
-  float normalizeTargetLength
+  float normalizeTargetLength,
+  bool decodeTextures,
+  bool isVehicle,
+  float yawOffsetRad
 ) {
   if (!std::filesystem::exists(path)) return false;
   GltfModel model;
-  if (!GltfAssetLoader::loadGlb(path, model, false, nullptr) || model.primitives.empty()) return false;
+  if (!GltfAssetLoader::loadGlb(path, model, decodeTextures, nullptr) || model.primitives.empty()) return false;
 
   std::vector<ModelVertex> verts;
   std::vector<uint32_t> indices;
@@ -1028,6 +1032,8 @@ bool WorldRenderer::loadGlbBatch(
   const float cx = (normalizeTargetLength > 0.0f) ? (model.boundsMin.x + model.boundsMax.x) * 0.5f : 0.0f;
   const float cz = (normalizeTargetLength > 0.0f) ? (model.boundsMin.z + model.boundsMax.z) * 0.5f : 0.0f;
   const float minY = model.boundsMin.y;
+  const float cosY = std::cos(yawOffsetRad);
+  const float sinY = std::sin(yawOffsetRad);
 
   std::unordered_map<int32_t, WGPUBindGroup> texBgCache;
   std::vector<size_t> primOrder(model.primitives.size());
@@ -1040,6 +1046,16 @@ bool WorldRenderer::loadGlbBatch(
     return ta < tb;
   });
 
+  auto startsWith = [](const std::string& s, const char* prefix) -> bool {
+    const size_t n = std::strlen(prefix);
+    return s.size() >= n && s.compare(0, n, prefix) == 0;
+  };
+  auto containsCI = [](const std::string& s, const char* needle) -> bool {
+    std::string lo = s;
+    for (char& c : lo) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return lo.find(needle) != std::string::npos;
+  };
+
   WGPUBindGroup curTexBg = nullptr;
   for (size_t pi : primOrder) {
     const auto& prim = model.primitives[pi];
@@ -1048,7 +1064,9 @@ bool WorldRenderer::loadGlbBatch(
     glm::vec3 matCol(1.0f);
     float metallic = 0.05f;
     float roughness = 0.58f;
+    float encodedMetallic = metallic;
     WGPUBindGroup texBg = defaultWhiteTex_.bindGroup;
+    bool hasTexture = false;
 
     if (prim.materialIndex >= 0 && static_cast<size_t>(prim.materialIndex) < model.materials.size()) {
       const auto& mat = model.materials[prim.materialIndex];
@@ -1060,6 +1078,7 @@ bool WorldRenderer::loadGlbBatch(
         if (it != texBgCache.end()) {
           texBg = it->second;
           matCol = glm::vec3(1.0f);
+          hasTexture = true;
         } else {
           const auto& td = model.textures[mat.baseColorTexIndex];
           if (td.width > 0 && td.height > 0 && !td.rgba8.empty()) {
@@ -1068,19 +1087,91 @@ bool WorldRenderer::loadGlbBatch(
             texBgCache[mat.baseColorTexIndex] = texBg;
             outBatch.ownedTextures.push_back(gtb);
             matCol = glm::vec3(1.0f);
+            hasTexture = true;
           }
         }
       }
+
+      if (isVehicle) {
+        const std::string& mn = mat.name;
+        if (startsWith(mn, "paint__")) {
+          // Metallic clearcoat body paint (receives instance colorTint)
+          metallic = 0.26f;
+          roughness = 0.14f;
+          encodedMetallic = 2.0f + metallic;
+          if (!hasTexture) matCol = glm::vec3(1.0f);
+        } else if (startsWith(mn, "headlight__")) {
+          if (containsCI(mn, "cover") || containsCI(mn, "glass")) {
+            encodedMetallic = -3.0f;
+            roughness = 0.05f;
+            matCol = glm::vec3(0.84f, 0.90f, 0.96f);
+          } else {
+            encodedMetallic = -1.0f;
+            roughness = 0.10f;
+            matCol = glm::vec3(0.96f, 0.98f, 1.0f);
+          }
+        } else if (startsWith(mn, "taillight__")) {
+          if (containsCI(mn, "cover")) {
+            encodedMetallic = -3.0f;
+            roughness = 0.06f;
+            matCol = glm::vec3(0.55f, 0.04f, 0.06f);
+          } else {
+            encodedMetallic = -2.0f;
+            roughness = 0.12f;
+            matCol = glm::vec3(0.95f, 0.08f, 0.08f);
+          }
+        } else if (startsWith(mn, "glass__") || containsCI(mn, "windshield")) {
+          encodedMetallic = -3.0f;
+          roughness = 0.05f;
+          matCol = glm::vec3(0.10f, 0.14f, 0.20f);
+        } else {
+          if (startsWith(mn, "chrome__")) {
+            metallic = 1.0f;
+            roughness = 0.08f;
+          } else if (startsWith(mn, "rim__")) {
+            metallic = 0.88f;
+            roughness = 0.18f;
+          } else if (startsWith(mn, "brake__")) {
+            metallic = 0.82f;
+            roughness = 0.28f;
+          } else if (startsWith(mn, "tire__")) {
+            metallic = 0.02f;
+            roughness = 0.86f;
+            if (!hasTexture && (matCol.r > 0.25f || matCol.g > 0.25f || matCol.b > 0.25f)) {
+              matCol = glm::vec3(0.085f, 0.095f, 0.11f);
+            }
+          } else if (startsWith(mn, "trim__") || startsWith(mn, "carbon__")) {
+            metallic = 0.16f;
+            roughness = 0.42f;
+            if (!hasTexture && !containsCI(mn, "_livery")) {
+              const float lum = matCol.r * 0.299f + matCol.g * 0.587f + matCol.b * 0.114f;
+              if (lum > 0.72f) matCol = glm::vec3(0.095f, 0.105f, 0.125f);
+            }
+          }
+          encodedMetallic = 4.0f + metallic;
+        }
+      } else {
+        encodedMetallic = metallic;
+      }
+    } else if (isVehicle) {
+      encodedMetallic = 4.0f + metallic;
     }
 
     for (const auto& v : prim.vertices) {
       const glm::vec3 col = glm::vec3(v.color) * matCol;
+      const float lx = (v.position.x - cx) * scale;
+      const float ly = (v.position.y - minY) * scale;
+      const float lz = (v.position.z - cz) * scale;
+      const float rx = lx * cosY + lz * sinY;
+      const float rz = -lx * sinY + lz * cosY;
+      const float nx = v.normal.x * cosY + v.normal.z * sinY;
+      const float nz = -v.normal.x * sinY + v.normal.z * cosY;
       verts.push_back(ModelVertex{
-        (v.position.x - cx) * scale, (v.position.y - minY) * scale, (v.position.z - cz) * scale,
-        v.normal.x, v.normal.y, v.normal.z,
+        rx, ly, rz,
+        nx, v.normal.y, nz,
         std::max(0.0f, v.uv.x), std::max(0.0f, v.uv.y),
         col.r, col.g, col.b,
-        metallic, roughness
+        encodedMetallic, roughness
       });
     }
     for (uint32_t idx : prim.indices) {
@@ -1402,27 +1493,38 @@ void WorldRenderer::buildPropAndVehicleBatches(WgpuContext& ctx, const WorldData
   }
 
   // All 16 Real GLB Vehicles (Cars, Emergency, Trucks, Speedboats, Cruisers & Helicopter!)
-  const std::pair<const char*, float> vehicleSpecs[kVehicleModelCount] = {
-    {"police_cruiser.glb", 4.45f},
-    {"taxi.glb", 4.45f},
-    {"sedan.glb", 4.45f},
-    {"mustang.glb", 4.55f},
-    {"ferrari.glb", 4.50f},
-    {"rangerover.glb", 4.75f},
-    {"speedboat.glb", 6.20f},
-    {"cruiser_boat.glb", 8.80f},
-    {"heli.glb", 9.40f},
-    {"ambulance.glb", 5.40f},
-    {"firetruck.glb", 8.20f},
-    {"delivery.glb", 5.80f},
-    {"semi.glb", 9.60f},
-    {"audi.glb", 4.50f},
-    {"challenger.glb", 4.70f},
-    {"r8.glb", 4.45f},
+  // GameSession forward is +Z at yaw=0; models facing -Z (mustang, semi) receive a PI yaw offset.
+  struct VehicleGlbSpec { const char* file; float length; float yawOffset; };
+  const VehicleGlbSpec vehicleSpecs[kVehicleModelCount] = {
+    {"police_cruiser.glb", 4.45f, 0.0f},
+    {"taxi.glb",           4.45f, 0.0f},
+    {"sedan.glb",          4.55f, 0.0f},
+    {"mustang.glb",        4.75f, 3.14159265f},
+    {"ferrari.glb",        4.45f, 0.0f},
+    {"rangerover.glb",     4.95f, 0.0f},
+    {"speedboat.glb",      6.20f, 0.0f},
+    {"cruiser_boat.glb",   8.80f, 0.0f},
+    {"heli.glb",           9.40f, 0.0f},
+    {"ambulance.glb",      5.40f, 0.0f},
+    {"firetruck.glb",      8.20f, 0.0f},
+    {"delivery.glb",       5.80f, 0.0f},
+    {"semi.glb",           9.60f, 3.14159265f},
+    {"audi.glb",           4.95f, 0.0f},
+    {"challenger.glb",     4.95f, 0.0f},
+    {"r8.glb",             4.45f, 0.0f},
   };
   std::vector<InstanceAttrib> dummyVeh(64);
   for (size_t vi = 0; vi < kVehicleModelCount; ++vi) {
-    loadGlbBatch(ctx, (std::filesystem::path(assetsRoot) / "models" / vehicleSpecs[vi].first).string(), dummyVeh, vehicleBatches_[vi], vehicleSpecs[vi].second);
+    loadGlbBatch(
+      ctx,
+      (std::filesystem::path(assetsRoot) / "models" / vehicleSpecs[vi].file).string(),
+      dummyVeh,
+      vehicleBatches_[vi],
+      vehicleSpecs[vi].length,
+      true,
+      true,
+      vehicleSpecs[vi].yawOffset
+    );
   }
 }
 

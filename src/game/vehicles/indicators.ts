@@ -19,7 +19,7 @@ type Config = {
 
 export const INDICATOR_LAYOUTS: Record<CarId, Config> = {
   golf: { materials: ["taillight__Rear-lights"], x: [0.5, 0.82], y: [0.8, 0.88], z: 1.63, color: "amber" },
-  mercedes: { materials: ["photo__W222 - Photo Textures Rough 0"], x: [0.57, 0.86], y: [0.58, 0.72], z: 2.04, color: "amber" },
+  mercedes: { materials: ["taillight__W222", "photo__W222 - Photo Textures Rough 0"], x: [0.57, 0.86], y: [0.56, 0.76], z: 2.04, color: "amber" },
   audi: {
     materials: ["taillight__Rear_secondary_emission", "taillight__Rear LIght_clear", "taillight__Rear_main_emission", "other__Material.005"],
     x: [0.35, 0.82],
@@ -111,7 +111,7 @@ export function indicatorMaterial(
 
 const FRONT_MATERIALS: Record<CarId, string[]> = {
   golf: ["chrome__Chrome", "headlight__Glass-light-cover", "headlight__Headlight1"],
-  mercedes: ["photo__W222 - Photo Textures", "photo__W222 - Photo Textures Rough 0"],
+  mercedes: ["headlight__W222", "photo__W222 - Photo Textures", "photo__W222 - Photo Textures Rough 0"],
   audi: ["headlight__Front DRL", "headlight__Bright_front_headlight", "chrome__Chrome_Light", "other__Material.001"],
   mustang: ["headlight__M_HeadLight2", "other__M_TurnSignalLight1"],
   ferrari: ["headlight__Main_Light_Cover.000", "headlight__Front_Light_Covers.000", "headlight__LEDsOn.000", "headlight__LEDsOff.000"],
