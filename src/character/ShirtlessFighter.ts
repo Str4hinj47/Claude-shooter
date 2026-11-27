@@ -144,12 +144,64 @@ function bindPartToBodySkeleton(partMesh: THREE.SkinnedMesh, bodySkeleton: THREE
   partMesh.bind(bodySkeleton, bindMatrix);
 }
 
-function applyMaterialTint(mat: THREE.Material, hex: string, defaultGain = 1) {
+function applyMaterialTint(mat: THREE.Material, hex: string, defaultGain = 1, maxGain = 3) {
   const m = mat as THREE.MeshStandardMaterial;
   if (!m?.color) return;
   m.color.set(hex);
-  const g = Number(m.userData?.tint?.gain) || defaultGain;
+  const rawG = Number(m.userData?.tint?.gain) || defaultGain;
+  const g = Math.min(maxGain, rawG);
   if (g > 0 && g !== 1) m.color.multiplyScalar(g);
+}
+
+/**
+ * Bake subtle scalp-to-crown ambient occlusion vertex shading onto hair cards
+ * so hair has natural volume & dark roots instead of flat uniform brightness.
+ */
+function applyHairRootDepth(mesh: THREE.SkinnedMesh) {
+  const pos = mesh.geometry?.getAttribute?.("position");
+  if (!pos || pos.count === 0) return;
+  const geo = mesh.geometry.clone();
+  let minX = Infinity, maxX = -Infinity;
+  let minY = Infinity, maxY = -Infinity;
+  let minZ = Infinity, maxZ = -Infinity;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const z = pos.getZ(i);
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+    if (z < minZ) minZ = z;
+    if (z > maxZ) maxZ = z;
+  }
+  const ySpan = Math.max(1e-4, maxY - minY);
+  const cx = (minX + maxX) * 0.5;
+  const cz = (minZ + maxZ) * 0.5;
+  const maxR = Math.max(1e-4, Math.hypot(maxX - cx, maxZ - cz));
+
+  const colors = new Float32Array(pos.count * 3);
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const z = pos.getZ(i);
+    const yNorm = Math.max(0, Math.min(1, (y - minY) / ySpan));
+    const rNorm = Math.max(0, Math.min(1, Math.hypot(x - cx, z - cz) / maxR));
+    // Darker at nape/roots & inner scalp, slightly lighter along crown/outer tips
+    const ao = 0.68 + 0.22 * yNorm + 0.14 * rNorm;
+    colors[i * 3] = ao;
+    colors[i * 3 + 1] = ao;
+    colors[i * 3 + 2] = ao;
+  }
+  geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  mesh.geometry = geo;
+  const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+  for (const m of mats) {
+    if (m) {
+      m.vertexColors = true;
+      m.needsUpdate = true;
+    }
+  }
 }
 
 /**
@@ -196,7 +248,11 @@ export async function assembleShirtlessFighter(
       const m = orig.clone();
       if (m.name === "Skin") applyMaterialTint(m, opts.skinHex, 1.6129);
       if (m.name === "Eyebrow" || m.name === "Eyelash") {
-        applyMaterialTint(m, opts.hairHex ?? "#1c1510", 1.8182);
+        applyMaterialTint(m, opts.hairHex ?? "#1c1510", 1.15, 1.2);
+        const std = m as THREE.MeshStandardMaterial;
+        std.roughness = 0.92;
+        std.metalness = 0.0;
+        std.envMapIntensity = 0.1;
       }
       return m;
     });
@@ -224,11 +280,18 @@ export async function assembleShirtlessFighter(
         if (isShorts && opts.shortsHex) {
           m.color.set(opts.shortsHex);
         } else if (isHair || /hair/i.test(m.name)) {
-          applyMaterialTint(m, opts.hairHex ?? "#1c1510", 1.8);
+          applyMaterialTint(m, opts.hairHex ?? "#1c1510", 1.12, 1.18);
+          m.roughness = 0.93;
+          m.metalness = 0.0;
+          m.envMapIntensity = 0.10;
+          m.alphaTest = Math.max(m.alphaTest || 0, 0.36);
         }
         return m;
       });
       pm.material = Array.isArray(pm.material) ? cloned : cloned[0];
+      if (isHair) {
+        applyHairRootDepth(pm);
+      }
       primaryBody.parent?.add(pm);
     }
   }

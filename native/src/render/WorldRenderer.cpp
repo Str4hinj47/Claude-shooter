@@ -612,6 +612,25 @@ void WorldRenderer::buildRoadAndArenaBuffers(WgpuContext& ctx, const WorldData& 
       appendBox(bPos, bNorm, bCol, bIdx, center + glm::vec3(rHalf, ry, 0.0f), glm::vec3(0.06f, 0.06f, rHalf * 2.0f), ropeCol);
     }
 
+    // North & South 2-tier spectator bleachers
+    for (float side : {-1.0f, 1.0f}) {
+      const float bz = side * 8.6f;
+      appendBox(bPos, bNorm, bCol, bIdx, center + glm::vec3(0.0f, 0.45f, bz), glm::vec3(8.8f, 0.14f, 0.7f), glm::vec3(0.36f, 0.24f, 0.15f));
+      appendBox(bPos, bNorm, bCol, bIdx, center + glm::vec3(0.0f, 0.92f, bz + side * 0.65f), glm::vec3(8.8f, 0.14f, 0.7f), glm::vec3(0.36f, 0.24f, 0.15f));
+    }
+    // Viktor's Bookie Desk & Canopy (West-North apron)
+    appendBox(bPos, bNorm, bCol, bIdx, center + glm::vec3(-9.2f, 0.42f, 3.4f), glm::vec3(1.8f, 0.84f, 0.85f), glm::vec3(0.34f, 0.22f, 0.14f));
+    appendBox(bPos, bNorm, bCol, bIdx, center + glm::vec3(-9.2f, 2.55f, 3.4f), glm::vec3(2.4f, 0.12f, 1.4f), glm::vec3(0.14f, 0.17f, 0.22f));
+    // Heavy Punching Bag Gallows Stand & Barbell Rack (South-West warm-up zone)
+    appendBox(bPos, bNorm, bCol, bIdx, center + glm::vec3(-9.0f, 1.35f, -5.2f), glm::vec3(0.14f, 2.7f, 0.14f), glm::vec3(0.16f, 0.19f, 0.24f));
+    appendBox(bPos, bNorm, bCol, bIdx, center + glm::vec3(-8.4f, 2.65f, -5.2f), glm::vec3(1.2f, 0.10f, 0.10f), glm::vec3(0.16f, 0.19f, 0.24f));
+    appendBox(bPos, bNorm, bCol, bIdx, center + glm::vec3(-7.9f, 1.55f, -5.2f), glm::vec3(0.42f, 1.15f, 0.42f), glm::vec3(0.42f, 0.11f, 0.09f));
+    // Entrance fire-drum braziers
+    for (float bz : {-3.6f, 3.8f}) {
+      appendBox(bPos, bNorm, bCol, bIdx, center + glm::vec3(-7.6f, 0.48f, bz), glm::vec3(0.62f, 0.96f, 0.62f), glm::vec3(0.32f, 0.24f, 0.19f));
+      appendBox(bPos, bNorm, bCol, bIdx, center + glm::vec3(-7.6f, 1.00f, bz), glm::vec3(0.44f, 0.12f, 0.44f), glm::vec3(0.95f, 0.45f, 0.12f));
+    }
+
     const uint32_t vBase = static_cast<uint32_t>(verts.size());
     for (size_t i = 0; i < bPos.size(); ++i) {
       verts.push_back(StaticVertex{bPos[i].x, bPos[i].y, bPos[i].z, bNorm[i].x, bNorm[i].y, bNorm[i].z, bCol[i].r, bCol[i].g, bCol[i].b, 0.0f, 0.0f, 3.0f});
@@ -937,6 +956,9 @@ void WorldRenderer::render(
     su.model = glm::translate(glm::mat4(1.0f), ch.position) *
                glm::rotate(glm::mat4(1.0f), ch.yawRad, glm::vec3(0.0f, 1.0f, 0.0f));
     su.tint = ch.tint;
+    if (ch.part == SkinnedPartKind::PlayerHair) {
+      su.tint.a = 2.0f;
+    }
     if (ch.palette) su.bones = *ch.palette;
     else su.bones.fill(glm::mat4(1.0f));
     wgpuQueueWriteBuffer(ctx.queue(), skinSlots_[ci].ubo, 0, &su, sizeof(su));

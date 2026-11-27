@@ -121,13 +121,16 @@ void sampleChannelVec3(const GltfAnimChannel& ch, float t, glm::vec3& out) {
 void sampleChannelQuat(const GltfAnimChannel& ch, float t, glm::quat& out) {
   const size_t n = ch.times.size();
   if (n == 0) return;
+  auto readQ = [&](size_t idx) {
+    const size_t k = idx * 4;
+    return glm::normalize(glm::quat(ch.values[k + 3], ch.values[k], ch.values[k + 1], ch.values[k + 2]));
+  };
   if (n == 1 || t <= ch.times.front()) {
-    out = glm::normalize(glm::quat(ch.values[3], ch.values[0], ch.values[1], ch.values[2]));
+    out = readQ(0);
     return;
   }
   if (t >= ch.times.back()) {
-    const size_t k = (n - 1) * 4;
-    out = glm::normalize(glm::quat(ch.values[k + 3], ch.values[k], ch.values[k + 1], ch.values[k + 2]));
+    out = readQ(n - 1);
     return;
   }
   auto it = std::upper_bound(ch.times.begin(), ch.times.end(), t);
@@ -135,9 +138,28 @@ void sampleChannelQuat(const GltfAnimChannel& ch, float t, glm::quat& out) {
   const size_t i0 = i1 - 1;
   const float span = std::max(1e-6f, ch.times[i1] - ch.times[i0]);
   const float a = std::clamp((t - ch.times[i0]) / span, 0.0f, 1.0f);
-  const glm::quat q0(ch.values[i0 * 4 + 3], ch.values[i0 * 4], ch.values[i0 * 4 + 1], ch.values[i0 * 4 + 2]);
-  const glm::quat q1(ch.values[i1 * 4 + 3], ch.values[i1 * 4], ch.values[i1 * 4 + 1], ch.values[i1 * 4 + 2]);
-  out = glm::normalize(glm::slerp(q0, q1, a));
+  glm::quat q0 = readQ(i0);
+  glm::quat q1 = readQ(i1);
+  if (glm::dot(q0, q1) < 0.0f) q1 = -q1;
+
+  if (n < 4) {
+    const float s = a * a * (3.0f - 2.0f * a);
+    out = glm::normalize(glm::slerp(q0, q1, s));
+    return;
+  }
+  const size_t im1 = (i0 > 0) ? (i0 - 1) : 0;
+  const size_t i2 = (i1 + 1 < n) ? (i1 + 1) : (n - 1);
+  glm::quat qm1 = readQ(im1);
+  glm::quat q2 = readQ(i2);
+  if (glm::dot(qm1, q0) < 0.0f) qm1 = -qm1;
+  if (glm::dot(q2, q1) < 0.0f) q2 = -q2;
+
+  const glm::quat tA = glm::normalize(glm::slerp(qm1, q1, 0.5f));
+  const glm::quat tB = glm::normalize(glm::slerp(q0, q2, 0.5f));
+  const float s = a * a * (3.0f - 2.0f * a);
+  const glm::quat lin = glm::normalize(glm::slerp(q0, q1, s));
+  const glm::quat tan = glm::normalize(glm::slerp(tA, tB, s));
+  out = glm::normalize(glm::slerp(lin, tan, 2.0f * a * (1.0f - a) * 0.32f));
 }
 
 } // namespace
@@ -306,7 +328,8 @@ void CharacterAnimator::evaluateBlended(
   float blend,
   std::array<glm::mat4, kMaxSkinBones>& outPalette
 ) const {
-  const float b = std::clamp(blend, 0.0f, 1.0f);
+  const float rawB = std::clamp(blend, 0.0f, 1.0f);
+  const float b = rawB * rawB * (3.0f - 2.0f * rawB);
   if (b <= 0.001f) {
     evaluateClip(clipA, timeA, outPalette);
     return;

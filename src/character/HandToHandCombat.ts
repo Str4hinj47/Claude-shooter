@@ -455,13 +455,18 @@ export class HandToHandController {
       };
     }
 
+    const smooth01 = (t: number) => {
+      const c = Math.max(0, Math.min(1, t));
+      return c * c * (3 - 2 * c);
+    };
+
     if (this.state === "attack" && this.currentMove) {
       const m = this.currentMove;
       const u = Math.max(0, Math.min(1, this.stateTime / Math.max(0.05, this.stateDuration)));
       const attackWin =
-        u < 0.12 ? u / 0.12 : u > 0.84 ? Math.max(0, (1 - u) / 0.16) : 1;
-      const w = Math.max(this.blendWeight, attackWin);
-      const standLower = m.fullBody ? w : w * (1 - Math.min(1, locoBlend * 1.4));
+        u < 0.14 ? smooth01(u / 0.14) : u > 0.78 ? smooth01((1 - u) / 0.22) : 1;
+      const w = Math.max(this.blendWeight * 0.75, attackWin);
+      const standLower = m.fullBody ? w : w * (1 - Math.min(1, locoBlend * 1.35));
       return {
         clipId: m.clip,
         clipTimeNorm: u,
@@ -475,11 +480,12 @@ export class HandToHandController {
 
     if (this.state === "dodge") {
       const u = Math.max(0, Math.min(1, this.stateTime / Math.max(0.05, this.stateDuration)));
+      const env = u < 0.14 ? smooth01(u / 0.14) : u > 0.76 ? smooth01((1 - u) / 0.24) : 1;
       return {
         clipId: "dodge",
         clipTimeNorm: u,
-        upperWeight: 1,
-        lowerWeight: 1,
+        upperWeight: Math.max(0.35, env),
+        lowerWeight: Math.max(0.35, env),
         fistWeight: 1,
         activeMove: null,
         attackProgress: 0,
@@ -488,13 +494,14 @@ export class HandToHandController {
 
     if (this.state === "hitstun") {
       const u = Math.max(0, Math.min(1, this.stateTime / Math.max(0.05, this.stateDuration)));
-      const fade = u > 0.72 ? (1 - u) / 0.28 : 1;
+      const enter = u < 0.12 ? smooth01(u / 0.12) : 1;
+      const fade = u > 0.70 ? smooth01((1 - u) / 0.30) : enter;
       return {
         clipId: "hit",
         clipTimeNorm: u,
         upperWeight: fade,
-        lowerWeight: fade * (1 - Math.min(1, locoBlend)),
-        fistWeight: 0.6,
+        lowerWeight: fade * (1 - Math.min(1, locoBlend * 0.85)),
+        fistWeight: 0.65,
         activeMove: null,
         attackProgress: 0,
       };
@@ -502,7 +509,8 @@ export class HandToHandController {
 
     if (this.state === "knockdown") {
       const u = Math.max(0, Math.min(1, this.stateTime / Math.max(0.05, this.stateDuration)));
-      const fade = u > 0.8 ? (1 - u) / 0.2 : 1;
+      const enter = u < 0.10 ? smooth01(u / 0.10) : 1;
+      const fade = u > 0.78 ? smooth01((1 - u) / 0.22) : enter;
       return {
         clipId: "knockdown",
         clipTimeNorm: u,
@@ -515,7 +523,7 @@ export class HandToHandController {
     }
 
     if (this.state === "block") {
-      const u = (this.stateTime / 0.65) % 1;
+      const u = (this.stateTime / 0.72) % 1;
       const lower = this.blendWeight * (1 - Math.min(1, locoBlend * 1.3));
       return {
         clipId: "block",
@@ -529,9 +537,10 @@ export class HandToHandController {
     }
 
     // Combat stance idle (boxing guard while standing or moving lightly after recent brawl)
-    const stanceFade = sprinting ? 0.15 : 1;
-    const upper = this.blendWeight * 0.88 * stanceFade;
-    const lower = this.blendWeight * (1 - Math.min(1, locoBlend * 1.5)) * stanceFade;
+    const stanceFade = sprinting ? 0.14 : 1;
+    const bob = 0.96 + Math.sin(this.idleClock * 2.6) * 0.04;
+    const upper = this.blendWeight * 0.88 * stanceFade * bob;
+    const lower = this.blendWeight * (1 - Math.min(1, locoBlend * 1.45)) * stanceFade;
     return {
       clipId: "fight_idle",
       clipTimeNorm: (this.idleClock / 2.33) % 1,

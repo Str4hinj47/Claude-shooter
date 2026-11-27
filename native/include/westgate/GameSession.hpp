@@ -138,6 +138,12 @@ struct IronPitState {
   bool hitApplied = false;
   bool defeated = false;
   int wins = 0;
+  int winStreak = 0;
+  int betWager = 0;
+  float betOdds = 1.65f;
+  bool betActive = false;
+  int betWins = 0;
+  int betProfit = 0;
 };
 
 struct ContractDef {
@@ -289,6 +295,8 @@ public:
   float playerAnimTime() const { return animClock_; }
   std::string playerAttackClip() const { return playerAttackClip_; }
   float playerAttackTime() const { return playerAttackTimer_; }
+  bool placeIronPitBet(int wager);
+  bool buyCutmanHeal();
 
 private:
   void pushToast(const std::string& msg, float duration = 3.5f);

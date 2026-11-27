@@ -293,8 +293,8 @@ export function bakeClipForTargetSkeleton(
   const tStart = Math.max(0, Math.min(def.tStart, src.clip.duration));
   const tEnd = Math.max(tStart + 0.05, Math.min(def.tEnd, src.clip.duration));
   const span = tEnd - tStart;
-  const sampleHz = 20;
-  const frames = Math.max(4, Math.ceil(span * sampleHz) + 1);
+  const sampleHz = 60;
+  const frames = Math.max(6, Math.ceil(span * sampleHz) + 1);
 
   const bonesOut: Partial<Record<CombatBoneName, Float32Array>> = {};
   const activeBoneList: { key: CombatBoneName; target: THREE.Object3D; srcBone: THREE.Object3D; srcBindInv: THREE.Quaternion; tgtBindW: THREE.Quaternion }[] = [];
@@ -450,8 +450,24 @@ export function getCombatBankForRig(
 
 const _q0 = new THREE.Quaternion();
 const _q1 = new THREE.Quaternion();
+const _qm1 = new THREE.Quaternion();
+const _q2 = new THREE.Quaternion();
+const _tA = new THREE.Quaternion();
+const _tB = new THREE.Quaternion();
 
-/** Sample a single bone's local quaternion from a baked combat clip at normalized time `u` (0..1). */
+function readClipQuat(arr: Float32Array, idx: number, out: THREE.Quaternion) {
+  const o = idx * 4;
+  out.set(arr[o], arr[o + 1], arr[o + 2], arr[o + 3]);
+}
+
+function alignHemisphere(q: THREE.Quaternion, ref: THREE.Quaternion) {
+  if (q.dot(ref) < 0) q.set(-q.x, -q.y, -q.z, -q.w);
+}
+
+/**
+ * Sample a single bone's local quaternion from a baked combat clip at normalized time `u` (0..1)
+ * using 4-point C1-continuous Catmull-Rom / SQUAD-like spherical cubic interpolation.
+ */
 export function sampleCombatBone(
   clip: BakedCombatClip,
   bone: CombatBoneName,
@@ -469,14 +485,35 @@ export function sampleCombatBone(
   } else {
     u = Math.max(0, Math.min(1, u));
   }
-  const pos = u * (clip.frames - 1);
+  const last = clip.frames - 1;
+  const pos = u * last;
   const i0 = Math.floor(pos);
-  const i1 = Math.min(clip.frames - 1, i0 + 1);
+  const i1 = Math.min(last, i0 + 1);
   const frac = pos - i0;
-  const o0 = i0 * 4;
-  const o1 = i1 * 4;
-  _q0.set(arr[o0], arr[o0 + 1], arr[o0 + 2], arr[o0 + 3]);
-  _q1.set(arr[o1], arr[o1 + 1], arr[o1 + 2], arr[o1 + 3]);
-  out.copy(_q0).slerp(_q1, frac);
+
+  readClipQuat(arr, i0, _q0);
+  readClipQuat(arr, i1, _q1);
+  alignHemisphere(_q1, _q0);
+
+  if (clip.frames < 4 || frac <= 1e-4 || frac >= 1 - 1e-4) {
+    out.copy(_q0).slerp(_q1, frac).normalize();
+    return true;
+  }
+
+  const im1 = clip.loop && !clip.pingPong ? (i0 - 1 + clip.frames) % clip.frames : Math.max(0, i0 - 1);
+  const i2 = clip.loop && !clip.pingPong ? (i1 + 1) % clip.frames : Math.min(last, i1 + 1);
+  readClipQuat(arr, im1, _qm1);
+  readClipQuat(arr, i2, _q2);
+  alignHemisphere(_qm1, _q0);
+  alignHemisphere(_q2, _q1);
+
+  // Tangent control quaternions for C1 cubic spherical blend (Catmull-Rom in tangent space)
+  _tA.copy(_qm1).slerp(_q1, 0.5);
+  _tB.copy(_q0).slerp(_q2, 0.5);
+  // Smooth Hermite blend between linear chord (_q0->_q1) and chord midpoint tangent (_tA->_tB)
+  const s = frac * frac * (3 - 2 * frac);
+  _q0.slerp(_q1, s);
+  _tA.slerp(_tB, s);
+  out.copy(_q0).slerp(_tA, 2 * frac * (1 - frac) * 0.35).normalize();
   return true;
 }

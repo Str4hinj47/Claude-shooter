@@ -165,7 +165,7 @@ fn vsSkinned(in : SkinnedVSIn) -> VSOut {
   out.normal = worldNorm;
   out.color = in.vtxCol * uSkin.tint.rgb;
   out.uv = in.uv;
-  out.surfaceKind = 5.0;
+  out.surfaceKind = select(5.0, 6.0, uSkin.tint.a > 1.5);
   return out;
 }
 
@@ -217,7 +217,12 @@ fn fsMain(in : VSOut) -> @location(0) vec4<f32> {
   var emissive = vec3<f32>(0.0);
   let nightFactor = clamp(uFrame.fogColor.w, 0.0, 1.0);
 
-  if (in.surfaceKind > 4.5) {
+  if (in.surfaceKind > 5.5) {
+    // Matte fibrous hair (zero plastic specular glare)
+    albedo = in.color * texColor.rgb;
+    specPower = 6.0;
+    specStrength = 0.025;
+  } else if (in.surfaceKind > 4.5) {
     // Textured skinned character
     albedo = in.color * texColor.rgb;
     specPower = 24.0;

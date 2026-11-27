@@ -42,6 +42,8 @@ interface CharDetailMaps {
   fabricRoughness: THREE.DataTexture;
   skinRoughness: THREE.DataTexture;
   metalRoughness: THREE.DataTexture;
+  hairRoughness: THREE.DataTexture;
+  hairBump: THREE.DataTexture;
 }
 
 let cachedDetailMaps: CharDetailMaps | null = null;
@@ -98,7 +100,27 @@ function getCharDetailMaps(): CharDetailMaps {
     return 0.25 + streak;
   });
 
-  cachedDetailMaps = { fabricRoughness, skinRoughness, metalRoughness };
+  // Fibrous matte vertical hair-strand roughness & micro-groove bump (512px)
+  // High base roughness (0.88–0.97) breaks up specular glare completely so hair never looks like glossy plastic
+  const hairRoughness = makeNoiseTex(512, 8, (x, y) => {
+    const u = (x / 512) * Math.PI * 2;
+    const v = (y / 512) * Math.PI * 2;
+    const fine = Math.sin(u * 46 + Math.sin(v * 3) * 0.8) * 0.028;
+    const clump = Math.cos(u * 13 + Math.cos(v * 2) * 0.5) * 0.022;
+    const micro = Math.sin(u * 92 + v * 5) * 0.015;
+    return 0.91 + fine + clump + micro;
+  });
+
+  const hairBump = makeNoiseTex(512, 8, (x, y) => {
+    const u = (x / 512) * Math.PI * 2;
+    const v = (y / 512) * Math.PI * 2;
+    const strands = Math.sin(u * 48 + Math.sin(v * 2.5) * 0.9) * 0.26;
+    const lock = Math.cos(u * 14 + Math.sin(v * 1.5) * 0.4) * 0.16;
+    const fiber = Math.sin(u * 96 + v * 7) * 0.08;
+    return 0.5 + strands + lock + fiber;
+  });
+
+  cachedDetailMaps = { fabricRoughness, skinRoughness, metalRoughness, hairRoughness, hairBump };
   return cachedDetailMaps;
 }
 
@@ -155,14 +177,42 @@ export function upgradeCharacterMaterial(orig: THREE.Material): THREE.MeshPhysic
     p.envMapIntensity = 1.85;
   } else if (/opacity|hair|eyebrow|eyelash/i.test(name)) {
     p.metalness = 0.0;
-    p.roughness = 0.65;
-    p.sheen = 0.15;
-    p.sheenRoughness = 0.55;
-    p.sheenColor = new THREE.Color(0x9aa3b0);
-    p.alphaTest = Math.max(p.alphaTest || 0, 0.44);
+    p.roughness = 0.93;
+    p.clearcoat = 0.0;
+    p.ior = 1.31;
+    p.specularIntensity = 0.05;
+    p.envMapIntensity = 0.10;
+    p.sheen = 0.12;
+    p.sheenRoughness = 0.88;
+    p.sheenColor = p.color.clone().multiplyScalar(0.32).addScalar(0.03);
+    p.alphaTest = Math.max(p.alphaTest || 0, 0.36);
     p.transparent = false;
     p.side = THREE.DoubleSide;
-    p.envMapIntensity = 0.45;
+
+    // Sync hair strand detail maps to any KHR_texture_transform UV tiling on p.map
+    if (p.map && (p.map.repeat.x > 2 || p.map.repeat.y > 2)) {
+      const rMap = maps.hairRoughness.clone();
+      rMap.repeat.set(p.map.repeat.x * 1.4, p.map.repeat.y * 1.4);
+      rMap.offset.copy(p.map.offset);
+      rMap.userData.sharedPresetTex = true;
+      rMap.needsUpdate = true;
+      p.roughnessMap = rMap;
+      if (!p.normalMap) {
+        const bMap = maps.hairBump.clone();
+        bMap.repeat.set(p.map.repeat.x * 1.4, p.map.repeat.y * 1.4);
+        bMap.offset.copy(p.map.offset);
+        bMap.userData.sharedPresetTex = true;
+        bMap.needsUpdate = true;
+        p.bumpMap = bMap;
+        p.bumpScale = 0.0042;
+      }
+    } else {
+      p.roughnessMap = maps.hairRoughness;
+      if (!p.normalMap) {
+        p.bumpMap = maps.hairBump;
+        p.bumpScale = 0.0042;
+      }
+    }
   } else if (/head|skin|face/i.test(name)) {
     p.metalness = 0.0;
     p.roughness = 0.56;
@@ -850,6 +900,11 @@ export class SoldierRig {
   events: RigEvents = {};
   readonly combat = new HandToHandController();
   private combatTmpQ = new THREE.Quaternion();
+  private combatBlendSnap: Record<string, THREE.Quaternion> = {};
+  private combatLastClipId: string | null = null;
+  private combatCrossfadeT = 1;
+  private combatCrossfadeDur = 0.11;
+  private combatLastActive = false;
 
   // calibrated locomotion data
   walkN = 1.4;
@@ -986,10 +1041,23 @@ export class SoldierRig {
           const m = mat as THREE.MeshStandardMaterial;
           if (m.map && !m.map.userData?.sharedPresetTex) m.map.dispose();
           if (m.emissiveMap && !m.emissiveMap.userData?.sharedPresetTex) m.emissiveMap.dispose();
-          if (m.roughnessMap && !m.roughnessMap.userData?.sharedPresetTex && m.roughnessMap !== cachedDetailMaps?.fabricRoughness && m.roughnessMap !== cachedDetailMaps?.skinRoughness && m.roughnessMap !== cachedDetailMaps?.metalRoughness) {
+          if (
+            m.roughnessMap &&
+            !m.roughnessMap.userData?.sharedPresetTex &&
+            m.roughnessMap !== cachedDetailMaps?.fabricRoughness &&
+            m.roughnessMap !== cachedDetailMaps?.skinRoughness &&
+            m.roughnessMap !== cachedDetailMaps?.metalRoughness &&
+            m.roughnessMap !== cachedDetailMaps?.hairRoughness
+          ) {
             m.roughnessMap.dispose();
           }
-          if (m.bumpMap && !m.bumpMap.userData?.sharedPresetTex && m.bumpMap !== cachedDetailMaps?.fabricRoughness && m.bumpMap !== cachedDetailMaps?.skinRoughness) {
+          if (
+            m.bumpMap &&
+            !m.bumpMap.userData?.sharedPresetTex &&
+            m.bumpMap !== cachedDetailMaps?.fabricRoughness &&
+            m.bumpMap !== cachedDetailMaps?.skinRoughness &&
+            m.bumpMap !== cachedDetailMaps?.hairBump
+          ) {
             m.bumpMap.dispose();
           }
           if (m.normalMap && !m.normalMap.userData?.sharedPresetTex) m.normalMap.dispose();
@@ -2133,13 +2201,30 @@ export class SoldierRig {
 
     if (combatPose && combatPose.upperWeight > 0.01) {
       if (quickMeleeArmed) this.rifle.group.visible = false;
-      this.applyCombatOverlay(combatPose);
+      this.applyCombatOverlay(combatPose, dt);
+    } else {
+      this.combatLastClipId = null;
+      this.combatLastActive = false;
+      this.combatCrossfadeT = 1;
     }
 
     this.model.updateMatrixWorld(true);
   }
 
-  private applyCombatOverlay(pose: CombatVisualPose) {
+  private captureCombatPoseSnapshot() {
+    const B = this.bones;
+    if (B[COMBAT_HIPS_BONE]) {
+      (this.combatBlendSnap[COMBAT_HIPS_BONE] ??= new THREE.Quaternion()).copy(B[COMBAT_HIPS_BONE].quaternion);
+    }
+    for (const bName of COMBAT_UPPER_BONES) {
+      if (B[bName]) (this.combatBlendSnap[bName] ??= new THREE.Quaternion()).copy(B[bName].quaternion);
+    }
+    for (const bName of COMBAT_LOWER_BONES) {
+      if (B[bName]) (this.combatBlendSnap[bName] ??= new THREE.Quaternion()).copy(B[bName].quaternion);
+    }
+  }
+
+  private applyCombatOverlay(pose: CombatVisualPose, dt: number) {
     const B = this.bones;
     const bank = getCombatBankForRig(
       this.isCC0Fighter ? "fighter://cc0" : this.modelTag || "default",
@@ -2149,27 +2234,42 @@ export class SoldierRig {
     );
     const clip = pose.clipId ? bank[pose.clipId] : undefined;
 
+    // Cross-clip pose snapshot smoothing so combo transitions (jab->cross->hook->idle) have zero frame pops
+    const curClipId = pose.clipId ?? null;
+    if (this.combatLastActive && curClipId !== this.combatLastClipId) {
+      this.combatCrossfadeT = 0;
+      this.combatCrossfadeDur = pose.activeMove ? 0.085 : 0.14;
+    } else if (!this.combatLastActive) {
+      this.captureCombatPoseSnapshot();
+      this.combatCrossfadeT = 0;
+      this.combatCrossfadeDur = 0.12;
+    }
+    this.combatLastClipId = curClipId;
+    this.combatLastActive = true;
+    this.combatCrossfadeT = Math.min(1, this.combatCrossfadeT + dt / Math.max(0.03, this.combatCrossfadeDur));
+    const cf = this.combatCrossfadeT * this.combatCrossfadeT * (3 - 2 * this.combatCrossfadeT);
+
     if (clip) {
       const q = this.combatTmpQ;
-      const hipsW = Math.max(pose.lowerWeight, pose.upperWeight * 0.42);
-      if (hipsW > 0.01 && B[COMBAT_HIPS_BONE] && sampleCombatBone(clip, COMBAT_HIPS_BONE, pose.clipTimeNorm, q)) {
-        B[COMBAT_HIPS_BONE].quaternion.slerp(q, hipsW);
-      }
-      if (pose.upperWeight > 0.01) {
-        for (const bName of COMBAT_UPPER_BONES) {
-          const b = B[bName];
-          if (b && sampleCombatBone(clip, bName, pose.clipTimeNorm, q)) {
-            b.quaternion.slerp(q, pose.upperWeight);
-          }
+      const applyBone = (bName: string, w: number) => {
+        const b = B[bName];
+        if (!b || !sampleCombatBone(clip, bName as never, pose.clipTimeNorm, q)) return;
+        b.quaternion.slerp(q, w);
+        const snap = this.combatBlendSnap[bName];
+        if (cf < 0.999 && snap) {
+          q.copy(snap).slerp(b.quaternion, cf);
+          b.quaternion.copy(q);
         }
+        (this.combatBlendSnap[bName] ??= new THREE.Quaternion()).copy(b.quaternion);
+      };
+
+      const hipsW = Math.max(pose.lowerWeight, pose.upperWeight * 0.42);
+      if (hipsW > 0.01) applyBone(COMBAT_HIPS_BONE, hipsW);
+      if (pose.upperWeight > 0.01) {
+        for (const bName of COMBAT_UPPER_BONES) applyBone(bName, pose.upperWeight);
       }
       if (pose.lowerWeight > 0.01) {
-        for (const bName of COMBAT_LOWER_BONES) {
-          const b = B[bName];
-          if (b && sampleCombatBone(clip, bName, pose.clipTimeNorm, q)) {
-            b.quaternion.slerp(q, pose.lowerWeight);
-          }
-        }
+        for (const bName of COMBAT_LOWER_BONES) applyBone(bName, pose.lowerWeight);
       }
     } else {
       // Crisp procedural combat fallback while Mixamo GLBs finish streaming

@@ -6,6 +6,7 @@ import type { MissionDef, StoryChapterDef } from "../game/story";
 import type { CarId } from "../game/vehicles/catalog";
 import type { ApartmentId, SaveData } from "../game/progression";
 import { WestgateMinimap } from "./WestgateMinimap";
+import { FightPitBookieModal } from "./FightPitBookieModal";
 import { WeaponWheel } from "./WeaponWheel";
 import { WeaponOutlineSvg } from "./WeaponOutlineSvg";
 import { WEAPONS } from "../character/rifle";
@@ -1015,35 +1016,103 @@ export function GameHud({
         <div className="pointer-events-none absolute top-14 left-1/2 z-20 -translate-x-1/2">
           <div
             data-augmented-ui="tl-clip br-clip border inlay"
-            className="voss-panel-sharp min-w-[330px] px-5 py-2.5 text-center"
-            style={{ "--aug-border-bg": "#f59e0b" } as React.CSSProperties}
+            className="voss-panel-sharp min-w-[390px] px-5 py-2.5 text-center"
+            style={{ "--aug-border-bg": hud.fightPit.mode === "spectator" ? "#22c55e" : "#f59e0b" } as React.CSSProperties}
           >
             <div className="flex items-center justify-between gap-4 font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-[#fde68a]">
               <span>
-                IRON PIT · BOUT {hud.fightPit.tierIndex + 1}/{hud.fightPit.tierTotal}
+                {hud.fightPit.mode === "spectator"
+                  ? "IRON PIT · LIVE BETTING BOUT"
+                  : `IRON PIT · BOUT ${hud.fightPit.tierIndex + 1}/${hud.fightPit.tierTotal}`}
               </span>
-              <span className="text-[#22c55e]">PURSE ${hud.fightPit.purse.toLocaleString()}</span>
+              <span className="text-[#22c55e]">
+                {hud.fightPit.mode === "spectator"
+                  ? `${Math.floor(hud.fightPit.boutElapsedSec)}s`
+                  : `PURSE $${hud.fightPit.purse.toLocaleString()}`}
+              </span>
             </div>
-            <div className="mt-1 font-display text-lg font-black uppercase tracking-wider text-[#fef3c7]">
-              {hud.fightPit.opponentName}
-            </div>
-            <div className="mt-1.5 h-2 w-full overflow-hidden rounded-sm bg-[#1c1917]">
-              <div
-                className="h-full transition-all duration-100"
-                style={{
-                  width: `${Math.max(0, Math.min(100, (hud.fightPit.opponentHp / Math.max(1, hud.fightPit.opponentMaxHp)) * 100))}%`,
-                  background: "linear-gradient(90deg, #dc2626 0%, #f59e0b 100%)",
-                }}
-              />
-            </div>
+
+            {hud.fightPit.mode === "spectator" ? (
+              <div className="mt-1.5 grid grid-cols-2 gap-3 text-left">
+                <div>
+                  <div className="flex items-center justify-between font-mono text-[10px] font-bold text-[#fca5a5]">
+                    <span>{hud.fightPit.redName}</span>
+                    <span>{hud.fightPit.redHp}</span>
+                  </div>
+                  <div className="mt-1 h-2 w-full overflow-hidden rounded-sm bg-[#1c1917]">
+                    <div
+                      className="h-full transition-all duration-100"
+                      style={{
+                        width: `${Math.max(0, Math.min(100, (hud.fightPit.redHp / Math.max(1, hud.fightPit.redMaxHp)) * 100))}%`,
+                        background: "linear-gradient(90deg, #991b1b 0%, #ef4444 100%)",
+                      }}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <div className="flex items-center justify-between font-mono text-[10px] font-bold text-[#93c5fd]">
+                    <span>{hud.fightPit.opponentName}</span>
+                    <span>{hud.fightPit.opponentHp}</span>
+                  </div>
+                  <div className="mt-1 h-2 w-full overflow-hidden rounded-sm bg-[#1c1917]">
+                    <div
+                      className="h-full transition-all duration-100"
+                      style={{
+                        width: `${Math.max(0, Math.min(100, (hud.fightPit.opponentHp / Math.max(1, hud.fightPit.opponentMaxHp)) * 100))}%`,
+                        background: "linear-gradient(90deg, #1d4ed8 0%, #3b82f6 100%)",
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="mt-1 font-display text-lg font-black uppercase tracking-wider text-[#fef3c7]">
+                  {hud.fightPit.opponentName}
+                </div>
+                <div className="mt-1.5 h-2 w-full overflow-hidden rounded-sm bg-[#1c1917]">
+                  <div
+                    className="h-full transition-all duration-100"
+                    style={{
+                      width: `${Math.max(0, Math.min(100, (hud.fightPit.opponentHp / Math.max(1, hud.fightPit.opponentMaxHp)) * 100))}%`,
+                      background: "linear-gradient(90deg, #dc2626 0%, #f59e0b 100%)",
+                    }}
+                  />
+                </div>
+              </>
+            )}
+
+            {hud.fightPit.activeBet && (
+              <div className="mt-1.5 flex items-center justify-between border-t border-white/10 pt-1 font-mono text-[10px] text-[#86efac]">
+                <span>
+                  TICKET: {hud.fightPit.activeBet.pickName} (${hud.fightPit.activeBet.wager})
+                  {hud.fightPit.activeBet.quickKoProp
+                    ? ` · KO <${hud.fightPit.activeBet.koCutoffSec}s`
+                    : ""}
+                </span>
+                <span>PAYOUT ${hud.fightPit.activeBet.potentialPayout.toLocaleString()}</span>
+              </div>
+            )}
+
             <div className="mt-1.5 flex items-center justify-between font-mono text-[10px] uppercase tracking-[0.15em] text-[#f59e0b]">
               <span>{hud.fightPit.bannerText}</span>
               {(hud.fightPit.phase === "fighting" || hud.fightPit.phase === "countdown") && (
-                <span className="text-[#94a3b8]">[F] Forfeit</span>
+                <span className="text-[#94a3b8]">
+                  {hud.fightPit.mode === "spectator" ? "[F] Leave Ringside" : "[F] Forfeit"}
+                </span>
               )}
             </div>
           </div>
         </div>
+      )}
+
+      {hud.fightPitBookie?.open && !hud.dead && (
+        <FightPitBookieModal
+          info={hud.fightPitBookie.info}
+          health={hud.health}
+          maxHealth={hud.maxHealth}
+          game={gameRef.current}
+        />
       )}
 
       {hud.isOpenWorld && hud.nearbyPrompt && !hud.interact && !hud.dead && (

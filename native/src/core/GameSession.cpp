@@ -217,6 +217,12 @@ void GameSession::init(const WorldData& world, PlayerController* player, Physics
 }
 
 void GameSession::spawnIronPitTier(int tier, const WorldData& world) {
+  if (ironPit_.betActive) {
+    ironPit_.betProfit -= ironPit_.betWager;
+    ironPit_.betActive = false;
+    ironPit_.betWager = 0;
+    ironPit_.winStreak = 0;
+  }
   ironPit_.tier = std::clamp(tier, 1, 3);
   const float pitY = world.heightfield.sampleHeight(world.fightPitPos.x, world.fightPitPos.z) + 0.65f;
   ironPit_.pos = glm::vec3(world.fightPitPos.x, pitY, world.fightPitPos.z + 2.8f);
@@ -937,6 +943,24 @@ void GameSession::updateNpcsAndPolice(float dt, PlayerController& player, Physic
   }), npcs_.end());
 }
 
+bool GameSession::placeIronPitBet(int wager) {
+  if (wager <= 0 || ironPit_.defeated || ironPit_.betActive || playerCash_ < wager) return false;
+  playerCash_ -= wager;
+  ironPit_.betWager = wager;
+  ironPit_.betOdds = 1.45f + static_cast<float>(ironPit_.tier - 1) * 0.35f;
+  ironPit_.betActive = true;
+  pushToast("BOOKIE TICKET LOCKED: $" + std::to_string(wager) + " @ " + std::to_string(ironPit_.betOdds).substr(0, 4) + "x", 3.0f);
+  return true;
+}
+
+bool GameSession::buyCutmanHeal() {
+  if (playerHp_ >= playerMaxHp_ || playerCash_ < 50) return false;
+  playerCash_ -= 50;
+  playerHp_ = std::min(playerMaxHp_, playerHp_ + 75.0f);
+  pushToast("CUTMAN PATCH-UP: +75 HP (-$50)", 2.5f);
+  return true;
+}
+
 void GameSession::updateIronPit(float dt, const GameInputFrame& input, PlayerController& player, const WorldData& world, AudioEngine* audio) {
   const glm::vec3 pPos = player.position();
   const bool nearPit = glm::distance(glm::vec2(pPos.x, pPos.z), glm::vec2(world.fightPitPos.x, world.fightPitPos.z)) < 16.0f;
@@ -986,9 +1010,20 @@ void GameSession::updateIronPit(float dt, const GameInputFrame& input, PlayerCon
           ironPit_.animClip = "knockdown";
           ironPit_.animTime = 0.0f;
           ironPit_.wins++;
-          playerCash_ += ironPit_.purse;
+          const int streakPct = std::min(60, ironPit_.winStreak * 15);
+          ironPit_.winStreak++;
+          const int purseWon = static_cast<int>(std::round(static_cast<float>(ironPit_.purse) * (1.0f + static_cast<float>(streakPct) / 100.0f)));
+          int betPayout = 0;
+          if (ironPit_.betActive) {
+            betPayout = static_cast<int>(std::round(static_cast<float>(ironPit_.betWager) * ironPit_.betOdds));
+            ironPit_.betWins++;
+            ironPit_.betProfit += (betPayout - ironPit_.betWager);
+            ironPit_.betActive = false;
+            ironPit_.betWager = 0;
+          }
+          playerCash_ += (purseWon + betPayout);
           if (audio) audio->playCashChime();
-          pushToast("KNOCKOUT! +$" + std::to_string(ironPit_.purse) + " — Press [R] for next tier!", 4.5f);
+          pushToast("KNOCKOUT! +$" + std::to_string(purseWon + betPayout) + " — Press [R] for next tier!", 4.5f);
         } else {
           ironPit_.animClip = "hit";
           ironPit_.animTime = 0.0f;

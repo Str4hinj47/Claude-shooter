@@ -180,12 +180,25 @@ void drawWestgateHud(
   const float pitDist = glm::distance(glm::vec2(pPos.x, pPos.z), glm::vec2(world.fightPitPos.x, world.fightPitPos.z));
   if (pitDist < 18.0f) {
     const auto& pit = session.ironPit();
-    ImGui::SetNextWindowPos({disp.x * 0.5f - 180.0f, 64.0f}, ImGuiCond_Always);
-    ImGui::SetNextWindowSize({360.0f, 68.0f}, ImGuiCond_Always);
-    ImGui::SetNextWindowBgAlpha(0.80f);
+    ImGui::SetNextWindowPos({disp.x * 0.5f - 210.0f, 64.0f}, ImGuiCond_Always);
+    ImGui::SetNextWindowSize({420.0f, 108.0f}, ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.84f);
     ImGui::Begin("##IronPitBar", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
-    ImGui::Text("IRON PIT TIER %d: %s  (Purse $%d)", pit.tier, pit.opponentName.c_str(), pit.purse);
+    ImGui::Text("IRON PIT TIER %d: %s  (Purse $%d | Streak %d)", pit.tier, pit.opponentName.c_str(), pit.purse, pit.winStreak);
     ImGui::ProgressBar(pit.hp / std::max(1.0f, pit.maxHp), {-1, 16}, pit.defeated ? "KO! Press [R]" : nullptr);
+    if (pit.betActive) {
+      ImGui::TextColored({0.3f, 0.95f, 0.45f, 1.0f}, "ACTIVE BET: $%d @ %.2fx (Net $%d)", pit.betWager, pit.betOdds, pit.betProfit);
+    } else if (!pit.defeated) {
+      if (ImGui::SmallButton("Bet $100")) session.placeIronPitBet(100);
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Bet $250")) session.placeIronPitBet(250);
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Bet $500")) session.placeIronPitBet(500);
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Cutman +75HP ($50)")) session.buyCutmanHeal();
+    } else {
+      ImGui::Text("Bet Wins: %d | Net Profit: $%d", pit.betWins, pit.betProfit);
+    }
     ImGui::End();
   }
 

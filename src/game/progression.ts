@@ -392,6 +392,9 @@ export interface SaveData {
   bodyStats?: BodyStatsProgress;
   pitRank?: number;
   pitWins?: number;
+  pitWinStreak?: number;
+  pitBetWins?: number;
+  pitBetProfit?: number;
 }
 
 export const SAVE_KEY = "vanguard_blackout_save_v1";
@@ -763,6 +766,9 @@ export function loadSave(): SaveData {
       bodyStats: sanitizeBodyStats(p.bodyStats),
       pitRank: Math.max(0, Math.floor(Number(p.pitRank ?? 0))),
       pitWins: Math.max(0, Math.floor(Number(p.pitWins ?? 0))),
+      pitWinStreak: Math.max(0, Math.floor(Number(p.pitWinStreak ?? 0))),
+      pitBetWins: Math.max(0, Math.floor(Number(p.pitBetWins ?? 0))),
+      pitBetProfit: Math.round(Number(p.pitBetProfit ?? 0)),
     };
   } catch {
     return DEFAULT_SAVE();
@@ -1265,7 +1271,37 @@ export function recordFightPitWin(tierIndex: number, rewardCredits: number): Sav
   const save = loadSave();
   save.currencies.credits += Math.max(0, Math.floor(rewardCredits));
   save.pitWins = (save.pitWins ?? 0) + 1;
+  save.pitWinStreak = (save.pitWinStreak ?? 0) + 1;
   save.pitRank = Math.max(save.pitRank ?? 0, tierIndex + 1);
+  writeSave(save);
+  return save;
+}
+
+export function resetFightPitStreak(): SaveData {
+  const save = loadSave();
+  save.pitWinStreak = 0;
+  writeSave(save);
+  return save;
+}
+
+export function spendPitCredits(amount: number): { ok: boolean; save: SaveData } {
+  const save = loadSave();
+  const cost = Math.max(0, Math.floor(amount));
+  if (save.currencies.credits < cost) return { ok: false, save };
+  save.currencies.credits -= cost;
+  writeSave(save);
+  return { ok: true, save };
+}
+
+export function recordFightPitBetResult(wager: number, payout: number): SaveData {
+  const save = loadSave();
+  const cleanPayout = Math.max(0, Math.round(payout));
+  const cleanWager = Math.max(0, Math.round(wager));
+  save.currencies.credits += cleanPayout;
+  if (cleanPayout > 0) {
+    save.pitBetWins = (save.pitBetWins ?? 0) + 1;
+  }
+  save.pitBetProfit = (save.pitBetProfit ?? 0) + (cleanPayout - cleanWager);
   writeSave(save);
   return save;
 }

@@ -38,7 +38,7 @@ import {
   type ObjectiveDef,
 } from "./story";
 import type { ContractSpotDef } from "./city/WestgateActivities";
-import { FIGHT_PIT_CENTER, type FightPitHudState } from "./city/UndergroundFightPit";
+import { FIGHT_PIT_CENTER, type FightPitHudState, type PitHudBookieInfo } from "./city/UndergroundFightPit";
 import {
   getLauncherProfile,
   markBootStarted,
@@ -326,6 +326,7 @@ export interface HudState {
   totalStashes: number;
   nearbyPrompt: { key: "F" | "G"; label: string; accent: string } | null;
   fightPit: FightPitHudState | null;
+  fightPitBookie: { open: boolean; info: PitHudBookieInfo } | null;
   surveillance: SurveillanceHudState | null;
   incomingCall: {
     id: string;
@@ -744,6 +745,7 @@ export class Game {
   private nearbyPrompt: { key: "F" | "G"; label: string; accent: string } | null = null;
   private fightPitHud: FightPitHudState | null = null;
   private fightPitHost: CombatHost | null = null;
+  private fightPitBookieOpen = false;
   private prePitHolstered = false;
   private openWorldReturnSpot: { x: number; z: number; yawDeg: number } | null = null;
   private activeContract: {
@@ -1163,6 +1165,120 @@ export class Game {
     this.emitHud();
   }
 
+  setFightPitBookieOpen(open: boolean) {
+    if (this.fightPitBookieOpen === open) return;
+    this.fightPitBookieOpen = open;
+    this.mouseEdgeTurn = 0;
+    this.lastClientX = null;
+    this.lastClientY = null;
+    if (open) {
+      this.mouseL = false;
+      this.mouseR = false;
+      this.weaponWheelOpen = false;
+      this.mapOpen = false;
+      this.phoneOpen = false;
+      if (document.pointerLockElement) document.exitPointerLock();
+    } else {
+      if (typeof document !== "undefined" && document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur();
+      }
+      if (this.isActiveGameplay()) this.requestLock();
+    }
+    this.syncCursorStyle();
+    this.emitHud();
+  }
+
+  refreshFightPitCard() {
+    this.level?.fightPit?.refreshFightCard();
+    this.emitHud();
+  }
+
+  placeFightPitSpectatorBet(
+    matchId: string,
+    pickCorner: "red" | "blue",
+    wager: number,
+    quickKoProp: boolean,
+  ): { ok: boolean; error?: string } {
+    if (!this.level?.fightPit || !this.rig) return { ok: false, error: "Pit unavailable" };
+    const host = this.ensureFightPitHost();
+    if (!host) return { ok: false, error: "Host unavailable" };
+    this.setFightPitBookieOpen(false);
+    void this.level.fightPit
+      .startSpectatorBout(matchId, pickCorner, wager, quickKoProp, host, this.rig)
+      .then((res) => {
+        if (res.ok) {
+          this.sfx.interactDone();
+          this.activityToast = {
+            title: "BET LOCKED · CAGE MATCH",
+            subtitle: `Wagered $${Math.floor(wager).toLocaleString()} · Watch the Octagon!`,
+            accent: "#22c55e",
+          };
+        } else {
+          this.activityToast = {
+            title: "BET REJECTED",
+            subtitle: res.error ?? "Unable to start bout",
+            accent: "#ef4444",
+          };
+        }
+        this.activityToastTimer = 3.2;
+        this.emitHud();
+      });
+    return { ok: true };
+  }
+
+  startFightPitPlayerBout(
+    tierIndex: number,
+    selfWager: number,
+    quickKoProp: boolean,
+  ): { ok: boolean; error?: string } {
+    if (!this.level?.fightPit || !this.rig) return { ok: false, error: "Pit unavailable" };
+    const host = this.ensureFightPitHost();
+    if (!host) return { ok: false, error: "Host unavailable" };
+    this.setFightPitBookieOpen(false);
+    this.prePitHolstered = this.holstered;
+    this.setHolstered(true);
+    void this.level.fightPit
+      .startBout(
+        host,
+        this.rig,
+        tierIndex,
+        selfWager > 0 ? { wager: selfWager, quickKoProp } : undefined,
+      )
+      .then((res) => {
+        if (res.ok) {
+          this.activityToast = {
+            title: `IRON PIT · BOUT ${tierIndex + 1}`,
+            subtitle: selfWager > 0 ? `Side-bet $${Math.floor(selfWager).toLocaleString()} active` : "Bare-knuckle bout starting!",
+            accent: "#f59e0b",
+          };
+        } else {
+          this.activityToast = {
+            title: "IRON PIT",
+            subtitle: res.error ?? "Could not start bout",
+            accent: "#ef4444",
+          };
+        }
+        this.activityToastTimer = 3.0;
+        this.emitHud();
+      });
+    return { ok: true };
+  }
+
+  buyFightPitCutmanHeal(): { ok: boolean; error?: string } {
+    if (this.health >= this.maxHealth) return { ok: false, error: "Already at full health" };
+    if (!this.spendCredits(50)) return { ok: false, error: "Need $50 for Cutman Patch-Up" };
+    this.health = Math.min(this.maxHealth, this.health + 100);
+    this.sfx.interactDone();
+    this.activityToast = {
+      title: "CUTMAN PATCH-UP",
+      subtitle: "Restored +100 HP · -$50",
+      accent: "#34d399",
+    };
+    this.activityToastTimer = 2.6;
+    this.emitHud();
+    return { ok: true };
+  }
+
   captureSnapmaticPhoto(): string | null {
     try {
       this.renderer.render(this.scene, this.camera);
@@ -1296,6 +1412,7 @@ export class Game {
     this.nearbyHomeStation = null;
     this.fightPitHost = null;
     this.fightPitHud = null;
+    this.fightPitBookieOpen = false;
     this.stationAutoCooldown.clear();
     this.vehAudio.setActive(false);
     this.engineHud = null;
@@ -1442,6 +1559,7 @@ export class Game {
     this.weaponWheelOpen = false;
     this.mapOpen = false;
     this.phoneOpen = false;
+    this.fightPitBookieOpen = false;
     this.rig.setHolstered(this.holstered);
     this.resetWeapons();
     this.rig.input.move.set(0, 0, 0);
@@ -1932,6 +2050,10 @@ export class Game {
           this.selectWeapon(4);
           break;
         case "Escape":
+          if (this.fightPitBookieOpen) {
+            this.setFightPitBookieOpen(false);
+            break;
+          }
           if (this.mapOpen) {
             this.setMapOpen(false);
             break;
@@ -2166,7 +2288,8 @@ export class Game {
       !this.rig?.dead &&
       !this.weaponWheelOpen &&
       !this.mapOpen &&
-      !this.phoneOpen
+      !this.phoneOpen &&
+      !this.fightPitBookieOpen
     );
   }
 
@@ -4555,7 +4678,7 @@ export class Game {
         rig.input.move.copy(mv);
         rig.input.sprint = !inIntroCine && (k.has("ShiftLeft") || k.has("ShiftRight") || this.uiHeld.sprint);
         rig.input.crouch = this.crouchToggle;
-        const canCombatInput = !inIntroCine && !this.binocularsOpen && !this.weaponWheelOpen && !this.mapOpen && !this.phoneOpen;
+        const canCombatInput = !inIntroCine && !this.binocularsOpen && !this.weaponWheelOpen && !this.mapOpen && !this.phoneOpen && !this.fightPitBookieOpen;
         rig.input.ads = canCombatInput && !this.holstered && (this.mouseR || this.uiHeld.ads);
         rig.setCombatBlock(canCombatInput && this.holstered && (this.mouseR || this.uiHeld.ads));
         rig.input.lean = inIntroCine ? 0 : (k.has("KeyQ") ? 1 : 0) - (k.has("KeyE") ? 1 : 0);
@@ -6087,35 +6210,11 @@ export class Game {
       return;
     }
 
-    if (!activeVeh && this.level.fightPit && this.rig && !this.rig.dead) {
-      if (this.level.fightPit.isBoutInProgress) {
-        this.level.fightPit.forfeit(this.rig);
-        this.holstered = this.prePitHolstered;
-        this.rig.setHolstered(this.holstered);
-        this.activityToast = {
-          title: "BOUT FORFEITED",
-          subtitle: "You stepped out of the Iron Pit",
-          accent: "#94a3b8",
-        };
-        this.activityToastTimer = 2.6;
-        this.emitHud();
+    if (!activeVeh && !activeBoat && !activeAir && this.level.fightPit && !this.level.fightPit.isActive && !this.rig.dead) {
+      const pitPrompt = this.level.fightPit.getPromptInfo(pos);
+      if (pitPrompt.near) {
+        this.setFightPitBookieOpen(!this.fightPitBookieOpen);
         return;
-      }
-      const prompt = this.level.fightPit.getPromptInfo(pos);
-      if (prompt.near && !this.level.fightPit.isActive) {
-        this.prePitHolstered = this.holstered;
-        this.setHolstered(true);
-        const host = this.ensureFightPitHost();
-        if (host) {
-          void this.level.fightPit.startBout(host, this.rig);
-          this.activityToast = {
-            title: `IRON PIT · BOUT ${prompt.tier.tier}`,
-            subtitle: `vs ${prompt.tier.alias} · Purse $${prompt.tier.purse.toLocaleString()}`,
-            accent: "#f59e0b",
-          };
-          this.activityToastTimer = 2.8;
-          this.emitHud();
-        }
       }
     }
   }
@@ -6236,15 +6335,15 @@ export class Game {
           this.health,
           pitHost,
           {
-            onPurseWon: (def) => {
+            onPurseWon: (def, totalCreditsWon, streakPct) => {
               this.health = Math.min(this.maxHealth, this.health + 45);
               for (const [stat, xp] of Object.entries(def.xpRewards)) {
                 if (xp && xp > 0) this.trainBodyStat(stat as BodyStatId, xp);
               }
               this.sfx.statUp();
               this.activityToast = {
-                title: `IRON PIT KNOCKOUT · +$${def.purse.toLocaleString()}`,
-                subtitle: `Defeated ${def.alias} · Strength, Toughness & Agility XP Earned`,
+                title: `IRON PIT KNOCKOUT · +$${totalCreditsWon.toLocaleString()}`,
+                subtitle: streakPct > 0 ? `Defeated ${def.alias} · +${streakPct}% Streak Bonus` : `Defeated ${def.alias} · Strength, Toughness & Agility XP`,
                 accent: "#f59e0b",
               };
               this.activityToastTimer = 4.6;
@@ -6263,6 +6362,15 @@ export class Game {
                 accent: "#ef4444",
               };
               this.activityToastTimer = 4.0;
+              this.emitHud();
+            },
+            onBetSettled: (won, title, detail) => {
+              this.activityToast = {
+                title,
+                subtitle: detail,
+                accent: won ? "#22c55e" : "#ef4444",
+              };
+              this.activityToastTimer = 4.4;
               this.emitHud();
             },
           },
@@ -6450,7 +6558,7 @@ export class Game {
       if (pitPrompt.near) {
         nextPrompt = {
           key: "F",
-          label: pitPrompt.text.replace(/^\[E\]\s*/, ""),
+          label: pitPrompt.text.replace(/^\[[EF]\]\s*/, ""),
           accent: "#f59e0b",
         };
       }
@@ -6726,6 +6834,44 @@ export class Game {
     if (nearStation && (nearStation.kind !== "garage_mod" || !nearV)) {
       this.triggerHomeStation();
       return;
+    }
+
+    // Iron Pit enter/forfeit on [F]
+    if (this.level?.fightPit && !vehicles.activeVehicle && !this.level.boats?.activeBoat && !this.level.aircraft?.activeAircraft) {
+      if (this.level.fightPit.isBoutInProgress) {
+        const wasSpec = this.fightPitHud?.mode === "spectator";
+        this.level.fightPit.forfeit(this.rig);
+        if (!wasSpec) {
+          this.holstered = this.prePitHolstered;
+          this.rig.setHolstered(this.holstered);
+        }
+        this.activityToast = {
+          title: wasSpec ? "LEFT RINGSIDE" : "BOUT FORFEITED",
+          subtitle: wasSpec ? "Spectator bout closed" : "You stepped out of the Iron Pit",
+          accent: "#94a3b8",
+        };
+        this.activityToastTimer = 2.6;
+        this.emitHud();
+        return;
+      }
+      const prompt = this.level.fightPit.getPromptInfo(this.rig.root.position);
+      if (prompt.near && !this.level.fightPit.isActive && !nearV) {
+        this.setFightPitBookieOpen(false);
+        this.prePitHolstered = this.holstered;
+        this.setHolstered(true);
+        const host = this.ensureFightPitHost();
+        if (host) {
+          void this.level.fightPit.startBout(host, this.rig);
+          this.activityToast = {
+            title: `IRON PIT · BOUT ${prompt.tier.tier}`,
+            subtitle: `vs ${prompt.tier.alias} · Purse $${prompt.tier.purse.toLocaleString()}`,
+            accent: "#f59e0b",
+          };
+          this.activityToastTimer = 2.8;
+          this.emitHud();
+        }
+        return;
+      }
     }
 
     if (nearV) {
@@ -7465,6 +7611,10 @@ export class Game {
       totalStashes: this.level?.collectibles?.totalStashes ?? 15,
       nearbyPrompt: this.nearbyPrompt,
       fightPit: this.fightPitHud,
+      fightPitBookie:
+        this.fightPitBookieOpen && this.level?.fightPit
+          ? { open: true, info: this.level.fightPit.getBookieInfo() }
+          : null,
       surveillance: this.rig ? this.level?.contracts?.getHudState(this.rig.root.position) ?? null : null,
       incomingCall: this.activeCall
         ? {

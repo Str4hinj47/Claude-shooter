@@ -251,6 +251,28 @@ int main() {
       return 1;
     }
 
+    // Iron Pit betting & Cutman recovery check
+    const int preCash = session.playerCash();
+    if (!session.placeIronPitBet(100) || session.playerCash() != preCash - 100 || !session.ironPit().betActive) {
+      std::fprintf(stderr, "FAIL placeIronPitBet\n");
+      return 1;
+    }
+
+    // Verify Iron Pit CC0 GLB props load cleanly
+    const char* pitProps[] = {
+      "pit_barrel.glb", "pit_barrel_open.glb", "pit_barrier.glb", "pit_cash_register.glb",
+      "pit_chair.glb", "pit_crate_stack.glb", "pit_floodlight.glb", "pit_pallet.glb",
+      "pit_speaker.glb", "pit_stool.glb", "pit_trophy.glb"
+    };
+    for (const char* pf : pitProps) {
+      westgate::GltfModel pm;
+      const std::string ppath = std::string(WESTGATE_SOURCE_ROOT) + "/public/models/" + pf;
+      if (!westgate::GltfAssetLoader::loadGlb(ppath, pm, false, nullptr) || pm.primitives.empty()) {
+        std::fprintf(stderr, "FAIL Iron Pit GLB prop: %s\n", pf);
+        return 1;
+      }
+    }
+
     // Save / load JSON persistence
     const std::string saveFile = "/tmp/westgate_test_save.json";
     if (!session.saveToFile(saveFile)) {
