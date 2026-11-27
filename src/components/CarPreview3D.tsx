@@ -46,6 +46,7 @@ export function CarPreview3D({ carId, paintHex, custom, className = "", label }:
   const sceneRefs = useRef<{
     scene: THREE.Scene;
     carSlot: THREE.Group;
+    pedestal: THREE.Group;
     renderer: THREE.WebGLRenderer;
     camera: THREE.PerspectiveCamera;
   } | null>(null);
@@ -97,14 +98,19 @@ export function CarPreview3D({ carId, paintHex, custom, className = "", label }:
     rim.position.set(-4.8, 3.2, -4.5);
     scene.add(rim);
 
-    // Turntable pedestal & glowing edge ring
+    const fill = new THREE.DirectionalLight(0x93c5fd, 0.72);
+    fill.position.set(-4.2, 1.4, 4.4);
+    scene.add(fill);
+
+    // Turntable pedestal & glowing edge ring (scales dynamically to vehicle length)
+    const pedestal = new THREE.Group();
     const floor = new THREE.Mesh(
       new THREE.CylinderGeometry(2.85, 3.05, 0.14, 64),
       new THREE.MeshStandardMaterial({ color: 0x0e141f, metalness: 0.55, roughness: 0.32 }),
     );
     floor.position.y = -0.07;
     floor.receiveShadow = true;
-    scene.add(floor);
+    pedestal.add(floor);
 
     const ring = new THREE.Mesh(
       new THREE.RingGeometry(2.74, 2.81, 64),
@@ -112,7 +118,8 @@ export function CarPreview3D({ carId, paintHex, custom, className = "", label }:
     );
     ring.rotation.x = -Math.PI / 2;
     ring.position.y = 0.003;
-    scene.add(ring);
+    pedestal.add(ring);
+    scene.add(pedestal);
 
     const outerGlow = new THREE.Mesh(
       new THREE.PlaneGeometry(18, 18),
@@ -124,7 +131,7 @@ export function CarPreview3D({ carId, paintHex, custom, className = "", label }:
 
     const carSlot = new THREE.Group();
     scene.add(carSlot);
-    sceneRefs.current = { scene, carSlot, renderer, camera };
+    sceneRefs.current = { scene, carSlot, pedestal, renderer, camera };
 
     const syncSize = () => {
       const w = Math.max(120, container.clientWidth);
@@ -198,9 +205,16 @@ export function CarPreview3D({ carId, paintHex, custom, className = "", label }:
           custom: customPayload,
         });
         if (carGroup) {
-          // Center visually on turntable & frame distance to vehicle length
+          // Center visually on turntable & frame distance + pedestal to vehicle length
           const span = Math.max(3.6, model.length);
+          const pedScale = Math.max(0.95, span / 4.75);
+          sceneRefs.current.pedestal.scale.set(pedScale, 1, pedScale);
           stateRef.current.dist = clampDist(span * 1.12);
+          // Subtle showroom DRL headlights & ruby taillights glow
+          const hlMats = carGroup.userData.headlightMaterials as THREE.MeshStandardMaterial[] | undefined;
+          if (hlMats) for (const m of hlMats) m.emissiveIntensity = 1.05;
+          const tlMats = carGroup.userData.brakeMaterials as THREE.MeshStandardMaterial[] | undefined;
+          if (tlMats) for (const m of tlMats) m.emissiveIntensity = 0.75;
           carSlot.add(carGroup);
         }
       }

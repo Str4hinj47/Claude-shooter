@@ -287,13 +287,23 @@ fn vsInstanced(in : InstancedVSIn) -> VSOut {
   out.normal = rotNorm;
 
   // Vehicle material submesh tags encoded in pbrParams.x without changing vertex stride:
+  //   [-5.5..-4.5]: police roof red strobe beacon (15.0)
+  //   [-4.5..-3.5]: police roof blue strobe beacon (14.0)
   //   [-3.5..-2.5]: automotive glass/covers (13.0)
   //   [-2.5..-1.5]: taillight LED emitter (12.0)
   //   [-1.5..-0.5]: headlight LED emitter (11.0)
   //   [ 1.5.. 3.5]: paint__ clearcoat body (10.0, tinted by instColEm.rgb)
   //   [ 3.5.. 5.5]: non-paint vehicle parts (4.0, untinted by instColEm.rgb)
   let mx = in.pbrParams.x;
-  if (mx < -2.5) {
+  if (mx < -4.5) {
+    out.color = in.vtxCol;
+    out.surfaceKind = 15.0;
+    out.pbrParams = vec2<f32>(0.10, in.pbrParams.y);
+  } else if (mx < -3.5) {
+    out.color = in.vtxCol;
+    out.surfaceKind = 14.0;
+    out.pbrParams = vec2<f32>(0.10, in.pbrParams.y);
+  } else if (mx < -2.5) {
     out.color = in.vtxCol;
     out.surfaceKind = 13.0;
     out.pbrParams = vec2<f32>(0.22, in.pbrParams.y);
@@ -442,7 +452,21 @@ fn fsMain(in : VSOut) -> @location(0) vec4<f32> {
   let nightFactor = clamp(uFrame.fogColor.w, 0.0, 1.0);
   let wetness = clamp(uFrame.weatherParams.y, 0.0, 1.0);
 
-  if (in.surfaceKind > 12.5) {
+  if (in.surfaceKind > 14.5) {
+    // Police cruiser alternating red lightbar strobe
+    let pulseRed = 0.35 + 1.65 * max(0.0, sin(tSec * 14.0));
+    albedo = vtxLin * texLin;
+    metallic = 0.12;
+    roughness = 0.10;
+    emissive += vec3<f32>(2.85, 0.12, 0.08) * pulseRed;
+  } else if (in.surfaceKind > 13.5) {
+    // Police cruiser alternating electric blue lightbar strobe
+    let pulseBlue = 0.35 + 1.65 * max(0.0, -sin(tSec * 14.0));
+    albedo = vtxLin * texLin;
+    metallic = 0.12;
+    roughness = 0.10;
+    emissive += vec3<f32>(0.16, 0.65, 3.10) * pulseBlue;
+  } else if (in.surfaceKind > 12.5) {
     // Automotive tinted glass & polycarbonate lamp lenses
     albedo = mix(vtxLin * texLin, vec3<f32>(0.014, 0.024, 0.042), 0.72);
     metallic = 0.28;

@@ -20,7 +20,7 @@ function rotates(id: TrafficId, mesh: THREE.Mesh): boolean {
   if (id === "r8") return name === "tire__r8" || name === "rim__r8" || name === "rim__r8_cap" || /^metal_2(?:_(?:[1-5]|1[1-6]))?$/.test(mesh.name);
   if (id === "rangerover") return /^(tire__RangeRover|rim__RangeRover|brake__RangeRover_Disc)$/i.test(name);
   if (id === "sedan" || id === "offroad") return /^(tire|rim)__(sedan|offroad)$/.test(name) || /^tire_wheel_/.test(mesh.name) || /^rim_wheel_/.test(mesh.name);
-  if (isQuaterniusNpc(id)) return mesh.name === "Black" || mesh.name === "Grey";
+  if (isQuaterniusNpc(id)) return /^(tire|rim)__/.test(name) || mesh.name === "Black" || mesh.name === "Grey";
   if (id === "semi") return /^(tire__TireRubber|tire__TireTreads|chrome__Chrome)$/.test(name);
   if (id === "kraz") return /^(tire__tire|chrome__wheel)$/.test(name);
   if (id === "challenger") {

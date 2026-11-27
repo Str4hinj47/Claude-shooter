@@ -1105,6 +1105,10 @@ bool WorldRenderer::loadGlbBatch(
             encodedMetallic = -3.0f;
             roughness = 0.05f;
             matCol = glm::vec3(0.84f, 0.90f, 0.96f);
+          } else if (containsCI(mn, "beacon_blue")) {
+            encodedMetallic = -4.0f;
+            roughness = 0.10f;
+            matCol = glm::vec3(0.18f, 0.48f, 1.0f);
           } else {
             encodedMetallic = -1.0f;
             roughness = 0.10f;
@@ -1115,6 +1119,10 @@ bool WorldRenderer::loadGlbBatch(
             encodedMetallic = -3.0f;
             roughness = 0.06f;
             matCol = glm::vec3(0.55f, 0.04f, 0.06f);
+          } else if (containsCI(mn, "beacon_red")) {
+            encodedMetallic = -5.0f;
+            roughness = 0.10f;
+            matCol = glm::vec3(1.0f, 0.10f, 0.10f);
           } else {
             encodedMetallic = -2.0f;
             roughness = 0.12f;

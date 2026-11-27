@@ -92,6 +92,8 @@ function prepareNpcModel(scene: THREE.Group, id: TrafficId): void {
     scene.traverse((o) => {
       const mesh = o as THREE.Mesh;
       if (!mesh.isMesh || Array.isArray(mesh.material)) return;
+      const matName = mesh.material.name || "";
+      if (/^(paint|glass|headlight|taillight|tire|rim|brake|trim|plate)__/i.test(matName)) return;
       const cloned = mesh.material.clone();
       const n = mesh.name;
       if (n === "Windows") cloned.name = `glass__${id}`;
@@ -293,6 +295,14 @@ function tuneAutomotiveMaterial(orig: THREE.Material, id: TrafficId): THREE.Mate
         envMapIntensity: 1.85,
       });
       return glassCover;
+    } else if (name === "headlight__police_beacon_blue") {
+      std.color.setHex(0x2563eb);
+      std.emissive = new THREE.Color(0x3b82f6);
+      std.emissiveIntensity = 1.65;
+    } else if (name === "headlight__police_beacon_white") {
+      std.color.setHex(0xf8fafc);
+      std.emissive = new THREE.Color(0xf8fafc);
+      std.emissiveIntensity = 1.35;
     } else {
       std.emissive = new THREE.Color(0xf6f9ff);
       std.emissiveIntensity = id === "golf" ? 0.35 : 0.85;
@@ -316,7 +326,7 @@ function tuneAutomotiveMaterial(orig: THREE.Material, id: TrafficId): THREE.Mate
       return rubyCover;
     }
     std.emissive = new THREE.Color(0xff2020);
-    std.emissiveIntensity = 0.85;
+    std.emissiveIntensity = name === "taillight__police_beacon_red" ? 1.65 : 0.85;
   } else if (name.startsWith("rim__")) {
     std.metalness = 0.88;
     std.roughness = 0.18;
@@ -688,6 +698,7 @@ export class ModelLibrary {
     const headlightCopies = new Map<THREE.Material, THREE.MeshStandardMaterial>();
     const paintCopies = new Map<THREE.Material, THREE.MeshPhysicalMaterial>();
     const rimCopies = new Map<THREE.Material, THREE.MeshStandardMaterial>();
+    const caliperCopies = new Map<THREE.Material, THREE.MeshStandardMaterial>();
     const glassCopies = new Map<THREE.Material, THREE.MeshStandardMaterial>();
     const trimCopies = new Map<THREE.Material, THREE.MeshStandardMaterial>();
     const headlightIndicators: THREE.MeshStandardMaterial[] = [];
@@ -758,6 +769,15 @@ export class ModelLibrary {
             copy = mat.clone() as THREE.MeshStandardMaterial;
             copy.userData.defaultColor = copy.color.getHex();
             rimCopies.set(mat, copy);
+          }
+          return copy;
+        }
+        if (opts.player && /brake__.*(?:caliper|pad1)/i.test(mat.name)) {
+          let copy = caliperCopies.get(mat);
+          if (!copy) {
+            copy = mat.clone() as THREE.MeshStandardMaterial;
+            copy.userData.defaultColor = copy.color.getHex();
+            caliperCopies.set(mat, copy);
           }
           return copy;
         }
@@ -844,6 +864,7 @@ export class ModelLibrary {
     wrapper.userData.indicatorState = signal;
     wrapper.userData.paintMaterials = [...paintCopies.values()];
     wrapper.userData.rimMaterials = [...rimCopies.values()];
+    wrapper.userData.caliperMaterials = [...caliperCopies.values()];
     wrapper.userData.glassMaterials = [...glassCopies.values()];
     wrapper.userData.trimMaterials = [...trimCopies.values()];
     if (opts.custom) {
@@ -897,6 +918,18 @@ export function applyCarCustomization(carRoot: THREE.Object3D, custom: CarCustom
       m.metalness = 0.88;
       m.roughness = 0.18;
       m.envMapIntensity = 1.45;
+      m.needsUpdate = true;
+    }
+  }
+
+  const caliperMats = carRoot.userData?.caliperMaterials as THREE.MeshStandardMaterial[] | undefined;
+  if (caliperMats) {
+    const lvl = Math.max(0, Math.min(3, Math.round(custom.brakeLevel)));
+    const caliperHex = [0x3b4252, 0xdc2626, 0xf59e0b, 0x06b6d4][lvl];
+    for (const m of caliperMats) {
+      m.color.setHex(caliperHex);
+      m.metalness = lvl >= 2 ? 0.72 : 0.48;
+      m.roughness = lvl >= 2 ? 0.22 : 0.34;
       m.needsUpdate = true;
     }
   }
