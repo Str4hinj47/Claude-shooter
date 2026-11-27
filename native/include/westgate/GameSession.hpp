@@ -295,6 +295,7 @@ struct GameInputFrame {
   bool secondaryAction = false;   // H: Horn/Siren or Rob Store
   bool uppercutPressed = false;   // Q
   bool kickPressed = false;       // E
+  bool dodgePressed = false;      // X
   bool rematchPressed = false;    // R (when unarmed near pit)
   int selectWeaponSlot = -1;      // 0..5 or -1
 };
@@ -399,8 +400,21 @@ public:
   // Player animation clip evaluation helpers
   std::string playerAnimClip(const PlayerController& player, bool blocking) const;
   float playerAnimTime() const { return animClock_; }
+  float playerLocomotionTime() const { return playerLocomotionClock_; }
   std::string playerAttackClip() const { return playerAttackClip_; }
   float playerAttackTime() const { return playerAttackTimer_; }
+  bool isAiming() const { return aiming_; }
+  bool isRangedWeapon() const { return !weapons_[static_cast<size_t>(activeWeapon_)].isMelee; }
+  bool isTwoHandedWeapon() const {
+    const auto& w = weapons_[static_cast<size_t>(activeWeapon_)];
+    return !w.isMelee && w.id != "pistol_sd";
+  }
+  float recoilImpulse() const { return recoilImpulse_; }
+  float reloadProgress() const {
+    const auto& w = weapons_[static_cast<size_t>(activeWeapon_)];
+    return (reloadTimer_ > 0.0f && w.reloadTime > 0.01f) ? std::clamp(1.0f - reloadTimer_ / w.reloadTime, 0.0f, 1.0f) : 0.0f;
+  }
+  bool isDodging() const { return playerDodgeTimer_ > 0.0f; }
   bool placeIronPitBet(int wager);
   bool buyCutmanHeal();
   bool startSpectatorBout(int matchIdx, int pickCorner, int wager, bool quickKoProp, const WorldData& world, AudioEngine* audio);
@@ -433,12 +447,16 @@ private:
   float hitmarkerTimer_ = 0.0f;
   bool aiming_ = false;
 
-  // Melee combat state
+  // Melee combat & procedural weapon animation state
   int comboStep_ = 0;
   std::string playerAttackClip_;
   float playerAttackTimer_ = 0.0f;
   bool playerAttackHitDone_ = false;
+  float playerDodgeTimer_ = 0.0f;
+  float playerHitAnimTimer_ = 0.0f;
+  float recoilImpulse_ = 0.0f;
   float animClock_ = 0.0f;
+  float playerLocomotionClock_ = 0.0f;
 
   // Vehicle driving state
   std::vector<VehicleEntity> vehicles_;

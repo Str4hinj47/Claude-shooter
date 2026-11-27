@@ -197,6 +197,10 @@ bool CharacterAnimator::buildSourceClip(
     }
   }
   computeWorldQuats(outClip.srcNodes, topo, restLocal, outClip.srcRestWorldQ);
+  auto hipIt = outClip.canonicalToSrcNode.find("Hips");
+  if (hipIt != outClip.canonicalToSrcNode.end()) {
+    outClip.srcRestHipPos = outClip.srcNodes[hipIt->second].restT;
+  }
   return !outClip.canonicalToSrcNode.empty();
 }
 
@@ -204,11 +208,14 @@ void CharacterAnimator::initForTarget(const GltfModel& targetModel) {
   target_ = &targetModel;
   targetTopoOrder_ = buildTopologicalOrder(targetModel.nodes);
   targetCanonicalNames_.resize(targetModel.nodes.size());
+  targetHipsNode_ = -1;
+  targetHipHeight_ = 0.95f;
   std::vector<glm::quat> restLocal(targetModel.nodes.size(), glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
   for (size_t i = 0; i < targetModel.nodes.size(); ++i) {
     restLocal[i] = targetModel.nodes[i].restR;
     targetCanonicalNames_[i] = canonicalizeBoneName(targetModel.nodes[i].name);
     if (targetCanonicalNames_[i] == "Hips") {
+      targetHipsNode_ = static_cast<int32_t>(i);
       targetHipHeight_ = std::max(0.5f, std::abs(targetModel.nodes[i].restT.y));
     }
   }
@@ -277,7 +284,8 @@ void CharacterAnimator::sampleSourcePose(
 void CharacterAnimator::evaluateClip(
   const SourceClip& src,
   float timeSec,
-  std::array<glm::mat4, kMaxSkinBones>& outPalette
+  std::array<glm::mat4, kMaxSkinBones>& outPalette,
+  const CharacterPoseOverlay* overlay
 ) const {
   outPalette.fill(glm::mat4(1.0f));
   if (!target_ || !target_->skin.valid) return;
@@ -296,6 +304,15 @@ void CharacterAnimator::evaluateClip(
     localS[i] = target_->nodes[i].restS;
   }
 
+  if (targetHipsNode_ >= 0) {
+    const float srcH = std::abs(src.srcRestHipPos.y) > 0.1f ? std::abs(src.srcRestHipPos.y) : targetHipHeight_;
+    const float hipScale = std::clamp(targetHipHeight_ / srcH, 0.004f, 250.0f);
+    const glm::vec3 d = (srcHipPos - src.srcRestHipPos) * hipScale;
+    const float unitScale = targetHipHeight_ / 0.95f;
+    localT[targetHipsNode_].y += std::clamp(d.y, -0.88f * unitScale, 0.35f * unitScale);
+    localT[targetHipsNode_].x += std::clamp(d.x * 0.35f, -0.22f * unitScale, 0.22f * unitScale);
+  }
+
   std::vector<glm::quat> targetWorldQ = targetRestWorldQ_;
   for (int32_t idx : targetTopoOrder_) {
     const int32_t p = target_->nodes[idx].parent;
@@ -306,9 +323,11 @@ void CharacterAnimator::evaluateClip(
       auto sit = src.canonicalToSrcNode.find(canon);
       if (sit != src.canonicalToSrcNode.end()) {
         const int32_t si = sit->second;
-        // World-space rotation delta from source rest -> source anim, applied to target rest world quat
         const glm::quat deltaWorld = srcWorldQ[si] * glm::inverse(src.srcRestWorldQ[si]);
-        const glm::quat desiredWorldQ = glm::normalize(deltaWorld * targetRestWorldQ_[idx]);
+        glm::quat desiredWorldQ = glm::normalize(deltaWorld * targetRestWorldQ_[idx]);
+        if (overlay) {
+          desiredWorldQ = glm::normalize(computeOverlayDeltaWorld(canon, *overlay) * desiredWorldQ);
+        }
         targetWorldQ[idx] = desiredWorldQ;
         localR[idx] = glm::normalize(glm::inverse(parentWorldQ) * desiredWorldQ);
         continue;
@@ -326,16 +345,17 @@ void CharacterAnimator::evaluateBlended(
   const SourceClip& clipB,
   float timeB,
   float blend,
-  std::array<glm::mat4, kMaxSkinBones>& outPalette
+  std::array<glm::mat4, kMaxSkinBones>& outPalette,
+  const CharacterPoseOverlay* overlay
 ) const {
   const float rawB = std::clamp(blend, 0.0f, 1.0f);
   const float b = rawB * rawB * (3.0f - 2.0f * rawB);
   if (b <= 0.001f) {
-    evaluateClip(clipA, timeA, outPalette);
+    evaluateClip(clipA, timeA, outPalette, overlay);
     return;
   }
   if (b >= 0.999f) {
-    evaluateClip(clipB, timeB, outPalette);
+    evaluateClip(clipB, timeB, outPalette, overlay);
     return;
   }
   if (!target_ || !target_->skin.valid) {
@@ -358,6 +378,17 @@ void CharacterAnimator::evaluateBlended(
     localS[i] = target_->nodes[i].restS;
   }
 
+  if (targetHipsNode_ >= 0) {
+    const float srcHA = std::abs(clipA.srcRestHipPos.y) > 0.1f ? std::abs(clipA.srcRestHipPos.y) : targetHipHeight_;
+    const float srcHB = std::abs(clipB.srcRestHipPos.y) > 0.1f ? std::abs(clipB.srcRestHipPos.y) : targetHipHeight_;
+    const glm::vec3 dA = (hipA - clipA.srcRestHipPos) * std::clamp(targetHipHeight_ / srcHA, 0.004f, 250.0f);
+    const glm::vec3 dB = (hipB - clipB.srcRestHipPos) * std::clamp(targetHipHeight_ / srcHB, 0.004f, 250.0f);
+    const glm::vec3 d = glm::mix(dA, dB, b);
+    const float unitScale = targetHipHeight_ / 0.95f;
+    localT[targetHipsNode_].y += std::clamp(d.y, -0.88f * unitScale, 0.35f * unitScale);
+    localT[targetHipsNode_].x += std::clamp(d.x * 0.35f, -0.22f * unitScale, 0.22f * unitScale);
+  }
+
   std::vector<glm::quat> targetWorldQ = targetRestWorldQ_;
   for (int32_t idx : targetTopoOrder_) {
     const int32_t p = target_->nodes[idx].parent;
@@ -370,7 +401,10 @@ void CharacterAnimator::evaluateBlended(
       if (itA != clipA.canonicalToSrcNode.end() && itB != clipB.canonicalToSrcNode.end()) {
         const glm::quat wA = glm::normalize((srcWorldQA[itA->second] * glm::inverse(clipA.srcRestWorldQ[itA->second])) * targetRestWorldQ_[idx]);
         const glm::quat wB = glm::normalize((srcWorldQB[itB->second] * glm::inverse(clipB.srcRestWorldQ[itB->second])) * targetRestWorldQ_[idx]);
-        const glm::quat desiredWorldQ = glm::normalize(glm::slerp(wA, wB, b));
+        glm::quat desiredWorldQ = glm::normalize(glm::slerp(wA, wB, b));
+        if (overlay) {
+          desiredWorldQ = glm::normalize(computeOverlayDeltaWorld(canon, *overlay) * desiredWorldQ);
+        }
         targetWorldQ[idx] = desiredWorldQ;
         localR[idx] = glm::normalize(glm::inverse(parentWorldQ) * desiredWorldQ);
         continue;
@@ -388,12 +422,13 @@ void CharacterAnimator::evaluateLayered(
   const SourceClip& upperClip,
   float upperTime,
   float upperWeight,
-  std::array<glm::mat4, kMaxSkinBones>& outPalette
+  std::array<glm::mat4, kMaxSkinBones>& outPalette,
+  const CharacterPoseOverlay* overlay
 ) const {
   const float rawW = std::clamp(upperWeight, 0.0f, 1.0f);
   const float w = rawW * rawW * (3.0f - 2.0f * rawW);
   if (w <= 0.001f) {
-    evaluateClip(lowerClip, lowerTime, outPalette);
+    evaluateClip(lowerClip, lowerTime, outPalette, overlay);
     return;
   }
   if (!target_ || !target_->skin.valid) {
@@ -429,6 +464,15 @@ void CharacterAnimator::evaluateLayered(
     localS[i] = target_->nodes[i].restS;
   }
 
+  if (targetHipsNode_ >= 0) {
+    const float srcH = std::abs(lowerClip.srcRestHipPos.y) > 0.1f ? std::abs(lowerClip.srcRestHipPos.y) : targetHipHeight_;
+    const float hipScale = std::clamp(targetHipHeight_ / srcH, 0.004f, 250.0f);
+    const glm::vec3 d = (hipL - lowerClip.srcRestHipPos) * hipScale;
+    const float unitScale = targetHipHeight_ / 0.95f;
+    localT[targetHipsNode_].y += std::clamp(d.y, -0.88f * unitScale, 0.35f * unitScale);
+    localT[targetHipsNode_].x += std::clamp(d.x * 0.35f, -0.22f * unitScale, 0.22f * unitScale);
+  }
+
   std::vector<glm::quat> targetWorldQ = targetRestWorldQ_;
   for (int32_t idx : targetTopoOrder_) {
     const int32_t p = target_->nodes[idx].parent;
@@ -442,12 +486,18 @@ void CharacterAnimator::evaluateLayered(
       if (itL != lowerClip.canonicalToSrcNode.end() && itU != upperClip.canonicalToSrcNode.end()) {
         const glm::quat wL = glm::normalize((srcLowerQ[itL->second] * glm::inverse(lowerClip.srcRestWorldQ[itL->second])) * targetRestWorldQ_[idx]);
         const glm::quat wU = glm::normalize((srcUpperQ[itU->second] * glm::inverse(upperClip.srcRestWorldQ[itU->second])) * targetRestWorldQ_[idx]);
-        const glm::quat desiredWorldQ = glm::normalize(glm::slerp(wL, wU, mask));
+        glm::quat desiredWorldQ = glm::normalize(glm::slerp(wL, wU, mask));
+        if (overlay) {
+          desiredWorldQ = glm::normalize(computeOverlayDeltaWorld(canon, *overlay) * desiredWorldQ);
+        }
         targetWorldQ[idx] = desiredWorldQ;
         localR[idx] = glm::normalize(glm::inverse(parentWorldQ) * desiredWorldQ);
         continue;
       } else if (itL != lowerClip.canonicalToSrcNode.end()) {
-        const glm::quat wL = glm::normalize((srcLowerQ[itL->second] * glm::inverse(lowerClip.srcRestWorldQ[itL->second])) * targetRestWorldQ_[idx]);
+        glm::quat wL = glm::normalize((srcLowerQ[itL->second] * glm::inverse(lowerClip.srcRestWorldQ[itL->second])) * targetRestWorldQ_[idx]);
+        if (overlay) {
+          wL = glm::normalize(computeOverlayDeltaWorld(canon, *overlay) * wL);
+        }
         targetWorldQ[idx] = wL;
         localR[idx] = glm::normalize(glm::inverse(parentWorldQ) * wL);
         continue;
@@ -457,6 +507,152 @@ void CharacterAnimator::evaluateLayered(
   }
 
   buildPaletteFromTargetLocals(localT, localR, localS, outPalette);
+}
+
+glm::quat CharacterAnimator::computeOverlayDeltaWorld(
+  const std::string& canon,
+  const CharacterPoseOverlay& ov
+) const {
+  const float t = ov.timeSec + ov.seed * 7.13f;
+  // Non-repeating two-octave breathing & micro-sway
+  const float breath = 0.65f * std::sin(t * 1.65f) + 0.35f * std::sin(t * 2.71f + 1.1f);
+  const float swayYaw = (0.62f * std::sin(t * 0.58f) + 0.38f * std::cos(t * 1.13f)) * 0.042f * ov.idleWeight;
+  const float swayRoll = std::sin(t * 0.49f + 0.8f) * 0.022f * ov.idleWeight;
+  const float scanYaw = (0.65f * std::sin(t * 0.43f) + 0.35f * std::sin(t * 0.91f)) * 0.11f * ov.idleWeight;
+  const float scanPitch = std::sin(t * 0.37f + 1.7f) * 0.045f * ov.idleWeight;
+
+  const float lean = ov.sprintLean * 0.16f;
+  const float bank = std::clamp(ov.turnBank, -1.0f, 1.0f) * 0.12f;
+  const float recoil = ov.recoilKick;
+  const float reloadDip = std::sin(std::clamp(ov.reloadProgress, 0.0f, 1.0f) * 3.1415926f);
+
+  float pitchX = 0.0f;
+  float yawY = 0.0f;
+  float rollZ = 0.0f;
+
+  if (canon == "Spine" || canon == "Spine1") {
+    const float w = (canon == "Spine") ? 0.5f : 0.65f;
+    pitchX += lean * w + breath * 0.014f * (0.4f + 0.6f * ov.idleWeight) - recoil * 0.07f * w + reloadDip * 0.08f * w;
+    yawY += swayYaw * w - ov.weaponHoldWeight * (0.14f + 0.12f * ov.aimWeight) * w;
+    rollZ += swayRoll * w + bank * w;
+  } else if (canon == "Spine2") {
+    pitchX += lean * 0.45f + breath * 0.020f * (0.45f + 0.55f * ov.idleWeight) - recoil * 0.11f + reloadDip * 0.10f;
+    yawY += swayYaw * 0.5f - ov.weaponHoldWeight * (0.12f + 0.10f * ov.aimWeight);
+    rollZ += bank * 0.45f;
+  } else if (canon == "Neck" || canon == "Head") {
+    const float hw = (canon == "Neck") ? 0.42f : 0.65f;
+    pitchX += -ov.headLookPitch * hw + scanPitch * hw - recoil * 0.04f * hw + reloadDip * 0.12f * hw;
+    yawY += ov.headLookYaw * hw + scanYaw * hw + ov.weaponHoldWeight * 0.18f * hw;
+  } else if (canon == "RightShoulder" || canon == "RightArm") {
+    if (ov.weaponHoldWeight > 0.01f) {
+      const float w = ov.weaponHoldWeight;
+      const float raise = (canon == "RightShoulder") ? 0.18f : (0.98f + 0.22f * ov.aimWeight);
+      pitchX += (-raise - recoil * 0.24f + reloadDip * 0.35f) * w;
+      yawY += (0.16f * ov.aimWeight + reloadDip * 0.25f) * w;
+      rollZ += (canon == "RightArm") ? (-0.28f * w) : 0.0f;
+    } else {
+      pitchX += breath * 0.012f * ov.idleWeight;
+    }
+  } else if (canon == "RightForeArm") {
+    if (ov.weaponHoldWeight > 0.01f) {
+      const float w = ov.weaponHoldWeight;
+      pitchX += (-0.42f - 0.16f * ov.aimWeight - recoil * 0.18f - reloadDip * 0.45f) * w;
+      yawY += (0.28f + 0.15f * ov.aimWeight) * w;
+    }
+  } else if (canon == "LeftShoulder" || canon == "LeftArm") {
+    if (ov.weaponHoldWeight > 0.01f) {
+      const float w = ov.weaponHoldWeight * (ov.twoHandedWeapon ? 1.0f : 0.72f * ov.aimWeight);
+      const float raise = (canon == "LeftShoulder") ? 0.16f : (0.94f + 0.20f * ov.aimWeight);
+      pitchX += (-raise - recoil * 0.16f + reloadDip * 0.55f) * w;
+      yawY += (-0.42f - 0.18f * ov.aimWeight) * w;
+      rollZ += (canon == "LeftArm") ? (0.32f * w) : 0.0f;
+    } else {
+      pitchX += breath * 0.012f * ov.idleWeight;
+    }
+  } else if (canon == "LeftForeArm") {
+    if (ov.weaponHoldWeight > 0.01f) {
+      const float w = ov.weaponHoldWeight * (ov.twoHandedWeapon ? 1.0f : 0.75f * ov.aimWeight);
+      pitchX += (-0.36f - 0.18f * ov.aimWeight - reloadDip * 0.35f) * w;
+      yawY += (-0.52f - 0.12f * ov.aimWeight) * w;
+    }
+  }
+
+  if (std::abs(pitchX) < 1e-5f && std::abs(yawY) < 1e-5f && std::abs(rollZ) < 1e-5f) {
+    return glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+  }
+  return glm::normalize(
+    glm::angleAxis(yawY, glm::vec3(0.0f, 1.0f, 0.0f)) *
+    glm::angleAxis(pitchX, glm::vec3(1.0f, 0.0f, 0.0f)) *
+    glm::angleAxis(rollZ, glm::vec3(0.0f, 0.0f, 1.0f))
+  );
+}
+
+void CharacterAnimator::advanceAnimState(
+  CharacterAnimState& st,
+  const std::string& desiredClip,
+  float desiredTime,
+  const std::string& desiredUpperClip,
+  float desiredUpperTime,
+  float dt,
+  float crossfadeSec
+) {
+  if (desiredClip != st.currClip) {
+    st.prevClip = st.currClip;
+    st.prevTime = st.currTime;
+    st.currClip = desiredClip;
+    st.currTime = desiredTime;
+    st.blend = 0.0f;
+    st.blendDuration = std::max(0.04f, crossfadeSec);
+  } else {
+    st.currTime = desiredTime;
+  }
+
+  st.prevTime += dt;
+  if (st.blend < 1.0f) {
+    st.blend = std::min(1.0f, st.blend + dt / std::max(0.04f, st.blendDuration));
+  }
+
+  if (!desiredUpperClip.empty()) {
+    if (desiredUpperClip != st.upperClip) {
+      st.upperClip = desiredUpperClip;
+    }
+    st.upperTime = desiredUpperTime;
+    st.upperWeight = std::min(1.0f, st.upperWeight + dt * 16.0f);
+  } else {
+    st.upperTime += dt;
+    st.upperWeight = std::max(0.0f, st.upperWeight - dt * 11.0f);
+    if (st.upperWeight <= 0.005f) {
+      st.upperWeight = 0.0f;
+      st.upperClip.clear();
+    }
+  }
+}
+
+void CharacterAnimator::evaluateState(
+  const CharacterAnimState& st,
+  const std::unordered_map<std::string, SourceClip>& clips,
+  std::array<glm::mat4, kMaxSkinBones>& outPalette,
+  const CharacterPoseOverlay* overlay
+) const {
+  auto itCurr = clips.find(st.currClip);
+  if (itCurr == clips.end()) {
+    evaluateRest(outPalette);
+    return;
+  }
+
+  auto itUpper = (!st.upperClip.empty() && st.upperWeight > 0.01f) ? clips.find(st.upperClip) : clips.end();
+  if (itUpper != clips.end()) {
+    // Lower body plays current locomotion/stance, upper body layers combat strike/block!
+    evaluateLayered(itCurr->second, st.currTime, itUpper->second, st.upperTime, st.upperWeight, outPalette, overlay);
+    return;
+  }
+
+  auto itPrev = (st.blend < 0.999f) ? clips.find(st.prevClip) : clips.end();
+  if (itPrev != clips.end() && st.prevClip != st.currClip) {
+    evaluateBlended(itPrev->second, st.prevTime, itCurr->second, st.currTime, st.blend, outPalette, overlay);
+  } else {
+    evaluateClip(itCurr->second, st.currTime, outPalette, overlay);
+  }
 }
 
 void CharacterAnimator::buildPaletteFromTargetLocals(

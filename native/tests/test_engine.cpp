@@ -167,8 +167,40 @@ int main() {
       anim.evaluateLayered(srcIdle, 0.25f, srcJab, 0.22f, 0.85f, layeredPal);
       const glm::vec3 layeredSkinned = glm::vec3((layeredPal[j4.x] * w4.x + layeredPal[j4.y] * w4.y + layeredPal[j4.z] * w4.z + layeredPal[j4.w] * w4.w) * glm::vec4(samplePos, 1.0f));
       assert(std::isfinite(layeredSkinned.x) && std::isfinite(layeredSkinned.y) && std::abs(layeredSkinned.y) < 3.0f);
-      std::printf("[PASS] CharacterAnimator evaluateLayered: vert=(%.2f, %.2f, %.2f)\n",
-                  layeredSkinned.x, layeredSkinned.y, layeredSkinned.z);
+
+      // CharacterAnimState crossfade state machine + CharacterPoseOverlay (aiming/recoil/breathing)
+      std::unordered_map<std::string, westgate::CharacterAnimator::SourceClip> testClips;
+      testClips["fight_idle"] = srcIdle;
+      testClips["jab"] = srcJab;
+      const std::filesystem::path kdGlb = publicDir / "animations" / "combat" / "knockdown.glb";
+      westgate::GltfModel kdAnim;
+      if (westgate::GltfAssetLoader::loadGlb(kdGlb.string(), kdAnim, false, &err)) {
+        westgate::CharacterAnimator::SourceClip srcKd;
+        assert(westgate::CharacterAnimator::buildSourceClip("knockdown", kdAnim, 0, false, srcKd));
+        testClips["knockdown"] = srcKd;
+        std::array<glm::mat4, westgate::kMaxSkinBones> kdPal{};
+        anim.evaluateClip(srcKd, 1.6f, kdPal);
+        const glm::vec3 kdVert = glm::vec3((kdPal[j4.x] * w4.x + kdPal[j4.y] * w4.y + kdPal[j4.z] * w4.z + kdPal[j4.w] * w4.w) * glm::vec4(samplePos, 1.0f));
+        assert(std::isfinite(kdVert.y) && kdVert.y < skinned.y - 0.15f); // Hip drop during knockdown!
+      }
+
+      westgate::CharacterAnimState st{};
+      st.currClip = "fight_idle";
+      westgate::CharacterAnimator::advanceAnimState(st, "fight_idle", 0.2f, "jab", 0.25f, 0.05f, 0.14f);
+      assert(st.upperWeight > 0.5f);
+      westgate::CharacterPoseOverlay aimOv{};
+      aimOv.timeSec = 1.0f;
+      aimOv.weaponHoldWeight = 1.0f;
+      aimOv.twoHandedWeapon = true;
+      aimOv.aimWeight = 1.0f;
+      aimOv.recoilKick = 0.8f;
+      std::array<glm::mat4, westgate::kMaxSkinBones> statePal{};
+      anim.evaluateState(st, testClips, statePal, &aimOv);
+      const glm::vec3 ovVert = glm::vec3((statePal[j4.x] * w4.x + statePal[j4.y] * w4.y + statePal[j4.z] * w4.z + statePal[j4.w] * w4.w) * glm::vec4(samplePos, 1.0f));
+      assert(std::isfinite(ovVert.x) && std::isfinite(ovVert.y) && std::abs(ovVert.y) < 3.0f);
+
+      std::printf("[PASS] CharacterAnimator crossfade + hip-drop + poseOverlay: layered=(%.2f,%.2f,%.2f), aim=(%.2f,%.2f,%.2f)\n",
+                  layeredSkinned.x, layeredSkinned.y, layeredSkinned.z, ovVert.x, ovVert.y, ovVert.z);
     }
   }
 
@@ -311,6 +343,16 @@ int main() {
       std::fprintf(stderr, "FAIL pistol fire did not consume ammo\n");
       return 1;
     }
+    assert(session.recoilImpulse() > 0.2f);
+
+    // Switch back to Boxing (slot 0) and trigger Dodge animation
+    westgate::GameInputFrame dodgeFrame{};
+    dodgeFrame.selectWeaponSlot = 0;
+    session.update(1.0f / 60.0f, dodgeFrame, player, physics, world, nullptr);
+    dodgeFrame.selectWeaponSlot = -1;
+    dodgeFrame.dodgePressed = true;
+    session.update(1.0f / 60.0f, dodgeFrame, player, physics, world, nullptr);
+    assert(session.isDodging() && session.playerAttackClip() == "dodge");
 
     // Sky lighting day vs night
     session.setTimeOfDayPreset(westgate::TimeOfDayPreset::Afternoon);

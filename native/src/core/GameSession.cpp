@@ -672,7 +672,7 @@ void GameSession::reportCrime(CrimeKind kind, const glm::vec3& pos, const WorldD
 }
 
 void GameSession::damagePlayer(float amount, const WorldData& world, PlayerController& player, AudioEngine* audio) {
-  if (amount <= 0.0f) return;
+  if (amount <= 0.0f || playerDodgeTimer_ > 0.14f) return;
   float rem = amount;
   if (playerArmor_ > 0.0f) {
     const float absorbed = std::min(playerArmor_, rem * 0.7f);
@@ -681,6 +681,9 @@ void GameSession::damagePlayer(float amount, const WorldData& world, PlayerContr
   }
   playerHp_ -= rem;
   playerHitFlash_ = 1.0f;
+  if (playerAttackClip_.empty() && amount >= 7.0f) {
+    playerHitAnimTimer_ = 0.34f;
+  }
   if (audio) audio->playImpact(0.7f);
 
   if (playerHp_ <= 0.0f) {
@@ -707,6 +710,8 @@ void GameSession::fireActiveWeapon(const PlayerController& player, PhysicsWorld&
   w.magAmmo--;
   fireCooldown_ = 60.0f / std::max(30.0f, w.rpm);
   muzzleFlashTimer_ = 0.055f;
+  const float kickAdd = (w.id == "shotgun" || w.id == "sniper") ? 0.95f : (w.id == "carbine" || w.id == "smg") ? 0.42f : 0.55f;
+  recoilImpulse_ = std::min(1.0f, recoilImpulse_ + kickAdd);
   if (audio) audio->playGunshot(w.suppressed, 1.0f);
 
   const glm::vec3 camPos = cameraPosition(player);
@@ -1236,7 +1241,13 @@ void GameSession::updateIronPit(float dt, const GameInputFrame& input, PlayerCon
   };
 
   if (!inVehicle() && unarmed) {
-    if (input.firePressed) {
+    if (input.dodgePressed && playerAttackClip_.empty() && playerDodgeTimer_ <= 0.0f && playerStamina_ >= 14.0f) {
+      playerStamina_ -= 14.0f;
+      playerDodgeTimer_ = 0.52f;
+      playerAttackClip_ = "dodge";
+      playerAttackTimer_ = 0.0f;
+      playerAttackHitDone_ = true;
+    } else if (input.firePressed) {
       const char* seq[3] = {"jab", "cross", "hook"};
       tryStartMelee(seq[comboStep_ % 3], 11.0f);
       ++comboStep_;
@@ -1248,7 +1259,8 @@ void GameSession::updateIronPit(float dt, const GameInputFrame& input, PlayerCon
   }
 
   if (!playerAttackClip_.empty()) {
-    const float clipDur = (playerAttackClip_ == "uppercut" || playerAttackClip_ == "kick") ? 0.85f : 0.58f;
+    const float clipDur = (playerAttackClip_ == "uppercut" || playerAttackClip_ == "kick") ? 0.85f
+                        : (playerAttackClip_ == "dodge") ? 0.52f : 0.58f;
     playerAttackTimer_ += dt;
     if (!playerAttackHitDone_ && playerAttackTimer_ >= clipDur * 0.36f) {
       playerAttackHitDone_ = true;
@@ -1315,12 +1327,18 @@ void GameSession::updateIronPit(float dt, const GameInputFrame& input, PlayerCon
     const float dist = glm::length(glm::vec2(toP.x, toP.z));
     if (dist > 0.05f && nearPit) ironPit_.yawRad = std::atan2(toP.x, toP.z);
 
-    if (ironPit_.animClip == "hit" || ironPit_.animClip == "jab") {
-      const float dur = (ironPit_.animClip == "hit") ? 0.6f : 0.72f;
-      if (ironPit_.animClip == "jab" && !ironPit_.hitApplied && ironPit_.animTime >= dur * 0.42f) {
+    const bool oppAttacking = (ironPit_.animClip == "jab" || ironPit_.animClip == "cross" ||
+                               ironPit_.animClip == "hook" || ironPit_.animClip == "uppercut" ||
+                               ironPit_.animClip == "kick");
+    if (ironPit_.animClip == "hit" || ironPit_.animClip == "block" || oppAttacking) {
+      const float dur = (ironPit_.animClip == "hit") ? 0.55f
+                      : (ironPit_.animClip == "block") ? 0.65f
+                      : (ironPit_.animClip == "uppercut" || ironPit_.animClip == "kick") ? 0.82f : 0.64f;
+      if (oppAttacking && !ironPit_.hitApplied && ironPit_.animTime >= dur * 0.40f) {
         ironPit_.hitApplied = true;
-        if (dist < 2.35f) {
-          const float dmg = input.aimDown ? 3.5f : 12.0f;
+        if (dist < 2.38f) {
+          const float baseDmg = (ironPit_.animClip == "uppercut" || ironPit_.animClip == "kick") ? 17.0f : 12.0f;
+          const float dmg = input.aimDown ? baseDmg * 0.28f : baseDmg;
           damagePlayer(dmg, world, player, audio);
         }
       }
@@ -1337,13 +1355,20 @@ void GameSession::updateIronPit(float dt, const GameInputFrame& input, PlayerCon
       ironPit_.animClip = "fight_idle";
     }
 
-    if (nearPit && dist <= 2.2f && ironPit_.animClip != "hit" && ironPit_.animClip != "jab") {
+    if (nearPit && dist <= 2.2f && ironPit_.animClip != "hit" && !oppAttacking && ironPit_.animClip != "block") {
       ironPit_.attackCooldown -= dt;
       if (ironPit_.attackCooldown <= 0.0f) {
-        ironPit_.animClip = "jab";
+        rng_ = rng_ * 1664525u + 1013904223u;
+        if ((rng_ % 6) == 0 && ironPit_.tier >= 2) {
+          ironPit_.animClip = "block";
+        } else {
+          static const char* kBossMoves[5] = {"jab", "cross", "hook", "uppercut", "kick"};
+          const int maxMoves = std::min(5, 2 + ironPit_.tier);
+          ironPit_.animClip = kBossMoves[(rng_ >> 4) % maxMoves];
+        }
         ironPit_.animTime = 0.0f;
         ironPit_.hitApplied = false;
-        ironPit_.attackCooldown = std::max(0.65f, 2.0f - 0.25f * static_cast<float>(ironPit_.tier));
+        ironPit_.attackCooldown = std::max(0.65f, 1.9f - 0.24f * static_cast<float>(ironPit_.tier));
       }
     }
   }
@@ -1526,7 +1551,7 @@ void GameSession::updateActivitiesAndShops(float dt, const GameInputFrame& input
   }
 
   if (contextPrompt_.empty() && glm::distance(glm::vec2(pPos.x, pPos.z), glm::vec2(722.0f, 115.0f)) < 12.0f) {
-    contextPrompt_ = "[LMB/F] Punch | [Q] Uppercut | [E] Kick | [RMB/V] Block | [R] Next Tier";
+    contextPrompt_ = "[LMB/F] Punch | [Q] Uppercut | [E] Kick | [X] Dodge | [RMB/V] Block | [R] Next Tier";
   }
 }
 
@@ -1534,11 +1559,23 @@ void GameSession::update(float dt, const GameInputFrame& input, PlayerController
   animClock_ += dt;
   sirenCooldown_ = std::max(0.0f, sirenCooldown_ - dt);
   playerHitFlash_ = std::max(0.0f, playerHitFlash_ - dt * 4.0f);
+  playerDodgeTimer_ = std::max(0.0f, playerDodgeTimer_ - dt);
+  playerHitAnimTimer_ = std::max(0.0f, playerHitAnimTimer_ - dt);
+  recoilImpulse_ = std::max(0.0f, recoilImpulse_ - dt * 6.5f);
   hitmarkerTimer_ = std::max(0.0f, hitmarkerTimer_ - dt);
   toastTimer_ = std::max(0.0f, toastTimer_ - dt);
   fireCooldown_ = std::max(0.0f, fireCooldown_ - dt);
   muzzleFlashTimer_ = std::max(0.0f, muzzleFlashTimer_ - dt);
   lastCamFocus_ = cameraPosition(player);
+
+  // Sync foot stride clock with real ground velocity to prevent foot skate
+  const float spd = player.speed();
+  if (spd > 0.35f) {
+    const float nominalSpd = player.sprinting() ? 7.8f : 4.2f;
+    playerLocomotionClock_ += dt * std::clamp(spd / nominalSpd, 0.55f, 1.45f);
+  } else {
+    playerLocomotionClock_ += dt;
+  }
 
   if (autoAdvanceTime_) {
     timeOfDayHours_ = std::fmod(timeOfDayHours_ + dt * 0.015f, 24.0f);
@@ -1673,6 +1710,7 @@ float GameSession::cameraFovDeg(bool aiming) const {
 }
 
 std::string GameSession::playerAnimClip(const PlayerController& player, bool blocking) const {
+  if (playerHitAnimTimer_ > 0.0f && playerAttackClip_.empty()) return "hit";
   if (blocking && weapons_[static_cast<size_t>(activeWeapon_)].isMelee) return "block";
   if (player.speed() > 0.35f) return player.sprinting() ? "Run" : "Walk";
   return weapons_[static_cast<size_t>(activeWeapon_)].isMelee ? "fight_idle" : "Idle";

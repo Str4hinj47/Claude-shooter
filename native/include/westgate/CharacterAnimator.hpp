@@ -13,6 +13,41 @@ namespace westgate {
 constexpr uint32_t kMaxSkinBones = 96;
 
 /**
+ * Procedural anatomical overlay applied in character space on top of retargeted clips
+ * (breathing, idle sway, sprint lean, head-look, firearm aiming, recoil kick & reload).
+ */
+struct CharacterPoseOverlay {
+  float timeSec = 0.0f;
+  float seed = 0.0f;
+  float idleWeight = 0.0f;
+  float sprintLean = 0.0f;
+  float turnBank = 0.0f;
+  float headLookYaw = 0.0f;
+  float headLookPitch = 0.0f;
+  float weaponHoldWeight = 0.0f;
+  bool twoHandedWeapon = false;
+  float aimWeight = 0.0f;
+  float recoilKick = 0.0f;
+  float reloadProgress = 0.0f;
+};
+
+/**
+ * Per-character animation crossfade & upper-body layer state machine.
+ */
+struct CharacterAnimState {
+  std::string prevClip = "Idle";
+  float prevTime = 0.0f;
+  std::string currClip = "Idle";
+  float currTime = 0.0f;
+  float blend = 1.0f;
+  float blendDuration = 0.16f;
+
+  std::string upperClip;
+  float upperTime = 0.0f;
+  float upperWeight = 0.0f;
+};
+
+/**
  * Evaluates glTF skeletal animations and Mixamo-to-UE/CC4 bone retargeting
  * into a 96-bone GPU skinning matrix palette (mat4x4<f32>).
  */
@@ -25,6 +60,7 @@ class CharacterAnimator {
     std::vector<GltfNodeInfo> srcNodes;
     std::vector<glm::quat> srcRestWorldQ;
     std::unordered_map<std::string, int32_t> canonicalToSrcNode;
+    glm::vec3 srcRestHipPos{0.0f, 0.95f, 0.0f};
     GltfAnimationClip clip;
   };
 
@@ -50,7 +86,8 @@ class CharacterAnimator {
   void evaluateClip(
     const SourceClip& src,
     float timeSec,
-    std::array<glm::mat4, kMaxSkinBones>& outPalette
+    std::array<glm::mat4, kMaxSkinBones>& outPalette,
+    const CharacterPoseOverlay* overlay = nullptr
   ) const;
 
   /**
@@ -62,7 +99,8 @@ class CharacterAnimator {
     const SourceClip& clipB,
     float timeB,
     float blend,
-    std::array<glm::mat4, kMaxSkinBones>& outPalette
+    std::array<glm::mat4, kMaxSkinBones>& outPalette,
+    const CharacterPoseOverlay* overlay = nullptr
   ) const;
 
   /**
@@ -76,7 +114,27 @@ class CharacterAnimator {
     const SourceClip& upperClip,
     float upperTime,
     float upperWeight,
-    std::array<glm::mat4, kMaxSkinBones>& outPalette
+    std::array<glm::mat4, kMaxSkinBones>& outPalette,
+    const CharacterPoseOverlay* overlay = nullptr
+  ) const;
+
+  /** Advance a per-character crossfade + upper-body overlay state machine. */
+  static void advanceAnimState(
+    CharacterAnimState& state,
+    const std::string& desiredClip,
+    float desiredTime,
+    const std::string& desiredUpperClip,
+    float desiredUpperTime,
+    float dt,
+    float crossfadeSec = 0.16f
+  );
+
+  /** Evaluate a CharacterAnimState against a clip bank with smooth crossfades + optional pose overlay. */
+  void evaluateState(
+    const CharacterAnimState& state,
+    const std::unordered_map<std::string, SourceClip>& clips,
+    std::array<glm::mat4, kMaxSkinBones>& outPalette,
+    const CharacterPoseOverlay* overlay = nullptr
   ) const;
 
   static std::string canonicalizeBoneName(const std::string& rawName);
@@ -87,6 +145,11 @@ class CharacterAnimator {
     float timeSec,
     std::vector<glm::quat>& outSrcWorldQ,
     glm::vec3& outSrcHipPos
+  ) const;
+
+  glm::quat computeOverlayDeltaWorld(
+    const std::string& canon,
+    const CharacterPoseOverlay& overlay
   ) const;
 
   void buildPaletteFromTargetLocals(
@@ -100,6 +163,7 @@ class CharacterAnimator {
   std::vector<int32_t> targetTopoOrder_;
   std::vector<glm::quat> targetRestWorldQ_;
   std::vector<std::string> targetCanonicalNames_;
+  int32_t targetHipsNode_ = -1;
   float targetHipHeight_ = 0.95f;
 };
 
