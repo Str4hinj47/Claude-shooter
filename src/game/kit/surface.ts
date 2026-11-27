@@ -454,7 +454,10 @@ export function surfaceMaps(family: SurfaceFamily, seed = 1, size = 256, repeat 
   const cloneTex = (src: THREE.Texture) => {
     const t = src.clone();
     t.repeat.set(repeat, repeat);
-    t.needsUpdate = true;
+    // Only flag an upload when the shared source actually holds image data.
+    // Flagging a still-empty clone makes WebGLRenderer warn
+    // "Texture marked for update but no image data found" every frame.
+    if (t.image) t.needsUpdate = true;
     return t;
   };
   const tuned: SurfaceMaps = {
@@ -530,7 +533,10 @@ export function materialFor(color: THREE.ColorRepresentation, opts: MatOpts = {}
         if (repeat === 1) return src;
         const c = src.clone();
         c.repeat.set(repeat, repeat);
-        c.needsUpdate = true;
+        // Guard the upload flag: cloning an arch-PBR texture that has not
+        // decoded yet must not queue a texture upload with no image, which
+        // spams "Texture marked for update but no image data found".
+        if (c.image) c.needsUpdate = true;
         return c;
       };
       const chosenColor = nativeAlbedo ? bundle.colorNative : (bundle.colorNeutral ?? bundle.colorNative);

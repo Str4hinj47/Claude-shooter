@@ -35,6 +35,9 @@ export const WESTGATE_MOD_GARAGES: ModGarageDef[] = [
   { id: "garage_seaport", name: "Westgate Customs — Seaport", x: 615, z: 345, yawDeg: 270 },
 ];
 
+/** Player distance (m) at which a 24/7 Mart clerk's skinned GLB is streamed in. */
+const CLERK_HYDRATE_RADIUS = 95;
+
 export const WESTGATE_STORES: ConvenienceStoreDef[] = [
   { id: "store_downtown", name: "24/7 Westgate Mart — Civic", x: -38, z: -125, yawDeg: 0 },
   { id: "store_delsol", name: "24/7 Westgate Mart — Boardwalk", x: -692, z: -72, yawDeg: 90 },
@@ -63,6 +66,13 @@ export class CityShopsManager {
     robCooldown: number;
     clerkMesh: THREE.Group;
     mixer: THREE.AnimationMixer | null;
+    /** Roles cycled per store — used when the clerk GLB is hydrated lazily. */
+    clerkRole: string;
+    /** Distant 24/7 marts hydrate their SkinnedMesh clerk only when the player
+     *  comes within {@link CLERK_HYDRATE_RADIUS}; caps live skinned instances. */
+    clerkHydrated: boolean;
+    /** True while the clerk GLB request is in flight (prevents duplicate loads). */
+    clerkHydrating: boolean;
   }> = [];
 
   private paintCursor = 0;
@@ -271,49 +281,64 @@ export class CityShopsManager {
         robCooldown: 0,
         clerkMesh: clerk,
         mixer: null as THREE.AnimationMixer | null,
+        clerkRole: clerkRoles[idx % clerkRoles.length],
+        clerkHydrated: false,
+        clerkHydrating: false,
       };
       this.stores.push(storeEntry);
-
-      if (this.isBrowser) {
-        const role = clerkRoles[idx % clerkRoles.length];
-        void loadCachedSoldierGltf(characterUrl(role))
-          .then((gltf) => {
-            const cloned = SkeletonUtils.clone(gltf.scene) as THREE.Group;
-            cloned.rotation.y = Math.PI;
-            cloned.traverse((o) => {
-              const m = o as THREE.Mesh;
-              if (!m.isMesh) return;
-              m.castShadow = true;
-              m.receiveShadow = true;
-              m.userData.sharedGltfAsset = true;
-              const orig = Array.isArray(m.material) ? m.material : [m.material];
-              const up = orig.map((mat) => upgradeCharacterMaterial(mat));
-              m.material = Array.isArray(m.material) ? up : up[0];
-            });
-            cloned.updateMatrixWorld(true);
-            const box = new THREE.Box3().setFromObject(cloned);
-            const h = box.max.y - box.min.y;
-            if (h > 0.2) cloned.scale.multiplyScalar(1.78 / h);
-
-            const mixer = new THREE.AnimationMixer(cloned);
-            const idleClip =
-              gltf.animations.find((a) => a.name === "Idle") ??
-              gltf.animations.find((a) => a.name.toLowerCase().includes("idle")) ??
-              gltf.animations[0];
-            if (idleClip) {
-              const act = mixer.clipAction(stripRootMotion(idleClip));
-              act.setLoop(THREE.LoopRepeat, Infinity);
-              act.play();
-              mixer.update(idx * 0.7);
-            }
-
-            clerk.clear();
-            clerk.add(cloned);
-            storeEntry.mixer = mixer;
-          })
-          .catch(() => {});
-      }
     }
+  }
+
+  /**
+   * Streams the SkinnedMesh clerk for one 24/7 Mart on demand.
+   * Boot no longer builds four animated skinned characters up front, which used
+   * to cost ~4 character GLB requests, 4 SkeletonUtils clones and 4
+   * AnimationMixers before the first frame was ever presented.
+   */
+  private hydrateStoreClerk(store: CityShopsManager["stores"][number]): void {
+    if (!this.isBrowser || store.clerkHydrated || store.clerkHydrating) return;
+    store.clerkHydrating = true;
+    const { clerkMesh, clerkRole } = store;
+    void loadCachedSoldierGltf(characterUrl(clerkRole))
+      .then((gltf) => {
+        const cloned = SkeletonUtils.clone(gltf.scene) as THREE.Group;
+        cloned.rotation.y = Math.PI;
+        cloned.traverse((o) => {
+          const m = o as THREE.Mesh;
+          if (!m.isMesh) return;
+          m.castShadow = true;
+          m.receiveShadow = true;
+          m.userData.sharedGltfAsset = true;
+          const orig = Array.isArray(m.material) ? m.material : [m.material];
+          const up = orig.map((mat) => upgradeCharacterMaterial(mat));
+          m.material = Array.isArray(m.material) ? up : up[0];
+        });
+        cloned.updateMatrixWorld(true);
+        const box = new THREE.Box3().setFromObject(cloned);
+        const h = box.max.y - box.min.y;
+        if (h > 0.2) cloned.scale.multiplyScalar(1.78 / h);
+
+        const mixer = new THREE.AnimationMixer(cloned);
+        const idleClip =
+          gltf.animations.find((a) => a.name === "Idle") ??
+          gltf.animations.find((a) => a.name.toLowerCase().includes("idle")) ??
+          gltf.animations[0];
+        if (idleClip) {
+          const act = mixer.clipAction(stripRootMotion(idleClip));
+          act.setLoop(THREE.LoopRepeat, Infinity);
+          act.play();
+          mixer.update(this.stores.indexOf(store) * 0.7);
+        }
+
+        clerkMesh.clear();
+        clerkMesh.add(cloned);
+        store.mixer = mixer;
+        store.clerkHydrated = true;
+      })
+      .catch(() => {})
+      .finally(() => {
+        store.clerkHydrating = false;
+      });
   }
 
   update(dt: number, focusPos?: THREE.Vector3): void {
@@ -321,6 +346,19 @@ export class CityShopsManager {
       if (s.robCooldown > 0) s.robCooldown = Math.max(0, s.robCooldown - dt);
       // Clerk cowers slightly while store is on robbery cooldown
       s.clerkMesh.position.y = s.robCooldown > 25 ? -0.35 : 0.14;
+
+      // Phase 3 proximity hydration: only pull a clerk's skinned GLB in once the
+      // player is actually near this mart. Without a focus position (headless /
+      // tests) fall back to hydrating everyone so scenes stay complete.
+      if (!s.clerkHydrated && !s.clerkHydrating) {
+        if (!focusPos) {
+          this.hydrateStoreClerk(s);
+        } else {
+          const d2 = (s.pos.x - focusPos.x) ** 2 + (s.pos.z - focusPos.z) ** 2;
+          if (d2 < CLERK_HYDRATE_RADIUS * CLERK_HYDRATE_RADIUS) this.hydrateStoreClerk(s);
+        }
+      }
+
       if (s.mixer && (!focusPos || (s.pos.x - focusPos.x) ** 2 + (s.pos.z - focusPos.z) ** 2 < 90 * 90)) {
         s.mixer.update(dt);
       }

@@ -291,7 +291,9 @@ function tuneAutomotiveMaterial(orig: THREE.Material, id: TrafficId): THREE.Mate
       tex.minFilter = THREE.LinearMipmapLinearFilter;
       tex.generateMipmaps = true;
       tex.anisotropy = 16;
-      tex.needsUpdate = true;
+      // Meshopt/quantized vehicle GLBs can expose textures that have not
+      // decoded yet; never flag an upload without image data.
+      if (tex.image) tex.needsUpdate = true;
     }
   }
   if (std.map) std.map.colorSpace = THREE.SRGBColorSpace;

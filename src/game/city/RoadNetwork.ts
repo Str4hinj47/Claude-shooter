@@ -1030,7 +1030,10 @@ export class RoadNetwork {
       t.wrapS = t.wrapT = THREE.RepeatWrapping;
       t.repeat.set(Math.max(1, acrossMetres / 3.2), alongMetres / 3.2);
       t.anisotropy = 16;
-      t.needsUpdate = true;
+      // Guard: cloning the shared asphalt normal map before its JPEG decodes
+      // must not queue a pixel-less upload (triggers the WebGL
+      // "Texture marked for update but no image data found" warning).
+      if (t.image) t.needsUpdate = true;
       return t;
     };
 
@@ -1183,7 +1186,7 @@ export class RoadNetwork {
       if (!loadedRoadAlbedoImg && roadTexLoader) {
         roadAlbedoListeners.push((img) => {
           paintAsphalt(img);
-          tex.needsUpdate = true;
+          if (tex.image) tex.needsUpdate = true;
         });
       }
       return tex;
@@ -1251,7 +1254,7 @@ export class RoadNetwork {
       if (!loadedRoadAlbedoImg && roadTexLoader) {
         roadAlbedoListeners.push((img) => {
           paintRoundabout(img);
-          tex.needsUpdate = true;
+          if (tex.image) tex.needsUpdate = true;
         });
       }
       return tex;

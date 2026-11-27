@@ -240,7 +240,9 @@ export function createFacadeMaterial(
     if (shareBase) return src;
     const t = src.clone();
     t.repeat.set(rx, ry);
-    t.needsUpdate = true;
+    // Only request an upload when the procedural facade canvas actually holds
+    // pixels; a flagged-but-empty clone spams the no-image-data warning.
+    if (t.image) t.needsUpdate = true;
     return t;
   };
 

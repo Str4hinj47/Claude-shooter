@@ -89,7 +89,11 @@ export function loadCityGltf(filename: string): Promise<CityGltfAsset | null> {
                 tex.minFilter = THREE.LinearMipmapLinearFilter;
                 tex.generateMipmaps = true;
                 tex.anisotropy = maxAniso;
-                tex.needsUpdate = true;
+                // Quantized/meshopt GLBs can surface material textures whose
+                // bitmap is still decoding when the traverse runs. Flagging an
+                // upload there produces "Texture marked for update but no image
+                // data found" spam, so only force the upload when we have pixels.
+                if (tex.image) tex.needsUpdate = true;
               }
             }
           }
