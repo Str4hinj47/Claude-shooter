@@ -74,12 +74,18 @@ FetchContent_Declare(
   URL https://codeload.github.com/nothings/stb/tar.gz/6b5799bae8a1fe3792691ef4b72ae26434c3e799
 )
 
-FetchContent_MakeAvailable(JoltPhysics meshoptimizer cgltf glm nlohmann_json stb)
+FetchContent_Declare(
+  miniaudio
+  URL https://codeload.github.com/mackron/miniaudio/tar.gz/4a5b74bef029b3592c54b6048650ee5f972c1a48
+)
+
+FetchContent_MakeAvailable(JoltPhysics meshoptimizer cgltf glm nlohmann_json stb miniaudio)
 
 # ---------------------------------------------------------------------------
 # 2. Core Native Engine Library (westgate_core)
 # ---------------------------------------------------------------------------
 add_library(westgate_core STATIC
+  src/audio/AudioEngine.cpp
   src/core/WorldData.cpp
   src/core/GltfAssetLoader.cpp
   src/core/CharacterAnimator.cpp
@@ -92,6 +98,7 @@ target_include_directories(westgate_core PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}/include"
   "${cgltf_SOURCE_DIR}"
   "${stb_SOURCE_DIR}"
+  "${miniaudio_SOURCE_DIR}"
 )
 
 target_link_libraries(westgate_core PUBLIC
@@ -100,6 +107,9 @@ target_link_libraries(westgate_core PUBLIC
   glm::glm
   nlohmann_json::nlohmann_json
 )
+if(UNIX AND NOT APPLE)
+  target_link_libraries(westgate_core PUBLIC dl pthread m)
+endif()
 
 if(MSVC)
   target_compile_options(westgate_core PRIVATE /W3 /MP)
@@ -144,12 +154,7 @@ if(WESTGATE_BUILD_DESKTOP)
     URL https://codeload.github.com/ocornut/imgui/tar.gz/0baafdcd3870bcdf5714a81ee2e4b1cc90ed134c
   )
 
-  FetchContent_Declare(
-    miniaudio
-    URL https://codeload.github.com/mackron/miniaudio/tar.gz/4a5b74bef029b3592c54b6048650ee5f972c1a48
-  )
-
-  FetchContent_MakeAvailable(SDL3 imgui miniaudio)
+  FetchContent_MakeAvailable(SDL3 imgui)
 
   # Download official prebuilt wgpu-native v29.0.1.1 binary for host platform
   set(WGPU_VERSION "v29.0.1.1")
@@ -219,14 +224,12 @@ if(WESTGATE_BUILD_DESKTOP)
   target_link_libraries(imgui_sdl3_wgpu PUBLIC SDL3::SDL3 wgpu_native)
 
   add_executable(westgate_engine
-    src/audio/AudioEngine.cpp
     src/render/WgpuContext.cpp
     src/render/WorldRenderer.cpp
     src/app/GameHud.cpp
     src/app/main.cpp
   )
   target_include_directories(westgate_engine PRIVATE
-    "${miniaudio_SOURCE_DIR}"
     "${stb_SOURCE_DIR}"
   )
   target_link_libraries(westgate_engine PRIVATE
@@ -271,6 +274,12 @@ if(WESTGATE_BUILD_DESKTOP)
           "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/fighter/hair_short04.glb"
           "$<TARGET_FILE_DIR:westgate_engine>/assets/characters/fighter/"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/soldier.glb"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/military.glb"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/construction.glb"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/delivery.glb"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/firefighter.glb"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/sports.glb"
           "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/business.glb"
           "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/civilian.glb"
           "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/police.glb"

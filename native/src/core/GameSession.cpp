@@ -159,14 +159,284 @@ void GameSession::pushToast(const std::string& msg, float duration) {
   toastTimer_ = duration;
 }
 
+void GameSession::triggerCommsLine(
+  const std::string& speaker,
+  const std::string& subtitle,
+  const std::string& relMp3,
+  AudioEngine* audio,
+  const glm::vec3* spatialPos
+) {
+  commsSpeaker_ = speaker;
+  commsSubtitle_ = subtitle;
+  commsTimer_ = std::max(3.8f, static_cast<float>(subtitle.size()) * 0.055f);
+  if (audio && !relMp3.empty()) {
+    if (spatialPos) {
+      audio->playSpatialComms(relMp3, *spatialPos, 0.92f);
+    } else {
+      audio->playVoiceClip(relMp3, 0.95f);
+    }
+  }
+}
+
+void GameSession::weaponFinishPalette(WeaponFinishKind finish, glm::vec3& outBody, glm::vec3& outAccent, const char** outName) {
+  switch (finish) {
+    case WeaponFinishKind::Obsidian:
+      outBody = {0.14f, 0.15f, 0.17f};
+      outAccent = {0.26f, 0.28f, 0.31f};
+      if (outName) *outName = "Obsidian Anodized";
+      break;
+    case WeaponFinishKind::Coyote:
+      outBody = {0.54f, 0.44f, 0.30f};
+      outAccent = {0.22f, 0.19f, 0.16f};
+      if (outName) *outName = "FDE Coyote Tan";
+      break;
+    case WeaponFinishKind::Arctic:
+      outBody = {0.78f, 0.81f, 0.85f};
+      outAccent = {0.18f, 0.21f, 0.25f};
+      if (outName) *outName = "Arctic Ghost";
+      break;
+    case WeaponFinishKind::Crimson:
+      outBody = {0.48f, 0.11f, 0.13f};
+      outAccent = {0.16f, 0.16f, 0.18f};
+      if (outName) *outName = "Crimson Carbon";
+      break;
+    case WeaponFinishKind::Gold:
+      outBody = {0.84f, 0.66f, 0.20f};
+      outAccent = {0.15f, 0.15f, 0.17f};
+      if (outName) *outName = "Syndicate Gold";
+      break;
+    case WeaponFinishKind::Titanium:
+      outBody = {0.46f, 0.50f, 0.56f};
+      outAccent = {0.20f, 0.23f, 0.27f};
+      if (outName) *outName = "Brushed Titanium";
+      break;
+  }
+}
+
+glm::vec4 GameSession::suitTintColor(PlayerSuitPreset suit, const char** outName) {
+  switch (suit) {
+    case PlayerSuitPreset::VanguardObsidian:
+      if (outName) *outName = "Vanguard // Shadow Obsidian";
+      return {0.82f, 0.86f, 0.92f, 1.0f};
+    case PlayerSuitPreset::VanguardUrban:
+      if (outName) *outName = "Vanguard // Urban Navy";
+      return {0.62f, 0.74f, 0.95f, 1.0f};
+    case PlayerSuitPreset::VanguardCoyote:
+      if (outName) *outName = "Vanguard // Desert Coyote";
+      return {1.05f, 0.92f, 0.72f, 1.0f};
+    case PlayerSuitPreset::VanguardArctic:
+      if (outName) *outName = "Vanguard // Arctic Ghost";
+      return {1.18f, 1.20f, 1.25f, 1.0f};
+    case PlayerSuitPreset::VanguardCrimson:
+      if (outName) *outName = "Vanguard // Crimson Spec-Ops";
+      return {1.10f, 0.62f, 0.64f, 1.0f};
+    case PlayerSuitPreset::IronPitBrawler:
+      if (outName) *outName = "Iron Pit // Bare-Knuckle";
+      return {1.0f, 1.0f, 1.0f, 1.0f};
+  }
+  return {1.0f, 1.0f, 1.0f, 1.0f};
+}
+
+bool GameSession::shouldUseBareKnuckleRig(const WorldData& world, const glm::vec3& playerPos) const {
+  if (playerSuit_ == PlayerSuitPreset::IronPitBrawler) return true;
+  if (!weapons_.empty() && weapons_[static_cast<size_t>(activeWeapon_)].isMelee) {
+    const float dPit = glm::distance(glm::vec2(playerPos.x, playerPos.z), glm::vec2(world.fightPitPos.x, world.fightPitPos.z));
+    if (dPit < 14.5f) return true;
+  }
+  return false;
+}
+
+void GameSession::configureWeaponSlot(
+  int slotIdx,
+  WeaponOpticKind optic,
+  WeaponMuzzleKind muzzle,
+  WeaponUnderbarrelKind underbarrel,
+  WeaponMagKind mag,
+  WeaponFinishKind finish
+) {
+  if (slotIdx < 1 || slotIdx >= static_cast<int>(weapons_.size())) return;
+  auto& w = weapons_[static_cast<size_t>(slotIdx)];
+  w.optic = optic;
+  w.muzzle = muzzle;
+  w.underbarrel = underbarrel;
+  w.mag = mag;
+  w.finish = finish;
+  w.suppressed = (muzzle == WeaponMuzzleKind::Suppressor);
+  w.noiseRadius = w.suppressed ? (w.id == "pistol" ? 3.8f : 6.8f) : 38.0f;
+
+  const int baseMag = std::max(4, w.baseMagSize);
+  if (mag == WeaponMagKind::Extended) {
+    w.magSize = std::max(baseMag + 2, static_cast<int>(std::round(static_cast<float>(baseMag) * 1.4f)));
+  } else if (mag == WeaponMagKind::Drum) {
+    w.magSize = baseMag * 2;
+  } else {
+    w.magSize = baseMag;
+  }
+  w.magAmmo = std::min(w.magAmmo, w.magSize);
+}
+
+void GameSession::appendHeldWeaponMarkers(
+  const glm::vec3& handWorldPos,
+  float yawRad,
+  float pitchRad,
+  const WeaponSlotState& w,
+  float recoil01,
+  std::vector<WorldMarkerBox>& out
+) {
+  if (w.isMelee) return;
+
+  glm::vec3 bodyCol, accCol;
+  weaponFinishPalette(w.finish, bodyCol, accCol, nullptr);
+  const glm::vec3 darkSteel(0.11f, 0.12f, 0.14f);
+
+  const float kickPitch = pitchRad - recoil01 * 0.14f;
+  const glm::quat qGun = glm::angleAxis(yawRad, glm::vec3(0.0f, 1.0f, 0.0f)) *
+                         glm::angleAxis(kickPitch, glm::vec3(1.0f, 0.0f, 0.0f));
+
+  auto emitPart = [&](const glm::vec3& localOff, const glm::vec3& sz, const glm::vec3& col, float rough = 0.28f, float metal = 0.78f, float em = 0.0f) {
+    WorldMarkerBox m;
+    m.pos = handWorldPos + qGun * localOff;
+    m.scale = sz;
+    m.color = col;
+    m.emissive = em;
+    m.roughness = rough;
+    m.metallic = metal;
+    m.useQuat = true;
+    m.rot = qGun;
+    out.push_back(m);
+  };
+
+  if (w.id == "pistol" || w.id == "pistol_sd") {
+    // Grip + Frame + Slide + Modular Muzzle + Reflex Dot + Rail Laser
+    emitPart({0.0f, -0.02f, 0.02f}, {0.032f, 0.105f, 0.044f}, accCol, 0.55f, 0.15f);
+    emitPart({0.0f, 0.042f, 0.095f}, {0.034f, 0.036f, 0.195f}, bodyCol, 0.25f, 0.85f);
+    if (w.muzzle == WeaponMuzzleKind::Suppressor) {
+      emitPart({0.0f, 0.042f, 0.265f}, {0.030f, 0.030f, 0.155f}, darkSteel, 0.34f, 0.72f);
+    } else if (w.muzzle == WeaponMuzzleKind::Compensator) {
+      emitPart({0.0f, 0.042f, 0.212f}, {0.035f, 0.036f, 0.048f}, accCol, 0.22f, 0.90f);
+    }
+    if (w.optic != WeaponOpticKind::IronSights) {
+      emitPart({0.0f, 0.072f, 0.055f}, {0.028f, 0.026f, 0.038f}, darkSteel, 0.22f, 0.80f);
+      emitPart({0.0f, 0.075f, 0.045f}, {0.009f, 0.009f, 0.006f}, {1.0f, 0.18f, 0.16f}, -1.0f, 0.0f, 2.8f);
+    }
+    if (w.underbarrel == WeaponUnderbarrelKind::LaserSight) {
+      emitPart({0.0f, 0.015f, 0.145f}, {0.026f, 0.020f, 0.046f}, darkSteel, 0.30f, 0.70f);
+    }
+    if (w.mag != WeaponMagKind::Standard) {
+      emitPart({0.0f, -0.088f, 0.012f}, {0.026f, 0.065f, 0.034f}, darkSteel, 0.35f, 0.65f);
+    }
+    return;
+  }
+
+  // Two-handed Rifles / SMG / Shotgun / DMR anchored at pistol grip (handWorldPos)
+  const bool isSmg = (w.id == "smg");
+  const bool isShotgun = (w.id == "shotgun");
+  const bool isDmr = (w.id == "dmr");
+  const float rxLen = isSmg ? 0.24f : (isDmr ? 0.36f : 0.30f);
+  const float hgLen = isSmg ? 0.16f : (isDmr ? 0.34f : (isShotgun ? 0.36f : 0.26f));
+  const float brlLen = isSmg ? 0.12f : (isDmr ? 0.28f : (isShotgun ? 0.24f : 0.18f));
+
+  // Pistol grip, buttstock, receiver, handguard, and barrel
+  emitPart({0.0f, -0.035f, 0.00f}, {0.034f, 0.11f, 0.046f}, accCol, 0.58f, 0.12f);
+  emitPart({0.0f, 0.035f, -0.17f}, {0.040f, 0.095f, 0.22f}, accCol, 0.48f, 0.22f);
+  emitPart({0.0f, 0.052f, 0.09f}, {0.048f, 0.076f, rxLen}, bodyCol, 0.26f, 0.84f);
+  emitPart({0.0f, 0.052f, 0.09f + rxLen * 0.5f + hgLen * 0.5f - 0.01f}, {0.044f, 0.058f, hgLen}, bodyCol, 0.30f, 0.78f);
+  const float muzzleBaseZ = 0.09f + rxLen * 0.5f + hgLen;
+  emitPart({0.0f, 0.054f, muzzleBaseZ + brlLen * 0.45f}, {0.022f, 0.022f, brlLen}, darkSteel, 0.22f, 0.90f);
+  if (isShotgun) {
+    // Under-barrel tubular magazine
+    emitPart({0.0f, 0.024f, muzzleBaseZ * 0.72f}, {0.024f, 0.024f, hgLen + 0.14f}, darkSteel, 0.28f, 0.82f);
+  }
+
+  // Modular Magazine (Standard / Extended / Drum)
+  if (!isShotgun) {
+    if (w.mag == WeaponMagKind::Drum) {
+      emitPart({0.0f, -0.055f, 0.155f}, {0.115f, 0.115f, 0.068f}, darkSteel, 0.34f, 0.72f);
+    } else {
+      const float magH = (w.mag == WeaponMagKind::Extended) ? 0.19f : 0.135f;
+      emitPart({0.0f, -0.035f - (magH - 0.135f) * 0.5f, 0.155f}, {0.030f, magH, 0.062f}, accCol, 0.38f, 0.55f);
+    }
+  }
+
+  // Modular Muzzle (Suppressor / Compensator)
+  const float tipZ = muzzleBaseZ + brlLen * 0.90f;
+  if (w.muzzle == WeaponMuzzleKind::Suppressor) {
+    emitPart({0.0f, 0.054f, tipZ + 0.09f}, {0.038f, 0.038f, 0.19f}, darkSteel, 0.32f, 0.75f);
+  } else if (w.muzzle == WeaponMuzzleKind::Compensator) {
+    emitPart({0.0f, 0.054f, tipZ + 0.03f}, {0.032f, 0.032f, 0.065f}, accCol, 0.20f, 0.92f);
+  }
+
+  // Modular Optic (Red Dot / Holo / ACOG / Variable Sniper Scope)
+  switch (w.optic) {
+    case WeaponOpticKind::IronSights:
+      emitPart({0.0f, 0.098f, -0.01f}, {0.022f, 0.026f, 0.018f}, darkSteel);
+      emitPart({0.0f, 0.098f, muzzleBaseZ - 0.02f}, {0.018f, 0.028f, 0.016f}, darkSteel);
+      break;
+    case WeaponOpticKind::RedDot:
+      emitPart({0.0f, 0.106f, 0.09f}, {0.034f, 0.036f, 0.055f}, darkSteel);
+      emitPart({0.0f, 0.110f, 0.075f}, {0.010f, 0.010f, 0.006f}, {1.0f, 0.16f, 0.14f}, -1.0f, 0.0f, 2.8f);
+      break;
+    case WeaponOpticKind::Holo:
+      emitPart({0.0f, 0.110f, 0.095f}, {0.042f, 0.044f, 0.078f}, accCol);
+      emitPart({0.0f, 0.114f, 0.072f}, {0.014f, 0.014f, 0.006f}, {0.18f, 1.0f, 0.42f}, -1.0f, 0.0f, 2.6f);
+      break;
+    case WeaponOpticKind::Acog:
+      emitPart({0.0f, 0.114f, 0.085f}, {0.040f, 0.046f, 0.135f}, darkSteel);
+      emitPart({0.0f, 0.116f, 0.022f}, {0.012f, 0.012f, 0.006f}, {1.0f, 0.35f, 0.12f}, -1.0f, 0.0f, 2.5f);
+      break;
+    case WeaponOpticKind::SniperScope:
+      emitPart({0.0f, 0.120f, 0.105f}, {0.044f, 0.048f, 0.255f}, darkSteel);
+      emitPart({0.0f, 0.120f, -0.018f}, {0.014f, 0.014f, 0.006f}, {0.22f, 0.92f, 1.0f}, -1.0f, 0.0f, 2.4f);
+      break;
+  }
+
+  // Modular Underbarrel (Vertical Grip / Tactical Laser Box)
+  if (w.underbarrel == WeaponUnderbarrelKind::VerticalGrip) {
+    emitPart({0.0f, -0.012f, muzzleBaseZ - hgLen * 0.48f}, {0.028f, 0.088f, 0.032f}, accCol, 0.52f, 0.18f);
+  } else if (w.underbarrel == WeaponUnderbarrelKind::LaserSight) {
+    emitPart({0.026f, 0.058f, muzzleBaseZ - 0.06f}, {0.026f, 0.024f, 0.075f}, darkSteel, 0.28f, 0.72f);
+    emitPart({0.028f, 0.058f, muzzleBaseZ - 0.02f}, {0.008f, 0.008f, 0.008f}, {0.15f, 1.0f, 0.38f}, -1.0f, 0.0f, 3.0f);
+  }
+}
+
 void GameSession::init(const WorldData& world, PlayerController* player, PhysicsWorld* /*physics*/) {
   weapons_.clear();
-  weapons_.push_back({"unarmed", "Iron Pit Boxing", "Fists", 0, 0, 18.0f, 1, 180.0f, 0.0f, 0.0f, 0.0f, 2.5f, false, true, true, true, 0, 0, 0, 0});
-  weapons_.push_back({"pistol", "Apex P226-SD", "P226-SD", 0, 45, 36.0f, 1, 420.0f, 0.008f, 0.002f, 1.45f, 4.0f, false, true, false, true, 15, 15, 75, 120});
-  weapons_.push_back({"carbine", "Vanguard M4A1-S", "M4A1-S", 850, 90, 38.0f, 1, 680.0f, 0.007f, 0.0015f, 2.1f, 7.5f, true, true, false, false, 30, 30, 120, 210});
-  weapons_.push_back({"smg", "Spectre MP5-SD", "MP5-SD", 650, 75, 29.0f, 1, 780.0f, 0.011f, 0.003f, 1.85f, 5.5f, true, true, false, false, 30, 30, 150, 240});
-  weapons_.push_back({"shotgun", "Breacher 870", "870 Tac", 700, 70, 19.0f, 8, 85.0f, 0.055f, 0.032f, 2.3f, 32.0f, false, false, false, false, 8, 8, 40, 64});
-  weapons_.push_back({"dmr", "MK14 EBR", "MK14", 1200, 110, 68.0f, 1, 240.0f, 0.005f, 0.0008f, 2.35f, 38.0f, false, false, false, false, 20, 20, 80, 120});
+  auto makeWep = [](
+    const char* id, const char* name, const char* shortName,
+    int price, int ammoPrice, float dmg, int pellets, float rpm,
+    float spread, float adsSpread, float reloadT, float noiseR,
+    bool autoFire, bool supp, bool melee, bool unlocked,
+    int magSz, int resAmmo, int resMax,
+    WeaponOpticKind optic, WeaponMuzzleKind muzzle, WeaponUnderbarrelKind under, WeaponMagKind mag, WeaponFinishKind fin
+  ) {
+    WeaponSlotState w;
+    w.id = id; w.name = name; w.shortName = shortName;
+    w.price = price; w.ammoPrice = ammoPrice; w.damage = dmg; w.pellets = pellets; w.rpm = rpm;
+    w.spread = spread; w.adsSpread = adsSpread; w.reloadTime = reloadT; w.noiseRadius = noiseR;
+    w.automatic = autoFire; w.suppressed = supp; w.isMelee = melee; w.unlocked = unlocked;
+    w.magSize = magSz; w.baseMagSize = magSz; w.magAmmo = magSz;
+    w.reserveAmmo = resAmmo; w.reserveMax = resMax;
+    w.optic = optic; w.muzzle = muzzle; w.underbarrel = under; w.mag = mag; w.finish = fin;
+    return w;
+  };
+  weapons_.push_back(makeWep("unarmed", "Iron Pit Boxing", "Fists", 0, 0, 18.0f, 1, 180.0f, 0.0f, 0.0f, 0.0f, 2.5f, false, true, true, true, 0, 0, 0, WeaponOpticKind::IronSights, WeaponMuzzleKind::Standard, WeaponUnderbarrelKind::None, WeaponMagKind::Standard, WeaponFinishKind::Obsidian));
+  weapons_.push_back(makeWep("pistol", "Apex P226-SD", "P226-SD", 0, 45, 36.0f, 1, 420.0f, 0.008f, 0.002f, 1.45f, 4.0f, false, true, false, true, 15, 75, 120, WeaponOpticKind::RedDot, WeaponMuzzleKind::Suppressor, WeaponUnderbarrelKind::LaserSight, WeaponMagKind::Standard, WeaponFinishKind::Obsidian));
+  weapons_.push_back(makeWep("carbine", "Vanguard M4A1-S", "M4A1-S", 850, 90, 38.0f, 1, 680.0f, 0.007f, 0.0015f, 2.1f, 7.5f, true, true, false, false, 30, 120, 210, WeaponOpticKind::Holo, WeaponMuzzleKind::Suppressor, WeaponUnderbarrelKind::VerticalGrip, WeaponMagKind::Standard, WeaponFinishKind::Obsidian));
+  weapons_.push_back(makeWep("smg", "Spectre MP5-SD", "MP5-SD", 650, 75, 29.0f, 1, 780.0f, 0.011f, 0.003f, 1.85f, 5.5f, true, true, false, false, 30, 150, 240, WeaponOpticKind::RedDot, WeaponMuzzleKind::Suppressor, WeaponUnderbarrelKind::LaserSight, WeaponMagKind::Extended, WeaponFinishKind::Titanium));
+  weapons_.push_back(makeWep("shotgun", "Breacher 870", "870 Tac", 700, 70, 19.0f, 8, 85.0f, 0.055f, 0.032f, 2.3f, 32.0f, false, false, false, false, 8, 40, 64, WeaponOpticKind::RedDot, WeaponMuzzleKind::Compensator, WeaponUnderbarrelKind::VerticalGrip, WeaponMagKind::Standard, WeaponFinishKind::Coyote));
+  weapons_.push_back(makeWep("dmr", "MK14 EBR", "MK14", 1200, 110, 68.0f, 1, 240.0f, 0.005f, 0.0008f, 2.35f, 38.0f, false, false, false, false, 20, 80, 120, WeaponOpticKind::SniperScope, WeaponMuzzleKind::Compensator, WeaponUnderbarrelKind::LaserSight, WeaponMagKind::Standard, WeaponFinishKind::Coyote));
+  carriedNpcId_ = -1;
+  bodiesDisposedCount_ = 0;
+  oceanDisposalsCount_ = 0;
+  totalHeadshots_ = 0;
+  shotsFired_ = 0;
+  shotsHit_ = 0;
+  lastHitHeadshot_ = false;
+  hasAimLaserDot_ = false;
+  commsSpeaker_.clear();
+  commsSubtitle_.clear();
+  commsTimer_ = 0.0f;
+  commsCooldown_ = 0.0f;
 
   activeWeapon_ = 0;
   vehicles_.clear();
@@ -342,13 +612,20 @@ void GameSession::init(const WorldData& world, PlayerController* player, Physics
     vehicles_.push_back(v);
   }
 
-  // 96 ambient city pedestrians walking sidewalks, plazas, Del Sol & Pelican Key
+  // 96 ambient city pedestrians walking sidewalks, plazas, Seaport & Del Sol
   if (!longRoads.empty()) {
-    const NpcModelKind pedKinds[3] = {NpcModelKind::Civilian, NpcModelKind::Business, NpcModelKind::Security};
+    const NpcModelKind pedKinds[5] = {
+      NpcModelKind::Civilian,
+      NpcModelKind::Business,
+      NpcModelKind::Sports,
+      NpcModelKind::Construction,
+      NpcModelKind::Civilian,
+    };
     for (int i = 0; i < 96; ++i) {
       NpcEntity ped;
       ped.id = nextNpcId_++;
-      ped.kind = pedKinds[i % 3];
+      ped.kind = pedKinds[i % 5];
+      ped.role = EnemyRole::Civilian;
       ped.roadIdx = longRoads[static_cast<size_t>(i * 3 + 1) % longRoads.size()];
       const auto& seg = world.roads[ped.roadIdx];
       const float maxS = static_cast<float>(seg.samples.size() - 1);
@@ -710,11 +987,21 @@ void GameSession::acceptContract(int idx, const WorldData& world) {
   activeContractIdx_ = idx;
   contractSeenByWitness_ = false;
   const auto& c = contracts_[static_cast<size_t>(idx)];
-  const float gy = world.heightfield.sampleHeight(c.targetPos.x, c.targetPos.z);
+  auto sampleContractSurfaceY = [&](float x, float z) -> float {
+    float y = world.heightfield.sampleHeight(x, z);
+    // Del Sol Pier wooden boardwalk deck spans x in [-760, -665], z in [16, 64] at y = 4.22m
+    if (x >= -760.0f && x <= -665.0f && z >= 16.0f && z <= 64.0f) {
+      y = std::max(y, 4.22f);
+    }
+    return y;
+  };
+  const float gy = sampleContractSurfaceY(c.targetPos.x, c.targetPos.z);
 
   NpcEntity target;
   target.id = nextNpcId_++;
   target.kind = NpcModelKind::Business;
+  target.role = EnemyRole::Target;
+  target.displayName = c.targetName;
   target.pos = glm::vec3(c.targetPos.x, gy + 0.05f, c.targetPos.z);
   target.homePos = target.pos;
   target.hp = 120.0f;
@@ -724,19 +1011,56 @@ void GameSession::acceptContract(int idx, const WorldData& world) {
   target.colorTint = glm::vec3(1.0f, 0.85f, 0.72f);
   npcs_.push_back(target);
 
-  for (int g = 0; g < 2; ++g) {
+  // Close-protection Security Guard + Armored Heavy Breacher (military.glb) + Overwatch Sniper
+  {
     NpcEntity guard;
     guard.id = nextNpcId_++;
     guard.kind = NpcModelKind::Security;
-    const float gx = c.targetPos.x + (g == 0 ? -3.2f : 3.2f);
-    const float gz = c.targetPos.z + 2.4f;
-    guard.pos = glm::vec3(gx, world.heightfield.sampleHeight(gx, gz) + 0.05f, gz);
+    guard.role = EnemyRole::Guard;
+    guard.displayName = "Syndicate Detail";
+    const float gx = c.targetPos.x - 3.4f;
+    const float gz = c.targetPos.z + 2.5f;
+    guard.pos = glm::vec3(gx, sampleContractSurfaceY(gx, gz) + 0.05f, gz);
     guard.homePos = guard.pos;
     guard.hp = 110.0f;
     guard.maxHp = 110.0f;
     guard.isContractGuard = true;
     guard.contractIdx = idx;
     npcs_.push_back(guard);
+  }
+  {
+    NpcEntity heavy;
+    heavy.id = nextNpcId_++;
+    heavy.kind = NpcModelKind::Military;
+    heavy.role = EnemyRole::Heavy;
+    heavy.displayName = "Armored Enforcer";
+    const float hx = c.targetPos.x + 3.6f;
+    const float hz = c.targetPos.z + 2.2f;
+    heavy.pos = glm::vec3(hx, sampleContractSurfaceY(hx, hz) + 0.05f, hz);
+    heavy.homePos = heavy.pos;
+    heavy.hp = 185.0f;
+    heavy.maxHp = 185.0f;
+    heavy.isContractGuard = true;
+    heavy.contractIdx = idx;
+    heavy.colorTint = glm::vec3(0.84f, 0.88f, 0.82f);
+    npcs_.push_back(heavy);
+  }
+  {
+    NpcEntity sniper;
+    sniper.id = nextNpcId_++;
+    sniper.kind = NpcModelKind::Security;
+    sniper.role = EnemyRole::Sniper;
+    sniper.displayName = "Overwatch Marksman";
+    const float sx = c.targetPos.x - 8.5f;
+    const float sz = c.targetPos.z - 8.0f;
+    sniper.pos = glm::vec3(sx, sampleContractSurfaceY(sx, sz) + 0.05f, sz);
+    sniper.homePos = sniper.pos;
+    sniper.hp = 95.0f;
+    sniper.maxHp = 95.0f;
+    sniper.isContractGuard = true;
+    sniper.contractIdx = idx;
+    sniper.colorTint = glm::vec3(0.65f, 0.72f, 0.68f);
+    npcs_.push_back(sniper);
   }
 
   setGpsWaypoint(target.pos, c.code + ": " + c.targetName);
@@ -858,7 +1182,7 @@ bool GameSession::buyArmorAndMedkit(AudioEngine* audio) {
   return true;
 }
 
-void GameSession::reportCrime(CrimeKind kind, const glm::vec3& pos, const WorldData& world) {
+void GameSession::reportCrime(CrimeKind kind, const glm::vec3& pos, const WorldData& world, AudioEngine* audio) {
   float addHeat = 0.0f;
   switch (kind) {
     case CrimeKind::Gunfire: addHeat = 0.55f; break;
@@ -872,15 +1196,38 @@ void GameSession::reportCrime(CrimeKind kind, const glm::vec3& pos, const WorldD
   if (newStars > wantedStars_) {
     wantedStars_ = newStars;
     pushToast("WANTED LEVEL " + std::to_string(wantedStars_) + " STAR" + (wantedStars_ > 1 ? "S" : "") + "!", 3.0f);
+    static const char* kDispatchLines[5] = {
+      "All units: disturbance reported in Westgate sector. Patrol car responding.",
+      "Dispatch: suspect is armed and dangerous - Code 3 pursuit authorized.",
+      "Tactical Dispatch: deploy SWAT interceptors and roadblock units immediately!",
+      "Metro Command: lethal force authorized - lock down all highway exits!",
+      "FEDERAL ALERT: maximum containment protocol engaged across Westgate Bay!",
+    };
+    const int sIdx = std::clamp(wantedStars_ - 1, 0, 4);
+    triggerCommsLine(
+      "WGPD DISPATCH",
+      kDispatchLines[sIdx],
+      "audio/comms/dispatch_star" + std::to_string(wantedStars_) + ".mp3",
+      audio,
+      nullptr
+    );
   }
   wantedEvadeTimer_ = 0.0f;
 
-  // Alert nearby pedestrians
+  // Alert nearby pedestrians & guards
   for (auto& npc : npcs_) {
-    if (!npc.alive || npc.isPolice || npc.isContractGuard) continue;
-    if (glm::distance(npc.pos, pos) < 34.0f) {
+    if (!npc.alive) continue;
+    const float d = glm::distance(npc.pos, pos);
+    if (npc.isPolice || npc.isContractGuard) {
+      if (d < 42.0f) {
+        npc.suspicion = 1.0f;
+        npc.alerted = true;
+      }
+      continue;
+    }
+    if (d < 34.0f) {
       npc.fleeing = true;
-      if (activeContractIdx_ >= 0 && npc.isContractTarget == false) {
+      if (activeContractIdx_ >= 0 && !npc.isContractTarget) {
         contractSeenByWitness_ = true;
       }
     }
@@ -1153,7 +1500,7 @@ void GameSession::damageVehicle(size_t vehIdx, float amount, const WorldData& wo
   }
 
   if (fromPlayer) {
-    reportCrime(v.kind == VehicleModelKind::PoliceCruiser ? CrimeKind::CopHit : CrimeKind::Gunfire, blastPos, world);
+    reportCrime(v.kind == VehicleModelKind::PoliceCruiser ? CrimeKind::CopHit : CrimeKind::Gunfire, blastPos, world, audio);
   }
 }
 
@@ -1166,9 +1513,14 @@ void GameSession::fireActiveWeapon(PlayerController& player, PhysicsWorld& physi
   }
 
   w.magAmmo--;
+  shotsFired_++;
+  lastHitHeadshot_ = false;
   fireCooldown_ = 60.0f / std::max(30.0f, w.rpm);
   muzzleFlashTimer_ = 0.055f;
-  const float kickAdd = (w.id == "shotgun" || w.id == "sniper") ? 0.95f : (w.id == "carbine" || w.id == "smg") ? 0.42f : 0.55f;
+
+  float kickAdd = (w.id == "shotgun" || w.id == "dmr" || w.id == "sniper") ? 0.92f : (w.id == "carbine" || w.id == "smg") ? 0.42f : 0.52f;
+  if (w.muzzle == WeaponMuzzleKind::Compensator) kickAdd *= 0.78f;
+  if (w.underbarrel == WeaponUnderbarrelKind::VerticalGrip) kickAdd *= 0.82f;
   recoilImpulse_ = std::min(1.0f, recoilImpulse_ + kickAdd);
   if (audio) audio->playGunshot(w.suppressed, 1.0f);
 
@@ -1177,9 +1529,13 @@ void GameSession::fireActiveWeapon(PlayerController& player, PhysicsWorld& physi
   const glm::vec3 aimDir = glm::normalize(camTgt - camPos);
   const glm::vec3 muzzle = player.position() + glm::vec3(0.0f, 1.42f, 0.0f) + aimDir * 0.65f;
   muzzleFlashPos_ = muzzle;
-  const float spread = aiming_ ? w.adsSpread : w.spread;
+  float spread = aiming_ ? w.adsSpread : w.spread;
+  if (w.underbarrel == WeaponUnderbarrelKind::VerticalGrip) spread *= 0.80f;
+  if (w.underbarrel == WeaponUnderbarrelKind::LaserSight && !aiming_) spread *= 0.68f;
+  const float dmgAttachMul = (w.muzzle == WeaponMuzzleKind::Compensator) ? 1.14f : 1.0f;
 
   bool hitAnything = false;
+  bool scoredHeadshot = false;
   for (int p = 0; p < w.pellets; ++p) {
     rng_ = rng_ * 1664525u + 1013904223u;
     const float rx = (static_cast<float>((rng_ >> 8) & 0xFFFF) / 32768.0f - 1.0f) * spread;
@@ -1189,21 +1545,35 @@ void GameSession::fireActiveWeapon(PlayerController& player, PhysicsWorld& physi
     const glm::vec3 up = glm::normalize(glm::cross(right, aimDir));
     const glm::vec3 rayDir = glm::normalize(aimDir + right * rx + up * ry);
 
-    constexpr float kMaxRange = 160.0f;
+    constexpr float kMaxRange = 180.0f;
     const RaycastHit worldHit = physics.raycast(camPos, rayDir, kMaxRange);
     float bestT = worldHit.hit ? worldHit.distance : kMaxRange;
 
     int hitNpcIdx = -1;
+    int hitZone = 1; // 0 = limb, 1 = torso, 2 = head
     int hitVehIdx = -1;
     bool hitIronOpp = false;
 
     for (size_t ni = 0; ni < npcs_.size(); ++ni) {
       const auto& npc = npcs_[ni];
-      if (!npc.alive) continue;
-      const float t = raySphereHit(camPos, rayDir, npc.pos + glm::vec3(0.0f, 0.95f, 0.0f), 0.68f);
-      if (t > 0.5f && t < bestT) {
-        bestT = t;
+      if (!npc.alive || npc.role == EnemyRole::Ally) continue;
+      // Test anatomical Head (y+1.56, r=0.30, prioritized at neck overlap), Torso (y+1.02, r=0.38), and Limbs (y+0.48, r=0.36)
+      const float tHead = raySphereHit(camPos, rayDir, npc.pos + glm::vec3(0.0f, 1.56f, 0.0f), 0.30f);
+      const float tTorso = raySphereHit(camPos, rayDir, npc.pos + glm::vec3(0.0f, 1.02f, 0.0f), 0.38f);
+      const float tLimb = raySphereHit(camPos, rayDir, npc.pos + glm::vec3(0.0f, 0.48f, 0.0f), 0.36f);
+      float tBestNpc = 1e9f;
+      int zone = 1;
+      if (tHead > 0.4f) {
+        tBestNpc = tHead;
+        zone = 2;
+      } else {
+        if (tTorso > 0.4f && tTorso < tBestNpc) { tBestNpc = tTorso; zone = 1; }
+        if (tLimb > 0.4f && tLimb < tBestNpc) { tBestNpc = tLimb; zone = 0; }
+      }
+      if (tBestNpc < bestT) {
+        bestT = tBestNpc;
         hitNpcIdx = static_cast<int>(ni);
+        hitZone = zone;
         hitVehIdx = -1;
         hitIronOpp = false;
       }
@@ -1243,20 +1613,42 @@ void GameSession::fireActiveWeapon(PlayerController& player, PhysicsWorld& physi
     if (hitVehIdx >= 0) {
       hitAnything = true;
       spawnSparks(endPt, -rayDir, {1.0f, 0.75f, 0.28f}, 6);
-      damageVehicle(static_cast<size_t>(hitVehIdx), w.damage * 0.82f, world, &player, audio, true);
+      damageVehicle(static_cast<size_t>(hitVehIdx), w.damage * dmgAttachMul * 0.82f, world, &player, audio, true);
     } else if (hitNpcIdx >= 0) {
       hitAnything = true;
       auto& npc = npcs_[static_cast<size_t>(hitNpcIdx)];
-      npc.hp -= w.damage;
+      float zoneMul = (hitZone == 2) ? ((!npc.alerted && w.suppressed) ? 3.2f : 2.0f)
+                    : (hitZone == 0) ? 0.72f : 1.0f;
+      if (npc.role == EnemyRole::Heavy && hitZone != 2) {
+        zoneMul *= 0.74f; // Heavy ballistic plate carrier absorbs torso/limb rounds
+      }
+      npc.hp -= w.damage * dmgAttachMul * zoneMul;
       npc.hitFlash = 1.0f;
-      if (npc.isPolice) reportCrime(CrimeKind::CopHit, npc.pos, world);
-      else if (!npc.isContractTarget && !npc.isContractGuard) reportCrime(CrimeKind::Assault, npc.pos, world);
+      npc.suspicion = 1.0f;
+      npc.alerted = true;
+      if (hitZone == 2) {
+        scoredHeadshot = true;
+        spawnSparks(endPt, -rayDir, {1.0f, 0.28f, 0.22f}, 7);
+      }
+      if (npc.isPolice) reportCrime(CrimeKind::CopHit, npc.pos, world, audio);
+      else if (!npc.isContractTarget && !npc.isContractGuard) reportCrime(CrimeKind::Assault, npc.pos, world, audio);
 
       if (npc.hp <= 0.0f && npc.alive) {
         npc.alive = false;
         npc.deadTimer = 0.0f;
         npc.animClip = "knockdown";
         npc.animTime = 0.0f;
+        npc.sniperTracking = false;
+        if (hitZone == 2) totalHeadshots_++;
+        if (commsCooldown_ <= 0.0f) {
+          for (const auto& ally : npcs_) {
+            if (ally.alive && (ally.isPolice || ally.isContractGuard) && glm::distance(ally.pos, npc.pos) < 26.0f) {
+              commsCooldown_ = 5.5f;
+              triggerCommsLine("TACTICAL RADIO", "Man down! Hostile marksman in the sector!", "audio/comms/comms_man_down.mp3", audio, &ally.pos);
+              break;
+            }
+          }
+        }
         if (npc.isContractTarget && npc.contractIdx >= 0 && npc.contractIdx == activeContractIdx_) {
           auto& c = contracts_[static_cast<size_t>(npc.contractIdx)];
           c.completed = true;
@@ -1264,15 +1656,18 @@ void GameSession::fireActiveWeapon(PlayerController& player, PhysicsWorld& physi
           const int total = c.rewardBase + bonus;
           playerCash_ += total;
           if (audio) audio->playCashChime();
-          pushToast("CONTRACT COMPLETE: " + c.targetName + " +$" + std::to_string(total), 5.0f);
+          pushToast("CONTRACT COMPLETE: " + c.targetName + " +$" + std::to_string(total) + " (Hide body for Clean Disposal!)", 5.0f);
           activeContractIdx_ = -1;
         } else {
-          playerCash_ += npc.isPolice ? 120 : 45;
+          playerCash_ += npc.isPolice ? 120 : (npc.role == EnemyRole::Heavy ? 180 : 55);
         }
+      } else if (commsCooldown_ <= 0.0f && (npc.isPolice || npc.isContractGuard)) {
+        commsCooldown_ = 5.5f;
+        triggerCommsLine("HOSTILE SQUAD", "Taking fire! Suppressing shooter's position!", "audio/comms/comms_under_fire.mp3", audio, &npc.pos);
       }
     } else if (hitIronOpp) {
       hitAnything = true;
-      ironPit_.hp = std::max(0.0f, ironPit_.hp - w.damage);
+      ironPit_.hp = std::max(0.0f, ironPit_.hp - w.damage * dmgAttachMul);
       ironPit_.hitFlash = 1.0f;
       if (ironPit_.hp <= 0.0f) {
         ironPit_.defeated = true;
@@ -1287,11 +1682,21 @@ void GameSession::fireActiveWeapon(PlayerController& player, PhysicsWorld& physi
   }
 
   if (hitAnything) {
-    hitmarkerTimer_ = 0.18f;
-    if (audio) audio->playImpact(0.5f);
+    shotsHit_++;
+    lastHitHeadshot_ = scoredHeadshot;
+    hitmarkerTimer_ = scoredHeadshot ? 0.28f : 0.18f;
+    if (audio) audio->playImpact(scoredHeadshot ? 0.95f : 0.5f);
   }
   if (!w.suppressed) {
-    reportCrime(CrimeKind::Gunfire, player.position(), world);
+    reportCrime(CrimeKind::Gunfire, player.position(), world, audio);
+  } else {
+    // Suppressed rounds only alert guards within w.noiseRadius
+    const glm::vec3 pPos = player.position();
+    for (auto& npc : npcs_) {
+      if (npc.alive && (npc.isPolice || npc.isContractGuard) && glm::distance(npc.pos, pPos) < w.noiseRadius) {
+        npc.suspicion = std::min(1.0f, npc.suspicion + 0.55f);
+      }
+    }
   }
 }
 
@@ -1352,11 +1757,113 @@ bool GameSession::trySilentTakedown(PlayerController& player, const WorldData& w
 
   if (audio) audio->playSpatialImpact(target.pos, 0.45f);
   if (witnessed) {
-    reportCrime(target.isPolice ? CrimeKind::CopHit : CrimeKind::Assault, target.pos, world);
+    reportCrime(target.isPolice ? CrimeKind::CopHit : CrimeKind::Assault, target.pos, world, audio);
     pushToast("TAKEDOWN WITNESSED! +$65", 2.4f);
   } else {
-    pushToast("SILENT TAKEDOWN +$65", 2.0f);
+    pushToast("SILENT TAKEDOWN +$65 ([J] Carry & Hide Body)", 2.4f);
   }
+  return true;
+}
+
+const NpcEntity* GameSession::carriedCorpse() const {
+  if (carriedNpcId_ <= 0) return nullptr;
+  for (const auto& n : npcs_) {
+    if (n.id == carriedNpcId_ && !n.alive && !n.bodyHidden) return &n;
+  }
+  return nullptr;
+}
+
+int GameSession::findCarryableCorpseIndex(const glm::vec3& playerPos) const {
+  if (inVehicle() || carriedNpcId_ > 0) return -1;
+  int bestIdx = -1;
+  float bestD = 2.45f;
+  for (size_t i = 0; i < npcs_.size(); ++i) {
+    const auto& n = npcs_[i];
+    if (n.alive || n.bodyHidden) continue;
+    if (std::abs(n.pos.y - playerPos.y) > 1.65f) continue;
+    const float d = glm::distance(glm::vec2(playerPos.x, playerPos.z), glm::vec2(n.pos.x, n.pos.z));
+    if (d < bestD) {
+      bestD = d;
+      bestIdx = static_cast<int>(i);
+    }
+  }
+  return bestIdx;
+}
+
+bool GameSession::tryCarryOrDisposeBody(const PlayerController& player, const WorldData& world, AudioEngine* audio) {
+  if (inVehicle()) return false;
+  const glm::vec3 pPos = player.position();
+  const glm::vec3 fwd(std::sin(player.yaw()), 0.0f, std::cos(player.yaw()));
+
+  if (carriedNpcId_ > 0) {
+    NpcEntity* body = nullptr;
+    for (auto& n : npcs_) {
+      if (n.id == carriedNpcId_) { body = &n; break; }
+    }
+    carriedNpcId_ = -1;
+    if (!body) return false;
+
+    // 1. Check Deep Ocean / Canal / Harbor Water disposal within 3.8m ahead
+    const glm::vec3 aheadWater = pPos + fwd * 2.6f;
+    if (world.heightfield.sampleHeight(aheadWater.x, aheadWater.z) < -0.35f || pPos.y < 0.45f) {
+      body->bodyHidden = true;
+      body->disposedInOcean = true;
+      bodiesDisposedCount_++;
+      oceanDisposalsCount_++;
+      const int bonus = body->isContractTarget ? 1000 : 120;
+      playerCash_ += bonus;
+      if (audio) {
+        audio->playFootstep(1.0f, true);
+        audio->playCashChime();
+      }
+      pushToast(body->isContractTarget
+        ? "PACIFIC OCEAN DISPOSAL COMPLETE! +$1000 Clean Contract Bonus!"
+        : "BODY DUMPED IN WATER! Evidence eliminated (+$120)", 3.8f);
+      return true;
+    }
+
+    // 2. Check nearby Dumpster Bin prop
+    for (const auto& prop : world.props) {
+      if (prop.proto == "dumpster" && glm::distance(glm::vec2(pPos.x, pPos.z), glm::vec2(prop.pos.x, prop.pos.z)) < 3.4f) {
+        body->bodyHidden = true;
+        bodiesDisposedCount_++;
+        playerCash_ += 100;
+        if (audio) audio->playSpatialImpact(prop.pos, 0.55f);
+        pushToast("BODY HIDDEN IN DUMPSTER! Zero trace (+$100)", 3.2f);
+        return true;
+      }
+    }
+
+    // 3. Check nearby parked vehicle trunk / boat deck
+    for (const auto& v : vehicles_) {
+      if (v.destroyed || v.isAircraft) continue;
+      const glm::vec3 vFwd(std::sin(v.yawRad), 0.0f, std::cos(v.yawRad));
+      const glm::vec3 trunkPos = v.pos - vFwd * (vehicleSpec(v.kind).length * 0.48f);
+      if (glm::distance(glm::vec2(pPos.x, pPos.z), glm::vec2(trunkPos.x, trunkPos.z)) < 3.1f) {
+        body->bodyHidden = true;
+        bodiesDisposedCount_++;
+        playerCash_ += 100;
+        if (audio) audio->playSpatialImpact(trunkPos, 0.50f);
+        pushToast(v.isBoat ? "BODY LOADED ONTO BOAT DECK! (+$100)" : "BODY CONCEALED IN VEHICLE TRUNK! (+$100)", 3.2f);
+        return true;
+      }
+    }
+
+    // 4. Otherwise drop body cleanly onto the ground ahead of Voss
+    const glm::vec3 dropPos = pPos + fwd * 0.85f;
+    body->pos = glm::vec3(dropPos.x, std::max(world.heightfield.sampleHeight(dropPos.x, dropPos.z), pPos.y - 0.9f) + 0.05f, dropPos.z);
+    body->yawRad = player.yaw();
+    if (audio) audio->playSpatialImpact(body->pos, 0.35f);
+    pushToast("Body set down.", 1.8f);
+    return true;
+  }
+
+  const int idx = findCarryableCorpseIndex(pPos);
+  if (idx < 0) return false;
+  auto& body = npcs_[static_cast<size_t>(idx)];
+  carriedNpcId_ = body.id;
+  if (audio) audio->playFootstep(0.65f, false);
+  pushToast("CARRYING BODY: [J] Drop, or carry to Dumpster / Trunk / Ocean Water", 3.5f);
   return true;
 }
 
@@ -1394,7 +1901,7 @@ void GameSession::updateTrafficAndVehicles(float dt, const GameInputFrame& input
       if (bestIdx >= 0) {
         auto& v = vehicles_[static_cast<size_t>(bestIdx)];
         if (v.isAmbientTraffic || v.isPolicePursuit) {
-          reportCrime(CrimeKind::Carjack, v.pos, world);
+          reportCrime(CrimeKind::Carjack, v.pos, world, audio);
         }
         v.isAmbientTraffic = false;
         v.isPolicePursuit = false;
@@ -2072,11 +2579,14 @@ void GameSession::updateNpcsAndPolice(float dt, PlayerController& player, Physic
       const float sz = std::clamp(pPos.z + std::sin(ang) * 34.0f, world.worldMin + 20.0f, world.worldMax - 20.0f);
       NpcEntity cop;
       cop.id = nextNpcId_++;
-      cop.kind = NpcModelKind::Police;
+      cop.kind = (wantedStars_ >= 3 && (activeCops % 2 == 1)) ? NpcModelKind::Military : NpcModelKind::Police;
+      cop.role = (cop.kind == NpcModelKind::Military) ? EnemyRole::Heavy : EnemyRole::Police;
       cop.isPolice = true;
+      cop.alerted = true;
+      cop.suspicion = 1.0f;
       cop.pos = glm::vec3(sx, world.heightfield.sampleHeight(sx, sz) + 0.05f, sz);
       cop.homePos = cop.pos;
-      cop.hp = 100.0f + static_cast<float>(wantedStars_) * 15.0f;
+      cop.hp = (cop.role == EnemyRole::Heavy ? 175.0f : 100.0f) + static_cast<float>(wantedStars_) * 15.0f;
       cop.maxHp = cop.hp;
       npcs_.push_back(cop);
     }
@@ -2091,6 +2601,7 @@ void GameSession::updateNpcsAndPolice(float dt, PlayerController& player, Physic
         playerCash_ += bonus;
         if (audio) audio->playCashChime();
         pushToast("WANTED EVADED! +$" + std::to_string(bonus), 3.5f);
+        triggerCommsLine("WGPD DISPATCH", "Suspect visual lost. All units return to sector patrol.", "audio/comms/comms_clear.mp3", audio, nullptr);
         npcs_.erase(std::remove_if(npcs_.begin(), npcs_.end(), [](const NpcEntity& n) { return n.isPolice; }), npcs_.end());
       }
     } else {
@@ -2098,44 +2609,147 @@ void GameSession::updateNpcsAndPolice(float dt, PlayerController& player, Physic
     }
   }
 
+  const SkyLightingState skyNow = skyLighting();
+  const float stealthVisMul = (player.crouching() ? 0.50f : (player.sprinting() ? 1.38f : 1.0f)) *
+                              (1.0f - skyNow.nightFactor * 0.30f) *
+                              (isCarryingBody() ? 1.35f : 1.0f);
+
+  // Keep carried corpse synced to Voss's shoulders
+  if (carriedNpcId_ > 0) {
+    bool foundCarried = false;
+    for (auto& n : npcs_) {
+      if (n.id == carriedNpcId_ && !n.alive && !n.bodyHidden) {
+        n.pos = pPos;
+        n.yawRad = player.yaw();
+        n.deadTimer = 0.0f;
+        foundCarried = true;
+        break;
+      }
+    }
+    if (!foundCarried) carriedNpcId_ = -1;
+  }
+
   for (auto& n : npcs_) {
     n.hitFlash = std::max(0.0f, n.hitFlash - dt * 4.0f);
     n.animTime += dt;
+    n.sniperTracking = false;
     if (!n.alive) {
-      n.deadTimer += dt;
+      if (n.id != carriedNpcId_) n.deadTimer += dt;
       continue;
     }
 
-    if (n.isPolice || (n.isContractGuard && activeContractIdx_ >= 0 && glm::distance(n.pos, pPos) < 26.0f && wantedStars_ > 0)) {
+    // Tactical Vision Cone + Jolt LOS Occlusion + Corpse Discovery for Guards, Snipers, Heavies & Police
+    if ((n.isContractGuard || n.isPolice) && !n.alerted) {
+      const glm::vec3 toP = pPos - n.pos;
+      const float distXZ = glm::length(glm::vec2(toP.x, toP.z));
+      const float maxSight = (n.role == EnemyRole::Sniper ? 62.0f : 30.0f) * stealthVisMul;
+      bool sawPlayer = false;
+      if (distXZ < maxSight && distXZ > 0.25f) {
+        const glm::vec2 dirXZ = glm::vec2(toP.x, toP.z) / distXZ;
+        const glm::vec2 fwdXZ(std::sin(n.yawRad), std::cos(n.yawRad));
+        const float cosAng = glm::dot(fwdXZ, dirXZ);
+        if (cosAng > 0.32f || distXZ < 4.2f) { // ~142 deg peripheral, 55 deg foveal
+          const glm::vec3 eye = n.pos + glm::vec3(0.0f, 1.56f, 0.0f);
+          const glm::vec3 pChest = pPos + glm::vec3(0.0f, player.crouching() ? 0.85f : 1.30f, 0.0f);
+          const glm::vec3 delta = pChest - eye;
+          const float dLen = glm::length(delta);
+          const RaycastHit los = (dLen > 0.2f) ? physics.raycast(eye, delta / dLen, dLen) : RaycastHit{};
+          if (!los.hit || los.distance > dLen * 0.92f) {
+            sawPlayer = true;
+            const float fovBoost = (cosAng > 0.78f) ? 1.45f : 0.72f;
+            const float proxRate = std::clamp(1.35f - distXZ / maxSight, 0.22f, 1.35f);
+            const float armedBoost = (!weapons_[static_cast<size_t>(activeWeapon_)].isMelee || isCarryingBody()) ? 1.35f : 0.45f;
+            n.suspicion = std::min(1.0f, n.suspicion + dt * 0.85f * fovBoost * proxRate * armedBoost);
+            if (n.suspicion >= 1.0f) {
+              n.alerted = true;
+              contractSeenByWitness_ = true;
+              if (commsCooldown_ <= 0.0f) {
+                commsCooldown_ = 5.0f;
+                triggerCommsLine("SECURITY DETAIL", "Contact! Armed operative spotted on perimeter!", "audio/comms/comms_contact.mp3", audio, &n.pos);
+              }
+            }
+          }
+        }
+      }
+      if (!sawPlayer) {
+        n.suspicion = std::max(0.0f, n.suspicion - dt * 0.22f);
+      }
+
+      // Corpse Discovery: unhidden dead body inside guard's vision cone!
+      if (!n.alerted) {
+        for (auto& corpse : npcs_) {
+          if (corpse.alive || corpse.bodyHidden || corpse.corpseReported || corpse.id == carriedNpcId_) continue;
+          const glm::vec3 toC = corpse.pos - n.pos;
+          const float cDist = glm::length(glm::vec2(toC.x, toC.z));
+          if (cDist < 22.0f && cDist > 0.2f) {
+            const glm::vec2 dirC = glm::vec2(toC.x, toC.z) / cDist;
+            if (glm::dot(glm::vec2(std::sin(n.yawRad), std::cos(n.yawRad)), dirC) > 0.42f) {
+              corpse.corpseReported = true;
+              n.suspicion = 1.0f;
+              n.alerted = true;
+              contractSeenByWitness_ = true;
+              if (commsCooldown_ <= 0.0f) {
+                commsCooldown_ = 5.5f;
+                triggerCommsLine("SECURITY DETAIL", "Command, we have a body here! Sound the alarm!", "audio/comms/comms_body.mp3", audio, &n.pos);
+              }
+              pushToast("BODY DISCOVERED! Hide corpses in Dumpsters, Trunks, or Water [J]!", 3.5f);
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    const bool hostileActive = n.isPolice || (n.isContractGuard && (n.alerted || wantedStars_ > 0));
+    if (hostileActive) {
       const glm::vec3 toP = pPos - n.pos;
       const float dist = glm::length(glm::vec2(toP.x, toP.z));
       if (dist > 0.1f) n.yawRad = std::atan2(toP.x, toP.z);
 
-      if (dist > 14.0f && dist < 80.0f) {
+      const bool isSniper = (n.role == EnemyRole::Sniper);
+      const bool isHeavy = (n.role == EnemyRole::Heavy);
+      const float stopDist = isSniper ? 38.0f : (isHeavy ? 8.5f : 14.0f);
+      const float moveSpd = isHeavy ? 3.5f : 4.5f;
+
+      if (!isSniper && dist > stopDist && dist < 85.0f) {
         const glm::vec2 dir = glm::normalize(glm::vec2(toP.x, toP.z));
-        n.pos.x += dir.x * 4.4f * dt;
-        n.pos.z += dir.y * 4.4f * dt;
+        n.pos.x += dir.x * moveSpd * dt;
+        n.pos.z += dir.y * moveSpd * dt;
         n.pos.y = world.heightfield.sampleHeight(n.pos.x, n.pos.z);
         n.animClip = "Run";
       } else {
         n.animClip = "Idle";
       }
 
-      if (dist < 32.0f) {
-        n.attackCooldown -= dt;
-        if (n.attackCooldown <= 0.0f) {
-          n.attackCooldown = std::max(0.7f, 1.85f - 0.2f * static_cast<float>(wantedStars_));
-          const glm::vec3 eye = n.pos + glm::vec3(0.0f, 1.5f, 0.0f);
-          const glm::vec3 pTarget = pPos + glm::vec3(0.0f, 1.25f, 0.0f);
-          const glm::vec3 delta = pTarget - eye;
-          const float dLen = glm::length(delta);
-          const RaycastHit los = (dLen > 0.1f) ? physics.raycast(eye, delta / dLen, dLen) : RaycastHit{};
-          if (!los.hit || los.distance > dLen * 0.92f) {
-            if (audio) audio->playSpatialGunshot(eye, false, 1.1f);
-            tracers_.push_back({eye, pTarget, {1.0f, 0.45f, 0.2f}, 0.09f});
-            damagePlayer(6.0f + static_cast<float>(wantedStars_), world, player, audio);
-          }
+      const float fireRange = isSniper ? 68.0f : 34.0f;
+      if (dist < fireRange) {
+        const glm::vec3 eye = n.pos + glm::vec3(0.0f, 1.52f, 0.0f);
+        const glm::vec3 pTarget = pPos + glm::vec3(0.0f, 1.25f, 0.0f);
+        const glm::vec3 delta = pTarget - eye;
+        const float dLen = glm::length(delta);
+        const RaycastHit los = (dLen > 0.1f) ? physics.raycast(eye, delta / dLen, dLen) : RaycastHit{};
+        const bool hasLos = (!los.hit || los.distance > dLen * 0.92f);
+
+        if (isSniper && hasLos) {
+          n.sniperTracking = true;
+          n.sniperLaserEnd = pTarget;
         }
+
+        n.attackCooldown -= dt;
+        if (n.attackCooldown <= 0.0f && hasLos) {
+          n.attackCooldown = isSniper ? 2.45f : (isHeavy ? 0.62f : std::max(0.75f, 1.80f - 0.18f * static_cast<float>(wantedStars_)));
+          if (audio) audio->playSpatialGunshot(eye, false, isSniper ? 1.45f : 1.1f);
+          tracers_.push_back({eye, pTarget, isSniper ? glm::vec3(1.0f, 0.16f, 0.16f) : glm::vec3(1.0f, 0.45f, 0.2f), 0.10f});
+          const float shotDmg = isSniper ? 22.0f : (isHeavy ? 8.5f : (6.0f + static_cast<float>(wantedStars_)));
+          damagePlayer(shotDmg, world, player, audio);
+        }
+      }
+    } else if (n.role == EnemyRole::Sniper && n.suspicion > 0.15f) {
+      // Unalerted sniper sweeps red laser sightline near player while suspicion builds
+      const glm::vec3 toP = pPos - n.pos;
+      if (glm::length(glm::vec2(toP.x, toP.z)) < 65.0f) {
+        n.sniperTracking = true;
+        n.sniperLaserEnd = pPos + glm::vec3(std::sin(animClock_ * 2.2f) * 1.4f, 1.15f, std::cos(animClock_ * 2.2f) * 1.4f);
       }
     } else if (n.fleeing) {
       const glm::vec3 away = n.pos - pPos;
@@ -2179,9 +2793,11 @@ void GameSession::updateNpcsAndPolice(float dt, PlayerController& player, Physic
     }
   }
 
-  // Cleanup long-dead non-contract NPCs
-  npcs_.erase(std::remove_if(npcs_.begin(), npcs_.end(), [](const NpcEntity& n) {
-    return !n.alive && !n.isContractTarget && n.deadTimer > 8.0f;
+  // Cleanup long-dead or disposed non-contract NPCs
+  npcs_.erase(std::remove_if(npcs_.begin(), npcs_.end(), [this](const NpcEntity& n) {
+    if (n.id == carriedNpcId_) return false;
+    if (n.bodyHidden && !n.isContractTarget) return true;
+    return !n.alive && !n.isContractTarget && n.deadTimer > 42.0f;
   }), npcs_.end());
 }
 
@@ -2630,7 +3246,7 @@ void GameSession::updateActivitiesAndShops(float dt, const GameInputFrame& input
           s.robCooldown = 45.0f;
           playerCash_ += 350;
           if (audio) audio->playCashChime();
-          reportCrime(CrimeKind::Robbery, s.pos, world);
+          reportCrime(CrimeKind::Robbery, s.pos, world, audio);
           pushToast("ROBBERY +$350! Police alerted!", 3.5f);
         }
       }
@@ -2655,6 +3271,8 @@ void GameSession::update(float dt, const GameInputFrame& input, PlayerController
   recoilImpulse_ = std::max(0.0f, recoilImpulse_ - dt * 6.5f);
   hitmarkerTimer_ = std::max(0.0f, hitmarkerTimer_ - dt);
   toastTimer_ = std::max(0.0f, toastTimer_ - dt);
+  commsTimer_ = std::max(0.0f, commsTimer_ - dt);
+  commsCooldown_ = std::max(0.0f, commsCooldown_ - dt);
   fireCooldown_ = std::max(0.0f, fireCooldown_ - dt);
   muzzleFlashTimer_ = std::max(0.0f, muzzleFlashTimer_ - dt);
   lastCamFocus_ = cameraPosition(player);
@@ -2746,7 +3364,13 @@ void GameSession::update(float dt, const GameInputFrame& input, PlayerController
 
   // Movement: on foot vs inside vehicle
   if (!inVehicle()) {
-    player.update(dt, input.moveInput);
+    PlayerInputState footMove = input.moveInput;
+    if (isCarryingBody()) {
+      footMove.moveForward *= 0.78f;
+      footMove.moveRight *= 0.78f;
+      footMove.sprint = false;
+    }
+    player.update(dt, footMove);
     if (player.steppedThisFrame() && audio) {
       const bool inWater = player.position().y < 0.25f;
       audio->playFootstep(player.stepIntensity(), inWater);
@@ -2755,10 +3379,22 @@ void GameSession::update(float dt, const GameInputFrame& input, PlayerController
     if (playerAttackClip_.empty()) {
       playerStamina_ = std::min(100.0f, playerStamina_ + (blocking ? 10.0f : 22.0f) * dt);
     }
-    if (!activeW.isMelee && fireCooldown_ <= 0.0f && ((activeW.automatic && input.fireDown) || (!activeW.automatic && input.firePressed))) {
+    if (!activeW.isMelee && !isCarryingBody() && fireCooldown_ <= 0.0f && ((activeW.automatic && input.fireDown) || (!activeW.automatic && input.firePressed))) {
       fireActiveWeapon(player, physics, world, audio);
     }
+
+    // Update live 3D Tactical Laser Sight ray when aiming with LaserSight underbarrel
+    hasAimLaserDot_ = false;
+    if (aiming_ && !activeW.isMelee && !isCarryingBody() && activeW.underbarrel == WeaponUnderbarrelKind::LaserSight) {
+      const glm::vec3 cPos = cameraPosition(player);
+      const glm::vec3 aDir = glm::normalize(cameraTarget(player) - cPos);
+      const RaycastHit lHit = physics.raycast(cPos, aDir, 95.0f);
+      aimLaserStart_ = player.position() + glm::vec3(0.16f * std::cos(player.yaw()), player.crouching() ? 0.96f : 1.38f, -0.16f * std::sin(player.yaw())) + aDir * 0.55f;
+      aimLaserEnd_ = lHit.hit ? lHit.position : (cPos + aDir * 70.0f);
+      hasAimLaserDot_ = true;
+    }
   } else {
+    hasAimLaserDot_ = false;
     // Still allow camera look while driving
     PlayerInputState lookOnly{};
     lookOnly.lookDeltaX = input.moveInput.lookDeltaX;
@@ -2768,17 +3404,24 @@ void GameSession::update(float dt, const GameInputFrame& input, PlayerController
 
   updateTrafficAndVehicles(dt, input, player, physics, world, audio);
   updateNpcsAndPolice(dt, player, physics, world, audio);
-  if (input.takedownPressed) {
+  if (input.carryBodyPressed || (input.kickPressed && (isCarryingBody() || !activeW.isMelee))) {
+    tryCarryOrDisposeBody(player, world, audio);
+  }
+  if (input.takedownPressed && !isCarryingBody()) {
     trySilentTakedown(player, world, audio);
   }
-  if (!spectatorBout_.active) {
+  if (!spectatorBout_.active && !isCarryingBody()) {
     updateIronPit(dt, input, player, world, audio);
   }
   updateSpectatorBout(dt, world, audio);
   updateActivitiesAndShops(dt, input, player, world, audio);
-  takedownReady_ = (takedownCooldown_ <= 0.0f) && (findTakedownNpcIndex(player.position()) >= 0);
-  if (takedownReady_ && contextPrompt_.empty()) {
+  takedownReady_ = !isCarryingBody() && (takedownCooldown_ <= 0.0f) && (findTakedownNpcIndex(player.position()) >= 0);
+  if (isCarryingBody()) {
+    contextPrompt_ = "[J/E] Drop Body  (Carry to Dumpster, Car Trunk, or Ocean Water to Dispose!)";
+  } else if (takedownReady_ && contextPrompt_.empty()) {
     contextPrompt_ = "[V] Silent Takedown";
+  } else if (contextPrompt_.empty() && findCarryableCorpseIndex(player.position()) >= 0) {
+    contextPrompt_ = "[J] Pick Up Body (Conceal Evidence)";
   }
 }
 
@@ -2799,9 +3442,16 @@ glm::vec3 GameSession::cameraPosition(const PlayerController& player) const {
     return v.pos + glm::vec3(0.0f, upH + v.suspHeave * 0.45f, 0.0f) - fwd * dist;
   }
   if (aiming_ && !weapons_[static_cast<size_t>(activeWeapon_)].isMelee) {
+    const auto& w = weapons_[static_cast<size_t>(activeWeapon_)];
     const glm::vec3 tgt = player.cameraTarget();
-    const glm::vec3 dir = glm::normalize(player.cameraTarget() - player.cameraPosition());
-    return tgt - dir * 1.9f;
+    const glm::vec3 dir = glm::normalize(tgt - player.cameraPosition());
+    const glm::vec3 shoulderPivot = tgt - dir * 10.0f;
+    if (w.optic == WeaponOpticKind::SniperScope) {
+      // First-person 8x scope lens position (ahead of helmet visor so own shoulder never occludes narrow 18-deg FOV)
+      return shoulderPivot + dir * 0.42f;
+    }
+    const glm::vec3 right(-std::cos(player.yaw()), 0.0f, std::sin(player.yaw()));
+    return shoulderPivot + right * 0.16f - dir * 1.45f;
   }
   return player.cameraPosition();
 }
@@ -2827,7 +3477,15 @@ float GameSession::cameraFovDeg(bool aiming) const {
     }
     return 68.0f;
   }
-  if (aiming && !weapons_[static_cast<size_t>(activeWeapon_)].isMelee) return 44.0f;
+  if (aiming && !weapons_[static_cast<size_t>(activeWeapon_)].isMelee) {
+    switch (weapons_[static_cast<size_t>(activeWeapon_)].optic) {
+      case WeaponOpticKind::IronSights:  return 54.0f;
+      case WeaponOpticKind::RedDot:      return 48.0f;
+      case WeaponOpticKind::Holo:        return 43.0f;
+      case WeaponOpticKind::Acog:        return 30.0f;
+      case WeaponOpticKind::SniperScope: return 18.0f;
+    }
+  }
   return 60.0f;
 }
 
@@ -2878,6 +3536,41 @@ std::vector<WorldMarkerBox> GameSession::gatherWorldMarkers(float elapsedSec) co
   // Dynamic spark particles (muzzle/bullet/vehicle/boxing impacts)
   for (const auto& sp : sparks_) {
     out.push_back({sp.pos, {sp.size, sp.size, sp.size * 2.2f}, 0.0f, sp.color, 0.0f});
+  }
+
+  // Player Tactical Green Laser Sight Beam + Dot when aiming with LaserSight attachment
+  if (hasAimLaserDot_) {
+    const glm::vec3 dL = aimLaserEnd_ - aimLaserStart_;
+    const float lenL = glm::length(dL);
+    if (lenL > 0.2f) {
+      const glm::vec3 mid = 0.5f * (aimLaserStart_ + aimLaserEnd_);
+      const float yaw = std::atan2(dL.x, dL.z);
+      const float pitch = -std::atan2(dL.y, std::max(1e-4f, std::hypot(dL.x, dL.z)));
+      out.push_back({mid, {0.012f, 0.012f, lenL}, yaw, {0.15f, 1.0f, 0.42f}, pitch, 2.8f});
+      out.push_back({aimLaserEnd_, {0.065f, 0.065f, 0.065f}, 0.0f, {0.25f, 1.0f, 0.48f}, 0.0f, 3.6f});
+    }
+  }
+
+  // Perched Sniper Red Laser Sightlines + Guard Stealth Alert Indicators (? / !)
+  for (const auto& n : npcs_) {
+    if (!n.alive) continue;
+    if (n.sniperTracking) {
+      const glm::vec3 eye = n.pos + glm::vec3(0.0f, 1.52f, 0.0f);
+      const glm::vec3 dS = n.sniperLaserEnd - eye;
+      const float lenS = glm::length(dS);
+      if (lenS > 0.5f) {
+        const glm::vec3 mid = 0.5f * (eye + n.sniperLaserEnd);
+        const float yaw = std::atan2(dS.x, dS.z);
+        const float pitch = -std::atan2(dS.y, std::max(1e-4f, std::hypot(dS.x, dS.z)));
+        out.push_back({mid, {0.016f, 0.016f, lenS}, yaw, {1.0f, 0.12f, 0.14f}, pitch, 3.0f});
+      }
+    }
+    if ((n.isContractGuard || n.isPolice) && n.suspicion > 0.18f) {
+      const glm::vec3 alertCol = n.alerted ? glm::vec3(1.0f, 0.16f, 0.14f) : glm::vec3(1.0f, 0.84f, 0.16f);
+      const float barH = n.alerted ? 0.34f : (0.16f + 0.18f * n.suspicion);
+      out.push_back({n.pos + glm::vec3(0.0f, 2.18f, 0.0f), {0.07f, barH, 0.07f}, elapsedSec * 2.0f, alertCol, 0.0f, 2.8f});
+      out.push_back({n.pos + glm::vec3(0.0f, 1.94f, 0.0f), {0.07f, 0.07f, 0.07f}, elapsedSec * 2.0f, alertCol, 0.0f, 2.8f});
+    }
   }
 
   // 3D Falling Rain Streaks around the camera when Weather = Rain or Thunderstorm
@@ -2949,6 +3642,19 @@ std::vector<DynamicPointLight> GameSession::gatherDynamicLights(const WorldData&
       if (prop.proto != "streetlamp") continue;
       if (glm::distance(glm::vec2(prop.pos.x, prop.pos.z), glm::vec2(pPos.x, pPos.z)) < 85.0f) {
         lights.push_back({prop.pos + glm::vec3(0.0f, 5.2f, 0.0f), 19.0f, {1.0f, 0.82f, 0.52f}, 1.45f * sky.nightFactor});
+      }
+    }
+  }
+
+  // 5b. Night Guard & Police Tactical Flashlights
+  if (sky.nightFactor > 0.20f) {
+    const glm::vec3 pPos = player.position();
+    for (const auto& n : npcs_) {
+      if (lights.size() >= 24) break;
+      if (!n.alive || (!n.isContractGuard && !n.isPolice)) continue;
+      if (glm::distance(glm::vec2(n.pos.x, n.pos.z), glm::vec2(pPos.x, pPos.z)) < 55.0f) {
+        const glm::vec3 fwd(std::sin(n.yawRad), -0.10f, std::cos(n.yawRad));
+        lights.push_back({n.pos + glm::vec3(0.0f, 1.38f, 0.0f) + fwd * 3.4f, 13.5f, {0.92f, 0.96f, 1.0f}, 1.75f * sky.nightFactor});
       }
     }
   }

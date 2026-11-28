@@ -53,6 +53,10 @@ int main(int argc, char** argv) {
   int headlessPhoneTab = -1;
   bool headlessTestReconfigure = false;
   int headlessSelectSlot = -1;
+  bool headlessUnlockWeapons = false;
+  bool headlessAimDown = false;
+  int headlessSuitIdx = -1;
+  int headlessContractIdx = -1;
   int headlessSpawnVehKind = -1;
   int headlessPaintIdx = -1;
   bool headlessBoardVeh = false;
@@ -108,6 +112,14 @@ int main(int argc, char** argv) {
       headlessTestReconfigure = true;
     } else if (arg == "--select-slot" && i + 1 < argc) {
       headlessSelectSlot = std::atoi(argv[++i]);
+    } else if (arg == "--unlock-weapons") {
+      headlessUnlockWeapons = true;
+    } else if (arg == "--aim") {
+      headlessAimDown = true;
+    } else if (arg == "--suit" && i + 1 < argc) {
+      headlessSuitIdx = std::atoi(argv[++i]);
+    } else if (arg == "--accept-contract" && i + 1 < argc) {
+      headlessContractIdx = std::atoi(argv[++i]);
     } else if (arg == "--teleport" && i + 1 < argc) {
       float tx = 0.0f, ty = 0.0f, tz = 0.0f, tyaw = 0.0f;
       if (std::sscanf(argv[++i], "%f,%f,%f,%f", &tx, &ty, &tz, &tyaw) >= 3) {
@@ -164,15 +176,20 @@ int main(int argc, char** argv) {
     return assetsRoot / rel;
   };
 
-  // Load character models & animation clips
-  westgate::GltfModel bodyModel, shortsModel, hairModel, bizModel, civModel, polModel, secModel;
+  // Load character models & animation clips (Vanguard Soldier + Bare-Knuckle Fighter + 7 City/Tactical Archetypes)
+  westgate::GltfModel bodyModel, shortsModel, hairModel, soldierModel;
+  westgate::GltfModel bizModel, civModel, polModel, secModel, milModel, conModel, sptModel;
   const bool hasBody = westgate::GltfAssetLoader::loadGlb(resolveAsset("characters/fighter/base_body.glb").string(), bodyModel, true, nullptr);
   const bool hasShorts = westgate::GltfAssetLoader::loadGlb(resolveAsset("characters/fighter/clothing_shorts.glb").string(), shortsModel, true, nullptr);
   const bool hasHair = westgate::GltfAssetLoader::loadGlb(resolveAsset("characters/fighter/hair_short02.glb").string(), hairModel, true, nullptr);
+  const bool hasSoldier = westgate::GltfAssetLoader::loadGlb(resolveAsset("characters/soldier.glb").string(), soldierModel, true, nullptr);
   const bool hasBiz = westgate::GltfAssetLoader::loadGlb(resolveAsset("characters/business.glb").string(), bizModel, true, nullptr);
   const bool hasCiv = westgate::GltfAssetLoader::loadGlb(resolveAsset("characters/civilian.glb").string(), civModel, true, nullptr);
   const bool hasPol = westgate::GltfAssetLoader::loadGlb(resolveAsset("characters/police.glb").string(), polModel, true, nullptr);
   const bool hasSec = westgate::GltfAssetLoader::loadGlb(resolveAsset("characters/security.glb").string(), secModel, true, nullptr);
+  const bool hasMil = westgate::GltfAssetLoader::loadGlb(resolveAsset("characters/military.glb").string(), milModel, true, nullptr);
+  const bool hasCon = westgate::GltfAssetLoader::loadGlb(resolveAsset("characters/construction.glb").string(), conModel, true, nullptr);
+  const bool hasSpt = westgate::GltfAssetLoader::loadGlb(resolveAsset("characters/sports.glb").string(), sptModel, true, nullptr);
 
   std::unordered_map<std::string, westgate::CharacterAnimator::SourceClip> clips;
   if (hasBiz) {
@@ -214,14 +231,19 @@ int main(int argc, char** argv) {
     }
   }
 
-  westgate::CharacterAnimator bodyAnim, shortsAnim, hairAnim, bizAnim, civAnim, polAnim, secAnim;
+  westgate::CharacterAnimator bodyAnim, shortsAnim, hairAnim, soldierAnim;
+  westgate::CharacterAnimator bizAnim, civAnim, polAnim, secAnim, milAnim, conAnim, sptAnim;
   if (hasBody) bodyAnim.initForTarget(bodyModel);
   if (hasShorts) shortsAnim.initForTarget(shortsModel);
   if (hasHair) hairAnim.initForTarget(hairModel);
+  if (hasSoldier) soldierAnim.initForTarget(soldierModel);
   if (hasBiz) bizAnim.initForTarget(bizModel);
   if (hasCiv) civAnim.initForTarget(civModel);
   if (hasPol) polAnim.initForTarget(polModel);
   if (hasSec) secAnim.initForTarget(secModel);
+  if (hasMil) milAnim.initForTarget(milModel);
+  if (hasCon) conAnim.initForTarget(conModel);
+  if (hasSpt) sptAnim.initForTarget(sptModel);
 
   westgate::PhysicsWorld physics;
   if (!physics.initFromWorld(world, &err)) {
@@ -237,6 +259,7 @@ int main(int argc, char** argv) {
   streamer.init(world);
 
   westgate::AudioEngine audio;
+  audio.setAssetsRoot(publicRoot.string());
   if (!headlessMode) {
     audio.init();
   }
@@ -253,6 +276,15 @@ int main(int argc, char** argv) {
     ui.forcePhoneTab = headlessPhoneTab;
   }
 
+  if (headlessSuitIdx >= 0 && headlessSuitIdx < westgate::kPlayerSuitCount) {
+    session.setPlayerSuit(static_cast<westgate::PlayerSuitPreset>(headlessSuitIdx));
+  }
+  if (headlessUnlockWeapons) {
+    session.unlockAllWeapons();
+  }
+  if (headlessContractIdx >= 0) {
+    session.acceptContract(headlessContractIdx, world);
+  }
   if (hasTeleportOverride) {
     session.teleportTo(teleportOverridePos, teleportOverrideYawDeg, player);
   }
@@ -331,10 +363,14 @@ int main(int argc, char** argv) {
   renderAssets.playerBody = hasBody ? &bodyModel : nullptr;
   renderAssets.playerShorts = hasShorts ? &shortsModel : nullptr;
   renderAssets.playerHair = hasHair ? &hairModel : nullptr;
+  renderAssets.vanguardSoldier = hasSoldier ? &soldierModel : nullptr;
   renderAssets.businessModel = hasBiz ? &bizModel : nullptr;
   renderAssets.civilianModel = hasCiv ? &civModel : nullptr;
   renderAssets.policeModel = hasPol ? &polModel : nullptr;
   renderAssets.securityModel = hasSec ? &secModel : nullptr;
+  renderAssets.militaryModel = hasMil ? &milModel : nullptr;
+  renderAssets.constructionModel = hasCon ? &conModel : nullptr;
+  renderAssets.sportsModel = hasSpt ? &sptModel : nullptr;
 
   westgate::WorldRenderer renderer;
   std::filesystem::path shaderPath = assetsRoot / "shaders" / "westgate.wgsl";
@@ -384,6 +420,7 @@ int main(int argc, char** argv) {
   std::unordered_map<uint32_t, westgate::CharacterAnimState> npcAnimStates;
   std::vector<westgate::SkinnedRenderCharacter> renderChars;
   std::vector<westgate::DynamicPropPose> dynamicProps;
+  std::vector<westgate::WorldMarkerBox> heldWeaponMarkers;
 
   int headlessStep = 0;
   while (running) {
@@ -394,6 +431,8 @@ int main(int argc, char** argv) {
     float lookDx = 0.0f;
     float lookDy = 0.0f;
     bool jumpPressed = false;
+    glm::vec3 pHandWorld{0.0f};
+    bool hasPlayerHandWorld = false;
 
     if (headlessMode) {
       if (headlessWalkForward) {
@@ -406,6 +445,9 @@ int main(int argc, char** argv) {
       }
       if (headlessStep == 1 && headlessSelectSlot >= 0) {
         gameInput.selectWeaponSlot = headlessSelectSlot;
+      }
+      if (headlessAimDown) {
+        gameInput.aimDown = true;
       }
       if (headlessTestReconfigure && headlessStep == 2) {
         // Simulate Windows swapchain SubOptimal depth recreation mid-movement to verify zero frozen SSAO silhouette
@@ -480,6 +522,8 @@ int main(int argc, char** argv) {
             gameInput.grapplePressed = true;
           } else if (sc == SDL_SCANCODE_U) {
             gameInput.takedownShootPressed = true;
+          } else if (sc == SDL_SCANCODE_J) {
+            gameInput.carryBodyPressed = true;
           } else if (sc == SDL_SCANCODE_R) {
             gameInput.reloadPressed = true;
             gameInput.rematchPressed = true;
@@ -593,19 +637,46 @@ int main(int argc, char** argv) {
       playerOverlay.crouchWeight = crouchSmooth;
       playerOverlay.airWeight = airSmooth;
 
-      const glm::vec4 playerTint = glm::mix(glm::vec4(1.0f), glm::vec4(1.55f, 0.42f, 0.42f, 1.0f), session.playerHitFlash());
-      if (hasBody) {
-        bodyAnim.evaluateState(playerAnimState, clips, palBody, &playerOverlay);
-        renderChars.push_back({pPos, player.yaw(), playerTint, westgate::SkinnedPartKind::PlayerBody, &palBody});
+      const glm::vec4 hitFlashCol(1.55f, 0.42f, 0.42f, 1.0f);
+      const bool bareKnuckle = session.shouldUseBareKnuckleRig(world, pPos);
+      const bool firstPersonScope = !hasCamOverride && session.isAiming() && session.isRangedWeapon() &&
+                                    session.activeWeapon().optic == westgate::WeaponOpticKind::SniperScope;
+      glm::vec3 playerRightHandWorld = pPos + glm::vec3(0.0f, 1.15f, 0.0f);
+
+      if (!bareKnuckle && hasSoldier) {
+        soldierAnim.evaluateState(playerAnimState, clips, palBody, &playerOverlay);
+        if (!firstPersonScope) {
+          const glm::vec4 suitTint = glm::mix(westgate::GameSession::suitTintColor(session.playerSuit()), hitFlashCol, session.playerHitFlash());
+          renderChars.push_back({pPos, player.yaw(), suitTint, westgate::SkinnedPartKind::VanguardSoldier, &palBody});
+        }
+        const glm::vec3 localHand = soldierAnim.animatedBonePos("RightHand", palBody, {0.22f, 1.10f, -0.25f});
+        const glm::mat4 charWorld = glm::translate(glm::mat4(1.0f), pPos) *
+                                    glm::rotate(glm::mat4(1.0f), player.yaw() + 3.14159265f, glm::vec3(0.0f, 1.0f, 0.0f));
+        playerRightHandWorld = glm::vec3(charWorld * glm::vec4(localHand, 1.0f));
+      } else {
+        const glm::vec4 playerTint = glm::mix(glm::vec4(1.0f), hitFlashCol, session.playerHitFlash());
+        if (hasBody) {
+          bodyAnim.evaluateState(playerAnimState, clips, palBody, &playerOverlay);
+          if (!firstPersonScope) {
+            renderChars.push_back({pPos, player.yaw(), playerTint, westgate::SkinnedPartKind::PlayerBody, &palBody});
+          }
+          const glm::vec3 localHand = bodyAnim.animatedBonePos("RightHand", palBody, {0.22f, 1.10f, 0.25f});
+          const glm::mat4 charWorld = glm::translate(glm::mat4(1.0f), pPos) *
+                                      glm::rotate(glm::mat4(1.0f), player.yaw(), glm::vec3(0.0f, 1.0f, 0.0f));
+          playerRightHandWorld = glm::vec3(charWorld * glm::vec4(localHand, 1.0f));
+        }
+        if (hasShorts && !firstPersonScope) {
+          shortsAnim.evaluateState(playerAnimState, clips, palShorts, &playerOverlay);
+          renderChars.push_back({pPos, player.yaw(), glm::vec4(0.84f, 0.22f, 0.22f, 1.0f), westgate::SkinnedPartKind::PlayerShorts, &palShorts});
+        }
+        if (hasHair && !firstPersonScope) {
+          hairAnim.evaluateState(playerAnimState, clips, palHair, &playerOverlay);
+          renderChars.push_back({pPos, player.yaw(), glm::vec4(1.0f), westgate::SkinnedPartKind::PlayerHair, &palHair});
+        }
       }
-      if (hasShorts) {
-        shortsAnim.evaluateState(playerAnimState, clips, palShorts, &playerOverlay);
-        renderChars.push_back({pPos, player.yaw(), glm::vec4(0.84f, 0.22f, 0.22f, 1.0f), westgate::SkinnedPartKind::PlayerShorts, &palShorts});
-      }
-      if (hasHair) {
-        hairAnim.evaluateState(playerAnimState, clips, palHair, &playerOverlay);
-        renderChars.push_back({pPos, player.yaw(), glm::vec4(1.0f), westgate::SkinnedPartKind::PlayerHair, &palHair});
-      }
+      // Cache playerRightHandWorld on a frame local for 3D modular weapon rendering below!
+      pHandWorld = playerRightHandWorld;
+      hasPlayerHandWorld = session.isRangedWeapon() && !session.isCarryingBody() && !firstPersonScope;
     }
 
     auto mapPitClipTime = [&](const std::string& clipId, float stateTime) -> float {
@@ -680,14 +751,43 @@ int main(int argc, char** argv) {
       renderChars.push_back({pit.pos, pit.yawRad, oppTint, westgate::SkinnedPartKind::Business, &palOppBody});
     }
 
-    // Closest NPCs / Police / Contract Targets up to kMaxSkinSlots (with smooth per-NPC crossfades!)
+    heldWeaponMarkers.clear();
+    if (hasPlayerHandWorld && !session.inVehicle()) {
+      westgate::GameSession::appendHeldWeaponMarkers(
+        pHandWorld,
+        player.yaw(),
+        -player.pitch() * (session.isAiming() ? 0.85f : 0.35f),
+        session.activeWeapon(),
+        session.recoilImpulse(),
+        heldWeaponMarkers
+      );
+    }
+
+    // Closest NPCs / Police / Contract Targets / Snipers / Heavies / Carried Corpses up to kMaxSkinSlots
     std::vector<std::pair<float, size_t>> sortedNpcs;
     sortedNpcs.reserve(session.npcs().size());
     for (size_t i = 0; i < session.npcs().size(); ++i) {
+      if (session.npcs()[i].bodyHidden) continue;
       const float d = glm::distance(pPos, session.npcs()[i].pos);
       if (d < 130.0f) sortedNpcs.emplace_back(d, i);
     }
     std::sort(sortedNpcs.begin(), sortedNpcs.end());
+
+    // Pre-build standard NPC rifle/pistol templates for armed hostiles
+    westgate::WeaponSlotState npcRifleTemplate{};
+    npcRifleTemplate.id = "carbine";
+    npcRifleTemplate.isMelee = false;
+    npcRifleTemplate.optic = westgate::WeaponOpticKind::RedDot;
+    npcRifleTemplate.muzzle = westgate::WeaponMuzzleKind::Compensator;
+    npcRifleTemplate.underbarrel = westgate::WeaponUnderbarrelKind::VerticalGrip;
+    npcRifleTemplate.mag = westgate::WeaponMagKind::Standard;
+    npcRifleTemplate.finish = westgate::WeaponFinishKind::Obsidian;
+
+    westgate::WeaponSlotState npcSniperTemplate = npcRifleTemplate;
+    npcSniperTemplate.id = "dmr";
+    npcSniperTemplate.optic = westgate::WeaponOpticKind::SniperScope;
+    npcSniperTemplate.underbarrel = westgate::WeaponUnderbarrelKind::LaserSight;
+    npcSniperTemplate.finish = westgate::WeaponFinishKind::Coyote;
 
     for (const auto& [dist, idx] : sortedNpcs) {
       if (renderChars.size() >= westgate::kMaxSkinSlots) break;
@@ -708,24 +808,67 @@ int main(int argc, char** argv) {
         part = westgate::SkinnedPartKind::Security;
         anim = &secAnim;
         ok = hasSec;
+      } else if (npc.kind == westgate::NpcModelKind::Military) {
+        part = westgate::SkinnedPartKind::Military;
+        anim = &milAnim;
+        ok = hasMil;
+      } else if (npc.kind == westgate::NpcModelKind::Construction) {
+        part = westgate::SkinnedPartKind::Construction;
+        anim = &conAnim;
+        ok = hasCon;
+      } else if (npc.kind == westgate::NpcModelKind::Sports) {
+        part = westgate::SkinnedPartKind::Sports;
+        anim = &sptAnim;
+        ok = hasSpt;
       }
       if (!ok) continue;
 
+      const bool isCarried = (!npc.alive && npc.id == session.carriedNpcId());
       auto& npcSt = npcAnimStates[static_cast<uint32_t>(npc.id)];
-      const float xf = (npc.animClip == "knockdown" || npc.animClip == "hit") ? 0.10f : 0.22f;
-      westgate::CharacterAnimator::advanceAnimState(npcSt, npc.animClip, npc.animTime, "", 0.0f, dt, xf);
+      const std::string clipUse = isCarried ? std::string("Idle") : npc.animClip;
+      const float xf = (clipUse == "knockdown" || clipUse == "hit") ? 0.10f : 0.22f;
+      westgate::CharacterAnimator::advanceAnimState(npcSt, clipUse, npc.animTime, "", 0.0f, dt, xf);
       westgate::CharacterPoseOverlay npcOv{};
       npcOv.timeSec = elapsedSec;
       npcOv.seed = static_cast<float>(npc.id) * 1.73f;
-      npcOv.idleWeight = (npc.animClip == "Idle") ? 1.0f : 0.1f;
-      npcOv.koProgress = !npc.alive ? std::clamp(npc.deadTimer / 0.50f, 0.0f, 1.0f) : 0.0f;
-      if ((npc.isPolice || npc.isContractGuard) && npc.alive && dist < 36.0f && session.wantedStars() > 0) {
+      npcOv.idleWeight = (clipUse == "Idle") ? 1.0f : 0.1f;
+      npcOv.koProgress = (!npc.alive && !isCarried) ? std::clamp(npc.deadTimer / 0.50f, 0.0f, 1.0f) : 0.0f;
+
+      const bool npcArmed = (npc.isPolice || npc.isContractGuard) && npc.alive;
+      if (npcArmed && dist < 56.0f) {
         npcOv.weaponHoldWeight = 1.0f;
-        npcOv.aimWeight = 0.8f;
+        npcOv.twoHandedWeapon = true;
+        npcOv.aimWeight = (npc.alerted || session.wantedStars() > 0 || npc.sniperTracking) ? 0.85f : 0.25f;
       }
       anim->evaluateState(npcSt, clips, npcPalettes[palIdx], &npcOv);
       const glm::vec4 tint = glm::mix(glm::vec4(npc.colorTint, 1.0f), glm::vec4(1.6f, 0.4f, 0.4f, 1.0f), npc.hitFlash);
-      renderChars.push_back({npc.pos, npc.yawRad, tint, part, &npcPalettes[palIdx]});
+
+      if (isCarried) {
+        // Drape carried corpse horizontally across Voss's right shoulder with walk sway
+        const float sway = std::sin(session.playerLocomotionTime() * 6.0f) * 0.04f;
+        const glm::vec3 fwd(std::sin(player.yaw()), 0.0f, std::cos(player.yaw()));
+        const glm::vec3 right(fwd.z, 0.0f, -fwd.x);
+        const glm::vec3 carryPos = pPos + glm::vec3(0.0f, 1.38f, 0.0f) + right * 0.16f - fwd * 0.12f;
+        const glm::quat carryRot = glm::angleAxis(1.52f + sway, glm::vec3(0.0f, 0.0f, 1.0f)) *
+                                   glm::angleAxis(0.28f, glm::vec3(1.0f, 0.0f, 0.0f));
+        renderChars.push_back({carryPos, player.yaw(), tint, part, &npcPalettes[palIdx], carryRot});
+      } else {
+        renderChars.push_back({npc.pos, npc.yawRad, tint, part, &npcPalettes[palIdx]});
+        if (npcArmed && dist < 48.0f) {
+          const glm::vec3 localHand = anim->animatedBonePos("RightHand", npcPalettes[palIdx], {0.20f, 1.08f, -0.24f});
+          const glm::mat4 npcWorld = glm::translate(glm::mat4(1.0f), npc.pos) *
+                                     glm::rotate(glm::mat4(1.0f), npc.yawRad + 3.14159265f, glm::vec3(0.0f, 1.0f, 0.0f));
+          const glm::vec3 handW = glm::vec3(npcWorld * glm::vec4(localHand, 1.0f));
+          westgate::GameSession::appendHeldWeaponMarkers(
+            handW,
+            npc.yawRad,
+            0.0f,
+            (npc.role == westgate::EnemyRole::Sniper) ? npcSniperTemplate : npcRifleTemplate,
+            0.0f,
+            heldWeaponMarkers
+          );
+        }
+      }
     }
 
     const bool shouldRenderFrame = !headlessMode || (headlessTestReconfigure && headlessStep == 1) || (headlessStep + 2 >= headlessFrames);
@@ -758,6 +901,10 @@ int main(int argc, char** argv) {
       const glm::vec3 camPos = hasCamOverride ? camOverridePos : session.cameraPosition(player);
       const glm::vec3 camTgt = hasCamOverride ? camOverrideTarget : session.cameraTarget(player);
       const glm::vec3 focus = hasCamOverride ? camOverrideTarget : pPos;
+      auto worldMarkers = session.gatherWorldMarkers(elapsedSec);
+      if (!heldWeaponMarkers.empty()) {
+        worldMarkers.insert(worldMarkers.end(), heldWeaponMarkers.begin(), heldWeaponMarkers.end());
+      }
       renderer.render(
         gpu,
         world,
@@ -770,7 +917,7 @@ int main(int argc, char** argv) {
         session.skyLighting(),
         renderChars,
         session.vehicles(),
-        session.gatherWorldMarkers(elapsedSec),
+        worldMarkers,
         session.gatherDynamicLights(world, player, elapsedSec),
         dynamicProps,
         true

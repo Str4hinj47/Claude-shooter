@@ -2,6 +2,10 @@
 #include <atomic>
 #include <cstdint>
 #include <glm/glm.hpp>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace westgate {
@@ -16,6 +20,23 @@ public:
 
   bool init();
   void shutdown();
+
+  // Configure root directory containing audio/{chapters,missions,story,bosses,comms,surveillance} MP3 clips.
+  void setAssetsRoot(const std::string& publicRoot);
+
+  /** Decode an MP3/WAV file via miniaudio's built-in decoder into interleaved stereo float32 PCM. */
+  static bool decodeAudioFileToStereo(const std::string& fullPath, uint32_t targetSampleRate, std::vector<float>& outStereoFrames);
+
+  /** Play recorded story/briefing/dispatch/surveillance MP3 voiceover (ducks background music automatically). */
+  virtual bool playVoiceClip(const std::string& relPath, float gain = 0.86f);
+
+  /** Play 3D spatialized enemy squad / police comms MP3 callout (`comms_*.mp3`). */
+  virtual bool playSpatialComms(const std::string& relPath, const glm::vec3& worldPos, float gain = 0.80f);
+
+  /** Play or stop chapter/mission soundtrack MP3 (`audio/missions/ch00.mp3` .. `ch09.mp3`). */
+  virtual bool playMusicTrack(const std::string& relPath, float gain = 0.24f, bool loop = true);
+  virtual void stopMusicTrack();
+  bool isVoicePlaying() const;
 
   /** Update 3D listener transform (player/camera world position + yaw in radians). */
   virtual void setListener(const glm::vec3& pos, float yawRad);
@@ -80,6 +101,32 @@ private:
   double enginePhaseB_ = 0.0;
   std::vector<ActiveGrain> grains_;
   double sampleRate_ = 48000.0;
+
+  struct DecodedClip {
+    std::vector<float> stereoSamples; // interleaved L, R
+    size_t frameCount() const { return stereoSamples.size() / 2; }
+  };
+  std::shared_ptr<const DecodedClip> loadOrGetClip(const std::string& relPath);
+
+  std::string assetsRoot_;
+  mutable std::mutex streamMutex_;
+  std::unordered_map<std::string, std::shared_ptr<const DecodedClip>> clipCache_;
+
+  std::shared_ptr<const DecodedClip> activeVoice_;
+  size_t voiceFrameCursor_ = 0;
+  float voiceGain_ = 0.85f;
+  float voicePan_ = 0.0f;
+
+  std::shared_ptr<const DecodedClip> activeComms_;
+  size_t commsFrameCursor_ = 0;
+  float commsGain_ = 0.75f;
+  float commsPan_ = 0.0f;
+
+  std::shared_ptr<const DecodedClip> activeMusic_;
+  size_t musicFrameCursor_ = 0;
+  float musicGain_ = 0.24f;
+  bool musicLoop_ = true;
+  std::string activeMusicPath_;
 };
 
 } // namespace westgate

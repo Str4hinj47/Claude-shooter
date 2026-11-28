@@ -334,6 +334,22 @@ void CharacterAnimator::initForTarget(const GltfModel& targetModel) {
     }
   }
 
+  // Precompute skin joint index + mesh-space bind origin per canonical bone for socket queries
+  canonicalToSkinJoint_.clear();
+  skinJointBindOriginMesh_.assign(targetModel.skin.jointNodeIndices.size(), glm::vec4(0.0f, 0.0f, 0.0f, 1.0f));
+  for (size_t ji = 0; ji < targetModel.skin.jointNodeIndices.size(); ++ji) {
+    const int32_t jn = targetModel.skin.jointNodeIndices[ji];
+    if (jn >= 0 && static_cast<size_t>(jn) < targetCanonicalNames_.size() && !targetCanonicalNames_[jn].empty()) {
+      canonicalToSkinJoint_.emplace(targetCanonicalNames_[jn], static_cast<uint32_t>(ji));
+    }
+    if (ji < targetModel.skin.inverseBindMatrices.size()) {
+      const glm::mat4& ibm = targetModel.skin.inverseBindMatrices[ji];
+      if (std::abs(glm::determinant(ibm)) > 1e-12f) {
+        skinJointBindOriginMesh_[ji] = glm::inverse(ibm) * glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+      }
+    }
+  }
+
   // Build automatic per-finger inward curl axes from palm geometry
   for (int sideIdx = 0; sideIdx < 2; ++sideIdx) {
     const std::string side = (sideIdx == 0) ? "Left" : "Right";
@@ -1279,6 +1295,18 @@ void CharacterAnimator::buildPaletteFromTargetLocals(
       outPalette[ji] = world[jn] * target_->skin.inverseBindMatrices[ji];
     }
   }
+}
+
+glm::vec3 CharacterAnimator::animatedBonePos(
+  const std::string& canonicalName,
+  const std::array<glm::mat4, kMaxSkinBones>& palette,
+  const glm::vec3& fallback
+) const {
+  auto it = canonicalToSkinJoint_.find(canonicalName);
+  if (it == canonicalToSkinJoint_.end()) return fallback;
+  const uint32_t ji = it->second;
+  if (ji >= kMaxSkinBones || ji >= skinJointBindOriginMesh_.size()) return fallback;
+  return glm::vec3(palette[ji] * skinJointBindOriginMesh_[ji]);
 }
 
 } // namespace westgate

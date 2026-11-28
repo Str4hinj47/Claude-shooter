@@ -24,6 +24,14 @@
 #define WESTGATE_SOURCE_ROOT "."
 #endif
 
+#define WG_CHECK(cond)                                                               \
+  do {                                                                               \
+    if (!(cond)) {                                                                   \
+      std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond);           \
+      return 1;                                                                      \
+    }                                                                                \
+  } while (0)
+
 int main() {
   const std::filesystem::path root(WESTGATE_SOURCE_ROOT);
   const std::filesystem::path worldDir = root / "native" / "assets" / "world";
@@ -819,6 +827,164 @@ int main() {
 
       std::printf("[PASS] Milestone 2 verified: %zu signal intersections, Dealership/Valet, Stage-1 tuning, suspension/spin/steer, boat planing & vehicle blast OK\n",
                   session.signalIntersections().size());
+    }
+
+    // -----------------------------------------------------------------------
+    // Milestone 3 Verification:
+    //   1. Multi-skin GLB merging (soldier.glb: vanguard_Mesh + vanguard_visor) + RightHand bone socket in meter space
+    //   2. Native miniaudio MP3 decoding (chapters/ch00_intro.mp3 & comms/dispatch_star1.mp3)
+    //   3. Modular Weapon Customization (Optic FOV, Drum Mag, Suppressor/Compensator, 3D PBR Held Weapon Markers)
+    //   4. Tactical Stealth Vision Cone + Sniper/Heavy Contract Guards + Headshot (2x+) Ballistics + BodyCarry Ocean Disposal
+    // -----------------------------------------------------------------------
+    {
+      // 1. Multi-skin soldier.glb + military.glb bone socket query
+      westgate::GltfModel soldierM, milM, bizM;
+      const bool okSoldier = westgate::GltfAssetLoader::loadGlb(std::string(WESTGATE_SOURCE_ROOT) + "/public/characters/soldier.glb", soldierM, true, nullptr);
+      const bool okMil = westgate::GltfAssetLoader::loadGlb(std::string(WESTGATE_SOURCE_ROOT) + "/public/characters/military.glb", milM, true, nullptr);
+      const bool okBiz = westgate::GltfAssetLoader::loadGlb(std::string(WESTGATE_SOURCE_ROOT) + "/public/characters/business.glb", bizM, false, nullptr);
+      WG_CHECK(okSoldier && okMil && okBiz);
+      WG_CHECK(soldierM.primitives.size() >= 2 && soldierM.skin.valid && soldierM.skin.jointNodeIndices.size() >= 49);
+
+      std::unordered_map<std::string, westgate::CharacterAnimator::SourceClip> m3Clips;
+      for (size_t ai = 0; ai < bizM.animations.size(); ++ai) {
+        westgate::CharacterAnimator::SourceClip sc;
+        if (westgate::CharacterAnimator::buildSourceClip(bizM.animations[ai].name, bizM, ai, true, sc)) {
+          m3Clips[bizM.animations[ai].name] = std::move(sc);
+        }
+      }
+      westgate::CharacterAnimator soldierAnim, milAnim;
+      soldierAnim.initForTarget(soldierM);
+      milAnim.initForTarget(milM);
+
+      std::array<glm::mat4, westgate::kMaxSkinBones> palS{}, palM{};
+      westgate::CharacterAnimState st{};
+      westgate::CharacterAnimator::advanceAnimState(st, "Idle", 0.25f, "", 0.0f, 1.0f / 60.0f, 0.1f);
+      westgate::CharacterPoseOverlay ov{};
+      ov.weaponHoldWeight = 1.0f;
+      ov.twoHandedWeapon = true;
+      ov.aimWeight = 1.0f;
+      soldierAnim.evaluateState(st, m3Clips, palS, &ov);
+      milAnim.evaluateState(st, m3Clips, palM, &ov);
+
+      const glm::vec3 sHand = soldierAnim.animatedBonePos("RightHand", palS);
+      const glm::vec3 sHead = soldierAnim.animatedBonePos("Head", palS);
+      const glm::vec3 mHand = milAnim.animatedBonePos("RightHand", palM);
+      WG_CHECK(sHand.y > 0.70f && sHand.y < 1.65f && sHead.y > 1.35f && sHead.y < 1.95f);
+      WG_CHECK(mHand.y > 0.70f && mHand.y < 1.65f);
+
+      // 2. Native miniaudio MP3 decoding verification
+      std::vector<float> introPcm, dispatchPcm;
+      const bool okIntro = westgate::AudioEngine::decodeAudioFileToStereo(
+        std::string(WESTGATE_SOURCE_ROOT) + "/public/audio/chapters/ch00_intro.mp3", 48000, introPcm);
+      const bool okDisp = westgate::AudioEngine::decodeAudioFileToStereo(
+        std::string(WESTGATE_SOURCE_ROOT) + "/public/audio/comms/dispatch_star1.mp3", 48000, dispatchPcm);
+      WG_CHECK(okIntro && introPcm.size() > 48000 * 2);
+      WG_CHECK(okDisp && dispatchPcm.size() > 12000 * 2);
+      float peakAbs = 0.0f;
+      for (size_t si = 0; si < std::min<size_t>(introPcm.size(), 96000); ++si) {
+        peakAbs = std::max(peakAbs, std::abs(introPcm[si]));
+      }
+      WG_CHECK(peakAbs > 0.02f && peakAbs <= 1.5f);
+
+      // 3. Modular weapon customization + 3D PBR weapon markers
+      session.unlockAllWeapons();
+      session.configureWeaponSlot(
+        2, // M4A1-S
+        westgate::WeaponOpticKind::SniperScope,
+        westgate::WeaponMuzzleKind::Compensator,
+        westgate::WeaponUnderbarrelKind::LaserSight,
+        westgate::WeaponMagKind::Drum,
+        westgate::WeaponFinishKind::Gold
+      );
+      const auto& m4 = session.weapons()[2];
+      WG_CHECK(m4.magSize == 60 && !m4.suppressed && m4.optic == westgate::WeaponOpticKind::SniperScope);
+      westgate::GameInputFrame selM4{};
+      selM4.selectWeaponSlot = 2;
+      selM4.aimDown = true;
+      session.update(1.0f / 60.0f, selM4, player, physics, world, nullptr);
+      WG_CHECK(std::abs(session.cameraFovDeg(true) - 18.0f) < 0.01f);
+
+      std::vector<westgate::WorldMarkerBox> wepBoxes;
+      westgate::GameSession::appendHeldWeaponMarkers(sHand, 0.0f, 0.0f, m4, 0.0f, wepBoxes);
+      WG_CHECK(wepBoxes.size() >= 8);
+
+      // 4. Contract Sniper/Heavy spawn + Headshot 2x+ damage + BodyCarry Ocean Disposal
+      session.configureWeaponSlot(1, westgate::WeaponOpticKind::RedDot, westgate::WeaponMuzzleKind::Suppressor, westgate::WeaponUnderbarrelKind::LaserSight, westgate::WeaponMagKind::Standard, westgate::WeaponFinishKind::Obsidian);
+      westgate::GameInputFrame selPistol{};
+      selPistol.selectWeaponSlot = 1;
+      session.update(1.0f / 60.0f, selPistol, player, physics, world, nullptr);
+
+      session.acceptContract(2, world); // H3: Nadia Kurosawa on Del Sol Pier
+      bool hasSniper = false, hasHeavy = false;
+      int targetIdx = -1;
+      for (size_t ni = 0; ni < session.npcs().size(); ++ni) {
+        const auto& n = session.npcs()[ni];
+        if (n.role == westgate::EnemyRole::Sniper) hasSniper = true;
+        if (n.role == westgate::EnemyRole::Heavy && n.kind == westgate::NpcModelKind::Military) hasHeavy = true;
+        if (n.isContractTarget && n.contractIdx == 2) targetIdx = static_cast<int>(ni);
+      }
+      WG_CHECK(hasSniper && hasHeavy && targetIdx >= 0);
+
+      // Aim directly at target's head (1.58m above feet, accounting for +0.42m over-shoulder camera offset) at Legion Square plaza
+      session.acceptContract(1, world); // H2: Viktor Vance at Legion Square
+      int targetId = -1;
+      glm::vec3 tPos{0.0f};
+      for (const auto& n : session.npcs()) {
+        if (n.isContractTarget && n.contractIdx == 1) {
+          targetId = n.id;
+          tPos = n.pos;
+          break;
+        }
+      }
+      WG_CHECK(targetId > 0);
+      auto findTargetById = [&]() -> const westgate::NpcEntity* {
+        for (const auto& n : session.npcs()) {
+          if (n.id == targetId) return &n;
+        }
+        return nullptr;
+      };
+
+      session.teleportTo(tPos + glm::vec3(0.42f, 0.25f, -4.2f), 0.0f, player);
+      const int hsBefore = session.totalHeadshots();
+      for (int shot = 0; shot < 2; ++shot) {
+        for (int waitF = 0; waitF < 12; ++waitF) {
+          westgate::GameInputFrame aimOnly{};
+          aimOnly.aimDown = true;
+          session.update(1.0f / 60.0f, aimOnly, player, physics, world, nullptr);
+          physics.step(1.0f / 60.0f);
+        }
+        const auto* curT = findTargetById();
+        WG_CHECK(curT != nullptr);
+        const glm::vec3 headPt = curT->pos + glm::vec3(0.0f, 1.58f, 0.0f);
+        const glm::vec3 pivot = player.position() + glm::vec3(-0.42f * std::cos(player.yaw()), 1.38f, 0.42f * std::sin(player.yaw()));
+        const glm::vec3 dH = glm::normalize(headPt - pivot);
+        const float desYaw = std::atan2(dH.x, dH.z);
+        const float desPitch = std::asin(std::clamp(dH.y, -0.80f, 0.50f));
+        westgate::GameInputFrame fireHead{};
+        fireHead.aimDown = true;
+        fireHead.moveInput.lookDeltaX = -(desYaw - player.yaw()) / 0.0024f;
+        fireHead.moveInput.lookDeltaY = -(desPitch - player.pitch()) / 0.0021f;
+        session.update(1.0f / 60.0f, fireHead, player, physics, world, nullptr);
+
+        westgate::GameInputFrame pullTrigger{};
+        pullTrigger.aimDown = true;
+        pullTrigger.firePressed = true;
+        session.update(1.0f / 60.0f, pullTrigger, player, physics, world, nullptr);
+      }
+      const auto* deadT = findTargetById();
+      WG_CHECK(deadT != nullptr && !deadT->alive);
+      WG_CHECK(session.totalHeadshots() > hsBefore);
+
+      // Walk up to target's corpse, pick up body, teleport to Pacific water edge, and dispose into ocean!
+      session.teleportTo(tPos + glm::vec3(0.0f, 0.5f, -0.8f), 0.0f, player);
+      WG_CHECK(session.tryCarryOrDisposeBody(player, world, nullptr) && session.isCarryingBody());
+      session.teleportTo({-748.0f, 0.20f, 34.0f}, -90.0f, player);
+      const int cashBeforeOcean = session.playerCash();
+      WG_CHECK(session.tryCarryOrDisposeBody(player, world, nullptr) && !session.isCarryingBody());
+      WG_CHECK(session.oceanDisposalsCount() >= 1 && session.playerCash() >= cashBeforeOcean + 1000);
+
+      std::printf("[PASS] Milestone 3 verified: multi-skin soldier.glb (%zu joints, hand=(%.2f,%.2f,%.2f)), MP3 decode (%zu frames), modular M4A1-S (%zu parts), Sniper/Heavy AI, Headshot ballistics & Ocean Body Disposal OK\n",
+                  soldierM.skin.jointNodeIndices.size(), sHand.x, sHand.y, sHand.z, introPcm.size() / 2, wepBoxes.size());
     }
 
     std::printf("[PASS] GameSession full loop: %zu vehicles, %zu NPCs, driving/gunplay/contracts/sky/save OK\n",

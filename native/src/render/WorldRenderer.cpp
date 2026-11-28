@@ -858,6 +858,10 @@ bool WorldRenderer::init(
   if (assets.civilianModel) buildSkinnedMesh(ctx, *assets.civilianModel, civilianGpu_);
   if (assets.policeModel) buildSkinnedMesh(ctx, *assets.policeModel, policeGpu_);
   if (assets.securityModel) buildSkinnedMesh(ctx, *assets.securityModel, securityGpu_);
+  if (assets.vanguardSoldier) buildSkinnedMesh(ctx, *assets.vanguardSoldier, vanguardSoldierGpu_);
+  if (assets.militaryModel) buildSkinnedMesh(ctx, *assets.militaryModel, militaryGpu_);
+  if (assets.constructionModel) buildSkinnedMesh(ctx, *assets.constructionModel, constructionGpu_);
+  if (assets.sportsModel) buildSkinnedMesh(ctx, *assets.sportsModel, sportsGpu_);
 
   return terrainPipeline_ != nullptr && instancedPipeline_ != nullptr && skinnedPipeline_ != nullptr;
 }
@@ -1784,7 +1788,7 @@ void WorldRenderer::buildPropAndVehicleBatches(WgpuContext& ctx, const WorldData
   shadowNearBoxStaging_.reserve(shadowNearBoxCapacity_);
   shadowFarBoxStaging_.reserve(shadowFarBoxCapacity_);
 
-  markerCapacity_ = 1024;
+  markerCapacity_ = 2560;
   markerInstVbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, nullptr, markerCapacity_ * sizeof(InstanceAttrib));
   markerStaging_.reserve(markerCapacity_);
 
@@ -2192,9 +2196,6 @@ void WorldRenderer::render(
   if (!buildingStaging_.empty()) {
     wgpuQueueWriteBuffer(ctx.queue(), buildingInstVbo_, 0, buildingStaging_.data(), buildingStaging_.size() * sizeof(InstanceAttrib));
   }
-  if (!shadowNearBoxStaging_.empty()) {
-    wgpuQueueWriteBuffer(ctx.queue(), shadowNearBoxInstVbo_, 0, shadowNearBoxStaging_.data(), shadowNearBoxStaging_.size() * sizeof(InstanceAttrib));
-  }
   if (!shadowFarBoxStaging_.empty()) {
     wgpuQueueWriteBuffer(ctx.queue(), shadowFarBoxInstVbo_, 0, shadowFarBoxStaging_.data(), shadowFarBoxStaging_.size() * sizeof(InstanceAttrib));
   }
@@ -2269,16 +2270,32 @@ void WorldRenderer::render(
     }
   }
 
-  // 3. Upload dynamic markers, tracers & helicopter rotor blades
+  // 3. Upload dynamic markers, tracers, laser beams & 3D modular held weapons
   markerStaging_.clear();
   for (const auto& m : markers) {
     if (markerStaging_.size() >= markerCapacity_) break;
-    const glm::quat q = glm::angleAxis(m.yawRad, glm::vec3(0.0f, 1.0f, 0.0f)) *
-                        glm::angleAxis(m.pitchRad, glm::vec3(1.0f, 0.0f, 0.0f));
-    markerStaging_.push_back(makeInst(m.pos.x, m.pos.y, m.pos.z, m.scale.x, m.scale.y, m.scale.z, q, m.color.r, m.color.g, m.color.b, 2.2f));
+    const glm::quat q = m.useQuat
+      ? m.rot
+      : (glm::angleAxis(m.yawRad, glm::vec3(0.0f, 1.0f, 0.0f)) *
+         glm::angleAxis(m.pitchRad, glm::vec3(1.0f, 0.0f, 0.0f)));
+    const float famMetal = (m.roughness >= 0.0f) ? (8.0f + std::clamp(m.metallic, 0.0f, 1.0f) * 0.49f) : 0.0f;
+    const InstanceAttrib inst = makeInst(
+      m.pos.x, m.pos.y, m.pos.z,
+      m.scale.x, m.scale.y, m.scale.z,
+      q,
+      m.color.r, m.color.g, m.color.b,
+      m.emissive, m.roughness, famMetal
+    );
+    markerStaging_.push_back(inst);
+    if (m.roughness >= 0.0f && m.emissive < 0.5f && shadowNearBoxStaging_.size() < shadowNearBoxCapacity_) {
+      shadowNearBoxStaging_.push_back(inst);
+    }
   }
   if (!markerStaging_.empty()) {
     wgpuQueueWriteBuffer(ctx.queue(), markerInstVbo_, 0, markerStaging_.data(), markerStaging_.size() * sizeof(InstanceAttrib));
+  }
+  if (!shadowNearBoxStaging_.empty()) {
+    wgpuQueueWriteBuffer(ctx.queue(), shadowNearBoxInstVbo_, 0, shadowNearBoxStaging_.data(), shadowNearBoxStaging_.size() * sizeof(InstanceAttrib));
   }
 
   // 4. Upload dynamic Jolt rigid-body crates, barrels & knockable props
@@ -2415,11 +2432,16 @@ void WorldRenderer::render(
     if (ch.part == SkinnedPartKind::Business ||
         ch.part == SkinnedPartKind::Civilian ||
         ch.part == SkinnedPartKind::Police ||
-        ch.part == SkinnedPartKind::Security) {
+        ch.part == SkinnedPartKind::Security ||
+        ch.part == SkinnedPartKind::VanguardSoldier ||
+        ch.part == SkinnedPartKind::Military ||
+        ch.part == SkinnedPartKind::Construction ||
+        ch.part == SkinnedPartKind::Sports) {
       modelYaw += 3.14159265f;
     }
     su.model = glm::translate(glm::mat4(1.0f), ch.position) *
-               glm::rotate(glm::mat4(1.0f), modelYaw, glm::vec3(0.0f, 1.0f, 0.0f));
+               glm::rotate(glm::mat4(1.0f), modelYaw, glm::vec3(0.0f, 1.0f, 0.0f)) *
+               glm::mat4_cast(ch.extraLocalRot);
     su.tint = ch.tint;
     if (ch.part == SkinnedPartKind::PlayerHair) {
       su.tint.a = 2.0f;
@@ -2588,10 +2610,14 @@ void WorldRenderer::render(
           case SkinnedPartKind::PlayerBody: drawSkinShadow(playerBodyGpu_); break;
           case SkinnedPartKind::PlayerShorts: drawSkinShadow(playerShortsGpu_); break;
           case SkinnedPartKind::PlayerHair: drawSkinShadow(playerHairGpu_); break;
+          case SkinnedPartKind::VanguardSoldier: drawSkinShadow(vanguardSoldierGpu_); break;
           case SkinnedPartKind::Business: drawSkinShadow(businessGpu_); break;
           case SkinnedPartKind::Civilian: drawSkinShadow(civilianGpu_); break;
           case SkinnedPartKind::Police: drawSkinShadow(policeGpu_); break;
           case SkinnedPartKind::Security: drawSkinShadow(securityGpu_); break;
+          case SkinnedPartKind::Military: drawSkinShadow(militaryGpu_); break;
+          case SkinnedPartKind::Construction: drawSkinShadow(constructionGpu_); break;
+          case SkinnedPartKind::Sports: drawSkinShadow(sportsGpu_); break;
         }
       }
     }
@@ -2756,10 +2782,14 @@ void WorldRenderer::render(
           case SkinnedPartKind::PlayerBody: drawSkinFwd(playerBodyGpu_); break;
           case SkinnedPartKind::PlayerShorts: drawSkinFwd(playerShortsGpu_); break;
           case SkinnedPartKind::PlayerHair: drawSkinFwd(playerHairGpu_); break;
+          case SkinnedPartKind::VanguardSoldier: drawSkinFwd(vanguardSoldierGpu_); break;
           case SkinnedPartKind::Business: drawSkinFwd(businessGpu_); break;
           case SkinnedPartKind::Civilian: drawSkinFwd(civilianGpu_); break;
           case SkinnedPartKind::Police: drawSkinFwd(policeGpu_); break;
           case SkinnedPartKind::Security: drawSkinFwd(securityGpu_); break;
+          case SkinnedPartKind::Military: drawSkinFwd(militaryGpu_); break;
+          case SkinnedPartKind::Construction: drawSkinFwd(constructionGpu_); break;
+          case SkinnedPartKind::Sports: drawSkinFwd(sportsGpu_); break;
         }
       }
     }
@@ -2913,10 +2943,14 @@ void WorldRenderer::shutdown() {
   relSkin(playerBodyGpu_);
   relSkin(playerShortsGpu_);
   relSkin(playerHairGpu_);
+  relSkin(vanguardSoldierGpu_);
   relSkin(businessGpu_);
   relSkin(civilianGpu_);
   relSkin(policeGpu_);
   relSkin(securityGpu_);
+  relSkin(militaryGpu_);
+  relSkin(constructionGpu_);
+  relSkin(sportsGpu_);
   relTex(defaultWhiteTex_);
   relTex(defaultFlatNormalTex_);
 

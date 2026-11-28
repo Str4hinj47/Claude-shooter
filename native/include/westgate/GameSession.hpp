@@ -101,7 +101,67 @@ enum class NpcModelKind : uint8_t {
   Civilian = 1,
   Police = 2,
   Security = 3,
+  Military = 4,
+  Construction = 5,
+  Sports = 6,
 };
+
+enum class EnemyRole : uint8_t {
+  Civilian = 0,
+  Guard = 1,
+  Police = 2,
+  Sniper = 3,
+  Heavy = 4,
+  Target = 5,
+  Ally = 6,
+  Boss = 7,
+};
+
+enum class PlayerSuitPreset : uint8_t {
+  VanguardObsidian = 0,
+  VanguardUrban = 1,
+  VanguardCoyote = 2,
+  VanguardArctic = 3,
+  VanguardCrimson = 4,
+  IronPitBrawler = 5,
+};
+static constexpr int kPlayerSuitCount = 6;
+
+enum class WeaponOpticKind : uint8_t {
+  IronSights = 0,
+  RedDot = 1,
+  Holo = 2,
+  Acog = 3,
+  SniperScope = 4,
+};
+
+enum class WeaponMuzzleKind : uint8_t {
+  Standard = 0,
+  Suppressor = 1,
+  Compensator = 2,
+};
+
+enum class WeaponUnderbarrelKind : uint8_t {
+  None = 0,
+  VerticalGrip = 1,
+  LaserSight = 2,
+};
+
+enum class WeaponMagKind : uint8_t {
+  Standard = 0,
+  Extended = 1,
+  Drum = 2,
+};
+
+enum class WeaponFinishKind : uint8_t {
+  Obsidian = 0,
+  Coyote = 1,
+  Arctic = 2,
+  Crimson = 3,
+  Gold = 4,
+  Titanium = 5,
+};
+static constexpr int kWeaponFinishCount = 6;
 
 enum class CrimeKind : uint8_t {
   Gunfire = 0,
@@ -140,9 +200,15 @@ struct WeaponSlotState {
   bool isMelee = false;
   bool unlocked = false;
   int magSize = 15;
+  int baseMagSize = 15;
   int magAmmo = 15;
   int reserveAmmo = 60;
   int reserveMax = 120;
+  WeaponOpticKind optic = WeaponOpticKind::RedDot;
+  WeaponMuzzleKind muzzle = WeaponMuzzleKind::Suppressor;
+  WeaponUnderbarrelKind underbarrel = WeaponUnderbarrelKind::None;
+  WeaponMagKind mag = WeaponMagKind::Standard;
+  WeaponFinishKind finish = WeaponFinishKind::Obsidian;
 };
 
 struct VehicleEntity {
@@ -219,6 +285,15 @@ struct NpcEntity {
   bool isPolice = false;
   bool isContractTarget = false;
   bool isContractGuard = false;
+  EnemyRole role = EnemyRole::Civilian;
+  float suspicion = 0.0f;      // 0..1 stealth awareness meter (? above 0.18, ! at 1.0)
+  bool alerted = false;
+  bool bodyHidden = false;     // true once hidden in dumpster, trunk, or deep ocean
+  bool disposedInOcean = false;
+  bool corpseReported = false;
+  bool sniperTracking = false;
+  glm::vec3 sniperLaserEnd{0.0f};
+  std::string displayName;
   int contractIdx = -1;
   size_t roadIdx = 0;
   float samplePos = 0.0f;
@@ -376,6 +451,7 @@ struct GameInputFrame {
   bool takedownPressed = false;   // V (silent takedown on unaware/flanked NPC)
   bool grapplePressed = false;    // Z (collar-tie clinch / body slam)
   bool takedownShootPressed = false; // U (double-leg takedown / guillotine choke)
+  bool carryBodyPressed = false;  // J (pick up / drop / dispose dead body)
   int selectWeaponSlot = -1;      // 0..5 or -1
 };
 
@@ -385,6 +461,11 @@ struct WorldMarkerBox {
   float yawRad = 0.0f;
   glm::vec3 color{1.0f};
   float pitchRad = 0.0f;
+  float emissive = 2.2f;
+  float roughness = -1.0f;
+  float metallic = 0.0f;
+  bool useQuat = false;
+  glm::quat rot{1.0f, 0.0f, 0.0f, 0.0f};
 };
 
 class GameSession {
@@ -442,6 +523,57 @@ public:
   const std::vector<WeaponSlotState>& weapons() const { return weapons_; }
   int activeWeaponIdx() const { return activeWeapon_; }
   const WeaponSlotState& activeWeapon() const { return weapons_[static_cast<size_t>(activeWeapon_)]; }
+  void unlockAllWeapons() {
+    for (auto& w : weapons_) {
+      w.unlocked = true;
+      w.magAmmo = w.magSize;
+      w.reserveAmmo = w.reserveMax;
+    }
+  }
+  void configureWeaponSlot(
+    int slotIdx,
+    WeaponOpticKind optic,
+    WeaponMuzzleKind muzzle,
+    WeaponUnderbarrelKind underbarrel,
+    WeaponMagKind mag,
+    WeaponFinishKind finish
+  );
+  static void weaponFinishPalette(WeaponFinishKind finish, glm::vec3& outBody, glm::vec3& outAccent, const char** outName = nullptr);
+  static void appendHeldWeaponMarkers(
+    const glm::vec3& handWorldPos,
+    float yawRad,
+    float pitchRad,
+    const WeaponSlotState& w,
+    float recoil01,
+    std::vector<WorldMarkerBox>& out
+  );
+
+  // Player Vanguard Tactical Suit & Outfit Presets
+  PlayerSuitPreset playerSuit() const { return playerSuit_; }
+  void setPlayerSuit(PlayerSuitPreset suit) { playerSuit_ = suit; }
+  void cyclePlayerSuit() {
+    playerSuit_ = static_cast<PlayerSuitPreset>((static_cast<int>(playerSuit_) + 1) % kPlayerSuitCount);
+  }
+  static glm::vec4 suitTintColor(PlayerSuitPreset suit, const char** outName = nullptr);
+  bool shouldUseBareKnuckleRig(const WorldData& world, const glm::vec3& playerPos) const;
+
+  // Body Carry & Stealth Disposal (BodyCarrySystem parity)
+  int carriedNpcId() const { return carriedNpcId_; }
+  bool isCarryingBody() const { return carriedNpcId_ > 0; }
+  const NpcEntity* carriedCorpse() const;
+  int bodiesDisposedCount() const { return bodiesDisposedCount_; }
+  int oceanDisposalsCount() const { return oceanDisposalsCount_; }
+  bool tryCarryOrDisposeBody(const PlayerController& player, const WorldData& world, AudioEngine* audio);
+
+  // Tactical Comms, Radio Subtitles & Ballistics Stats
+  const std::string& commsSpeaker() const { return commsSpeaker_; }
+  const std::string& commsSubtitle() const { return commsSubtitle_; }
+  float commsTimer() const { return commsTimer_; }
+  void triggerCommsLine(const std::string& speaker, const std::string& subtitle, const std::string& relMp3, AudioEngine* audio, const glm::vec3* spatialPos = nullptr);
+  int totalHeadshots() const { return totalHeadshots_; }
+  int shotsFired() const { return shotsFired_; }
+  int shotsHit() const { return shotsHit_; }
+  bool lastHitHeadshot() const { return lastHitHeadshot_; }
 
   const std::vector<VehicleEntity>& vehicles() const { return vehicles_; }
   const std::vector<NpcEntity>& npcs() const { return npcs_; }
@@ -521,7 +653,7 @@ public:
   bool isRangedWeapon() const { return !weapons_[static_cast<size_t>(activeWeapon_)].isMelee; }
   bool isTwoHandedWeapon() const {
     const auto& w = weapons_[static_cast<size_t>(activeWeapon_)];
-    return !w.isMelee && w.id != "pistol_sd";
+    return !w.isMelee && w.id != "pistol" && w.id != "pistol_sd";
   }
   float recoilImpulse() const { return recoilImpulse_; }
   float reloadProgress() const {
@@ -537,11 +669,12 @@ public:
 private:
   void spawnSparks(const glm::vec3& pos, const glm::vec3& normal, const glm::vec3& color, int count);
   void pushToast(const std::string& msg, float duration = 3.5f);
-  void reportCrime(CrimeKind kind, const glm::vec3& pos, const WorldData& world);
+  void reportCrime(CrimeKind kind, const glm::vec3& pos, const WorldData& world, AudioEngine* audio = nullptr);
   void spawnIronPitTier(int tier, const WorldData& world);
   void fireActiveWeapon(PlayerController& player, PhysicsWorld& physics, const WorldData& world, AudioEngine* audio);
   void damagePlayer(float amount, const WorldData& world, PlayerController& player, AudioEngine* audio);
   int findTakedownNpcIndex(const glm::vec3& playerPos) const;
+  int findCarryableCorpseIndex(const glm::vec3& playerPos) const;
   bool trySilentTakedown(PlayerController& player, const WorldData& world, AudioEngine* audio);
   void updateTrafficAndVehicles(float dt, const GameInputFrame& input, PlayerController& player, PhysicsWorld& physics, const WorldData& world, AudioEngine* audio);
   void updateNpcsAndPolice(float dt, PlayerController& player, PhysicsWorld& physics, const WorldData& world, AudioEngine* audio);
@@ -636,6 +769,21 @@ private:
   std::string contextPrompt_;
   std::string toastText_;
   float toastTimer_ = 0.0f;
+  PlayerSuitPreset playerSuit_ = PlayerSuitPreset::VanguardObsidian;
+  int carriedNpcId_ = -1;
+  int bodiesDisposedCount_ = 0;
+  int oceanDisposalsCount_ = 0;
+  int totalHeadshots_ = 0;
+  int shotsFired_ = 0;
+  int shotsHit_ = 0;
+  bool lastHitHeadshot_ = false;
+  bool hasAimLaserDot_ = false;
+  glm::vec3 aimLaserStart_{0.0f};
+  glm::vec3 aimLaserEnd_{0.0f};
+  std::string commsSpeaker_;
+  std::string commsSubtitle_;
+  float commsTimer_ = 0.0f;
+  float commsCooldown_ = 0.0f;
   uint32_t rng_ = 0x9E3779B9u;
 };
 

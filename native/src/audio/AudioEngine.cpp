@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 
 #if defined(__has_include)
 #if __has_include("miniaudio.h")
@@ -88,6 +89,128 @@ void AudioEngine::setListener(const glm::vec3& pos, float yawRad) {
   listenerY_.store(pos.y, std::memory_order_relaxed);
   listenerZ_.store(pos.z, std::memory_order_relaxed);
   listenerYaw_.store(yawRad, std::memory_order_relaxed);
+}
+
+void AudioEngine::setAssetsRoot(const std::string& publicRoot) {
+  std::lock_guard<std::mutex> lk(streamMutex_);
+  assetsRoot_ = publicRoot;
+}
+
+bool AudioEngine::decodeAudioFileToStereo(const std::string& fullPath, uint32_t targetSampleRate, std::vector<float>& outStereoFrames) {
+  outStereoFrames.clear();
+#ifdef WESTGATE_HAS_MINIAUDIO
+  if (!std::filesystem::exists(fullPath)) return false;
+  ma_decoder_config dcfg = ma_decoder_config_init(ma_format_f32, 2, targetSampleRate > 0 ? targetSampleRate : 48000u);
+  ma_decoder dec{};
+  if (ma_decoder_init_file(fullPath.c_str(), &dcfg, &dec) != MA_SUCCESS) {
+    return false;
+  }
+  constexpr ma_uint64 kChunkFrames = 4096;
+  std::vector<float> temp(kChunkFrames * 2);
+  while (true) {
+    ma_uint64 framesRead = 0;
+    const ma_result r = ma_decoder_read_pcm_frames(&dec, temp.data(), kChunkFrames, &framesRead);
+    if (framesRead > 0) {
+      outStereoFrames.insert(outStereoFrames.end(), temp.begin(), temp.begin() + static_cast<size_t>(framesRead * 2));
+    }
+    if (r != MA_SUCCESS || framesRead < kChunkFrames) break;
+  }
+  ma_decoder_uninit(&dec);
+  return !outStereoFrames.empty();
+#else
+  (void)fullPath;
+  (void)targetSampleRate;
+  return false;
+#endif
+}
+
+std::shared_ptr<const AudioEngine::DecodedClip> AudioEngine::loadOrGetClip(const std::string& relPath) {
+  if (relPath.empty()) return nullptr;
+  std::string rootCopy;
+  {
+    std::lock_guard<std::mutex> lk(streamMutex_);
+    auto it = clipCache_.find(relPath);
+    if (it != clipCache_.end()) return it->second;
+    rootCopy = assetsRoot_;
+  }
+
+  std::filesystem::path fullPath = relPath;
+  if (!std::filesystem::exists(fullPath) && !rootCopy.empty()) {
+    fullPath = std::filesystem::path(rootCopy) / relPath;
+  }
+  if (!std::filesystem::exists(fullPath)) {
+    fullPath = std::filesystem::path("public") / relPath;
+  }
+
+  auto decoded = std::make_shared<DecodedClip>();
+  const uint32_t sr = static_cast<uint32_t>(std::max(8000.0, sampleRate_));
+  if (!decodeAudioFileToStereo(fullPath.string(), sr, decoded->stereoSamples)) {
+    return nullptr;
+  }
+
+  std::lock_guard<std::mutex> lk(streamMutex_);
+  if (clipCache_.size() > 64) {
+    clipCache_.clear();
+  }
+  clipCache_[relPath] = decoded;
+  return decoded;
+}
+
+bool AudioEngine::playVoiceClip(const std::string& relPath, float gain) {
+  auto clip = loadOrGetClip(relPath);
+  if (!clip) return false;
+  std::lock_guard<std::mutex> lk(streamMutex_);
+  activeVoice_ = std::move(clip);
+  voiceFrameCursor_ = 0;
+  voiceGain_ = std::clamp(gain, 0.0f, 1.5f);
+  voicePan_ = 0.0f;
+  return true;
+}
+
+bool AudioEngine::playSpatialComms(const std::string& relPath, const glm::vec3& worldPos, float gain) {
+  float att = 1.0f, pan = 0.0f;
+  computeSpatial(worldPos, 72.0f, att, pan);
+  if (att <= 0.02f) return false;
+  auto clip = loadOrGetClip(relPath);
+  if (!clip) return false;
+  std::lock_guard<std::mutex> lk(streamMutex_);
+  activeComms_ = std::move(clip);
+  commsFrameCursor_ = 0;
+  commsGain_ = std::clamp(gain * att, 0.0f, 1.4f);
+  commsPan_ = pan;
+  return true;
+}
+
+bool AudioEngine::playMusicTrack(const std::string& relPath, float gain, bool loop) {
+  {
+    std::lock_guard<std::mutex> lk(streamMutex_);
+    if (activeMusic_ && activeMusicPath_ == relPath) {
+      musicGain_ = std::clamp(gain, 0.0f, 1.0f);
+      musicLoop_ = loop;
+      return true;
+    }
+  }
+  auto clip = loadOrGetClip(relPath);
+  if (!clip) return false;
+  std::lock_guard<std::mutex> lk(streamMutex_);
+  activeMusic_ = std::move(clip);
+  activeMusicPath_ = relPath;
+  musicFrameCursor_ = 0;
+  musicGain_ = std::clamp(gain, 0.0f, 1.0f);
+  musicLoop_ = loop;
+  return true;
+}
+
+void AudioEngine::stopMusicTrack() {
+  std::lock_guard<std::mutex> lk(streamMutex_);
+  activeMusic_.reset();
+  activeMusicPath_.clear();
+  musicFrameCursor_ = 0;
+}
+
+bool AudioEngine::isVoicePlaying() const {
+  std::lock_guard<std::mutex> lk(streamMutex_);
+  return activeVoice_ != nullptr && voiceFrameCursor_ < activeVoice_->frameCount();
 }
 
 void AudioEngine::computeSpatial(const glm::vec3& worldPos, float maxDist, float& outGain, float& outPan) const {
@@ -293,9 +416,46 @@ void AudioEngine::mixSamples(float* output, uint32_t frameCount) {
   const double engFreqA = 34.0 + static_cast<double>(engSpd) * 76.0;
   const double engFreqB = engFreqA * 1.98;
 
+  // Snapshot active MP3 streams under non-blocking try_lock so the audio callback never stalls
+  std::shared_ptr<const DecodedClip> voiceRef, commsRef, musicRef;
+  size_t vCur = 0, cCur = 0, mCur = 0;
+  float vGain = 0.0f, cGain = 0.0f, cPan = 0.0f, mGain = 0.0f;
+  bool mLoop = true;
+  const bool haveStreamLock = streamMutex_.try_lock();
+  if (haveStreamLock) {
+    voiceRef = activeVoice_; vCur = voiceFrameCursor_; vGain = voiceGain_;
+    commsRef = activeComms_; cCur = commsFrameCursor_; cGain = commsGain_; cPan = commsPan_;
+    musicRef = activeMusic_; mCur = musicFrameCursor_; mGain = musicGain_; mLoop = musicLoop_;
+  }
+
   for (uint32_t i = 0; i < frameCount; ++i) {
     float left = 0.0f;
     float right = 0.0f;
+
+    bool voiceActiveThisFrame = false;
+    if (voiceRef && vCur < voiceRef->frameCount()) {
+      left += voiceRef->stereoSamples[vCur * 2 + 0] * vGain;
+      right += voiceRef->stereoSamples[vCur * 2 + 1] * vGain;
+      ++vCur;
+      voiceActiveThisFrame = true;
+    }
+    if (commsRef && cCur < commsRef->frameCount()) {
+      const float mono = 0.5f * (commsRef->stereoSamples[cCur * 2 + 0] + commsRef->stereoSamples[cCur * 2 + 1]) * cGain;
+      const float ang = (std::clamp(cPan, -1.0f, 1.0f) + 1.0f) * 0.78539816f;
+      left += mono * std::cos(ang);
+      right += mono * std::sin(ang);
+      ++cCur;
+      voiceActiveThisFrame = true;
+    }
+    if (musicRef && musicRef->frameCount() > 0) {
+      if (mCur >= musicRef->frameCount() && mLoop) mCur = 0;
+      if (mCur < musicRef->frameCount()) {
+        const float duck = voiceActiveThisFrame ? 0.42f : 1.0f;
+        left += musicRef->stereoSamples[mCur * 2 + 0] * mGain * duck;
+        right += musicRef->stereoSamples[mCur * 2 + 1] * mGain * duck;
+        ++mCur;
+      }
+    }
 
     if (engGain > 0.001f) {
       enginePhaseA_ += dt * engFreqA;
@@ -329,6 +489,16 @@ void AudioEngine::mixSamples(float* output, uint32_t frameCount) {
     }
     output[i * 2 + 0] = std::tanh(left);
     output[i * 2 + 1] = std::tanh(right);
+  }
+
+  if (haveStreamLock) {
+    voiceFrameCursor_ = vCur;
+    if (activeVoice_ && voiceFrameCursor_ >= activeVoice_->frameCount()) activeVoice_.reset();
+    commsFrameCursor_ = cCur;
+    if (activeComms_ && commsFrameCursor_ >= activeComms_->frameCount()) activeComms_.reset();
+    musicFrameCursor_ = mCur;
+    if (activeMusic_ && !musicLoop_ && musicFrameCursor_ >= activeMusic_->frameCount()) activeMusic_.reset();
+    streamMutex_.unlock();
   }
 }
 

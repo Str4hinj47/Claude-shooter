@@ -12,6 +12,7 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <limits>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace westgate {
@@ -106,6 +107,8 @@ void extractPrimitive(
   const cgltf_data* data,
   const cgltf_primitive& prim,
   bool isSkinned,
+  const cgltf_skin* primSkin,
+  const std::unordered_map<const cgltf_node*, uint32_t>& nodeToUnifiedJoint,
   const glm::mat4& worldMat,
   const glm::mat3& normalMat,
   GltfPrimitive& outPrim
@@ -202,6 +205,14 @@ void extractPrimitive(
     if (outPrim.hasSkin) {
       cgltf_uint j4[4]{0, 0, 0, 0};
       cgltf_accessor_read_uint(jntAcc, vi, j4, 4);
+      if (primSkin && !nodeToUnifiedJoint.empty()) {
+        for (int k = 0; k < 4; ++k) {
+          if (j4[k] < primSkin->joints_count && primSkin->joints[j4[k]]) {
+            auto it = nodeToUnifiedJoint.find(primSkin->joints[j4[k]]);
+            if (it != nodeToUnifiedJoint.end()) j4[k] = it->second;
+          }
+        }
+      }
       v.joints = glm::uvec4(j4[0], j4[1], j4[2], j4[3]);
       glm::vec4 w(wgtBuf[vi * 4 + 0], wgtBuf[vi * 4 + 1], wgtBuf[vi * 4 + 2], wgtBuf[vi * 4 + 3]);
       const float sum = w.x + w.y + w.z + w.w;
@@ -270,24 +281,36 @@ bool GltfAssetLoader::loadGlb(const std::string& path, GltfModel& outModel, bool
     if (cn.has_scale) dst.restS = glm::vec3(cn.scale[0], cn.scale[1], cn.scale[2]);
   }
 
-  // Skin (first skin if present)
+  // Unified Skin (merges multi-skin GLBs such as soldier.glb vanguard_Mesh + vanguard_visor onto one joint palette)
+  std::unordered_map<const cgltf_node*, uint32_t> nodeToUnifiedJoint;
   if (data->skins_count > 0) {
-    const cgltf_skin& cs = data->skins[0];
-    outModel.skin.valid = cs.joints_count > 0;
-    outModel.skin.jointNodeIndices.resize(cs.joints_count, -1);
-    for (cgltf_size ji = 0; ji < cs.joints_count; ++ji) {
-      if (cs.joints[ji]) {
-        outModel.skin.jointNodeIndices[ji] = static_cast<int32_t>(cs.joints[ji] - data->nodes);
-      }
+    // Pick the skin with the largest joint count as primary so joint ordering stays canonical
+    cgltf_size primarySkinIdx = 0;
+    for (cgltf_size si = 1; si < data->skins_count; ++si) {
+      if (data->skins[si].joints_count > data->skins[primarySkinIdx].joints_count) primarySkinIdx = si;
     }
-    outModel.skin.inverseBindMatrices.resize(cs.joints_count, glm::mat4(1.0f));
-    if (cs.inverse_bind_matrices && cs.inverse_bind_matrices->count >= cs.joints_count) {
-      std::vector<float> ibmFloats(cs.joints_count * 16, 0.0f);
-      cgltf_accessor_unpack_floats(cs.inverse_bind_matrices, ibmFloats.data(), ibmFloats.size());
+    auto appendSkinJoints = [&](const cgltf_skin& cs) {
+      std::vector<float> ibmFloats;
+      const bool hasIbm = (cs.inverse_bind_matrices && cs.inverse_bind_matrices->count >= cs.joints_count);
+      if (hasIbm) {
+        ibmFloats.resize(cs.joints_count * 16, 0.0f);
+        cgltf_accessor_unpack_floats(cs.inverse_bind_matrices, ibmFloats.data(), ibmFloats.size());
+      }
       for (cgltf_size ji = 0; ji < cs.joints_count; ++ji) {
-        outModel.skin.inverseBindMatrices[ji] = glm::make_mat4(&ibmFloats[ji * 16]);
+        const cgltf_node* jn = cs.joints[ji];
+        if (!jn || nodeToUnifiedJoint.count(jn)) continue;
+        const uint32_t newIdx = static_cast<uint32_t>(outModel.skin.jointNodeIndices.size());
+        nodeToUnifiedJoint[jn] = newIdx;
+        outModel.skin.jointNodeIndices.push_back(static_cast<int32_t>(jn - data->nodes));
+        outModel.skin.inverseBindMatrices.push_back(hasIbm ? glm::make_mat4(&ibmFloats[ji * 16]) : glm::mat4(1.0f));
       }
+    };
+    appendSkinJoints(data->skins[primarySkinIdx]);
+    for (cgltf_size si = 0; si < data->skins_count; ++si) {
+      if (si != primarySkinIdx) appendSkinJoints(data->skins[si]);
     }
+    outModel.skin.valid = !outModel.skin.jointNodeIndices.empty();
+    outModel.boneCount = static_cast<uint32_t>(outModel.skin.jointNodeIndices.size());
   }
 
   // Animations
@@ -397,7 +420,7 @@ bool GltfAssetLoader::loadGlb(const std::string& path, GltfModel& outModel, bool
       if (prim.type != cgltf_primitive_type_triangles) continue;
       GltfPrimitive outPrim;
       outPrim.nodeIndex = static_cast<int32_t>(ni);
-      extractPrimitive(data, prim, isSkinned, worldMat, normalMat, outPrim);
+      extractPrimitive(data, prim, isSkinned, node.skin, nodeToUnifiedJoint, worldMat, normalMat, outPrim);
       if (!outPrim.vertices.empty()) {
         outModel.primitives.push_back(std::move(outPrim));
       }
@@ -412,7 +435,7 @@ bool GltfAssetLoader::loadGlb(const std::string& path, GltfModel& outModel, bool
         const cgltf_primitive& prim = mesh.primitives[pi];
         if (prim.type != cgltf_primitive_type_triangles) continue;
         GltfPrimitive outPrim;
-        extractPrimitive(data, prim, false, glm::mat4(1.0f), glm::mat3(1.0f), outPrim);
+        extractPrimitive(data, prim, false, nullptr, nodeToUnifiedJoint, glm::mat4(1.0f), glm::mat3(1.0f), outPrim);
         if (!outPrim.vertices.empty()) {
           outModel.primitives.push_back(std::move(outPrim));
         }

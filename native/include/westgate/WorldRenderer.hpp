@@ -51,6 +51,10 @@ enum class SkinnedPartKind : uint8_t {
   Civilian = 4,
   Police = 5,
   Security = 6,
+  VanguardSoldier = 7,
+  Military = 8,
+  Construction = 9,
+  Sports = 10,
 };
 
 struct SkinnedRenderCharacter {
@@ -59,6 +63,7 @@ struct SkinnedRenderCharacter {
   glm::vec4 tint{1.0f};
   SkinnedPartKind part = SkinnedPartKind::PlayerBody;
   const std::array<glm::mat4, kMaxSkinBones>* palette = nullptr;
+  glm::quat extraLocalRot{1.0f, 0.0f, 0.0f, 0.0f};
 };
 
 struct WorldRenderAssets {
@@ -66,10 +71,14 @@ struct WorldRenderAssets {
   const GltfModel* playerBody = nullptr;
   const GltfModel* playerShorts = nullptr;
   const GltfModel* playerHair = nullptr;
+  const GltfModel* vanguardSoldier = nullptr;
   const GltfModel* businessModel = nullptr;
   const GltfModel* civilianModel = nullptr;
   const GltfModel* policeModel = nullptr;
   const GltfModel* securityModel = nullptr;
+  const GltfModel* militaryModel = nullptr;
+  const GltfModel* constructionModel = nullptr;
+  const GltfModel* sportsModel = nullptr;
 };
 
 class WorldRenderer {
@@ -383,10 +392,14 @@ private:
   SkinnedMeshGpu playerBodyGpu_;
   SkinnedMeshGpu playerShortsGpu_;
   SkinnedMeshGpu playerHairGpu_;
+  SkinnedMeshGpu vanguardSoldierGpu_;
   SkinnedMeshGpu businessGpu_;
   SkinnedMeshGpu civilianGpu_;
   SkinnedMeshGpu policeGpu_;
   SkinnedMeshGpu securityGpu_;
+  SkinnedMeshGpu militaryGpu_;
+  SkinnedMeshGpu constructionGpu_;
+  SkinnedMeshGpu sportsGpu_;
 
   RenderTelemetry telemetry_;
 };

@@ -157,6 +157,13 @@ class CharacterAnimator {
     const CharacterPoseOverlay* overlay = nullptr
   ) const;
 
+  /** Return the animated meter-space character-local position of a canonical bone (e.g. "RightHand", "Head"). */
+  glm::vec3 animatedBonePos(
+    const std::string& canonicalName,
+    const std::array<glm::mat4, kMaxSkinBones>& palette,
+    const glm::vec3& fallback = glm::vec3(0.0f, 1.15f, 0.25f)
+  ) const;
+
   static std::string canonicalizeBoneName(const std::string& rawName);
 
   struct AlignedTargetBind {
@@ -209,6 +216,8 @@ class CharacterAnimator {
   std::vector<glm::vec3> targetRestWorldPos_;
   std::vector<std::string> targetCanonicalNames_;
   std::unordered_map<std::string, int32_t> canonicalToTargetNode_;
+  std::unordered_map<std::string, uint32_t> canonicalToSkinJoint_;
+  std::vector<glm::vec4> skinJointBindOriginMesh_;
   std::unordered_map<int32_t, FingerCurlInfo> fingerCurlByNode_;
   mutable std::unordered_map<std::string, AlignedTargetBind> alignedBindCache_;
   int32_t targetHipsNode_ = -1;

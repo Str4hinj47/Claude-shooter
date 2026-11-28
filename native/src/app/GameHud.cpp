@@ -25,24 +25,43 @@ void drawWestgateHud(
   const glm::vec3 pPos = player.position();
 
   // -------------------------------------------------------------------------
-  // 1. Center Crosshair & Hitmarker (when mouse captured & not in Phone)
+  // 1. Center Crosshair, Sniper Scope Overlay & Hitmarker
   // -------------------------------------------------------------------------
-  if (ui.mouseCaptured && !ui.showPhone) {
+  if ((ui.mouseCaptured || session.isAiming()) && !ui.showPhone) {
     const ImVec2 c(disp.x * 0.5f, disp.y * 0.5f);
-    const bool armed = !session.activeWeapon().isMelee && !session.inVehicle();
-    const ImU32 crossCol = armed ? IM_COL32(235, 245, 255, 210) : IM_COL32(220, 220, 220, 120);
-    bgDraw->AddLine({c.x - 9.0f, c.y}, {c.x - 3.0f, c.y}, crossCol, 1.8f);
-    bgDraw->AddLine({c.x + 3.0f, c.y}, {c.x + 9.0f, c.y}, crossCol, 1.8f);
-    bgDraw->AddLine({c.x, c.y - 9.0f}, {c.x, c.y - 3.0f}, crossCol, 1.8f);
-    bgDraw->AddLine({c.x, c.y + 3.0f}, {c.x, c.y + 9.0f}, crossCol, 1.8f);
-    bgDraw->AddCircleFilled(c, 1.8f, crossCol);
+    const auto& actW = session.activeWeapon();
+    const bool armed = !actW.isMelee && !session.inVehicle();
+    const bool scopeAds = armed && session.isAiming() && actW.optic == WeaponOpticKind::SniperScope;
+
+    if (scopeAds) {
+      const float r = std::min(disp.x, disp.y) * 0.39f;
+      bgDraw->AddCircle(c, r, IM_COL32(18, 28, 36, 245), 64, 18.0f);
+      bgDraw->AddCircle(c, r - 9.0f, IM_COL32(95, 225, 255, 190), 64, 1.5f);
+      bgDraw->AddLine({c.x - r, c.y}, {c.x + r, c.y}, IM_COL32(20, 35, 45, 215), 1.3f);
+      bgDraw->AddLine({c.x, c.y - r}, {c.x, c.y + r}, IM_COL32(20, 35, 45, 215), 1.3f);
+      for (int md = -4; md <= 4; ++md) {
+        if (md == 0) continue;
+        bgDraw->AddCircleFilled({c.x + md * 24.0f, c.y}, 2.0f, IM_COL32(95, 235, 255, 210));
+        bgDraw->AddCircleFilled({c.x, c.y + md * 24.0f}, 2.0f, IM_COL32(95, 235, 255, 210));
+      }
+      bgDraw->AddCircleFilled(c, 2.4f, IM_COL32(255, 65, 65, 245));
+    } else {
+      const ImU32 crossCol = armed ? IM_COL32(235, 245, 255, 210) : IM_COL32(220, 220, 220, 120);
+      bgDraw->AddLine({c.x - 9.0f, c.y}, {c.x - 3.0f, c.y}, crossCol, 1.8f);
+      bgDraw->AddLine({c.x + 3.0f, c.y}, {c.x + 9.0f, c.y}, crossCol, 1.8f);
+      bgDraw->AddLine({c.x, c.y - 9.0f}, {c.x, c.y - 3.0f}, crossCol, 1.8f);
+      bgDraw->AddLine({c.x, c.y + 3.0f}, {c.x, c.y + 9.0f}, crossCol, 1.8f);
+      bgDraw->AddCircleFilled(c, 1.8f, crossCol);
+    }
 
     if (session.hitmarkerTimer() > 0.0f) {
-      const ImU32 hmCol = IM_COL32(255, 75, 75, 240);
-      bgDraw->AddLine({c.x - 10.0f, c.y - 10.0f}, {c.x - 4.0f, c.y - 4.0f}, hmCol, 2.2f);
-      bgDraw->AddLine({c.x + 4.0f, c.y - 4.0f}, {c.x + 10.0f, c.y - 10.0f}, hmCol, 2.2f);
-      bgDraw->AddLine({c.x - 10.0f, c.y + 10.0f}, {c.x - 4.0f, c.y + 4.0f}, hmCol, 2.2f);
-      bgDraw->AddLine({c.x + 4.0f, c.y + 4.0f}, {c.x + 10.0f, c.y + 10.0f}, hmCol, 2.2f);
+      const ImU32 hmCol = session.lastHitHeadshot()
+        ? IM_COL32(255, 215, 55, 255)
+        : IM_COL32(255, 75, 75, 240);
+      bgDraw->AddLine({c.x - 11.0f, c.y - 11.0f}, {c.x - 4.0f, c.y - 4.0f}, hmCol, 2.4f);
+      bgDraw->AddLine({c.x + 4.0f, c.y - 4.0f}, {c.x + 11.0f, c.y - 11.0f}, hmCol, 2.4f);
+      bgDraw->AddLine({c.x - 11.0f, c.y + 11.0f}, {c.x - 4.0f, c.y + 4.0f}, hmCol, 2.4f);
+      bgDraw->AddLine({c.x + 4.0f, c.y + 4.0f}, {c.x + 11.0f, c.y + 11.0f}, hmCol, 2.4f);
     }
   }
 
@@ -222,6 +241,17 @@ void drawWestgateHud(
     bgDraw->AddText({bx + 16.0f, by + 8.0f}, IM_COL32(255, 232, 120, 255), session.contextPrompt().c_str());
   }
 
+  // Tactical Radio Comms & Voiceover Subtitle Banner
+  if (session.commsTimer() > 0.0f && !session.commsSubtitle().empty()) {
+    const std::string line = "[" + session.commsSpeaker() + "]  " + session.commsSubtitle();
+    const ImVec2 ts = ImGui::CalcTextSize(line.c_str());
+    const float bx = (disp.x - ts.x) * 0.5f - 18.0f;
+    const float by = disp.y - 108.0f;
+    bgDraw->AddRectFilled({bx, by}, {bx + ts.x + 36.0f, by + 30.0f}, IM_COL32(8, 16, 26, 232), 6.0f);
+    bgDraw->AddRect({bx, by}, {bx + ts.x + 36.0f, by + 30.0f}, IM_COL32(72, 205, 195, 210), 6.0f);
+    bgDraw->AddText({bx + 18.0f, by + 8.0f}, IM_COL32(195, 245, 255, 255), line.c_str());
+  }
+
   // Active Iron Pit Boss Bar or Live AI-vs-AI Spectator Cage Bout (when nearby)
   const float pitDist = glm::distance(glm::vec2(pPos.x, pPos.z), glm::vec2(world.fightPitPos.x, world.fightPitPos.z));
   if (pitDist < 22.0f) {
@@ -374,26 +404,66 @@ void drawWestgateHud(
           ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem("Gun Runner")) {
+        const ImGuiTabItemFlags armoryTabFlags = (ui.forcePhoneTab == 2) ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
+        if (ImGui::BeginTabItem("Armory & Suit", nullptr, armoryTabFlags)) {
+          if (ui.forcePhoneTab == 2) ui.forcePhoneTab = -1;
+          const char* suitName = nullptr;
+          GameSession::suitTintColor(session.playerSuit(), &suitName);
+          ImGui::TextColored({0.52f, 0.92f, 1.0f, 1.0f}, "Operative Rig: %s", suitName ? suitName : "Vanguard");
+          ImGui::SameLine();
+          if (ImGui::SmallButton("Cycle Suit")) session.cyclePlayerSuit();
           if (ImGui::Button("Buy Medkit + 100 Armor ($150)")) {
             session.buyArmorAndMedkit(audio);
           }
+          ImGui::SameLine();
+          ImGui::Text("Headshots: %d | Bodies Hidden: %d", session.totalHeadshots(), session.bodiesDisposedCount());
           ImGui::Separator();
+
+          static const char* kOpticNames[5] = {"Irons", "Red Dot", "Holo", "ACOG", "8x Scope"};
+          static const char* kMuzzleNames[3] = {"Std", "Suppressor", "Compensator"};
+          static const char* kUnderNames[3] = {"None", "Vert Grip", "Laser"};
+          static const char* kMagNames[3] = {"Std Mag", "Ext Mag", "Drum"};
+          static const char* kFinishNames[6] = {"Obsidian", "Coyote", "Arctic", "Crimson", "Gold", "Titanium"};
+
+          ImGui::BeginChild("ArmoryWorkbench", {0, 295}, true);
           for (size_t i = 1; i < session.weapons().size(); ++i) {
             const auto& w = session.weapons()[i];
             ImGui::PushID(static_cast<int>(200 + i));
-            ImGui::Text("[%zu] %s - DMG %.0f %s", i, w.name.c_str(), w.damage, w.suppressed ? "(Suppressed)" : "(Loud)");
+            ImGui::TextColored(w.unlocked ? ImVec4(0.45f, 0.96f, 0.65f, 1.0f) : ImVec4(0.88f, 0.88f, 0.92f, 1.0f),
+                               "[%zu] %s  |  DMG %.0f  |  %d rnd  %s",
+                               i + 1, w.name.c_str(), w.damage, w.magSize, w.suppressed ? "[SD]" : "[LOUD]");
             if (!w.unlocked) {
               char lbl[64];
               std::snprintf(lbl, sizeof(lbl), "Unlock ($%d)", w.price);
               if (ImGui::Button(lbl)) session.buyWeaponOrAmmo(static_cast<int>(i), audio);
             } else {
               char lbl[64];
-              std::snprintf(lbl, sizeof(lbl), "Refill Ammo ($%d) [%d/%d]", w.ammoPrice, w.magAmmo, w.reserveAmmo);
-              if (ImGui::Button(lbl)) session.buyWeaponOrAmmo(static_cast<int>(i), audio);
+              std::snprintf(lbl, sizeof(lbl), "Ammo ($%d) [%d/%d]", w.ammoPrice, w.magAmmo, w.reserveAmmo);
+              if (ImGui::SmallButton(lbl)) session.buyWeaponOrAmmo(static_cast<int>(i), audio);
+              ImGui::SameLine();
+              if (ImGui::SmallButton((std::string("Optic: ") + kOpticNames[static_cast<int>(w.optic)]).c_str())) {
+                session.configureWeaponSlot(static_cast<int>(i), static_cast<WeaponOpticKind>((static_cast<int>(w.optic) + 1) % 5), w.muzzle, w.underbarrel, w.mag, w.finish);
+              }
+              ImGui::SameLine();
+              if (ImGui::SmallButton((std::string("Muz: ") + kMuzzleNames[static_cast<int>(w.muzzle)]).c_str())) {
+                session.configureWeaponSlot(static_cast<int>(i), w.optic, static_cast<WeaponMuzzleKind>((static_cast<int>(w.muzzle) + 1) % 3), w.underbarrel, w.mag, w.finish);
+              }
+              if (ImGui::SmallButton((std::string("Under: ") + kUnderNames[static_cast<int>(w.underbarrel)]).c_str())) {
+                session.configureWeaponSlot(static_cast<int>(i), w.optic, w.muzzle, static_cast<WeaponUnderbarrelKind>((static_cast<int>(w.underbarrel) + 1) % 3), w.mag, w.finish);
+              }
+              ImGui::SameLine();
+              if (ImGui::SmallButton((std::string("Mag: ") + kMagNames[static_cast<int>(w.mag)]).c_str())) {
+                session.configureWeaponSlot(static_cast<int>(i), w.optic, w.muzzle, w.underbarrel, static_cast<WeaponMagKind>((static_cast<int>(w.mag) + 1) % 3), w.finish);
+              }
+              ImGui::SameLine();
+              if (ImGui::SmallButton((std::string("Finish: ") + kFinishNames[static_cast<int>(w.finish)]).c_str())) {
+                session.configureWeaponSlot(static_cast<int>(i), w.optic, w.muzzle, w.underbarrel, w.mag, static_cast<WeaponFinishKind>((static_cast<int>(w.finish) + 1) % 6));
+              }
             }
+            ImGui::Separator();
             ImGui::PopID();
           }
+          ImGui::EndChild();
           ImGui::EndTabItem();
         }
 
