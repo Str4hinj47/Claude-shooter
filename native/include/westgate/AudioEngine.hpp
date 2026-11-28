@@ -68,6 +68,11 @@ public:
   virtual void playExplosion(const glm::vec3& worldPos);
   virtual void setEngineState(bool inVehicle, float speedRatio);
 
+  /** Real-time AAA audio bus mixer & simulation pause mute. */
+  void setMixVolumes(float master, float sfx, float voice, float music);
+  void setPaused(bool paused) { paused_.store(paused, std::memory_order_relaxed); }
+  bool isPaused() const { return paused_.load(std::memory_order_relaxed); }
+
   bool initialized() const { return initialized_; }
 
 private:
@@ -97,6 +102,11 @@ private:
   std::atomic<float> listenerYaw_{0.0f};
   std::atomic<float> engineGain_{0.0f};
   std::atomic<float> engineSpeedRatio_{0.0f};
+  std::atomic<float> masterVolume_{0.90f};
+  std::atomic<float> sfxVolume_{0.90f};
+  std::atomic<float> voiceVolume_{1.00f};
+  std::atomic<float> musicVolume_{0.70f};
+  std::atomic<bool> paused_{false};
   double enginePhaseA_ = 0.0;
   double enginePhaseB_ = 0.0;
   std::vector<ActiveGrain> grains_;

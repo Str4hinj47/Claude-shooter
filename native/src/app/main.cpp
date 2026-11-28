@@ -3,9 +3,11 @@
 #include "westgate/EngineTypes.hpp"
 #include "westgate/GameHud.hpp"
 #include "westgate/GameSession.hpp"
+#include "westgate/GameSettings.hpp"
 #include "westgate/GltfAssetLoader.hpp"
 #include "westgate/PhysicsWorld.hpp"
 #include "westgate/PlayerController.hpp"
+#include "westgate/UiTheme.hpp"
 #include "westgate/WeaponSystem3D.hpp"
 #include "westgate/WgpuContext.hpp"
 #include "westgate/WorldData.hpp"
@@ -17,6 +19,7 @@
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -25,6 +28,7 @@
 #include <cstring>
 #include <filesystem>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -42,6 +46,42 @@ std::filesystem::path findAssetsRoot(const char* argv0) {
     if (std::filesystem::exists(c / "world" / "westgate_world.json")) return c;
   }
   return exeDir / "assets";
+}
+
+void applyLiveClientSettings(
+  const westgate::GameSettings& settings,
+  SDL_Window* window,
+  westgate::WgpuContext& gpu,
+  westgate::WorldRenderer& renderer,
+  westgate::ChunkStreamer& streamer,
+  westgate::GameSession& session,
+  westgate::AudioEngine& audio,
+  bool headlessMode
+) {
+  gpu.setVsync(settings.vsync);
+  renderer.setPostFxParams(settings.bloomIntensity, settings.ssaoStrength);
+  streamer.setRadii(335.0f * settings.drawDistanceScale, 1550.0f * settings.drawDistanceScale);
+  session.setBaseFovDeg(settings.fieldOfViewDeg);
+  if (!headlessMode) {
+    audio.setMixVolumes(settings.masterVolume, settings.sfxVolume, settings.voiceVolume, settings.musicVolume);
+  }
+  if (window && !headlessMode) {
+    if (settings.windowMode == westgate::WindowDisplayMode::ExclusiveFullscreen) {
+      SDL_SetWindowFullscreen(window, true);
+    } else if (settings.windowMode == westgate::WindowDisplayMode::BorderlessFullscreen) {
+      SDL_SetWindowFullscreen(window, false);
+      SDL_SetWindowBordered(window, false);
+      SDL_Rect bounds{};
+      if (SDL_GetDisplayBounds(SDL_GetPrimaryDisplay(), &bounds) && bounds.w > 0 && bounds.h > 0) {
+        SDL_SetWindowPosition(window, bounds.x, bounds.y);
+        SDL_SetWindowSize(window, bounds.w, bounds.h);
+      }
+    } else {
+      SDL_SetWindowFullscreen(window, false);
+      SDL_SetWindowBordered(window, true);
+      SDL_SetWindowSize(window, settings.resolutionWidth, settings.resolutionHeight);
+    }
+  }
 }
 
 } // namespace
@@ -89,6 +129,14 @@ int main(int argc, char** argv) {
   int headlessWepAccFin = -1;
   int headlessWepHwFin = -1;
   int headlessWepReticle = -1;
+  bool cliHasRes = false;
+  bool cliContinue = false;
+  bool cliNewGame = false;
+  bool cliBootGunsmith = false;
+  bool cliSkipMenu = false;
+  bool cliDevMode = false;
+  std::string cliScreenOverride;
+  int cliSettingsTab = -1;
 
   int headlessW = 1280;
   int headlessH = 720;
@@ -101,7 +149,22 @@ int main(int argc, char** argv) {
       if (std::sscanf(argv[++i], "%dx%d", &rw, &rh) == 2 && rw >= 160 && rh >= 120) {
         headlessW = rw;
         headlessH = rh;
+        cliHasRes = true;
       }
+    } else if (arg == "--continue") {
+      cliContinue = true;
+    } else if (arg == "--new-game") {
+      cliNewGame = true;
+    } else if (arg == "--boot-gunsmith") {
+      cliBootGunsmith = true;
+    } else if (arg == "--skip-menu") {
+      cliSkipMenu = true;
+    } else if (arg == "--dev") {
+      cliDevMode = true;
+    } else if (arg == "--screen" && i + 1 < argc) {
+      cliScreenOverride = argv[++i];
+    } else if (arg == "--settings-tab" && i + 1 < argc) {
+      cliSettingsTab = std::clamp(std::atoi(argv[++i]), 0, 4);
     } else if (arg == "--frames" && i + 1 < argc) {
       headlessFrames = std::max(1, std::atoi(argv[++i]));
     } else if (arg == "--walk-forward") {
@@ -350,12 +413,65 @@ int main(int argc, char** argv) {
   session.init(world, &player, &physics);
 
   westgate::HudUiState ui;
+  ui.devMode = cliDevMode;
   ui.savePath = (assetsRoot.parent_path() / "westgate_save.json").string();
+  ui.settingsPath = (assetsRoot.parent_path() / "westgate_settings.json").string();
+
+  westgate::GameSettings settings;
+  settings.loadFromFile(ui.settingsPath);
+
+  ui.saveFileExists = std::filesystem::exists(ui.savePath);
   if (!headlessMode) {
-    session.loadFromFile(ui.savePath);
+    if (ui.saveFileExists && !cliNewGame) {
+      session.loadFromFile(ui.savePath);
+      ui.savedStoryStep = session.storyStep();
+      ui.savedCredits = session.playerCash();
+    } else {
+      session.setTimeOfDayPreset(westgate::TimeOfDayPreset::Sunset);
+    }
   } else {
+    if (ui.saveFileExists && (cliContinue || cliScreenOverride == "main-menu" || cliScreenOverride == "pause")) {
+      session.loadFromFile(ui.savePath);
+      ui.savedStoryStep = session.storyStep();
+      ui.savedCredits = session.playerCash();
+    }
     ui.showPhone = headlessShowPhone;
     ui.forcePhoneTab = headlessPhoneTab;
+  }
+
+  // Determine initial AAA client screen state
+  ui.screen = headlessMode ? westgate::AppScreen::InGame : westgate::AppScreen::MainMenu;
+  if (cliContinue || cliSkipMenu) {
+    ui.screen = westgate::AppScreen::InGame;
+  } else if (cliNewGame) {
+    session.init(world, &player, &physics);
+    if (!session.storyChapters().empty()) {
+      session.startStoryChapter(session.storyChapters().front().chapter, player, world, headlessMode ? nullptr : &audio, true);
+    }
+    ui.screen = westgate::AppScreen::InGame;
+  } else if (cliBootGunsmith) {
+    ui.screen = westgate::AppScreen::InGame;
+    ui.gunsmithReturnToMenu = true;
+    session.setGunsmithOpen(true);
+    session.setGunsmithSlot(session.activeWeaponIdx() > 0 ? session.activeWeaponIdx() : 2);
+  }
+  if (!cliScreenOverride.empty()) {
+    if (cliScreenOverride == "main-menu") {
+      ui.screen = westgate::AppScreen::MainMenu;
+      if (todOverride.empty()) session.setTimeOfDayPreset(westgate::TimeOfDayPreset::Sunset);
+    } else if (cliScreenOverride == "pause") {
+      ui.screen = westgate::AppScreen::Paused;
+    } else if (cliScreenOverride == "settings") {
+      ui.screen = westgate::AppScreen::MainMenu;
+      ui.showSettings = true;
+      if (todOverride.empty()) session.setTimeOfDayPreset(westgate::TimeOfDayPreset::Sunset);
+    } else if (cliScreenOverride == "gameplay") {
+      ui.screen = westgate::AppScreen::InGame;
+    }
+  }
+  if (cliSettingsTab >= 0) {
+    ui.showSettings = true;
+    ui.settingsTab = cliSettingsTab;
   }
 
   if (headlessSuitIdx >= 0 && headlessSuitIdx < westgate::kPlayerSuitCount) {
@@ -446,8 +562,8 @@ int main(int argc, char** argv) {
 
   float scale = headlessMode ? 1.0f : SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
   if (scale <= 0.0f) scale = 1.0f;
-  const int initW = headlessMode ? headlessW : static_cast<int>(1280 * scale);
-  const int initH = headlessMode ? headlessH : static_cast<int>(720 * scale);
+  const int initW = headlessMode ? headlessW : (cliHasRes ? headlessW : settings.resolutionWidth);
+  const int initH = headlessMode ? headlessH : (cliHasRes ? headlessH : settings.resolutionHeight);
 
   SDL_Window* window = nullptr;
   westgate::WgpuContext gpu;
@@ -458,7 +574,10 @@ int main(int argc, char** argv) {
       return 1;
     }
   } else {
-    window = SDL_CreateWindow("Westgate Bay - Custom Native C++20 Engine (SDL3 + wgpu + Jolt)", initW, initH, SDL_WINDOW_RESIZABLE);
+    SDL_WindowFlags winFlags = SDL_WINDOW_RESIZABLE;
+    if (settings.windowMode == westgate::WindowDisplayMode::ExclusiveFullscreen) winFlags |= SDL_WINDOW_FULLSCREEN;
+    else if (settings.windowMode == westgate::WindowDisplayMode::BorderlessFullscreen) winFlags |= SDL_WINDOW_BORDERLESS;
+    window = SDL_CreateWindow("WESTGATE BAY — VOSS // BLACK CONTRACT", initW, initH, winFlags);
     if (!window) {
       std::fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
       SDL_Quit();
@@ -470,15 +589,19 @@ int main(int argc, char** argv) {
       SDL_Quit();
       return 1;
     }
+    if (ui.screen == westgate::AppScreen::InGame && !session.gunsmithOpen() && !ui.showPhone && !ui.showSettings) {
+      ui.mouseCaptured = true;
+      SDL_SetWindowRelativeMouseMode(window, true);
+    }
   }
 
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
   ImGuiIO& io = ImGui::GetIO();
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-  io.Fonts->AddFontDefault();
-  ImGui::StyleColorsDark();
-  ImGui::GetStyle().ScaleAllSizes(scale);
+  io.IniFilename = nullptr; // Clean standalone game client — never write debug imgui.ini
+  westgate::loadWestgateUiFonts(io, assetsRoot, scale, ui.fonts);
+  westgate::applyWestgateAaaTheme(scale);
 
   if (!headlessMode) {
     ImGui_ImplSDL3_InitForOther(window);
@@ -522,6 +645,8 @@ int main(int argc, char** argv) {
     return 1;
   }
 
+  applyLiveClientSettings(settings, window, gpu, renderer, streamer, session, audio, headlessMode);
+
   std::array<glm::mat4, westgate::kMaxSkinBones> palBody{}, palShorts{}, palHair{};
   std::array<glm::mat4, westgate::kMaxSkinBones> palOppBody{}, palOppShorts{}, palOppHair{};
   std::array<glm::mat4, westgate::kMaxSkinBones> palSpecBody{}, palSpecShorts{}, palSpecHair{};
@@ -557,11 +682,19 @@ int main(int argc, char** argv) {
   std::vector<westgate::WeaponPartDrawInstance> weaponPartInstances;
 
   int headlessStep = 0;
+  float menuClockSec = 0.0f;
   while (running) {
+    const auto frameStartTime = std::chrono::steady_clock::now();
     const float dt = headlessMode ? (1.0f / 60.0f) : static_cast<float>(timer.tickSeconds());
-    elapsedSec += dt;
+    menuClockSec += dt;
+    if (ui.saveStatusTimer > 0.0f) {
+      ui.saveStatusTimer = std::max(0.0f, ui.saveStatusTimer - dt);
+    }
 
     westgate::GameInputFrame gameInput{};
+    const float sensScale = (session.isAiming() && session.isRangedWeapon()) ? settings.adsSensitivityMult : 1.0f;
+    gameInput.moveInput.lookSensitivity = settings.mouseSensitivity * sensScale;
+    gameInput.moveInput.invertY = settings.invertMouseY;
     float lookDx = 0.0f;
     float lookDy = 0.0f;
     bool jumpPressed = false;
@@ -569,21 +702,23 @@ int main(int argc, char** argv) {
     bool hasPlayerHandWorld = false;
 
     if (headlessMode) {
-      if (headlessWalkForward) {
-        gameInput.moveInput.moveForward = 1.0f;
+      if (ui.screen == westgate::AppScreen::InGame) {
+        if (headlessWalkForward) {
+          gameInput.moveInput.moveForward = 1.0f;
+        }
+        if (hasHeadlessDrive) {
+          gameInput.moveInput.moveForward = headlessDriveFwd;
+          gameInput.moveInput.moveRight = headlessDriveRight;
+          gameInput.moveInput.jump = headlessDriveJump;
+        }
+        if (headlessStep == 1 && headlessSelectSlot >= 0) {
+          gameInput.selectWeaponSlot = headlessSelectSlot;
+        }
+        if (headlessAimDown) {
+          gameInput.aimDown = true;
+        }
+        gameInput.moveInput.firstPersonLook = session.firstPersonMode() && !session.inVehicle();
       }
-      if (hasHeadlessDrive) {
-        gameInput.moveInput.moveForward = headlessDriveFwd;
-        gameInput.moveInput.moveRight = headlessDriveRight;
-        gameInput.moveInput.jump = headlessDriveJump;
-      }
-      if (headlessStep == 1 && headlessSelectSlot >= 0) {
-        gameInput.selectWeaponSlot = headlessSelectSlot;
-      }
-      if (headlessAimDown) {
-        gameInput.aimDown = true;
-      }
-      gameInput.moveInput.firstPersonLook = session.firstPersonMode() && !session.inVehicle();
       if (headlessTestReconfigure && headlessStep == 2) {
         // Simulate Windows swapchain SubOptimal depth recreation mid-movement to verify zero frozen SSAO silhouette
         gpu.reconfigureSurface(true);
@@ -594,7 +729,7 @@ int main(int argc, char** argv) {
         ImGui_ImplSDL3_ProcessEvent(&ev);
         if (ev.type == SDL_EVENT_QUIT) running = false;
         if (ev.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && ev.window.windowID == SDL_GetWindowID(window)) running = false;
-        if (ev.type == SDL_EVENT_MOUSE_MOTION) {
+        if (ev.type == SDL_EVENT_MOUSE_MOTION && ui.screen == westgate::AppScreen::InGame && !ui.showSettings) {
           if (session.gunsmithOpen()) {
             if (!io.WantCaptureMouse && (ev.motion.state & SDL_BUTTON_LMASK) != 0) {
               session.setGunsmithAutoRotate(false);
@@ -605,10 +740,17 @@ int main(int argc, char** argv) {
             lookDy += ev.motion.yrel;
           }
         }
-        if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN && !session.gunsmithOpen() && ui.mouseCaptured && !ui.showPhone && ev.button.button == SDL_BUTTON_LEFT) {
-          gameInput.firePressed = true;
+        if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
+            ui.screen == westgate::AppScreen::InGame && !ui.showSettings &&
+            !session.gunsmithOpen() && !ui.showPhone) {
+          if (!ui.mouseCaptured && !io.WantCaptureMouse && ev.button.button == SDL_BUTTON_LEFT) {
+            ui.mouseCaptured = true;
+            SDL_SetWindowRelativeMouseMode(window, true);
+          } else if (ui.mouseCaptured && ev.button.button == SDL_BUTTON_LEFT) {
+            gameInput.firePressed = true;
+          }
         }
-        if (ev.type == SDL_EVENT_MOUSE_WHEEL) {
+        if (ev.type == SDL_EVENT_MOUSE_WHEEL && ui.screen == westgate::AppScreen::InGame && !ui.showSettings) {
           if (session.gunsmithOpen()) {
             if (!io.WantCaptureMouse) {
               session.orbitGunsmith(0.0f, 0.0f, -ev.wheel.y * 0.055f);
@@ -623,81 +765,134 @@ int main(int argc, char** argv) {
         }
         if (ev.type == SDL_EVENT_KEY_DOWN && !ev.key.repeat) {
           const SDL_Scancode sc = ev.key.scancode;
-          if (sc == SDL_SCANCODE_TAB || sc == SDL_SCANCODE_ESCAPE) {
-            if (session.gunsmithOpen()) {
+          if (sc == SDL_SCANCODE_ESCAPE) {
+            if (ui.showSettings) {
+              ui.showSettings = false;
+            } else if (session.gunsmithOpen()) {
               session.setGunsmithOpen(false);
+              session.saveToFile(ui.savePath);
+              ui.saveFileExists = true;
+              if (ui.gunsmithReturnToMenu) {
+                ui.gunsmithReturnToMenu = false;
+                ui.screen = westgate::AppScreen::MainMenu;
+                ui.mouseCaptured = false;
+                SDL_SetWindowRelativeMouseMode(window, false);
+              } else {
+                ui.mouseCaptured = true;
+                SDL_SetWindowRelativeMouseMode(window, true);
+              }
             } else if (ui.showPhone) {
               ui.showPhone = false;
-            } else {
+              ui.mouseCaptured = true;
+              SDL_SetWindowRelativeMouseMode(window, true);
+            } else if (ui.screen == westgate::AppScreen::InGame) {
+              ui.screen = westgate::AppScreen::Paused;
+              ui.mouseCaptured = false;
+              SDL_SetWindowRelativeMouseMode(window, false);
+              audio.setPaused(true);
+            } else if (ui.screen == westgate::AppScreen::Paused) {
+              ui.screen = westgate::AppScreen::InGame;
+              ui.mouseCaptured = true;
+              SDL_SetWindowRelativeMouseMode(window, true);
+              audio.setPaused(false);
+            } else if (ui.screen == westgate::AppScreen::MainMenu) {
+              ui.showSettings = true;
+            }
+          } else if (sc == SDL_SCANCODE_TAB && ui.screen == westgate::AppScreen::InGame && !ui.showSettings) {
+            if (ui.showPhone) {
+              ui.showPhone = false;
+              ui.mouseCaptured = true;
+              SDL_SetWindowRelativeMouseMode(window, true);
+            } else if (!session.gunsmithOpen()) {
               ui.mouseCaptured = !ui.mouseCaptured;
               SDL_SetWindowRelativeMouseMode(window, ui.mouseCaptured);
             }
-          } else if (sc == SDL_SCANCODE_F2) {
-            const bool nextOpen = !session.gunsmithOpen();
-            session.setGunsmithOpen(nextOpen);
-            if (nextOpen) {
-              ui.showPhone = false;
-              if (ui.mouseCaptured) {
-                ui.mouseCaptured = false;
-                SDL_SetWindowRelativeMouseMode(window, false);
-              }
-            }
-          } else if (sc == SDL_SCANCODE_F5) {
-            session.toggleFirstPersonMode();
-          } else if (sc == SDL_SCANCODE_P) {
-            if (session.gunsmithOpen()) session.setGunsmithOpen(false);
-            ui.showPhone = !ui.showPhone;
-            if (ui.showPhone && ui.mouseCaptured) {
+          } else if (sc == SDL_SCANCODE_F2 && !ui.showSettings) {
+            if (ui.screen == westgate::AppScreen::MainMenu) {
+              ui.gunsmithReturnToMenu = true;
+              ui.screen = westgate::AppScreen::InGame;
+              session.setGunsmithOpen(true);
+              session.setGunsmithSlot(session.activeWeaponIdx() > 0 ? session.activeWeaponIdx() : 2);
               ui.mouseCaptured = false;
               SDL_SetWindowRelativeMouseMode(window, false);
+            } else if (ui.screen == westgate::AppScreen::InGame) {
+              const bool nextOpen = !session.gunsmithOpen();
+              session.setGunsmithOpen(nextOpen);
+              if (nextOpen) {
+                ui.showPhone = false;
+                if (ui.mouseCaptured) {
+                  ui.mouseCaptured = false;
+                  SDL_SetWindowRelativeMouseMode(window, false);
+                }
+              } else if (ui.gunsmithReturnToMenu) {
+                ui.gunsmithReturnToMenu = false;
+                ui.screen = westgate::AppScreen::MainMenu;
+              } else {
+                ui.mouseCaptured = true;
+                SDL_SetWindowRelativeMouseMode(window, true);
+              }
             }
-          } else if (sc == SDL_SCANCODE_F9) {
-            ui.showTelemetry = !ui.showTelemetry;
-          } else if (sc == SDL_SCANCODE_F1) {
-            session.teleportTo({world.fightPitPos.x, world.fightPitPos.y + 1.0f, world.fightPitPos.z - 2.6f}, 0.0f, player);
-          } else if (sc == SDL_SCANCODE_T) {
-            session.cycleTimeOfDay();
-          } else if (sc == SDL_SCANCODE_Y) {
-            session.cycleWeather();
-          } else if (sc == SDL_SCANCODE_SPACE) {
-            jumpPressed = true;
-          } else if (sc == SDL_SCANCODE_G) {
-            gameInput.interactPressed = true;
-          } else if (sc == SDL_SCANCODE_B) {
-            gameInput.actionPressed = true;
-          } else if (sc == SDL_SCANCODE_H) {
-            gameInput.secondaryAction = true;
-          } else if (sc == SDL_SCANCODE_F) {
-            gameInput.firePressed = true;
-          } else if (sc == SDL_SCANCODE_Q) {
-            gameInput.uppercutPressed = true;
-          } else if (sc == SDL_SCANCODE_E) {
-            gameInput.kickPressed = true;
-          } else if (sc == SDL_SCANCODE_X) {
-            gameInput.dodgePressed = true;
-          } else if (sc == SDL_SCANCODE_V) {
-            if (session.inVehicle()) {
-              session.cycleDriveCameraMode();
-            } else if (session.takedownReady()) {
-              gameInput.takedownPressed = true;
-            } else {
+          } else if (ui.screen == westgate::AppScreen::InGame && !ui.showSettings) {
+            if (sc == SDL_SCANCODE_F5) {
               session.toggleFirstPersonMode();
-            }
-          } else if (sc == SDL_SCANCODE_Z) {
-            gameInput.grapplePressed = true;
-          } else if (sc == SDL_SCANCODE_U) {
-            gameInput.takedownShootPressed = true;
-          } else if (sc == SDL_SCANCODE_J) {
-            gameInput.carryBodyPressed = true;
-          } else if (sc == SDL_SCANCODE_R) {
-            gameInput.reloadPressed = true;
-            gameInput.rematchPressed = true;
-          } else if (sc >= SDL_SCANCODE_1 && sc <= SDL_SCANCODE_6) {
-            const int chosen = static_cast<int>(sc - SDL_SCANCODE_1);
-            if (session.gunsmithOpen() && chosen >= 1) {
-              session.setGunsmithSlot(chosen);
-            } else {
-              gameInput.selectWeaponSlot = chosen;
+            } else if (sc == SDL_SCANCODE_P) {
+              if (session.gunsmithOpen()) session.setGunsmithOpen(false);
+              ui.showPhone = !ui.showPhone;
+              if (ui.showPhone && ui.mouseCaptured) {
+                ui.mouseCaptured = false;
+                SDL_SetWindowRelativeMouseMode(window, false);
+              } else if (!ui.showPhone && !ui.mouseCaptured) {
+                ui.mouseCaptured = true;
+                SDL_SetWindowRelativeMouseMode(window, true);
+              }
+            } else if (sc == SDL_SCANCODE_F9 && ui.devMode) {
+              ui.showTelemetry = !ui.showTelemetry;
+            } else if (sc == SDL_SCANCODE_F1 && ui.devMode) {
+              session.teleportTo({world.fightPitPos.x, world.fightPitPos.y + 1.0f, world.fightPitPos.z - 2.6f}, 0.0f, player);
+            } else if (sc == SDL_SCANCODE_T) {
+              session.cycleTimeOfDay();
+            } else if (sc == SDL_SCANCODE_Y) {
+              session.cycleWeather();
+            } else if (sc == SDL_SCANCODE_SPACE) {
+              jumpPressed = true;
+            } else if (sc == SDL_SCANCODE_G) {
+              gameInput.interactPressed = true;
+            } else if (sc == SDL_SCANCODE_B) {
+              gameInput.actionPressed = true;
+            } else if (sc == SDL_SCANCODE_H) {
+              gameInput.secondaryAction = true;
+            } else if (sc == SDL_SCANCODE_F) {
+              gameInput.firePressed = true;
+            } else if (sc == SDL_SCANCODE_Q) {
+              gameInput.uppercutPressed = true;
+            } else if (sc == SDL_SCANCODE_E) {
+              gameInput.kickPressed = true;
+            } else if (sc == SDL_SCANCODE_X) {
+              gameInput.dodgePressed = true;
+            } else if (sc == SDL_SCANCODE_V) {
+              if (session.inVehicle()) {
+                session.cycleDriveCameraMode();
+              } else if (session.takedownReady()) {
+                gameInput.takedownPressed = true;
+              } else {
+                session.toggleFirstPersonMode();
+              }
+            } else if (sc == SDL_SCANCODE_Z) {
+              gameInput.grapplePressed = true;
+            } else if (sc == SDL_SCANCODE_U) {
+              gameInput.takedownShootPressed = true;
+            } else if (sc == SDL_SCANCODE_J) {
+              gameInput.carryBodyPressed = true;
+            } else if (sc == SDL_SCANCODE_R) {
+              gameInput.reloadPressed = true;
+              gameInput.rematchPressed = true;
+            } else if (sc >= SDL_SCANCODE_1 && sc <= SDL_SCANCODE_6) {
+              const int chosen = static_cast<int>(sc - SDL_SCANCODE_1);
+              if (session.gunsmithOpen() && chosen >= 1) {
+                session.setGunsmithSlot(chosen);
+              } else {
+                gameInput.selectWeaponSlot = chosen;
+              }
             }
           }
         }
@@ -713,7 +908,7 @@ int main(int argc, char** argv) {
 
       const bool* keys = SDL_GetKeyboardState(nullptr);
       const SDL_MouseButtonFlags mouseButtons = SDL_GetMouseState(nullptr, nullptr);
-      if (!ui.showPhone && !session.gunsmithOpen()) {
+      if (ui.screen == westgate::AppScreen::InGame && !ui.showSettings && !ui.showPhone && !session.gunsmithOpen()) {
         if (keys[SDL_SCANCODE_W]) gameInput.moveInput.moveForward += 1.0f;
         if (keys[SDL_SCANCODE_S]) gameInput.moveInput.moveForward -= 1.0f;
         if (keys[SDL_SCANCODE_D]) gameInput.moveInput.moveRight += 1.0f;
@@ -725,18 +920,26 @@ int main(int argc, char** argv) {
         gameInput.moveInput.lookDeltaY = lookDy;
         gameInput.moveInput.firstPersonLook = session.firstPersonMode() && !session.inVehicle();
         gameInput.fireDown = ui.mouseCaptured && ((mouseButtons & SDL_BUTTON_LMASK) != 0);
-        gameInput.aimDown = ((mouseButtons & SDL_BUTTON_RMASK) != 0);
+        gameInput.aimDown = ui.mouseCaptured && ((mouseButtons & SDL_BUTTON_RMASK) != 0);
         gameInput.useHeld = keys[SDL_SCANCODE_E] || keys[SDL_SCANCODE_F] || keys[SDL_SCANCODE_B];
       }
     }
 
-    session.update(dt, gameInput, player, physics, world, headlessMode ? nullptr : &audio);
+    const bool simFrozen = (ui.screen == westgate::AppScreen::Paused) && (!headlessMode || headlessStep > 4);
+    if (!headlessMode) {
+      audio.setPaused(ui.screen == westgate::AppScreen::Paused);
+    }
+    const float simDt = simFrozen ? 0.0f : dt;
+    elapsedSec += simDt;
+    if (!simFrozen) {
+      session.update(dt, gameInput, player, physics, world, headlessMode ? nullptr : &audio);
 
-    physicsAccum += dt;
-    constexpr float kFixedStep = 1.0f / 60.0f;
-    while (physicsAccum >= kFixedStep) {
-      physics.step(kFixedStep);
-      physicsAccum -= kFixedStep;
+      physicsAccum += dt;
+      constexpr float kFixedStep = 1.0f / 60.0f;
+      while (physicsAccum >= kFixedStep) {
+        physics.step(kFixedStep);
+        physicsAccum -= kFixedStep;
+      }
     }
 
     // Evaluate player skeletal parts with smooth crossfades, upper/lower combat layering, and procedural aiming/recoil
@@ -961,12 +1164,19 @@ int main(int argc, char** argv) {
     }
 
     // Closest NPCs / Police / Contract Targets / Snipers / Heavies / Carried Corpses up to kMaxSkinSlots
+    const float menuSweep = menuClockSec * 0.085f;
+    const glm::vec3 menuCamPos(
+      34.0f + std::sin(menuSweep) * 14.0f,
+      21.0f + std::cos(menuSweep * 0.7f) * 2.4f,
+      -52.0f + std::cos(menuSweep) * 12.0f
+    );
+    const glm::vec3 cullOrigin = (ui.screen == westgate::AppScreen::MainMenu) ? glm::vec3(menuCamPos.x, 4.5f, menuCamPos.z - 40.0f) : pPos;
     std::vector<std::pair<float, size_t>> sortedNpcs;
     sortedNpcs.reserve(session.npcs().size());
     for (size_t i = 0; i < session.npcs().size(); ++i) {
       if (session.npcs()[i].bodyHidden) continue;
-      const float d = glm::distance(pPos, session.npcs()[i].pos);
-      if (d < 130.0f) sortedNpcs.emplace_back(d, i);
+      const float d = glm::distance(cullOrigin, session.npcs()[i].pos);
+      if (d < 150.0f) sortedNpcs.emplace_back(d, i);
     }
     std::sort(sortedNpcs.begin(), sortedNpcs.end());
 
@@ -1131,6 +1341,7 @@ int main(int argc, char** argv) {
 
       westgate::drawWestgateHud(
         ui,
+        settings,
         session,
         player,
         physics,
@@ -1142,17 +1353,65 @@ int main(int argc, char** argv) {
         elapsedSec
       );
 
+      // Dispatch one-shot AAA UI actions emitted by Main Menu / Pause Menu / Settings Modal
+      if (ui.requestApplySettings) {
+        ui.requestApplySettings = false;
+        applyLiveClientSettings(settings, window, gpu, renderer, streamer, session, audio, headlessMode);
+      }
+      if (ui.requestNewCampaign) {
+        ui.requestNewCampaign = false;
+        session.init(world, &player, &physics);
+        session.setBaseFovDeg(settings.fieldOfViewDeg);
+        session.setFirstPersonMode(settings.defaultFirstPerson);
+        if (!session.storyChapters().empty()) {
+          session.startStoryChapter(session.storyChapters().front().chapter, player, world, headlessMode ? nullptr : &audio, true);
+        }
+      }
+      if (ui.requestLoadSave) {
+        ui.requestLoadSave = false;
+        session.loadFromFile(ui.savePath);
+      }
+      if (ui.requestEngageMouseCapture) {
+        ui.requestEngageMouseCapture = false;
+        if (window && !headlessMode) {
+          ui.mouseCaptured = true;
+          SDL_SetWindowRelativeMouseMode(window, true);
+          audio.setPaused(false);
+        }
+      }
+      if (ui.requestQuitApp) {
+        ui.requestQuitApp = false;
+        running = false;
+      }
+
       physics.gatherDynamicProps(dynamicProps);
       ImGui::Render();
 
-      const glm::vec3 camPos = hasCamOverride ? camOverridePos : session.cameraPosition(player);
-      const glm::vec3 camTgt = hasCamOverride ? camOverrideTarget : session.cameraTarget(player);
-      const glm::vec3 focus = hasCamOverride ? camOverrideTarget : (session.gunsmithOpen() ? session.gunsmithAnchorPos(player) : pPos);
+      // Live 3D Cinematic Skyline Camera on Main Menu vs Gameplay/Pause Camera
+      glm::vec3 camPos;
+      glm::vec3 camTgt;
+      glm::vec3 focus;
+      float activeFov = session.cameraFovDeg(gameInput.aimDown);
+      if (hasCamOverride) {
+        camPos = camOverridePos;
+        camTgt = camOverrideTarget;
+        focus = camOverrideTarget;
+      } else if (ui.screen == westgate::AppScreen::MainMenu) {
+        camPos = menuCamPos;
+        camTgt = glm::vec3(42.0f + std::cos(menuSweep * 0.5f) * 10.0f, 13.5f, -168.0f);
+        focus = camPos;
+        activeFov = 58.0f;
+      } else {
+        camPos = session.cameraPosition(player);
+        camTgt = session.cameraTarget(player);
+        focus = session.gunsmithOpen() ? session.gunsmithAnchorPos(player) : pPos;
+      }
 
-      // Assemble First-Person 3D Viewmodel + Gloves locked to the exact eye camera (unless in Sniper 8x glass scope)
+      // Assemble First-Person 3D Viewmodel + Gloves locked to the exact eye camera (unless in MainMenu or Sniper 8x glass scope)
       const bool inSniperGlass = session.isAiming() && session.isRangedWeapon() &&
                                  session.activeWeapon().optic == westgate::WeaponOpticKind::SniperScope;
-      if (!hasCamOverride && !session.gunsmithOpen() && !session.inVehicle() && session.firstPersonMode() && !inSniperGlass) {
+      if (!hasCamOverride && ui.screen != westgate::AppScreen::MainMenu &&
+          !session.gunsmithOpen() && !session.inVehicle() && session.firstPersonMode() && !inSniperGlass) {
         const bool meleeBlocking = gameInput.aimDown && session.activeWeapon().isMelee;
         westgate::WeaponSystem3D::appendFirstPersonViewmodel(
           camPos,
@@ -1181,7 +1440,7 @@ int main(int argc, char** argv) {
         camPos,
         camTgt,
         focus,
-        session.cameraFovDeg(gameInput.aimDown),
+        activeFov,
         elapsedSec,
         session.skyLighting(),
         renderChars,
@@ -1210,7 +1469,14 @@ int main(int argc, char** argv) {
           running = false;
         }
       }
+    } else if (!settings.vsync && settings.frameRateLimit > 0) {
+      const auto targetDur = std::chrono::microseconds(1000000 / std::max(30, settings.frameRateLimit));
+      const auto elapsedDur = std::chrono::steady_clock::now() - frameStartTime;
+      if (elapsedDur < targetDur) {
+        std::this_thread::sleep_for(targetDur - elapsedDur);
+      }
     }
+    (void)simDt;
   }
 
   if (!headlessMode) {

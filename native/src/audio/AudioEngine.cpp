@@ -409,9 +409,25 @@ void AudioEngine::setEngineState(bool inVehicle, float speedRatio) {
   engineSpeedRatio_.store(std::clamp(speedRatio, 0.0f, 1.5f), std::memory_order_relaxed);
 }
 
+void AudioEngine::setMixVolumes(float master, float sfx, float voice, float music) {
+  masterVolume_.store(std::clamp(master, 0.0f, 1.0f), std::memory_order_relaxed);
+  sfxVolume_.store(std::clamp(sfx, 0.0f, 1.0f), std::memory_order_relaxed);
+  voiceVolume_.store(std::clamp(voice, 0.0f, 1.0f), std::memory_order_relaxed);
+  musicVolume_.store(std::clamp(music, 0.0f, 1.0f), std::memory_order_relaxed);
+}
+
 void AudioEngine::mixSamples(float* output, uint32_t frameCount) {
+  if (paused_.load(std::memory_order_relaxed)) {
+    std::memset(output, 0, frameCount * 2 * sizeof(float));
+    return;
+  }
+  const float masterMul = masterVolume_.load(std::memory_order_relaxed);
+  const float sfxMul = sfxVolume_.load(std::memory_order_relaxed) * masterMul;
+  const float voiceMul = voiceVolume_.load(std::memory_order_relaxed) * masterMul;
+  const float musicMul = musicVolume_.load(std::memory_order_relaxed) * masterMul;
+
   const double dt = 1.0 / std::max(8000.0, sampleRate_);
-  const float engGain = engineGain_.load(std::memory_order_relaxed);
+  const float engGain = engineGain_.load(std::memory_order_relaxed) * sfxMul;
   const float engSpd = engineSpeedRatio_.load(std::memory_order_relaxed);
   const double engFreqA = 34.0 + static_cast<double>(engSpd) * 76.0;
   const double engFreqB = engFreqA * 1.98;
@@ -434,13 +450,13 @@ void AudioEngine::mixSamples(float* output, uint32_t frameCount) {
 
     bool voiceActiveThisFrame = false;
     if (voiceRef && vCur < voiceRef->frameCount()) {
-      left += voiceRef->stereoSamples[vCur * 2 + 0] * vGain;
-      right += voiceRef->stereoSamples[vCur * 2 + 1] * vGain;
+      left += voiceRef->stereoSamples[vCur * 2 + 0] * vGain * voiceMul;
+      right += voiceRef->stereoSamples[vCur * 2 + 1] * vGain * voiceMul;
       ++vCur;
       voiceActiveThisFrame = true;
     }
     if (commsRef && cCur < commsRef->frameCount()) {
-      const float mono = 0.5f * (commsRef->stereoSamples[cCur * 2 + 0] + commsRef->stereoSamples[cCur * 2 + 1]) * cGain;
+      const float mono = 0.5f * (commsRef->stereoSamples[cCur * 2 + 0] + commsRef->stereoSamples[cCur * 2 + 1]) * cGain * voiceMul;
       const float ang = (std::clamp(cPan, -1.0f, 1.0f) + 1.0f) * 0.78539816f;
       left += mono * std::cos(ang);
       right += mono * std::sin(ang);
@@ -451,8 +467,8 @@ void AudioEngine::mixSamples(float* output, uint32_t frameCount) {
       if (mCur >= musicRef->frameCount() && mLoop) mCur = 0;
       if (mCur < musicRef->frameCount()) {
         const float duck = voiceActiveThisFrame ? 0.42f : 1.0f;
-        left += musicRef->stereoSamples[mCur * 2 + 0] * mGain * duck;
-        right += musicRef->stereoSamples[mCur * 2 + 1] * mGain * duck;
+        left += musicRef->stereoSamples[mCur * 2 + 0] * mGain * duck * musicMul;
+        right += musicRef->stereoSamples[mCur * 2 + 1] * mGain * duck * musicMul;
         ++mCur;
       }
     }
@@ -479,7 +495,7 @@ void AudioEngine::mixSamples(float* output, uint32_t frameCount) {
       g.rng = g.rng * 1664525u + 1013904223u;
       const float white = (static_cast<float>((g.rng >> 8) & 0xFFFF) / 32768.0f) - 1.0f;
       const float mixed = static_cast<float>(tone) * (1.0f - g.noiseMix) + white * g.noiseMix;
-      const float val = mixed * static_cast<float>(env) * g.gain;
+      const float val = mixed * static_cast<float>(env) * g.gain * sfxMul;
 
       const float p = std::clamp(g.pan, -1.0f, 1.0f);
       const float ang = (p + 1.0f) * 0.78539816f; // [0 .. pi/2] equal-power pan

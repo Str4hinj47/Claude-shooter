@@ -119,6 +119,10 @@ public:
   );
 
   const RenderTelemetry& telemetry() const { return telemetry_; }
+  void setPostFxParams(float bloomIntensity, float ssaoStrength) {
+    bloomIntensity_ = bloomIntensity;
+    ssaoStrength_ = ssaoStrength;
+  }
 
 private:
   struct alignas(16) GpuPointLight {
@@ -416,6 +420,8 @@ private:
   SkinnedMeshGpu deerGpu_;
 
   RenderTelemetry telemetry_;
+  float bloomIntensity_ = 0.26f;
+  float ssaoStrength_ = 0.72f;
 };
 
 } // namespace westgate

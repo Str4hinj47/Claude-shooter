@@ -1,6 +1,8 @@
+#include "westgate/AudioEngine.hpp"
 #include "westgate/CharacterAnimator.hpp"
 #include "westgate/EngineTypes.hpp"
 #include "westgate/GameSession.hpp"
+#include "westgate/GameSettings.hpp"
 #include "westgate/GltfAssetLoader.hpp"
 #include "westgate/PhysicsWorld.hpp"
 #include "westgate/PlayerController.hpp"
@@ -1524,6 +1526,101 @@ int main() {
 
       std::printf("[PASS] First-Person Mode, 3D Gunsmith Studio & 32 Procedural PBR Weapon Meshes (%zu verts / %zu tris) OK\n",
                   totalWepVerts, totalWepTris);
+    }
+
+    // -----------------------------------------------------------------------
+    // AAA Standalone Client Settings, Live Runtime Hooks & Persistence Tests
+    // -----------------------------------------------------------------------
+    {
+      westgate::GameSettings cfg;
+      cfg.applyGraphicsPreset(westgate::GraphicsPreset::Low);
+      WG_CHECK(cfg.drawDistanceScale < 0.80f && cfg.ssaoStrength < 0.30f);
+      cfg.applyGraphicsPreset(westgate::GraphicsPreset::Ultra);
+      WG_CHECK(cfg.drawDistanceScale > 1.20f && cfg.ssaoStrength > 0.85f && cfg.bloomIntensity > 0.35f);
+
+      cfg.windowMode = westgate::WindowDisplayMode::BorderlessFullscreen;
+      cfg.resolutionWidth = 2560;
+      cfg.resolutionHeight = 1440;
+      cfg.vsync = false;
+      cfg.frameRateLimit = 144;
+      cfg.fieldOfViewDeg = 92.0f;
+      cfg.mouseSensitivity = 1.65f;
+      cfg.invertMouseY = true;
+      cfg.showSubtitles = false;
+      cfg.showFpsCounter = true;
+      cfg.masterVolume = 0.72f;
+      cfg.sfxVolume = 0.85f;
+      cfg.voiceVolume = 0.91f;
+      cfg.musicVolume = 0.44f;
+
+      const std::string cfgPath = "/tmp/westgate_settings_test.json";
+      WG_CHECK(cfg.saveToFile(cfgPath));
+
+      westgate::GameSettings cfgLoaded;
+      WG_CHECK(cfgLoaded.loadFromFile(cfgPath));
+      WG_CHECK(cfgLoaded.windowMode == westgate::WindowDisplayMode::BorderlessFullscreen);
+      WG_CHECK(cfgLoaded.resolutionWidth == 2560 && cfgLoaded.resolutionHeight == 1440);
+      WG_CHECK(!cfgLoaded.vsync && cfgLoaded.frameRateLimit == 144);
+      WG_CHECK(std::abs(cfgLoaded.fieldOfViewDeg - 92.0f) < 0.01f);
+      WG_CHECK(std::abs(cfgLoaded.mouseSensitivity - 1.65f) < 0.01f);
+      WG_CHECK(cfgLoaded.invertMouseY && !cfgLoaded.showSubtitles && cfgLoaded.showFpsCounter);
+      WG_CHECK(std::abs(cfgLoaded.masterVolume - 0.72f) < 0.01f);
+      WG_CHECK(std::abs(cfgLoaded.musicVolume - 0.44f) < 0.01f);
+
+      // Clamping out-of-range settings
+      cfgLoaded.fieldOfViewDeg = 300.0f;
+      cfgLoaded.mouseSensitivity = -5.0f;
+      cfgLoaded.masterVolume = 9.0f;
+      cfgLoaded.clampValid();
+      WG_CHECK(cfgLoaded.fieldOfViewDeg <= 105.0f && cfgLoaded.mouseSensitivity >= 0.15f && cfgLoaded.masterVolume <= 1.0f);
+
+      // Live FOV scaling in GameSession
+      westgate::GameSession fovSess;
+      fovSess.init(world, &player, &physics);
+      fovSess.setFirstPersonMode(true);
+      fovSess.setBaseFovDeg(70.0f);
+      const float fov70 = fovSess.cameraFovDeg(false);
+      fovSess.setBaseFovDeg(100.0f);
+      const float fov100 = fovSess.cameraFovDeg(false);
+      WG_CHECK(fov100 > fov70 + 18.0f);
+
+      // PlayerController lookSensitivity & invertY
+      player.setPitch(0.0f);
+      westgate::PlayerInputState pin{};
+      pin.lookDeltaY = 20.0f;
+      pin.lookSensitivity = 2.0f;
+      pin.invertY = false;
+      player.update(1.0f / 60.0f, pin);
+      const float pitchNormal = player.pitch();
+      player.setPitch(0.0f);
+      pin.invertY = true;
+      player.update(1.0f / 60.0f, pin);
+      const float pitchInverted = player.pitch();
+      WG_CHECK(pitchNormal * pitchInverted < 0.0f);
+
+      // Dynamic ChunkStreamer radii adjustment
+      westgate::ChunkStreamer dynStream(220.0f, 900.0f, 24.0f);
+      dynStream.init(world);
+      const glm::mat4 proj = glm::perspectiveZO(glm::radians(75.0f), 16.0f / 9.0f, 0.1f, 2800.0f);
+      const glm::mat4 view = glm::lookAt(glm::vec3(24.0f, 25.0f, -60.0f), glm::vec3(40.0f, 10.0f, -165.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+      const auto frustum = westgate::Frustum::fromViewProj(proj * view);
+      dynStream.update(glm::vec3(24.0f, 25.0f, -60.0f), frustum);
+      const uint32_t nearLow = dynStream.nearCount();
+      dynStream.setRadii(520.0f, 2200.0f);
+      dynStream.update(glm::vec3(24.0f, 25.0f, -60.0f), frustum);
+      const uint32_t nearUltra = dynStream.nearCount();
+      WG_CHECK(nearUltra >= nearLow && nearUltra > 0);
+
+      // AudioEngine lock-free pause & mixer channels
+      westgate::AudioEngine testAud;
+      testAud.setMixVolumes(0.6f, 0.8f, 0.9f, 0.5f);
+      WG_CHECK(!testAud.isPaused());
+      testAud.setPaused(true);
+      WG_CHECK(testAud.isPaused());
+      testAud.setPaused(false);
+      WG_CHECK(!testAud.isPaused());
+
+      std::printf("[PASS] AAA GameSettings presets/persistence, live FOV, invertY, dynamic streaming & audio mixer OK\n");
     }
 
     std::printf("[PASS] GameSession full loop: %zu vehicles, %zu NPCs, driving/gunplay/contracts/sky/save OK\n",

@@ -1,12 +1,9 @@
-# Westgate Native Engine (C++20 + SDL3 + wgpu-native + JoltPhysics)
+# Westgate Bay — Standalone AAA Native PC Architecture (`C++20` + `SDL3` + `wgpu-native` + `JoltPhysics`)
 
-True native desktop C++20 engine for **Westgate Bay** using:
-- **Window / Input**: SDL3 (`release-3.4.20`)
-- **Graphics Backend**: `wgpu-native` (`v29.0.1.1`) — runs **DirectX 12 / Vulkan** on Windows, Metal on macOS, Vulkan on Linux via unified WGSL shaders
-- **Physics**: JoltPhysics (`v5.7.0`) — `512×512` `HeightFieldShape` terrain, static building colliders, `CharacterVirtual` player capsule, and multi-threaded raycasts
-- **Asset Pipeline**: `cgltf` (`v1.15`) + `meshoptimizer` (`v1.3`) + `stb_image` (decodes standard glTF, `KHR_mesh_quantization`, and `EXT_meshopt_compression` GLBs)
-- **Audio**: `miniaudio` click-free footstep DSP mixer
-- **Debug / HUD Overlay**: Dear ImGui (`SDL3` + `WGPU`)
+Pure native standalone PC game architecture (zero browser/WebSocket streaming, zero Electron/Tauri webview wrapper):
+- **`libwestgate_core` & `libwestgate_runtime`**: Background C++20 engine runtime libraries (`wgpu-native v29.0.1.1` DirectX 12 / Metal / Vulkan, `JoltPhysics v5.7.0`, `cgltf` + `meshoptimizer`, `miniaudio` lock-free DSP mixer, persistent `GameSettings`, and anti-aliased TrueType typography).
+- **`WestgateBay` (`WestgateBay.exe`)**: Standalone shipping AAA game client inside a single zero-copy GPU swapchain — Live 3D Cinematic Skyline Main Menu, simulation-freezing `[ESC]` Pause Menu, 5-tab PC Settings (`westgate_settings.json`), Save/Load (`westgate_save.json`), 3D Gunsmith Design Studio (`[F2]`), First-Person & Third-Person combat, and bespoke frameless vector Tactical HUD (`--dev` gates developer telemetry).
+- **`WestgateLauncher` (`WestgateLauncher.exe`)**: Lightweight (`~4.6 MB`) native SDL3 + WebGPU pre-game desktop launcher (like *REDlauncher* / *Hitman*'s launcher) for key-art, operative save dossier, quick display/graphics setup, and launching `WestgateBay`.
 
 ## Quick Start (Windows 10 / 11 with Visual Studio 2022 + CMake)
 
@@ -20,34 +17,36 @@ winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --passi
    ```bat
    npm run export:native
    ```
-2. Build and launch:
+2. Build and launch the Desktop Pre-Game Launcher:
    ```powershell
    cd native
    .\build-windows.bat
    ```
-   (`build-windows.bat` automatically searches `PATH`, `Program Files\CMake`, and Visual Studio's bundled CMake via `vswhere.exe`.)
    Or manually:
    ```bat
    cmake -B build -G "Visual Studio 17 2022" -A x64 -DWESTGATE_BUILD_DESKTOP=ON
    cmake --build build --config Release --parallel
    build\Release\westgate_tests.exe
-   build\Release\westgate_engine.exe
+   build\Release\WestgateLauncher.exe
+   rem Or boot the shipping game client directly:
+   build\Release\WestgateBay.exe
    ```
 
 ## Controls & Gameplay
-- `TAB` or `ESC`: Toggle mouse-look camera (or close Tactical Phone)
+- `ESC`: Open/Close simulation-freezing **Pause Menu** (or close Settings / SkyPhone / 3D Gunsmith)
+- `TAB`: Release / recapture mouse cursor in-game
+- `V` / `F5`: Toggle **First-Person / Third-Person** on foot (or Rear Silent Takedown when behind an isolated target); cycle **Driving Camera** (`Chase` -> `Wide` -> `Hood`) in vehicles
+- `F2`: Open Interactive **3D Gunsmith Design Studio** (`360°` orbit, zoom, 3-zone Cerakote finishes, optics, suppressors, grips, magazines)
 - `W A S D`: Move / Drive / Boat Throttle & Rudder / Helicopter Cyclic (`Shift` sprint, `C` / `Ctrl` crouch or Heli descend, `Space` jump, handbrake drift, or Heli climb)
-- `G`: Enter / Exit nearest vehicle across all **20 3D GLB Vehicles, Boats & Helicopter** (`Golf R`, `Mercedes S63`, `Baja 4x4`, `KrAZ 6x6`, `Mustang`, `Ferrari`, `R8`, `Challenger`, `RS7`, `Range Rover`, `Sedan`, `Taxi`, `Police Cruiser`, upgraded `VW LT Ambulance`, `Firetruck`, `Delivery Van`, `Semi`, `Cigarette Speedboat`, `Harbor Cruiser`, `Bell 407 Helicopter`)
-- `V`: Cycle **Driving Camera** (`Chase` -> `Cinematic Wide` -> `Hood/Bonnet`) while driving; **Rear Silent Takedown** / Block on foot
+- `G`: Enter / Exit nearest vehicle across all **20 3D GLB Vehicles, Boats & Helicopter**
 - `1`–`6` or Mouse Wheel: Switch weapons (`1: Boxing & Grappling`, `2: Apex P226-SD`, `3: Vanguard M4A1-S`, `4: MP5-SD`, `5: Breacher 870`, `6: MK14 EBR`)
 - `Left Click` / `F`: Fire firearm or throw Jab → Cross → Hook combo
-- `Right Click`: Aim down sights (firearms) or Block (boxing)
+- `Right Click`: 3D Optical Aim Down Sights (firearms) or Block (boxing)
 - `Q` / `E` / `X`: Uppercut / Kick / Directional Dodge Roll
 - `Z` / `U`: Clinch Grapple & Body Slam / Double-Leg Takedown & Guillotine Choke
+- `J`: Pick up / Carry / Dispose unconscious or eliminated body
 - `R`: Reload firearm or start next Iron Pit opponent tier
-- `B`: Buy Medkit + Armor at 24/7 Westgate Marts, Free Repair & Respray at Westgate Customs Garages, or Free Starter Golf R Valet at the Luxury Auto Dealership `(56, -118)`
-- `H`: Horn / Emergency Strobe Siren while driving, **Stage 1–3 Turbo Engine Upgrade** inside Westgate Customs, or Rob 24/7 Mart register
-- `P`: Open Tactical Phone (`Contracts`, `Races & Pit`, `Gun Runner`, **`Autos & Garage`** Dealership + Personal Valet, `GPS & Save`)
+- `B` / `H`: Context shop/valet/customs interaction & vehicle horn/siren/stage upgrade
+- `P`: Open **Tactical SkyPhone** (`Campaign`, `Contracts`, `Races & Pit`, `Gun Runner`, `Autos & Garage`, `Tech & Stats`, `GPS & Save`)
 - `T` / `Y`: Cycle Sky Time of Day (`Afternoon`, `Sunset`, `Night`, `Dawn`) / Weather (`Clear`, `Overcast`, `Rain`, `Thunderstorm`)
-- `F1`: Quick teleport to Westgate Iron Pit (`722, 115`)
-- `F9`: Toggle Engine Telemetry overlay
+- `--dev` CLI flag: Enables developer diagnostics (`F9` Engine Telemetry overlay & `F1` quick pit teleport)

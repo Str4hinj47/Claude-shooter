@@ -3736,26 +3736,27 @@ float GameSession::cameraFovDeg(bool aiming) const {
   if (gunsmithOpen_) {
     return 40.0f;
   }
+  const float fovScale = baseFovDeg_ / 75.0f;
   if (inVehicle()) {
     if (const auto* cv = currentVehicle()) {
       const float spdFrac = std::clamp(std::abs(cv->speed) / 52.0f, 0.0f, 1.0f);
-      return 66.0f + spdFrac * 9.0f;
+      return std::clamp((66.0f + spdFrac * 9.0f) * fovScale, 52.0f, 108.0f);
     }
-    return 68.0f;
+    return std::clamp(68.0f * fovScale, 52.0f, 105.0f);
   }
-  const float baseFov = firstPersonMode_ ? 68.0f : 60.0f;
+  const float baseFov = std::clamp((firstPersonMode_ ? 68.0f : 60.0f) * fovScale, 50.0f, 105.0f);
   if (aiming && !weapons_[static_cast<size_t>(activeWeapon_)].isMelee) {
-    float adsFov = 48.0f;
+    float adsFov = 48.0f * fovScale;
     switch (weapons_[static_cast<size_t>(activeWeapon_)].optic) {
-      case WeaponOpticKind::IronSights:  adsFov = 54.0f; break;
-      case WeaponOpticKind::RedDot:      adsFov = 48.0f; break;
-      case WeaponOpticKind::Holo:        adsFov = 43.0f; break;
+      case WeaponOpticKind::IronSights:  adsFov = 54.0f * fovScale; break;
+      case WeaponOpticKind::RedDot:      adsFov = 48.0f * fovScale; break;
+      case WeaponOpticKind::Holo:        adsFov = 43.0f * fovScale; break;
       case WeaponOpticKind::Acog:        adsFov = 30.0f; break;
       case WeaponOpticKind::SniperScope: adsFov = 18.0f; break;
     }
     return firstPersonMode_ ? glm::mix(baseFov, adsFov, adsBlend_) : adsFov;
   }
-  return firstPersonMode_ ? glm::mix(baseFov, 48.0f, adsBlend_) : baseFov;
+  return firstPersonMode_ ? glm::mix(baseFov, 48.0f * fovScale, adsBlend_) : baseFov;
 }
 
 std::string GameSession::playerAnimClip(const PlayerController& player, bool blocking) const {

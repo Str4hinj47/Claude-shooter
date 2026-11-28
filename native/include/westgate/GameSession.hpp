@@ -1063,6 +1063,8 @@ public:
   glm::vec3 cameraPosition(const PlayerController& player) const;
   glm::vec3 cameraTarget(const PlayerController& player) const;
   float cameraFovDeg(bool aiming) const;
+  void setBaseFovDeg(float fovDeg) { baseFovDeg_ = std::clamp(fovDeg, 60.0f, 110.0f); }
+  float baseFovDeg() const { return baseFovDeg_; }
 
   // Player animation clip evaluation helpers
   std::string playerAnimClip(const PlayerController& player, bool blocking) const;
@@ -1273,6 +1275,7 @@ private:
   std::vector<BirdFlockMember> birdFlocks_;
   float worldAnimClock_ = 0.0f;
   glm::vec3 gunsmithCachedAnchor_{0.0f, 318.0f, 0.0f};
+  float baseFovDeg_ = 75.0f;
 };
 
 } // namespace westgate

@@ -2584,8 +2584,8 @@ void WorldRenderer::render(
   wgpuQueueWriteBuffer(ctx.queue(), frameUbo_, 0, &ubo, sizeof(ubo));
 
   PostUniforms postUbo{};
-  postUbo.screenSize = glm::vec4(static_cast<float>(ctx.width()), static_cast<float>(ctx.height()), 1.05f, 0.26f);
-  postUbo.projParams = glm::vec4(kCameraZNear, 2800.0f, 16.0f, 0.72f);
+  postUbo.screenSize = glm::vec4(static_cast<float>(ctx.width()), static_cast<float>(ctx.height()), 1.05f, bloomIntensity_);
+  postUbo.projParams = glm::vec4(kCameraZNear, 2800.0f, 16.0f, ssaoStrength_);
   wgpuQueueWriteBuffer(ctx.queue(), postUbo_, 0, &postUbo, sizeof(postUbo));
 
   const uint32_t charCount = static_cast<uint32_t>(std::min<size_t>(characters.size(), kMaxSkinSlots));

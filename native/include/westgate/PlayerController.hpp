@@ -14,6 +14,8 @@ struct PlayerInputState {
   bool crouch = false;
   bool jump = false;
   bool firstPersonLook = false;
+  float lookSensitivity = 1.0f;
+  bool invertY = false;
 };
 
 class PlayerController {

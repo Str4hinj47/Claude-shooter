@@ -242,6 +242,10 @@ class ChunkStreamer {
 
   void init(const WorldData& world);
   void update(const glm::vec3& focusPos, const Frustum& frustum);
+  void setRadii(float nearRadius, float lodRadius) {
+    nearRadius_ = nearRadius;
+    lodRadius_ = lodRadius;
+  }
 
   const std::vector<ActiveChunkView>& views() const { return views_; }
   uint32_t nearCount() const { return nearCount_; }

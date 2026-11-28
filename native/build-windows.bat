@@ -89,9 +89,13 @@ if exist "build\Release\westgate_tests.exe" (
 )
 if errorlevel 1 exit /b 1
 
-echo [Westgate Native Engine] Launching westgate_engine.exe...
-if exist "build\Release\westgate_engine.exe" (
-  start "" "build\Release\westgate_engine.exe"
+echo [Westgate Native] Launching WestgateLauncher.exe...
+if exist "build\Release\WestgateLauncher.exe" (
+  start "" "build\Release\WestgateLauncher.exe"
+) else if exist "build\WestgateLauncher.exe" (
+  start "" "build\WestgateLauncher.exe"
+) else if exist "build\Release\WestgateBay.exe" (
+  start "" "build\Release\WestgateBay.exe"
 ) else (
-  start "" "build\westgate_engine.exe"
+  start "" "build\WestgateBay.exe"
 )

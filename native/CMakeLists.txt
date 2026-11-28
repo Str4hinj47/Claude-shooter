@@ -86,6 +86,7 @@ FetchContent_MakeAvailable(JoltPhysics meshoptimizer cgltf glm nlohmann_json stb
 # ---------------------------------------------------------------------------
 add_library(westgate_core STATIC
   src/audio/AudioEngine.cpp
+  src/core/GameSettings.cpp
   src/core/WorldData.cpp
   src/core/GltfAssetLoader.cpp
   src/core/CharacterAnimator.cpp
@@ -226,48 +227,72 @@ if(WESTGATE_BUILD_DESKTOP)
   target_compile_definitions(imgui_sdl3_wgpu PUBLIC IMGUI_IMPL_WEBGPU_BACKEND_WGPU=1)
   target_link_libraries(imgui_sdl3_wgpu PUBLIC SDL3::SDL3 wgpu_native)
 
-  add_executable(westgate_engine
+  # Background Native Engine Runtime Library (westgate_runtime)
+  # Encapsulates WebGPU swapchain/PBR rendering, TrueType UI typography/theming, SDL3, and westgate_core
+  add_library(westgate_runtime STATIC
     src/render/WgpuContext.cpp
     src/render/WorldRenderer.cpp
-    src/app/GameHud.cpp
-    src/app/main.cpp
+    src/render/UiTheme.cpp
   )
-  target_include_directories(westgate_engine PRIVATE
+  target_include_directories(westgate_runtime PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${stb_SOURCE_DIR}"
   )
-  target_link_libraries(westgate_engine PRIVATE
+  target_link_libraries(westgate_runtime PUBLIC
     westgate_core
     SDL3::SDL3
     wgpu_native
     imgui_sdl3_wgpu
   )
 
-  # Stage runtime DLL, WGSL shaders, world data, and player GLB beside westgate_engine executable
+  # Standalone Shipping AAA Game Client (WestgateBay)
+  add_executable(WestgateBay
+    src/app/GameHud.cpp
+    src/app/main.cpp
+  )
+  target_link_libraries(WestgateBay PRIVATE westgate_runtime)
+
+  # Standalone Native Desktop Pre-Game Launcher (WestgateLauncher)
+  add_executable(WestgateLauncher
+    src/launcher/launcher_main.cpp
+  )
+  target_link_libraries(WestgateLauncher PRIVATE westgate_runtime)
+
+  # Stage runtime DLL, WGSL shaders, TrueType fonts, world data, and compatibility binary beside WestgateBay
   if(WIN32)
-    add_custom_command(TARGET westgate_engine POST_BUILD
+    add_custom_command(TARGET WestgateBay POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${WGPU_DIR}/lib/wgpu_native.dll"
-        "$<TARGET_FILE_DIR:westgate_engine>/wgpu_native.dll"
+        "$<TARGET_FILE_DIR:WestgateBay>/wgpu_native.dll"
     )
   endif()
 
-  add_custom_command(TARGET westgate_engine POST_BUILD
+  add_custom_command(TARGET WestgateBay POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
       "${CMAKE_CURRENT_SOURCE_DIR}/assets"
-      "$<TARGET_FILE_DIR:westgate_engine>/assets"
+      "$<TARGET_FILE_DIR:WestgateBay>/assets"
     COMMAND ${CMAKE_COMMAND} -E copy_directory
       "${CMAKE_CURRENT_SOURCE_DIR}/shaders"
-      "$<TARGET_FILE_DIR:westgate_engine>/assets/shaders"
+      "$<TARGET_FILE_DIR:WestgateBay>/assets/shaders"
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+      "$<TARGET_FILE_DIR:WestgateBay>/assets/fonts"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${imgui_SOURCE_DIR}/misc/fonts/Roboto-Medium.ttf"
+      "${imgui_SOURCE_DIR}/misc/fonts/Cousine-Regular.ttf"
+      "$<TARGET_FILE_DIR:WestgateBay>/assets/fonts/"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "$<TARGET_FILE:WestgateBay>"
+      "$<TARGET_FILE_DIR:WestgateBay>/westgate_engine$<TARGET_FILE_SUFFIX:WestgateBay>"
   )
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/fighter/base_body.glb")
     if(WIN32)
-      add_custom_command(TARGET westgate_engine POST_BUILD
+      add_custom_command(TARGET WestgateBay POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory
-          "$<TARGET_FILE_DIR:westgate_engine>/assets/characters/fighter"
+          "$<TARGET_FILE_DIR:WestgateBay>/assets/characters/fighter"
         COMMAND ${CMAKE_COMMAND} -E make_directory
-          "$<TARGET_FILE_DIR:westgate_engine>/assets/animations/combat"
+          "$<TARGET_FILE_DIR:WestgateBay>/assets/animations/combat"
         COMMAND ${CMAKE_COMMAND} -E make_directory
-          "$<TARGET_FILE_DIR:westgate_engine>/assets/models"
+          "$<TARGET_FILE_DIR:WestgateBay>/assets/models"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
           "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/fighter/base_body.glb"
           "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/fighter/clothing_shorts.glb"
@@ -275,7 +300,7 @@ if(WESTGATE_BUILD_DESKTOP)
           "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/fighter/clothing_boots.glb"
           "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/fighter/hair_short02.glb"
           "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/fighter/hair_short04.glb"
-          "$<TARGET_FILE_DIR:westgate_engine>/assets/characters/fighter/"
+          "$<TARGET_FILE_DIR:WestgateBay>/assets/characters/fighter/"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
           "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/soldier.glb"
           "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/military.glb"
@@ -287,22 +312,22 @@ if(WESTGATE_BUILD_DESKTOP)
           "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/civilian.glb"
           "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/police.glb"
           "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/security.glb"
-          "$<TARGET_FILE_DIR:westgate_engine>/assets/characters/"
+          "$<TARGET_FILE_DIR:WestgateBay>/assets/characters/"
         COMMAND ${CMAKE_COMMAND} -E copy_directory
           "${CMAKE_CURRENT_SOURCE_DIR}/../public/animations/combat"
-          "$<TARGET_FILE_DIR:westgate_engine>/assets/animations/combat"
+          "$<TARGET_FILE_DIR:WestgateBay>/assets/animations/combat"
         COMMAND ${CMAKE_COMMAND} -E copy_directory
           "${CMAKE_CURRENT_SOURCE_DIR}/../public/models"
-          "$<TARGET_FILE_DIR:westgate_engine>/assets/models"
+          "$<TARGET_FILE_DIR:WestgateBay>/assets/models"
         COMMAND ${CMAKE_COMMAND} -E copy_directory
           "${CMAKE_CURRENT_SOURCE_DIR}/../public/audio"
-          "$<TARGET_FILE_DIR:westgate_engine>/assets/audio"
+          "$<TARGET_FILE_DIR:WestgateBay>/assets/audio"
       )
     else()
-      add_custom_command(TARGET westgate_engine POST_BUILD
+      add_custom_command(TARGET WestgateBay POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory
           "${CMAKE_CURRENT_SOURCE_DIR}/shaders"
-          "$<TARGET_FILE_DIR:westgate_engine>/assets/shaders"
+          "$<TARGET_FILE_DIR:WestgateBay>/assets/shaders"
       )
     endif()
   endif()

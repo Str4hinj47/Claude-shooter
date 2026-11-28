@@ -21,6 +21,8 @@ class WgpuContext {
   bool saveOffscreenPng(const std::string& path, std::string* err = nullptr) const;
   void resize(uint32_t width, uint32_t height);
   void reconfigureSurface(bool forceRecreateDepth = false);
+  void setVsync(bool vsync);
+  bool vsync() const { return vsync_; }
   void shutdown();
 
   bool isOffscreen() const { return offscreenView_ != nullptr && surface_ == nullptr; }
@@ -52,6 +54,7 @@ class WgpuContext {
   WGPUSurfaceConfiguration surfaceConfig_{};
   uint32_t width_ = 1280;
   uint32_t height_ = 720;
+  bool vsync_ = true;
   std::string adapterName_ = "Unknown GPU";
 };
 

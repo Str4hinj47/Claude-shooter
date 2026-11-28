@@ -382,6 +382,31 @@ void WgpuContext::resize(uint32_t width, uint32_t height) {
   recreateDepthBuffer();
 }
 
+void WgpuContext::setVsync(bool vsync) {
+  vsync_ = vsync;
+  if (!surface_ || !adapter_ || !device_ || width_ == 0 || height_ == 0) return;
+
+  WGPUPresentMode chosen = WGPUPresentMode_Fifo;
+  if (!vsync) {
+    WGPUSurfaceCapabilities caps = WGPU_SURFACE_CAPABILITIES_INIT;
+    if (wgpuSurfaceGetCapabilities(surface_, adapter_, &caps) == WGPUStatus_Success) {
+      bool hasImmediate = false;
+      bool hasMailbox = false;
+      for (size_t i = 0; i < caps.presentModeCount; ++i) {
+        if (caps.presentModes[i] == WGPUPresentMode_Immediate) hasImmediate = true;
+        if (caps.presentModes[i] == WGPUPresentMode_Mailbox) hasMailbox = true;
+      }
+      if (hasImmediate) chosen = WGPUPresentMode_Immediate;
+      else if (hasMailbox) chosen = WGPUPresentMode_Mailbox;
+    }
+    wgpuSurfaceCapabilitiesFreeMembers(caps);
+  }
+  if (surfaceConfig_.presentMode != chosen) {
+    surfaceConfig_.presentMode = chosen;
+    wgpuSurfaceConfigure(surface_, &surfaceConfig_);
+  }
+}
+
 void WgpuContext::reconfigureSurface(bool forceRecreateDepth) {
   if (device_ && width_ > 0 && height_ > 0 && (forceRecreateDepth || !depthTexture_ || !depthView_)) {
     recreateDepthBuffer();

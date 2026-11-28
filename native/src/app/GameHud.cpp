@@ -7,8 +7,546 @@
 
 namespace westgate {
 
+namespace {
+
+void drawChamferPlate(
+  ImDrawList* dl,
+  ImVec2 tl,
+  ImVec2 br,
+  float cut,
+  ImU32 fillCol,
+  ImU32 borderCol,
+  float borderThick = 1.4f
+) {
+  const ImVec2 pts[6] = {
+    {tl.x + cut, tl.y},
+    {br.x,       tl.y},
+    {br.x,       br.y - cut},
+    {br.x - cut, br.y},
+    {tl.x,       br.y},
+    {tl.x,       tl.y + cut},
+  };
+  dl->AddConvexPolyFilled(pts, 6, fillCol);
+  if ((borderCol >> 24) > 0 && borderThick > 0.0f) {
+    dl->AddPolyline(pts, 6, borderCol, ImDrawFlags_Closed, borderThick);
+  }
+}
+
+const char* districtLabelForPos(const glm::vec3& p, const WorldData& world) {
+  if (glm::distance(glm::vec2(p.x, p.z), glm::vec2(world.fightPitPos.x, world.fightPitPos.z)) < 55.0f) {
+    return "IRON PIT ARENA";
+  }
+  if (p.y > 220.0f) return "PENTHOUSE SKY-SUITE";
+  if (p.z > 240.0f) return "SOVEREIGN HILLS";
+  if (p.z < -220.0f) return "MARINA WATERFRONT";
+  if (p.x > 220.0f) return "HARBOR INDUSTRIAL";
+  if (std::abs(p.x) < 190.0f && std::abs(p.z) < 190.0f) return "DOWNTOWN WESTGATE";
+  return "WESTGATE BAY";
+}
+
+bool drawAaaMenuBlade(
+  const char* id,
+  const char* label,
+  const char* rightTag,
+  ImFont* headingFont,
+  ImFont* monoFont,
+  float width,
+  bool primaryAccent = false,
+  bool disabled = false
+) {
+  const float h = 44.0f;
+  ImGui::PushID(id);
+  if (disabled) ImGui::BeginDisabled();
+  const ImVec2 p0 = ImGui::GetCursorScreenPos();
+  const bool clicked = ImGui::InvisibleButton("##blade", ImVec2(width, h));
+  const bool hovered = !disabled && ImGui::IsItemHovered();
+  const bool held = !disabled && ImGui::IsItemActive();
+  if (disabled) ImGui::EndDisabled();
+  ImGui::PopID();
+
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  const ImVec2 p1(p0.x + width, p0.y + h);
+  const ImU32 bgCol = disabled
+    ? IM_COL32(12, 16, 24, 150)
+    : (held ? IM_COL32(34, 88, 128, 242)
+            : (hovered ? IM_COL32(24, 52, 78, 238)
+                       : (primaryAccent ? IM_COL32(20, 38, 58, 228) : IM_COL32(13, 19, 29, 214))));
+  const ImU32 borderCol = hovered
+    ? IM_COL32(72, 216, 255, 245)
+    : (primaryAccent ? IM_COL32(238, 192, 68, 195) : IM_COL32(52, 78, 108, 140));
+  drawChamferPlate(dl, p0, p1, 8.0f, bgCol, borderCol, hovered ? 1.8f : 1.1f);
+
+  // Glowing left tactical bar
+  const ImU32 barCol = disabled
+    ? IM_COL32(75, 82, 95, 120)
+    : (hovered ? IM_COL32(72, 226, 255, 255)
+               : (primaryAccent ? IM_COL32(248, 198, 68, 255) : IM_COL32(58, 158, 214, 210)));
+  dl->AddRectFilled({p0.x, p0.y + 5.0f}, {p0.x + (hovered ? 5.5f : 4.0f), p1.y - 5.0f}, barCol, 1.5f);
+
+  ImFont* fMain = headingFont ? headingFont : ImGui::GetFont();
+  const float mainSz = headingFont ? headingFont->LegacySize : ImGui::GetFontSize();
+  const ImU32 txtCol = disabled ? IM_COL32(125, 134, 148, 180)
+                                : (hovered ? IM_COL32(255, 255, 255, 255) : IM_COL32(232, 240, 250, 248));
+  dl->AddText(fMain, mainSz, {p0.x + (hovered ? 20.0f : 16.0f), p0.y + (h - mainSz) * 0.5f}, txtCol, label);
+
+  if (rightTag && rightTag[0] != '\0') {
+    ImFont* fTag = monoFont ? monoFont : ImGui::GetFont();
+    const float tagSz = monoFont ? monoFont->LegacySize : ImGui::GetFontSize();
+    const ImVec2 ts = fTag->CalcTextSizeA(tagSz, 400.0f, 0.0f, rightTag);
+    const ImU32 tagCol = primaryAccent ? IM_COL32(248, 206, 92, 240) : IM_COL32(138, 178, 212, 215);
+    dl->AddText(fTag, tagSz, {p1.x - ts.x - 16.0f, p0.y + (h - tagSz) * 0.5f}, tagCol, rightTag);
+  }
+  return clicked && !disabled;
+}
+
+void drawSettingsModal(
+  HudUiState& ui,
+  GameSettings& settings,
+  const WgpuContext& gpu
+) {
+  const ImGuiViewport* vp = ImGui::GetMainViewport();
+  const ImVec2 disp = vp->Size;
+  ImDrawList* bg = ImGui::GetBackgroundDrawList();
+  bg->AddRectFilled({0.0f, 0.0f}, disp, IM_COL32(4, 7, 12, 212));
+
+  const ImVec2 winSize(std::min(760.0f, disp.x - 48.0f), std::min(530.0f, disp.y - 48.0f));
+  ImGui::SetNextWindowPos({(disp.x - winSize.x) * 0.5f, (disp.y - winSize.y) * 0.5f}, ImGuiCond_Always);
+  ImGui::SetNextWindowSize(winSize, ImGuiCond_Always);
+  ImGui::SetNextWindowBgAlpha(0.97f);
+  ImGui::Begin("##WestgateSettingsModal", nullptr,
+               ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar);
+
+  if (ui.fonts.heading) ImGui::PushFont(ui.fonts.heading);
+  ImGui::TextColored({0.36f, 0.90f, 1.0f, 1.0f}, "SYSTEM OPTIONS & GRAPHICS CONFIGURATION");
+  if (ui.fonts.heading) ImGui::PopFont();
+  ImGui::SameLine(winSize.x - 280.0f);
+  ImGui::TextDisabled("GPU: %s", gpu.adapterName().c_str());
+  ImGui::Separator();
+
+  const char* kTabNames[5] = {"DISPLAY", "GRAPHICS", "CONTROLS", "AUDIO", "KEYBINDINGS"};
+  for (int ti = 0; ti < 5; ++ti) {
+    if (ti > 0) ImGui::SameLine();
+    const bool sel = (ui.settingsTab == ti);
+    if (sel) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.52f, 0.74f, 1.0f));
+    if (ImGui::Button(kTabNames[ti], {(winSize.x - 68.0f) / 5.0f, 30.0f})) {
+      ui.settingsTab = ti;
+    }
+    if (sel) ImGui::PopStyleColor();
+  }
+
+  ImGui::Spacing();
+  ImGui::BeginChild("##SettingsBody", {0.0f, winSize.y - 156.0f}, true);
+
+  if (ui.settingsTab == 0) {
+    // DISPLAY
+    ImGui::TextColored({0.96f, 0.82f, 0.34f, 1.0f}, "WINDOW & PRESENTATION");
+    const WindowDisplayMode modes[3] = {
+      WindowDisplayMode::BorderlessFullscreen,
+      WindowDisplayMode::ExclusiveFullscreen,
+      WindowDisplayMode::Windowed
+    };
+    for (int mi = 0; mi < 3; ++mi) {
+      if (mi > 0) ImGui::SameLine();
+      const bool sel = (settings.windowMode == modes[mi]);
+      if (sel) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.54f, 0.76f, 1.0f));
+      if (ImGui::Button(GameSettings::windowModeLabel(modes[mi]), {218.0f, 28.0f})) {
+        settings.windowMode = modes[mi];
+        ui.requestApplySettings = true;
+      }
+      if (sel) ImGui::PopStyleColor();
+    }
+
+    ImGui::Spacing();
+    ImGui::Text("Render Resolution (Windowed / Fullscreen):");
+    struct ResPreset { int w; int h; const char* label; };
+    static const ResPreset kRes[4] = {
+      {1280, 720,  "1280 x 720 (HD)"},
+      {1600, 900,  "1600 x 900 (HD+)"},
+      {1920, 1080, "1920 x 1080 (FHD)"},
+      {2560, 1440, "2560 x 1440 (QHD)"},
+    };
+    for (int ri = 0; ri < 4; ++ri) {
+      if (ri > 0) ImGui::SameLine();
+      const bool sel = (settings.resolutionWidth == kRes[ri].w && settings.resolutionHeight == kRes[ri].h);
+      if (sel) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.54f, 0.76f, 1.0f));
+      if (ImGui::Button(kRes[ri].label, {162.0f, 27.0f})) {
+        settings.resolutionWidth = kRes[ri].w;
+        settings.resolutionHeight = kRes[ri].h;
+        ui.requestApplySettings = true;
+      }
+      if (sel) ImGui::PopStyleColor();
+    }
+
+    ImGui::Spacing();
+    if (ImGui::Checkbox("Vertical Sync (VSync - Tear-Free Presentation)", &settings.vsync)) {
+      ui.requestApplySettings = true;
+    }
+    ImGui::Checkbox("Show Minimal Corner FPS Counter", &settings.showFpsCounter);
+
+    ImGui::Spacing();
+    ImGui::Text("Frame Rate Limit:");
+    static const int kCaps[5] = {0, 60, 120, 144, 240};
+    static const char* kCapLabels[5] = {"Uncapped", "60 FPS", "120 FPS", "144 FPS", "240 FPS"};
+    for (int ci = 0; ci < 5; ++ci) {
+      if (ci > 0) ImGui::SameLine();
+      const bool sel = (settings.frameRateLimit == kCaps[ci]);
+      if (sel) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.54f, 0.76f, 1.0f));
+      if (ImGui::Button(kCapLabels[ci], {128.0f, 26.0f})) {
+        settings.frameRateLimit = kCaps[ci];
+        ui.requestApplySettings = true;
+      }
+      if (sel) ImGui::PopStyleColor();
+    }
+  } else if (ui.settingsTab == 1) {
+    // GRAPHICS
+    ImGui::TextColored({0.96f, 0.82f, 0.34f, 1.0f}, "RENDERING QUALITY & POST-PROCESSING");
+    const GraphicsPreset presets[4] = {
+      GraphicsPreset::Low, GraphicsPreset::Medium, GraphicsPreset::High, GraphicsPreset::Ultra
+    };
+    for (int pi = 0; pi < 4; ++pi) {
+      if (pi > 0) ImGui::SameLine();
+      const bool sel = (settings.graphicsPreset == presets[pi]);
+      if (sel) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.54f, 0.76f, 1.0f));
+      if (ImGui::Button(GameSettings::graphicsPresetLabel(presets[pi]), {162.0f, 28.0f})) {
+        settings.applyGraphicsPreset(presets[pi]);
+        ui.requestApplySettings = true;
+      }
+      if (sel) ImGui::PopStyleColor();
+    }
+
+    ImGui::Spacing();
+    if (ImGui::SliderFloat("Field of View (FOV)", &settings.fieldOfViewDeg, 65.0f, 105.0f, "%.0f deg")) {
+      ui.requestApplySettings = true;
+    }
+    float distPct = settings.drawDistanceScale * 100.0f;
+    if (ImGui::SliderFloat("World Streaming Distance", &distPct, 65.0f, 140.0f, "%.0f%%")) {
+      settings.drawDistanceScale = distPct * 0.01f;
+      settings.graphicsPreset = GraphicsPreset::Custom;
+      ui.requestApplySettings = true;
+    }
+    float ssaoPct = (settings.ssaoStrength / 0.72f) * 100.0f;
+    if (ImGui::SliderFloat("SSAO Ambient Occlusion", &ssaoPct, 0.0f, 160.0f, "%.0f%%")) {
+      settings.ssaoStrength = (ssaoPct * 0.01f) * 0.72f;
+      settings.graphicsPreset = GraphicsPreset::Custom;
+      ui.requestApplySettings = true;
+    }
+    float bloomPct = (settings.bloomIntensity / 0.34f) * 100.0f;
+    if (ImGui::SliderFloat("HDR Bloom Intensity", &bloomPct, 0.0f, 180.0f, "%.0f%%")) {
+      settings.bloomIntensity = (bloomPct * 0.01f) * 0.34f;
+      settings.graphicsPreset = GraphicsPreset::Custom;
+      ui.requestApplySettings = true;
+    }
+  } else if (ui.settingsTab == 2) {
+    // CONTROLS & CAMERA
+    ImGui::TextColored({0.96f, 0.82f, 0.34f, 1.0f}, "MOUSE AIMING & CAMERA PREFERENCES");
+    if (ImGui::SliderFloat("Mouse Look Sensitivity", &settings.mouseSensitivity, 0.20f, 3.00f, "%.2fx")) {
+      ui.requestApplySettings = true;
+    }
+    if (ImGui::SliderFloat("ADS Zoom Sensitivity Multiplier", &settings.adsSensitivityMult, 0.25f, 1.20f, "%.2fx")) {
+      ui.requestApplySettings = true;
+    }
+    if (ImGui::Checkbox("Invert Vertical Mouse Look (Y-Axis)", &settings.invertMouseY)) {
+      ui.requestApplySettings = true;
+    }
+    if (ImGui::Checkbox("Default On-Foot Perspective: First-Person Mode", &settings.defaultFirstPerson)) {
+      ui.requestApplySettings = true;
+    }
+    ImGui::Checkbox("Display Voiceover & Radio Comms Subtitles", &settings.showSubtitles);
+  } else if (ui.settingsTab == 3) {
+    // AUDIO
+    ImGui::TextColored({0.96f, 0.82f, 0.34f, 1.0f}, "3D SPATIAL AUDIO MIXER");
+    float mv = settings.masterVolume * 100.0f;
+    if (ImGui::SliderFloat("Master Volume", &mv, 0.0f, 100.0f, "%.0f%%")) {
+      settings.masterVolume = mv * 0.01f;
+      ui.requestApplySettings = true;
+    }
+    float sv = settings.sfxVolume * 100.0f;
+    if (ImGui::SliderFloat("Weapons, Vehicles & Combat SFX", &sv, 0.0f, 100.0f, "%.0f%%")) {
+      settings.sfxVolume = sv * 0.01f;
+      ui.requestApplySettings = true;
+    }
+    float vv = settings.voiceVolume * 100.0f;
+    if (ImGui::SliderFloat("Story Dialogue & Tactical Comms", &vv, 0.0f, 100.0f, "%.0f%%")) {
+      settings.voiceVolume = vv * 0.01f;
+      ui.requestApplySettings = true;
+    }
+    float muv = settings.musicVolume * 100.0f;
+    if (ImGui::SliderFloat("Mission Score & Ambience", &muv, 0.0f, 100.0f, "%.0f%%")) {
+      settings.musicVolume = muv * 0.01f;
+      ui.requestApplySettings = true;
+    }
+  } else {
+    // KEYBINDINGS
+    ImGui::TextColored({0.96f, 0.82f, 0.34f, 1.0f}, "OPERATIVE KEYBOARD & MOUSE BINDINGS");
+    struct KeyRow { const char* action; const char* key; };
+    static const KeyRow kRows[] = {
+      {"Move / Strafe",                "W / A / S / D"},
+      {"Sprint / Tactical Crouch",     "Left Shift  /  C or Left Ctrl"},
+      {"Jump / Vehicle Handbrake",     "Spacebar"},
+      {"Fire Weapon / Jab-Combo",      "Left Mouse Button"},
+      {"Aim Down Sights (3D Optic)",   "Right Mouse Button (Hold)"},
+      {"Reload Firearm",               "R"},
+      {"Select Weapon Slot",           "1 - 6  or  Mouse Wheel"},
+      {"Toggle 1st / 3rd Person View", "V  (On Foot)  or  F5"},
+      {"Silent Takedown (Behind NPC)", "V  (When Prompted)  /  U (Shoot)"},
+      {"Carry / Conceal Body",         "J"},
+      {"Enter / Exit Vehicle",         "G"},
+      {"Interact / Safehouse / Shop",  "B"},
+      {"Iron Pit Uppercut / Kick / Dodge", "Q  /  E  /  X  (Z = Grapple)"},
+      {"Open Tactical SkyPhone",       "P"},
+      {"Open 3D Gunsmith Studio",      "F2"},
+      {"Pause Game / Options",         "ESC"},
+    };
+    if (ImGui::BeginTable("##KeybindTable", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH)) {
+      ImGui::TableSetupColumn("Action", ImGuiTableColumnFlags_WidthStretch);
+      ImGui::TableSetupColumn("Binding", ImGuiTableColumnFlags_WidthFixed, 250.0f);
+      for (const auto& r : kRows) {
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::TextUnformatted(r.action);
+        ImGui::TableSetColumnIndex(1);
+        ImGui::TextColored({0.42f, 0.90f, 1.0f, 1.0f}, "%s", r.key);
+      }
+      ImGui::EndTable();
+    }
+  }
+
+  ImGui::EndChild();
+  ImGui::Spacing();
+  if (ImGui::Button("Restore Defaults", {165.0f, 32.0f})) {
+    settings = GameSettings{};
+    ui.requestApplySettings = true;
+  }
+  ImGui::SameLine(winSize.x - 340.0f);
+  if (ImGui::Button("Apply & Save", {155.0f, 32.0f})) {
+    settings.saveToFile(ui.settingsPath);
+    ui.requestApplySettings = true;
+  }
+  ImGui::SameLine();
+  ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16f, 0.54f, 0.38f, 1.0f));
+  if (ImGui::Button("Back [ESC]", {155.0f, 32.0f})) {
+    settings.saveToFile(ui.settingsPath);
+    ui.requestApplySettings = true;
+    ui.showSettings = false;
+  }
+  ImGui::PopStyleColor();
+  ImGui::End();
+}
+
+void drawMainMenuScreen(
+  HudUiState& ui,
+  GameSettings& settings,
+  GameSession& session,
+  PlayerController& player,
+  const WorldData& world,
+  const WgpuContext& gpu,
+  AudioEngine* audio
+) {
+  const ImGuiViewport* vp = ImGui::GetMainViewport();
+  const ImVec2 disp = vp->Size;
+  ImDrawList* bg = ImGui::GetBackgroundDrawList();
+
+  // Left-side cinematic dark obsidian gradient over live 3D Westgate Bay world
+  const float gradW = std::min(720.0f, disp.x * 0.62f);
+  bg->AddRectFilledMultiColor(
+    {0.0f, 0.0f}, {gradW, disp.y},
+    IM_COL32(5, 8, 14, 240), IM_COL32(5, 8, 14, 0),
+    IM_COL32(5, 8, 14, 0),   IM_COL32(5, 8, 14, 245)
+  );
+  bg->AddRectFilledMultiColor(
+    {0.0f, disp.y - 90.0f}, disp,
+    IM_COL32(5, 8, 14, 0),   IM_COL32(5, 8, 14, 0),
+    IM_COL32(5, 8, 14, 215), IM_COL32(5, 8, 14, 215)
+  );
+
+  // Title Lockup (Top-Left)
+  const float leftX = 56.0f;
+  const float topY = std::max(44.0f, disp.y * 0.09f);
+  ImFont* fMono = ui.fonts.mono ? ui.fonts.mono : ImGui::GetFont();
+  ImFont* fHead = ui.fonts.heading ? ui.fonts.heading : ImGui::GetFont();
+  ImFont* fTitle = ui.fonts.title ? ui.fonts.title : fHead;
+
+  bg->AddRectFilled({leftX, topY}, {leftX + 5.0f, topY + 78.0f}, IM_COL32(248, 196, 64, 255), 1.5f);
+  bg->AddText(fMono, fMono->LegacySize, {leftX + 16.0f, topY + 2.0f}, IM_COL32(84, 214, 255, 235),
+              "VANGUARD SYNDICATE  //  STANDALONE NATIVE EDITION");
+  bg->AddText(fTitle, fTitle->LegacySize, {leftX + 15.0f, topY + 21.0f}, IM_COL32(246, 250, 255, 255),
+              "WESTGATE BAY");
+  bg->AddText(fHead, fHead->LegacySize, {leftX + 17.0f, topY + 62.0f}, IM_COL32(248, 198, 72, 245),
+              "VOSS // BLACK CONTRACT");
+  bg->AddLine({leftX, topY + 96.0f}, {leftX + 430.0f, topY + 96.0f}, IM_COL32(72, 188, 245, 110), 1.2f);
+
+  // Subtle bottom footer bar
+  char buildTag[160];
+  std::snprintf(buildTag, sizeof(buildTag), "WESTGATE RUNTIME v1.0   |   %s   |   %ux%u",
+                gpu.adapterName().c_str(), gpu.width(), gpu.height());
+  const ImVec2 bts = fMono->CalcTextSizeA(fMono->LegacySize, 900.0f, 0.0f, buildTag);
+  bg->AddText(fMono, fMono->LegacySize, {disp.x - bts.x - 28.0f, disp.y - 30.0f}, IM_COL32(158, 178, 202, 190), buildTag);
+  bg->AddText(fMono, fMono->LegacySize, {leftX, disp.y - 30.0f}, IM_COL32(168, 192, 218, 205),
+              "SELECT OPERATION TO DEPLOY   •   [ESC] OPTIONS   •   [F2] 3D GUNSMITH");
+
+  if (ui.showSettings) {
+    drawSettingsModal(ui, settings, gpu);
+    return;
+  }
+
+  // Interactive AAA Menu Blade Column
+  const float menuY = topY + 118.0f;
+  const float bladeW = 430.0f;
+  ImGui::SetNextWindowPos({leftX, menuY}, ImGuiCond_Always);
+  ImGui::SetNextWindowSize({bladeW + 16.0f, 360.0f}, ImGuiCond_Always);
+  ImGui::Begin("##MainMenuBlades", nullptr,
+               ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+               ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollbar);
+
+  char contTag[64] = "DEPLOY PROFILE";
+  if (ui.saveFileExists) {
+    std::snprintf(contTag, sizeof(contTag), "STEP %d/9  •  $%d", session.storyStep(), session.playerCash());
+  }
+  if (drawAaaMenuBlade("mm_continue", ui.saveFileExists ? "CONTINUE OPERATION" : "DEPLOY OPERATIVE",
+                       contTag, ui.fonts.heading, ui.fonts.mono, bladeW, true)) {
+    ui.screen = AppScreen::InGame;
+    ui.requestEngageMouseCapture = true;
+  }
+
+  if (drawAaaMenuBlade("mm_campaign", "NEW CAMPAIGN", "CH 01 PROLOGUE",
+                       ui.fonts.heading, ui.fonts.mono, bladeW)) {
+    ui.requestNewCampaign = true;
+    ui.screen = AppScreen::InGame;
+    ui.requestEngageMouseCapture = true;
+  }
+
+  if (drawAaaMenuBlade("mm_freeroam", "FREE ROAM SANDBOX", "OPEN CITY",
+                       ui.fonts.heading, ui.fonts.mono, bladeW)) {
+    session.abortActiveMissionOrSurveillance();
+    session.teleportTo(world.spawnPos, world.spawnYawDeg, player);
+    ui.screen = AppScreen::InGame;
+    ui.requestEngageMouseCapture = true;
+  }
+
+  if (drawAaaMenuBlade("mm_gunsmith", "3D GUNSMITH STUDIO", "ARSENAL & CERAKOTE",
+                       ui.fonts.heading, ui.fonts.mono, bladeW)) {
+    ui.gunsmithReturnToMenu = true;
+    ui.screen = AppScreen::InGame;
+    session.setGunsmithOpen(true);
+    session.setGunsmithSlot(session.activeWeaponIdx() > 0 ? session.activeWeaponIdx() : 2);
+  }
+
+  if (drawAaaMenuBlade("mm_settings", "SETTINGS & CONTROLS", "DISPLAY / AUDIO",
+                       ui.fonts.heading, ui.fonts.mono, bladeW)) {
+    ui.showSettings = true;
+  }
+
+  if (drawAaaMenuBlade("mm_quit", "QUIT TO DESKTOP", "EXIT",
+                       ui.fonts.heading, ui.fonts.mono, bladeW)) {
+    session.saveToFile(ui.savePath);
+    ui.requestQuitApp = true;
+  }
+
+  (void)audio;
+  ImGui::End();
+}
+
+void drawPauseScreen(
+  HudUiState& ui,
+  GameSettings& settings,
+  GameSession& session,
+  const WorldData& world,
+  const glm::vec3& pPos,
+  const WgpuContext& gpu
+) {
+  const ImGuiViewport* vp = ImGui::GetMainViewport();
+  const ImVec2 disp = vp->Size;
+  ImDrawList* bg = ImGui::GetBackgroundDrawList();
+
+  bg->AddRectFilled({0.0f, 0.0f}, disp, IM_COL32(5, 9, 15, 178));
+  bg->AddRectFilledMultiColor(
+    {0.0f, 0.0f}, {580.0f, disp.y},
+    IM_COL32(4, 7, 12, 235), IM_COL32(4, 7, 12, 0),
+    IM_COL32(4, 7, 12, 0),   IM_COL32(4, 7, 12, 235)
+  );
+
+  if (ui.showSettings) {
+    drawSettingsModal(ui, settings, gpu);
+    return;
+  }
+
+  const float leftX = 60.0f;
+  const float topY = std::max(44.0f, disp.y * 0.09f);
+  ImFont* fMono = ui.fonts.mono ? ui.fonts.mono : ImGui::GetFont();
+  ImFont* fHead = ui.fonts.heading ? ui.fonts.heading : ImGui::GetFont();
+  ImFont* fTitle = ui.fonts.title ? ui.fonts.title : fHead;
+
+  bg->AddRectFilled({leftX, topY}, {leftX + 5.0f, topY + 66.0f}, IM_COL32(72, 214, 255, 255), 1.5f);
+  bg->AddText(fMono, fMono->LegacySize, {leftX + 16.0f, topY + 2.0f}, IM_COL32(248, 198, 72, 240),
+              districtLabelForPos(pPos, world));
+  bg->AddText(fTitle, fTitle->LegacySize, {leftX + 15.0f, topY + 20.0f}, IM_COL32(246, 250, 255, 255),
+              "OPERATION PAUSED");
+
+  char statLine[128];
+  std::snprintf(statLine, sizeof(statLine), "CREDITS $%d   •   INTEL %d   •   SALVAGE %d   •   CHAPTER STEP %d/9",
+                session.playerCash(), session.playerIntel(), session.playerSalvage(), session.storyStep());
+  bg->AddText(fMono, fMono->LegacySize, {leftX, topY + 76.0f}, IM_COL32(168, 204, 232, 225), statLine);
+
+  if (ui.saveStatusTimer > 0.0f && !ui.saveStatusBanner.empty()) {
+    bg->AddText(fHead, fHead->LegacySize, {leftX, disp.y - 46.0f}, IM_COL32(82, 244, 152, 255), ui.saveStatusBanner.c_str());
+  }
+
+  const float bladeW = 420.0f;
+  ImGui::SetNextWindowPos({leftX, topY + 106.0f}, ImGuiCond_Always);
+  ImGui::SetNextWindowSize({bladeW + 16.0f, 420.0f}, ImGuiCond_Always);
+  ImGui::Begin("##PauseBlades", nullptr,
+               ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+               ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollbar);
+
+  if (drawAaaMenuBlade("p_resume", "RESUME GAME", "[ESC]", ui.fonts.heading, ui.fonts.mono, bladeW, true)) {
+    ui.screen = AppScreen::InGame;
+    ui.requestEngageMouseCapture = true;
+  }
+  if (drawAaaMenuBlade("p_phone", "TACTICAL SKYPHONE", "[P]", ui.fonts.heading, ui.fonts.mono, bladeW)) {
+    ui.screen = AppScreen::InGame;
+    ui.showPhone = true;
+  }
+  if (drawAaaMenuBlade("p_gunsmith", "3D GUNSMITH STUDIO", "[F2]", ui.fonts.heading, ui.fonts.mono, bladeW)) {
+    ui.gunsmithReturnToMenu = false;
+    ui.screen = AppScreen::InGame;
+    session.setGunsmithOpen(true);
+    session.setGunsmithSlot(session.activeWeaponIdx() > 0 ? session.activeWeaponIdx() : 2);
+  }
+  if (drawAaaMenuBlade("p_save", "SAVE PROGRESS", "WRITE DISK", ui.fonts.heading, ui.fonts.mono, bladeW)) {
+    if (session.saveToFile(ui.savePath)) {
+      ui.saveFileExists = true;
+      ui.saveStatusBanner = "CHECKPOINT SAVED TO DISK";
+      ui.saveStatusTimer = 3.0f;
+    }
+  }
+  if (drawAaaMenuBlade("p_load", "LOAD LAST SAVE", "RESTORE", ui.fonts.heading, ui.fonts.mono, bladeW, false, !ui.saveFileExists)) {
+    ui.requestLoadSave = true;
+    ui.screen = AppScreen::InGame;
+    ui.requestEngageMouseCapture = true;
+  }
+  if (drawAaaMenuBlade("p_settings", "SETTINGS & CONTROLS", "OPTIONS", ui.fonts.heading, ui.fonts.mono, bladeW)) {
+    ui.showSettings = true;
+  }
+  if (drawAaaMenuBlade("p_mainmenu", "EXIT TO MAIN MENU", "TITLE SCREEN", ui.fonts.heading, ui.fonts.mono, bladeW)) {
+    session.saveToFile(ui.savePath);
+    ui.saveFileExists = true;
+    ui.showPhone = false;
+    session.setGunsmithOpen(false);
+    ui.screen = AppScreen::MainMenu;
+  }
+  if (drawAaaMenuBlade("p_quit", "QUIT TO DESKTOP", "EXIT", ui.fonts.heading, ui.fonts.mono, bladeW)) {
+    session.saveToFile(ui.savePath);
+    ui.requestQuitApp = true;
+  }
+
+  ImGui::End();
+}
+
+} // namespace
+
 void drawWestgateHud(
   HudUiState& ui,
+  GameSettings& settings,
   GameSession& session,
   PlayerController& player,
   const PhysicsWorld& physics,
@@ -23,6 +561,25 @@ void drawWestgateHud(
   const ImVec2 disp = vp->Size;
   ImDrawList* bgDraw = ImGui::GetBackgroundDrawList();
   const glm::vec3 pPos = player.position();
+
+  // Optional minimal AAA corner FPS readout (only when toggled in Display Settings)
+  if (settings.showFpsCounter) {
+    ImFont* fMono = ui.fonts.mono ? ui.fonts.mono : ImGui::GetFont();
+    char fpsTxt[32];
+    std::snprintf(fpsTxt, sizeof(fpsTxt), "%.0f FPS", fps);
+    bgDraw->AddRectFilled({12.0f, 10.0f}, {84.0f, 30.0f}, IM_COL32(8, 12, 18, 185), 3.0f);
+    bgDraw->AddText(fMono, fMono->LegacySize, {20.0f, 13.0f}, IM_COL32(110, 242, 162, 240), fpsTxt);
+  }
+
+  // Live 3D Cinematic Main Menu & Simulation-Frozen [ESC] Pause Menu
+  if (ui.screen == AppScreen::MainMenu) {
+    drawMainMenuScreen(ui, settings, session, player, world, gpu, audio);
+    return;
+  }
+  if (ui.screen == AppScreen::Paused) {
+    drawPauseScreen(ui, settings, session, world, pPos, gpu);
+    return;
+  }
 
   // =========================================================================
   // 0. Dedicated Interactive 3D Gunsmith Design Studio Mode [F2]
@@ -274,8 +831,14 @@ void drawWestgateHud(
     }
     ImGui::SameLine();
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.54f, 0.36f, 1.0f));
-    if (ImGui::Button("Save & Return to Field [F2]", {-1.0f, 28.0f})) {
+    const char* retLbl = ui.gunsmithReturnToMenu ? "Save & Return to Title [ESC]" : "Save & Return to Field [F2]";
+    if (ImGui::Button(retLbl, {-1.0f, 28.0f})) {
       session.setGunsmithOpen(false);
+      session.saveToFile(ui.savePath);
+      if (ui.gunsmithReturnToMenu) {
+        ui.gunsmithReturnToMenu = false;
+        ui.screen = AppScreen::MainMenu;
+      }
     }
     ImGui::PopStyleColor();
     ImGui::End();
@@ -456,65 +1019,166 @@ void drawWestgateHud(
                     session.wantedStars(), "*****",
                     5 - session.wantedStars(), ".....");
       bgDraw->AddRectFilled({tl.x, br.y + 6.0f}, {br.x, br.y + 30.0f},
-                            sirenPhase ? IM_COL32(150, 24, 34, 215) : IM_COL32(24, 52, 145, 215), 6.0f);
+                            sirenPhase ? IM_COL32(150, 24, 34, 215) : IM_COL32(24, 52, 145, 215), 4.0f);
       bgDraw->AddText({tl.x + 12.0f, br.y + 11.0f}, IM_COL32(255, 255, 255, 255), starsBuf);
     }
+
+    // Crisp Radar North Badge & District/Clock/Cash Pill
+    ImFont* fMono = ui.fonts.mono ? ui.fonts.mono : ImGui::GetFont();
+    bgDraw->AddRectFilled({center.x - 10.0f, tl.y + 3.0f}, {center.x + 10.0f, tl.y + 18.0f}, IM_COL32(8, 14, 22, 220), 3.0f);
+    bgDraw->AddText(fMono, fMono->LegacySize, {center.x - 4.0f, tl.y + 3.0f}, IM_COL32(248, 198, 72, 255), "N");
+
+    const float infoY = br.y + (session.wantedStars() > 0 ? 34.0f : 6.0f);
+    drawChamferPlate(bgDraw, {tl.x, infoY}, {br.x, infoY + 24.0f}, 5.0f,
+                     IM_COL32(9, 15, 24, 215), IM_COL32(58, 128, 178, 130), 1.0f);
+    char clkBuf[48];
+    std::snprintf(clkBuf, sizeof(clkBuf), "%02d:%02d   $%d",
+                  static_cast<int>(session.timeOfDayHours()) % 24,
+                  static_cast<int>((session.timeOfDayHours() - std::floor(session.timeOfDayHours())) * 60.0f),
+                  session.playerCash());
+    bgDraw->AddText(fMono, fMono->LegacySize, {tl.x + 10.0f, infoY + 4.0f}, IM_COL32(182, 224, 252, 245), clkBuf);
   }
 
   // -------------------------------------------------------------------------
-  // 3. Bottom-Right Cash / Vitals / Weapon / Drivetrain Speedometer & RPM
+  // 3. Bespoke AAA Vector Tactical HUD (Bottom-Left Vitals + Bottom-Right Arsenal/Vehicle)
   // -------------------------------------------------------------------------
   {
+    ImFont* fMono = ui.fonts.mono ? ui.fonts.mono : ImGui::GetFont();
+    ImFont* fHead = ui.fonts.heading ? ui.fonts.heading : ImGui::GetFont();
+    ImFont* fTitle = ui.fonts.title ? ui.fonts.title : fHead;
+
+    // 3A. Bottom-Left Operative Vitals & Stance Plate
+    const ImVec2 vTl(22.0f, disp.y - 100.0f);
+    const ImVec2 vBr(326.0f, disp.y - 20.0f);
+    drawChamferPlate(bgDraw, vTl, vBr, 8.0f, IM_COL32(8, 13, 21, 212), IM_COL32(54, 118, 168, 135), 1.2f);
+    bgDraw->AddRectFilled({vTl.x, vTl.y + 6.0f}, {vTl.x + 4.0f, vBr.y - 6.0f}, IM_COL32(64, 212, 255, 245), 1.5f);
+
+    const char* camModeLbl = session.inVehicle()
+      ? (session.driveCameraMode() == 2 ? "HOOD CAM" : "CHASE CAM")
+      : (session.firstPersonMode() ? "1ST PERSON" : "3RD PERSON");
+    char stanceHdr[96];
+    std::snprintf(stanceHdr, sizeof(stanceHdr), "%s  •  %s",
+                  districtLabelForPos(pPos, world), camModeLbl);
+    bgDraw->AddText(fMono, fMono->LegacySize, {vTl.x + 14.0f, vTl.y + 7.5f}, IM_COL32(158, 198, 228, 225), stanceHdr);
+
+    // Health Bar
+    const float hpFrac = std::clamp(session.playerHp() / std::max(1.0f, session.playerMaxHp()), 0.0f, 1.0f);
+    const ImVec2 hp0(vTl.x + 14.0f, vTl.y + 30.0f);
+    const ImVec2 hp1(vBr.x - 14.0f, vTl.y + 43.0f);
+    bgDraw->AddRectFilled(hp0, hp1, IM_COL32(22, 30, 42, 225), 2.0f);
+    const ImU32 hpCol = (hpFrac < 0.30f) ? IM_COL32(248, 68, 68, 245) : IM_COL32(72, 232, 148, 245);
+    if (hpFrac > 0.005f) {
+      bgDraw->AddRectFilled(hp0, {hp0.x + (hp1.x - hp0.x) * hpFrac, hp1.y}, hpCol, 2.0f);
+    }
+
+    // Armor Bar (left 62%) + Stamina Bar (right 35%)
+    const float armFrac = std::clamp(session.playerArmor() / 100.0f, 0.0f, 1.0f);
+    const float stmFrac = std::clamp(session.playerStamina() / 100.0f, 0.0f, 1.0f);
+    const ImVec2 ar0(vTl.x + 14.0f, vTl.y + 49.0f);
+    const ImVec2 ar1(vTl.x + 190.0f, vTl.y + 58.0f);
+    bgDraw->AddRectFilled(ar0, ar1, IM_COL32(20, 28, 40, 225), 2.0f);
+    if (armFrac > 0.005f) {
+      bgDraw->AddRectFilled(ar0, {ar0.x + (ar1.x - ar0.x) * armFrac, ar1.y}, IM_COL32(68, 198, 255, 245), 2.0f);
+    }
+
+    const ImVec2 st0(vTl.x + 198.0f, vTl.y + 49.0f);
+    const ImVec2 st1(vBr.x - 14.0f, vTl.y + 58.0f);
+    bgDraw->AddRectFilled(st0, st1, IM_COL32(20, 28, 40, 225), 2.0f);
+    if (stmFrac > 0.005f) {
+      bgDraw->AddRectFilled(st0, {st0.x + (st1.x - st0.x) * stmFrac, st1.y}, IM_COL32(248, 198, 72, 235), 2.0f);
+    }
+
+    char vitSub[80];
+    std::snprintf(vitSub, sizeof(vitSub), "HP %.0f   ARM %.0f   •   INT %d  SLV %d",
+                  std::max(0.0f, session.playerHp()), session.playerArmor(),
+                  session.playerIntel(), session.playerSalvage());
+    bgDraw->AddText(fMono, fMono->LegacySize * 0.90f, {vTl.x + 14.0f, vTl.y + 62.0f}, IM_COL32(198, 214, 232, 215), vitSub);
+
+    // 3B. Bottom-Right Arsenal Ballistics OR Vehicle Drivetrain Cluster
     const bool drivingHud = session.inVehicle() && session.currentVehicle() != nullptr;
-    const float boxH = drivingHud ? 174.0f : 132.0f;
-    ImGui::SetNextWindowPos({disp.x - 324.0f, disp.y - boxH - 16.0f}, ImGuiCond_Always);
-    ImGui::SetNextWindowSize({308.0f, boxH}, ImGuiCond_Always);
-    ImGui::SetNextWindowBgAlpha(0.80f);
-    ImGui::Begin("##StatusBox", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar);
-    ImGui::TextColored({0.35f, 0.94f, 0.52f, 1.0f}, "$%d | %d INT | %d SLV  (%02d:%02d)",
-                       session.playerCash(),
-                       session.playerIntel(),
-                       session.playerSalvage(),
-                       static_cast<int>(session.timeOfDayHours()) % 24,
-                       static_cast<int>((session.timeOfDayHours() - std::floor(session.timeOfDayHours())) * 60.0f));
-    ImGui::ProgressBar(session.playerHp() / session.playerMaxHp(), {-1, 13}, "PLAYER HP");
+    const ImVec2 wTl(disp.x - 332.0f, disp.y - 106.0f);
+    const ImVec2 wBr(disp.x - 20.0f,  disp.y - 20.0f);
+    drawChamferPlate(bgDraw, wTl, wBr, 8.0f, IM_COL32(8, 13, 21, 216), IM_COL32(248, 196, 68, 140), 1.2f);
+    bgDraw->AddRectFilled({wBr.x - 4.0f, wTl.y + 6.0f}, {wBr.x, wBr.y - 6.0f}, IM_COL32(248, 196, 68, 245), 1.5f);
+
     if (drivingHud) {
       const auto* cv = session.currentVehicle();
       const auto& sp = GameSession::vehicleSpec(cv->kind);
-      char vehHpLabel[64];
-      std::snprintf(vehHpLabel, sizeof(vehHpLabel), "CHASSIS %.0f%%", std::clamp(cv->hp, 0.0f, 100.0f));
-      ImGui::ProgressBar(std::clamp(cv->hp / 100.0f, 0.0f, 1.0f), {-1, 13}, vehHpLabel);
-
       const float kmh = glm::length(glm::vec3(cv->speed, cv->verticalVel, 0.0f)) * 3.6f;
+
+      char spdNum[32];
+      std::snprintf(spdNum, sizeof(spdNum), "%03.0f", cv->isBoat ? (kmh * 0.54f) : std::abs(kmh));
+      bgDraw->AddText(fTitle, fTitle->LegacySize * 0.86f, {wTl.x + 16.0f, wTl.y + 8.0f}, IM_COL32(250, 252, 255, 255), spdNum);
+      bgDraw->AddText(fMono, fMono->LegacySize * 0.92f, {wTl.x + 94.0f, wTl.y + 11.0f}, IM_COL32(248, 198, 72, 240),
+                      cv->isBoat ? "KTS" : "KM/H");
+
+      char gearBadge[32];
       if (cv->isAircraft) {
-        ImGui::TextColored({0.95f, 0.84f, 0.36f, 1.0f}, "%s  |  %.0f KM/H  |  ALT %.0fm",
-                           sp.displayName, kmh, std::max(0.0f, cv->pos.y));
-        ImGui::TextDisabled("[Space/C] Climb/Descend  [V] Cam  [G] Exit");
+        std::snprintf(gearBadge, sizeof(gearBadge), "ALT %.0fm", std::max(0.0f, cv->pos.y));
       } else if (cv->isBoat) {
-        ImGui::TextColored({0.42f, 0.88f, 0.98f, 1.0f}, "%s  |  %.0f KTS (%.0f KM/H)",
-                           sp.displayName, kmh * 0.54f, kmh);
-        ImGui::TextDisabled("[W/S] Throttle  [A/D] Rudder  [V] Cam  [G] Exit");
+        std::snprintf(gearBadge, sizeof(gearBadge), "MARINE");
       } else {
         const char gearCh = (cv->gear < 0) ? 'R' : static_cast<char>('0' + std::clamp(cv->gear, 1, 9));
-        char stageTag[16] = "";
-        if (cv->engineStage > 0) std::snprintf(stageTag, sizeof(stageTag), " [STG%d]", cv->engineStage);
-        ImGui::TextColored({0.96f, 0.86f, 0.40f, 1.0f}, "%s%s  |  %.0f KM/H  [G%c]",
-                           sp.displayName, stageTag, std::abs(cv->speed) * 3.6f, gearCh);
-        char rpmLbl[48];
-        std::snprintf(rpmLbl, sizeof(rpmLbl), "%.0f RPM  ([Space] Drift  [V] Cam)", cv->rpm);
-        const float rpmNorm = std::clamp((cv->rpm - sp.idleRpm) / std::max(500.0f, sp.redlineRpm - sp.idleRpm), 0.0f, 1.0f);
-        ImGui::ProgressBar(rpmNorm, {-1, 13}, rpmLbl);
+        std::snprintf(gearBadge, sizeof(gearBadge), "[G%c]%s", gearCh, cv->engineStage > 0 ? " STG+" : "");
       }
+      bgDraw->AddText(fMono, fMono->LegacySize * 0.92f, {wTl.x + 94.0f, wTl.y + 27.0f}, IM_COL32(110, 224, 255, 240), gearBadge);
+
+      const ImVec2 nameSz = fMono->CalcTextSizeA(fMono->LegacySize * 0.94f, 200.0f, 0.0f, sp.displayName);
+      bgDraw->AddText(fMono, fMono->LegacySize * 0.94f,
+                      {std::max(wTl.x + 150.0f, wBr.x - nameSz.x - 14.0f), wTl.y + 12.0f},
+                      IM_COL32(218, 236, 255, 245), sp.displayName);
+
+      const float rpmNorm = cv->isAircraft
+        ? std::clamp(kmh / 180.0f, 0.1f, 1.0f)
+        : std::clamp((cv->rpm - sp.idleRpm) / std::max(500.0f, sp.redlineRpm - sp.idleRpm), 0.0f, 1.0f);
+      const ImVec2 t0(wTl.x + 16.0f, wTl.y + 52.0f);
+      const ImVec2 t1(wBr.x - 16.0f, wTl.y + 62.0f);
+      bgDraw->AddRectFilled(t0, t1, IM_COL32(20, 28, 40, 225), 2.0f);
+      const ImU32 tachCol = (rpmNorm > 0.84f) ? IM_COL32(252, 74, 68, 250) : IM_COL32(248, 196, 68, 245);
+      bgDraw->AddRectFilled(t0, {t0.x + (t1.x - t0.x) * rpmNorm, t1.y}, tachCol, 2.0f);
+
+      char chasSub[80];
+      std::snprintf(chasSub, sizeof(chasSub), "CHASSIS %.0f%%   •   [V] CAM   [G] EXIT", std::clamp(cv->hp, 0.0f, 100.0f));
+      bgDraw->AddText(fMono, fMono->LegacySize * 0.90f, {wTl.x + 16.0f, wTl.y + 66.0f}, IM_COL32(168, 188, 210, 215), chasSub);
     } else {
-      ImGui::ProgressBar(session.playerArmor() / 100.0f, {-1, 13}, "ARMOR");
       const auto& w = session.activeWeapon();
+      bgDraw->AddText(fHead, fHead->LegacySize * 0.88f, {wTl.x + 16.0f, wTl.y + 8.0f}, IM_COL32(242, 248, 255, 250), w.name.c_str());
+
       if (w.isMelee) {
-        ImGui::Text("WEAPON: %s  (Stamina %.0f%%)", w.shortName.c_str(), session.playerStamina());
+        bgDraw->AddText(fMono, fMono->LegacySize, {wTl.x + 16.0f, wTl.y + 36.0f}, IM_COL32(248, 198, 72, 240),
+                        "BARE-KNUCKLE CQC   •   [LMB] COMBO  [Q/E] HEAVY");
       } else {
-        ImGui::Text("WEAPON: %s   %d / %d", w.shortName.c_str(), w.magAmmo, w.reserveAmmo);
+        char magTxt[24];
+        char resTxt[32];
+        std::snprintf(magTxt, sizeof(magTxt), "%02d", w.magAmmo);
+        std::snprintf(resTxt, sizeof(resTxt), "/ %d", w.reserveAmmo);
+        const ImU32 magCol = (w.magAmmo == 0) ? IM_COL32(252, 74, 74, 255) : IM_COL32(250, 252, 255, 255);
+        bgDraw->AddText(fTitle, fTitle->LegacySize * 0.82f, {wTl.x + 16.0f, wTl.y + 27.0f}, magCol, magTxt);
+        bgDraw->AddText(fHead, fHead->LegacySize * 0.90f, {wTl.x + 68.0f, wTl.y + 37.0f}, IM_COL32(158, 182, 208, 235), resTxt);
+
+        char modeTag[48];
+        std::snprintf(modeTag, sizeof(modeTag), "%s  •  %s",
+                      w.automatic ? "AUTO" : "SEMI",
+                      w.suppressed ? "SUBSONIC SD" : "LOUD");
+        const ImU32 tagCol = w.suppressed ? IM_COL32(82, 238, 172, 245) : IM_COL32(252, 168, 78, 245);
+        bgDraw->AddText(fMono, fMono->LegacySize * 0.92f, {wTl.x + 148.0f, wTl.y + 40.0f}, tagCol, modeTag);
+      }
+
+      // Quick 1..6 Weapon Slot Pip Strip along bottom of Arsenal plate
+      for (int si = 0; si < static_cast<int>(session.weapons().size()) && si < 6; ++si) {
+        const bool unlocked = session.weapons()[static_cast<size_t>(si)].unlocked;
+        const bool active = (si == session.activeWeaponIdx());
+        const float px = wTl.x + 16.0f + static_cast<float>(si) * 46.5f;
+        const float py = wTl.y + 66.0f;
+        const ImU32 pCol = active ? IM_COL32(72, 216, 255, 245)
+                         : (unlocked ? IM_COL32(62, 86, 114, 195) : IM_COL32(26, 34, 46, 150));
+        bgDraw->AddRectFilled({px, py}, {px + 41.0f, py + 12.0f}, pCol, 2.0f);
+        char sNum[8];
+        std::snprintf(sNum, sizeof(sNum), "%d", si + 1);
+        bgDraw->AddText(fMono, fMono->LegacySize * 0.78f, {px + 17.0f, py - 0.5f},
+                        active ? IM_COL32(8, 14, 22, 255) : IM_COL32(215, 228, 242, 210), sNum);
       }
     }
-    ImGui::End();
   }
 
   // -------------------------------------------------------------------------
@@ -536,11 +1200,11 @@ void drawWestgateHud(
     bgDraw->AddText({bx + 16.0f, by + 8.0f}, IM_COL32(255, 232, 120, 255), session.contextPrompt().c_str());
   }
 
-  // Tactical Radio Comms & Voiceover Subtitle Banner (kept left of StatusBox so it never overlaps)
-  if (session.commsTimer() > 0.0f && !session.commsSubtitle().empty()) {
-    const float maxSubW = std::max(280.0f, disp.x - 360.0f);
-    ImGui::SetNextWindowPos({18.0f, disp.y - 122.0f}, ImGuiCond_Always);
-    ImGui::SetNextWindowSize({maxSubW, 50.0f}, ImGuiCond_Always);
+  // Tactical Radio Comms & Voiceover Subtitle Banner (honors Subtitles toggle, placed cleanly above Vitals)
+  if (settings.showSubtitles && session.commsTimer() > 0.0f && !session.commsSubtitle().empty()) {
+    const float maxSubW = std::min(560.0f, disp.x - 680.0f);
+    ImGui::SetNextWindowPos({(disp.x - maxSubW) * 0.5f, disp.y - 124.0f}, ImGuiCond_Always);
+    ImGui::SetNextWindowSize({maxSubW, 54.0f}, ImGuiCond_Always);
     ImGui::SetNextWindowBgAlpha(0.88f);
     ImGui::Begin("##CommsSubtitleBox", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar);
     ImGui::TextColored({0.42f, 0.92f, 0.96f, 1.0f}, "[%s]", session.commsSpeaker().c_str());
@@ -550,10 +1214,10 @@ void drawWestgateHud(
   }
 
   // -------------------------------------------------------------------------
-  // 4b. VOSS // BLACK CONTRACT: Boss Bar, Mission Checklist, Surveillance & Debrief
+  // 4b. VOSS // BLACK CONTRACT: Boss Bar, Top-Left Mission Tracker, Surveillance & Debrief
   // -------------------------------------------------------------------------
   if (const NpcEntity* boss = session.activeBossNpc()) {
-    const float bossY = ui.showTelemetry ? 162.0f : 58.0f;
+    const float bossY = (ui.devMode && ui.showTelemetry) ? 162.0f : 58.0f;
     ImGui::SetNextWindowPos({disp.x * 0.5f - 215.0f, bossY}, ImGuiCond_Always);
     ImGui::SetNextWindowSize({430.0f, 66.0f}, ImGuiCond_Always);
     ImGui::SetNextWindowBgAlpha(0.88f);
@@ -567,11 +1231,12 @@ void drawWestgateHud(
     ImGui::End();
   }
 
+  const float trackerTopY = (ui.devMode && ui.showTelemetry) ? 186.0f : (settings.showFpsCounter ? 38.0f : 20.0f);
   if (session.activeMission().active) {
     const auto& am = session.activeMission();
-    const float panelH = 88.0f + static_cast<float>(am.objectives.size()) * 19.0f + (session.activeAllyNpc() ? 32.0f : 0.0f);
-    ImGui::SetNextWindowPos({disp.x - 324.0f, 206.0f}, ImGuiCond_Always);
-    ImGui::SetNextWindowSize({308.0f, panelH}, ImGuiCond_Always);
+    const float panelH = 92.0f + static_cast<float>(am.objectives.size()) * 21.0f + (session.activeAllyNpc() ? 34.0f : 0.0f);
+    ImGui::SetNextWindowPos({22.0f, trackerTopY}, ImGuiCond_Always);
+    ImGui::SetNextWindowSize({322.0f, panelH}, ImGuiCond_Always);
     ImGui::SetNextWindowBgAlpha(0.82f);
     ImGui::Begin("##MissionChecklist", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar);
     ImGui::TextColored({0.38f, 0.88f, 1.0f, 1.0f}, "CH %02d // %s", am.chapter, am.codename.c_str());
@@ -592,8 +1257,8 @@ void drawWestgateHud(
     ImGui::End();
   } else if (session.activeSurveillance().active) {
     const auto& sv = session.activeSurveillance();
-    ImGui::SetNextWindowPos({disp.x - 324.0f, 206.0f}, ImGuiCond_Always);
-    ImGui::SetNextWindowSize({308.0f, 128.0f}, ImGuiCond_Always);
+    ImGui::SetNextWindowPos({22.0f, trackerTopY}, ImGuiCond_Always);
+    ImGui::SetNextWindowSize({322.0f, 132.0f}, ImGuiCond_Always);
     ImGui::SetNextWindowBgAlpha(0.84f);
     ImGui::Begin("##SurveillanceHud", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar);
     ImGui::TextColored({0.98f, 0.72f, 0.16f, 1.0f}, "SURVEILLANCE [%s] // %s", sv.code.c_str(), sv.targetName.c_str());
@@ -683,9 +1348,9 @@ void drawWestgateHud(
   }
 
   // -------------------------------------------------------------------------
-  // 5. F9 Telemetry Panel (Left)
+  // 5. Developer Telemetry Panel (STRICTLY gated behind --dev mode)
   // -------------------------------------------------------------------------
-  if (ui.showTelemetry) {
+  if (ui.devMode && ui.showTelemetry) {
     ImGui::SetNextWindowPos({14.0f, 14.0f}, ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowBgAlpha(0.78f);
     ImGui::Begin("Westgate Engine [F9]  |  Phone [P]", &ui.showTelemetry, ImGuiWindowFlags_AlwaysAutoResize);
