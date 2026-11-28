@@ -2694,7 +2694,12 @@ void GameSession::update(float dt, const GameInputFrame& input, PlayerController
   if (audio) {
     audio->setListener(player.position() + glm::vec3(0.0f, 1.5f, 0.0f), player.yaw());
     if (const auto* veh = currentVehicle()) {
-      audio->setEngineState(true, std::abs(veh->speed) / std::max(1.0f, veh->maxSpeed));
+      const auto& vsp = vehicleSpec(veh->kind);
+      const float spdRatio = std::clamp(std::abs(veh->speed) / std::max(1.0f, veh->maxSpeed), 0.0f, 1.2f);
+      const float rpmRatio = (veh->isAircraft || veh->isBoat)
+        ? (veh->isAircraft ? std::max(0.25f, veh->rotorRpm01) : spdRatio)
+        : std::clamp((veh->rpm - vsp.idleRpm) / std::max(500.0f, vsp.redlineRpm - vsp.idleRpm), 0.0f, 1.05f);
+      audio->setEngineState(!veh->destroyed, 0.30f * spdRatio + 0.70f * rpmRatio);
     } else {
       audio->setEngineState(false, 0.0f);
     }
