@@ -2,6 +2,7 @@
 #include "imgui.h"
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 
 namespace westgate {
@@ -267,7 +268,7 @@ void drawWestgateHud(
           for (size_t i = 0; i < session.contracts().size(); ++i) {
             const auto& c = session.contracts()[i];
             ImGui::PushID(static_cast<int>(i));
-            ImGui::Text("%s: %s — %s (%s)", c.code.c_str(), c.title.c_str(), c.targetName.c_str(), c.district.c_str());
+            ImGui::Text("%s: %s - %s (%s)", c.code.c_str(), c.title.c_str(), c.targetName.c_str(), c.district.c_str());
             ImGui::TextColored({0.4f, 0.9f, 0.5f, 1.0f}, "Payout: $%d (+$%d Unseen)  %s",
                                c.rewardBase, c.unseenBonus, c.completed ? "[COMPLETED]" : "");
             if (ImGui::Button("Accept & Track GPS")) {
@@ -322,7 +323,7 @@ void drawWestgateHud(
           for (size_t i = 0; i < session.races().size(); ++i) {
             const auto& r = session.races()[i];
             ImGui::PushID(static_cast<int>(100 + i));
-            ImGui::Text("%s — 1st Prize: $%d %s", r.name.c_str(), r.rewardFirst, r.won ? "[WON]" : "");
+            ImGui::Text("%s - 1st Prize: $%d %s", r.name.c_str(), r.rewardFirst, r.won ? "[WON]" : "");
             if (ImGui::Button("Start Race (Spawns Supercar)")) {
               session.startStreetRace(static_cast<int>(i), player, world);
               ui.showPhone = false;
@@ -343,7 +344,7 @@ void drawWestgateHud(
           for (size_t i = 1; i < session.weapons().size(); ++i) {
             const auto& w = session.weapons()[i];
             ImGui::PushID(static_cast<int>(200 + i));
-            ImGui::Text("[%zu] %s — DMG %.0f %s", i, w.name.c_str(), w.damage, w.suppressed ? "(Suppressed)" : "(Loud)");
+            ImGui::Text("[%zu] %s - DMG %.0f %s", i, w.name.c_str(), w.damage, w.suppressed ? "(Suppressed)" : "(Loud)");
             if (!w.unlocked) {
               char lbl[64];
               std::snprintf(lbl, sizeof(lbl), "Unlock ($%d)", w.price);

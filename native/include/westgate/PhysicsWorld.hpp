@@ -1,6 +1,8 @@
 #pragma once
 
 #include "WorldData.hpp"
+#include <cstddef>
+#include <cstdint>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <memory>

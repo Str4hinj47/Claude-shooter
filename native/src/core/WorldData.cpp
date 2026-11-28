@@ -1,8 +1,11 @@
 #include "westgate/WorldData.hpp"
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <fstream>
 #include <nlohmann/json.hpp>
+#include <string>
 
 namespace westgate {
 

@@ -8,6 +8,7 @@
 #include "westgate/AudioEngine.hpp"
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 
 #if defined(__has_include)

@@ -7,6 +7,7 @@
 #include "westgate/WgpuContext.hpp"
 #include "westgate/WorldData.hpp"
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <glm/glm.hpp>
 #include <string>
@@ -232,6 +233,7 @@ private:
 
   uint32_t offscreenW_ = 0;
   uint32_t offscreenH_ = 0;
+  WGPUTextureView boundDepthView_ = nullptr;
   WGPUTexture hdrTex_ = nullptr;
   WGPUTextureView hdrView_ = nullptr;
   WGPUTexture ssaoTex_ = nullptr;

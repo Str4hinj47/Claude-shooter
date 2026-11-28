@@ -6,12 +6,19 @@
 #include "westgate/PlayerController.hpp"
 #include "westgate/WorldData.hpp"
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <cassert>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <glm/gtc/matrix_transform.hpp>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 #ifndef WESTGATE_SOURCE_ROOT
 #define WESTGATE_SOURCE_ROOT "."

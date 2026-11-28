@@ -2,6 +2,8 @@
 
 #include "westgate/GltfAssetLoader.hpp"
 #include <array>
+#include <cstddef>
+#include <cstdint>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <string>

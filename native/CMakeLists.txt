@@ -130,6 +130,10 @@ if(WESTGATE_BUILD_DESKTOP)
   set(SDL_FORCE_STATIC_VCRT OFF CACHE BOOL "" FORCE)
   set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
   set(SDL_TESTS OFF CACHE BOOL "" FORCE)
+  if(UNIX AND NOT APPLE AND NOT EXISTS "/usr/include/X11/Xlib.h" AND NOT EXISTS "/usr/include/wayland-client.h")
+    set(SDL_UNIX_CONSOLE_BUILD ON CACHE BOOL "" FORCE)
+    set(SDL_AUDIO OFF CACHE BOOL "" FORCE)
+  endif()
   FetchContent_Declare(
     SDL3
     URL https://codeload.github.com/libsdl-org/SDL/tar.gz/refs/tags/release-3.4.20
@@ -221,7 +225,10 @@ if(WESTGATE_BUILD_DESKTOP)
     src/app/GameHud.cpp
     src/app/main.cpp
   )
-  target_include_directories(westgate_engine PRIVATE "${miniaudio_SOURCE_DIR}")
+  target_include_directories(westgate_engine PRIVATE
+    "${miniaudio_SOURCE_DIR}"
+    "${stb_SOURCE_DIR}"
+  )
   target_link_libraries(westgate_engine PRIVATE
     westgate_core
     SDL3::SDL3
@@ -247,88 +254,44 @@ if(WESTGATE_BUILD_DESKTOP)
       "$<TARGET_FILE_DIR:westgate_engine>/assets/shaders"
   )
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/fighter/base_body.glb")
-    add_custom_command(TARGET westgate_engine POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E make_directory
-        "$<TARGET_FILE_DIR:westgate_engine>/assets/characters/fighter"
-      COMMAND ${CMAKE_COMMAND} -E make_directory
-        "$<TARGET_FILE_DIR:westgate_engine>/assets/animations/combat"
-      COMMAND ${CMAKE_COMMAND} -E make_directory
-        "$<TARGET_FILE_DIR:westgate_engine>/assets/models"
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/fighter/base_body.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/fighter/clothing_shorts.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/fighter/clothing_jeans.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/fighter/clothing_boots.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/fighter/hair_short02.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/fighter/hair_short04.glb"
-        "$<TARGET_FILE_DIR:westgate_engine>/assets/characters/fighter/"
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/business.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/civilian.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/police.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/security.glb"
-        "$<TARGET_FILE_DIR:westgate_engine>/assets/characters/"
-      COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/animations/combat"
-        "$<TARGET_FILE_DIR:westgate_engine>/assets/animations/combat"
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/tree_palm.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/tree_oak.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/tree_pine.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/bush.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/rock.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/dumpster_bin.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/park_bench.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/sign_stop.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/trash_bin.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/police_cruiser.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/taxi.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/sedan.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/mustang.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/ferrari.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/rangerover.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/speedboat.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/cruiser_boat.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/heli.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/ambulance.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/firetruck.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/delivery.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/semi.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/audi.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/challenger.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/r8.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/cruise_ship.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/airliner_737.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/plane.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/fuel_tank.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/rooftop_ac.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/antenna.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/int_bed.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/int_couch_l.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/int_tv.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/int_fridge.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/store_shelf.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/ph_steel_shelves.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/kk_rug.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/pit_barrel.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/pit_barrel_open.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/pit_barrier.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/pit_cash_register.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/pit_chair.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/pit_crate_stack.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/pit_floodlight.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/pit_pallet.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/pit_speaker.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/pit_stool.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/pit_trophy.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/int_table.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/pos_terminal.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/stash_bag.glb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/medkit.glb"
-        "$<TARGET_FILE_DIR:westgate_engine>/assets/models/"
-      COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_CURRENT_SOURCE_DIR}/../public/models/houses"
-        "$<TARGET_FILE_DIR:westgate_engine>/assets/models/houses"
-    )
+    if(WIN32)
+      add_custom_command(TARGET westgate_engine POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+          "$<TARGET_FILE_DIR:westgate_engine>/assets/characters/fighter"
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+          "$<TARGET_FILE_DIR:westgate_engine>/assets/animations/combat"
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+          "$<TARGET_FILE_DIR:westgate_engine>/assets/models"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/fighter/base_body.glb"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/fighter/clothing_shorts.glb"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/fighter/clothing_jeans.glb"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/fighter/clothing_boots.glb"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/fighter/hair_short02.glb"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/fighter/hair_short04.glb"
+          "$<TARGET_FILE_DIR:westgate_engine>/assets/characters/fighter/"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/business.glb"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/civilian.glb"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/police.glb"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters/security.glb"
+          "$<TARGET_FILE_DIR:westgate_engine>/assets/characters/"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+          "${CMAKE_CURRENT_SOURCE_DIR}/../public/animations/combat"
+          "$<TARGET_FILE_DIR:westgate_engine>/assets/animations/combat"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+          "${CMAKE_CURRENT_SOURCE_DIR}/../public/models"
+          "$<TARGET_FILE_DIR:westgate_engine>/assets/models"
+      )
+    else()
+      add_custom_command(TARGET westgate_engine POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E create_symlink
+          "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters"
+          "$<TARGET_FILE_DIR:westgate_engine>/assets/characters_link"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+          "${CMAKE_CURRENT_SOURCE_DIR}/shaders"
+          "$<TARGET_FILE_DIR:westgate_engine>/assets/shaders"
+      )
+    endif()
   endif()
 endif()

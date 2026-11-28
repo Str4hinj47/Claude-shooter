@@ -3,7 +3,10 @@
 #include "westgate/PhysicsWorld.hpp"
 #include "westgate/PlayerController.hpp"
 #include "westgate/WorldData.hpp"
+#include <algorithm>
 #include <array>
+#include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <glm/glm.hpp>
 #include <string>
@@ -115,6 +118,7 @@ struct VehicleEntity {
   bool isRacer = false;
   bool isBoat = false;
   bool isAircraft = false;
+  float rotorAngleRad = 0.0f;
   int racerRank = 0;
   int racerCheckpoint = 0;
   size_t roadIdx = 0;

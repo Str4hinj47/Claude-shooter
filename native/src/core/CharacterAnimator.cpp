@@ -1,7 +1,12 @@
 #include "westgate/CharacterAnimator.hpp"
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace westgate {
 

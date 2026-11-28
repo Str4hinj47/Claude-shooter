@@ -4,13 +4,17 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <sstream>
+#include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace westgate {
 
@@ -967,47 +971,61 @@ void WorldRenderer::releaseOffscreenTargets() {
   relTex(bloomTexB_);
   offscreenW_ = 0;
   offscreenH_ = 0;
+  boundDepthView_ = nullptr;
 }
 
 void WorldRenderer::ensureOffscreenTargets(WgpuContext& ctx) {
   const uint32_t w = std::max(1u, ctx.width());
   const uint32_t h = std::max(1u, ctx.height());
-  if (w == offscreenW_ && h == offscreenH_ && hdrView_ && ssaoView_ && bloomViewA_ && bloomViewB_) return;
+  const bool sizeSame = (w == offscreenW_ && h == offscreenH_ && hdrView_ && ssaoView_ && bloomViewA_ && bloomViewB_);
+  if (sizeSame && boundDepthView_ == ctx.depthView()) return;
 
-  releaseOffscreenTargets();
-  offscreenW_ = w;
-  offscreenH_ = h;
+  if (!sizeSame) {
+    releaseOffscreenTargets();
+    offscreenW_ = w;
+    offscreenH_ = h;
 
-  auto makeTarget = [&](uint32_t tw, uint32_t th, WGPUTextureFormat fmt, WGPUTexture& outTex, WGPUTextureView& outView) {
-    WGPUTextureDescriptor td = WGPU_TEXTURE_DESCRIPTOR_INIT;
-    td.usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding;
-    td.dimension = WGPUTextureDimension_2D;
-    td.size = {std::max(1u, tw), std::max(1u, th), 1};
-    td.format = fmt;
-    td.mipLevelCount = 1;
-    td.sampleCount = 1;
-    outTex = wgpuDeviceCreateTexture(ctx.device(), &td);
+    auto makeTarget = [&](uint32_t tw, uint32_t th, WGPUTextureFormat fmt, WGPUTexture& outTex, WGPUTextureView& outView) {
+      WGPUTextureDescriptor td = WGPU_TEXTURE_DESCRIPTOR_INIT;
+      td.usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding;
+      td.dimension = WGPUTextureDimension_2D;
+      td.size = {std::max(1u, tw), std::max(1u, th), 1};
+      td.format = fmt;
+      td.mipLevelCount = 1;
+      td.sampleCount = 1;
+      outTex = wgpuDeviceCreateTexture(ctx.device(), &td);
 
-    WGPUTextureViewDescriptor tvd = WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
-    tvd.format = fmt;
-    tvd.dimension = WGPUTextureViewDimension_2D;
-    tvd.mipLevelCount = 1;
-    tvd.arrayLayerCount = 1;
-    tvd.aspect = WGPUTextureAspect_All;
-    outView = wgpuTextureCreateView(outTex, &tvd);
-  };
+      WGPUTextureViewDescriptor tvd = WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
+      tvd.format = fmt;
+      tvd.dimension = WGPUTextureViewDimension_2D;
+      tvd.mipLevelCount = 1;
+      tvd.arrayLayerCount = 1;
+      tvd.aspect = WGPUTextureAspect_All;
+      outView = wgpuTextureCreateView(outTex, &tvd);
+    };
 
-  makeTarget(w, h, WGPUTextureFormat_RGBA16Float, hdrTex_, hdrView_);
-  makeTarget(std::max(1u, w / 2), std::max(1u, h / 2), WGPUTextureFormat_RGBA8Unorm, ssaoTex_, ssaoView_);
-  makeTarget(std::max(1u, w / 4), std::max(1u, h / 4), WGPUTextureFormat_RGBA16Float, bloomTexA_, bloomViewA_);
-  makeTarget(std::max(1u, w / 4), std::max(1u, h / 4), WGPUTextureFormat_RGBA16Float, bloomTexB_, bloomViewB_);
+    makeTarget(w, h, WGPUTextureFormat_RGBA16Float, hdrTex_, hdrView_);
+    makeTarget(std::max(1u, w / 2), std::max(1u, h / 2), WGPUTextureFormat_RGBA8Unorm, ssaoTex_, ssaoView_);
+    makeTarget(std::max(1u, w / 4), std::max(1u, h / 4), WGPUTextureFormat_RGBA16Float, bloomTexA_, bloomViewA_);
+    makeTarget(std::max(1u, w / 4), std::max(1u, h / 4), WGPUTextureFormat_RGBA16Float, bloomTexB_, bloomViewB_);
+  } else {
+    auto relBg = [](WGPUBindGroup& bg) {
+      if (bg) { wgpuBindGroupRelease(bg); bg = nullptr; }
+    };
+    relBg(postBgSSAO_);
+    relBg(postBgThresh_);
+    relBg(postBgBlurH_);
+    relBg(postBgBlurV_);
+    relBg(postBgComposite_);
+  }
 
-  // Bind groups for each post pass (no texture is simultaneously RenderAttachment & TextureBinding!)
-  postBgSSAO_ = createPostBindGroup(ctx, defaultWhiteTex_.view, defaultWhiteTex_.view, ctx.depthView(), defaultWhiteTex_.view);
-  postBgThresh_ = createPostBindGroup(ctx, hdrView_, defaultWhiteTex_.view, ctx.depthView(), defaultWhiteTex_.view);
-  postBgBlurH_ = createPostBindGroup(ctx, bloomViewA_, defaultWhiteTex_.view, ctx.depthView(), defaultWhiteTex_.view);
-  postBgBlurV_ = createPostBindGroup(ctx, bloomViewB_, defaultWhiteTex_.view, ctx.depthView(), defaultWhiteTex_.view);
-  postBgComposite_ = createPostBindGroup(ctx, hdrView_, bloomViewA_, ctx.depthView(), ssaoView_);
+  // Always bind the live ctx.depthView() so recreated depth buffers never leave a frozen silhouette in SSAO/Composite
+  boundDepthView_ = ctx.depthView();
+  postBgSSAO_ = createPostBindGroup(ctx, defaultWhiteTex_.view, defaultWhiteTex_.view, boundDepthView_, defaultWhiteTex_.view);
+  postBgThresh_ = createPostBindGroup(ctx, hdrView_, defaultWhiteTex_.view, boundDepthView_, defaultWhiteTex_.view);
+  postBgBlurH_ = createPostBindGroup(ctx, bloomViewA_, defaultWhiteTex_.view, boundDepthView_, defaultWhiteTex_.view);
+  postBgBlurV_ = createPostBindGroup(ctx, bloomViewB_, defaultWhiteTex_.view, boundDepthView_, defaultWhiteTex_.view);
+  postBgComposite_ = createPostBindGroup(ctx, hdrView_, bloomViewA_, boundDepthView_, ssaoView_);
 }
 
 bool WorldRenderer::loadGlbBatch(
@@ -1784,8 +1802,6 @@ void WorldRenderer::render(
   }
   wgpuQueueWriteBuffer(ctx.queue(), frameUbo_, 0, &ubo, sizeof(ubo));
 
-  ensureOffscreenTargets(ctx);
-
   PostUniforms postUbo{};
   postUbo.screenSize = glm::vec4(static_cast<float>(ctx.width()), static_cast<float>(ctx.height()), 1.05f, 0.28f);
   postUbo.projParams = glm::vec4(0.25f, 2800.0f, 16.0f, 0.72f);
@@ -1823,20 +1839,36 @@ void WorldRenderer::render(
   telemetry_.drawnCharacters = charCount;
 
   WGPUSurfaceTexture surfTex{};
-  wgpuSurfaceGetCurrentTexture(ctx.surface(), &surfTex);
-  if (ImGui_ImplWGPU_IsSurfaceStatusError(surfTex.status) || ImGui_ImplWGPU_IsSurfaceStatusSubOptimal(surfTex.status)) {
-    if (surfTex.texture) wgpuTextureRelease(surfTex.texture);
-    ctx.reconfigureSurface();
-    return;
+  WGPUTextureView backView = nullptr;
+  bool ownsBackView = false;
+  if (ctx.isOffscreen()) {
+    backView = ctx.offscreenView();
+  } else {
+    wgpuSurfaceGetCurrentTexture(ctx.surface(), &surfTex);
+    if (ImGui_ImplWGPU_IsSurfaceStatusError(surfTex.status) || ImGui_ImplWGPU_IsSurfaceStatusSubOptimal(surfTex.status)) {
+      if (surfTex.texture) {
+        wgpuTextureRelease(surfTex.texture);
+        surfTex.texture = nullptr;
+      }
+      ctx.reconfigureSurface();
+      wgpuSurfaceGetCurrentTexture(ctx.surface(), &surfTex);
+      if (ImGui_ImplWGPU_IsSurfaceStatusError(surfTex.status) || !surfTex.texture) {
+        if (surfTex.texture) wgpuTextureRelease(surfTex.texture);
+        return;
+      }
+    }
+    WGPUTextureViewDescriptor tvd = WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
+    tvd.format = ctx.surfaceFormat();
+    tvd.dimension = WGPUTextureViewDimension_2D;
+    tvd.mipLevelCount = 1;
+    tvd.arrayLayerCount = 1;
+    tvd.aspect = WGPUTextureAspect_All;
+    backView = wgpuTextureCreateView(surfTex.texture, &tvd);
+    ownsBackView = true;
   }
 
-  WGPUTextureViewDescriptor tvd = WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
-  tvd.format = ctx.surfaceFormat();
-  tvd.dimension = WGPUTextureViewDimension_2D;
-  tvd.mipLevelCount = 1;
-  tvd.arrayLayerCount = 1;
-  tvd.aspect = WGPUTextureAspect_All;
-  WGPUTextureView backView = wgpuTextureCreateView(surfTex.texture, &tvd);
+  // Ensure offscreen targets + depth bind groups AFTER any swapchain reconfiguration so boundDepthView_ is always live
+  ensureOffscreenTargets(ctx);
 
   WGPUCommandEncoderDescriptor encDesc = {};
   WGPUCommandEncoder enc = wgpuDeviceCreateCommandEncoder(ctx.device(), &encDesc);
@@ -2073,7 +2105,7 @@ void WorldRenderer::render(
   }
 
   // -------------------------------------------------------------------------
-  // Passes 3–7: Half-Res SSAO + Quarter-Res Bloom + ACES Composite Tonemap
+  // Passes 3-7: Half-Res SSAO + Quarter-Res Bloom + ACES Composite Tonemap
   // -------------------------------------------------------------------------
   const auto runFullscreenPost = [&](WGPUTextureView targetView, WGPURenderPipeline pipe, WGPUBindGroup bg) {
     if (!targetView || !pipe || !bg) return;
@@ -2125,12 +2157,14 @@ void WorldRenderer::render(
   WGPUCommandBufferDescriptor cmdDesc = {};
   WGPUCommandBuffer cmd = wgpuCommandEncoderFinish(enc, &cmdDesc);
   wgpuQueueSubmit(ctx.queue(), 1, &cmd);
-  wgpuSurfacePresent(ctx.surface());
+  if (!ctx.isOffscreen() && ctx.surface()) {
+    wgpuSurfacePresent(ctx.surface());
+  }
 
   wgpuCommandBufferRelease(cmd);
   wgpuCommandEncoderRelease(enc);
-  wgpuTextureViewRelease(backView);
-  wgpuTextureRelease(surfTex.texture);
+  if (ownsBackView && backView) wgpuTextureViewRelease(backView);
+  if (surfTex.texture) wgpuTextureRelease(surfTex.texture);
 }
 
 void WorldRenderer::shutdown() {

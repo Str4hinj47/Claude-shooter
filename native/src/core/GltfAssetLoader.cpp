@@ -7,8 +7,11 @@
 #include "westgate/GltfAssetLoader.hpp"
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <glm/gtc/type_ptr.hpp>
 #include <limits>
+#include <string>
 #include <vector>
 
 namespace westgate {

@@ -45,6 +45,8 @@ fn sampleDepthAtUV(uv : vec2<f32>) -> f32 {
 
 // ---------------------------------------------------------------------------
 // Pass 4: Half-Res Screen-Space Horizon Ambient Occlusion (SSAO)
+// Disocclusion-safe thickness rejection prevents foreground actors from
+// casting dark screen-space silhouettes onto distant background surfaces.
 // ---------------------------------------------------------------------------
 @fragment
 fn fsSSAO(in : FullscreenOut) -> @location(0) vec4<f32> {
@@ -55,24 +57,29 @@ fn fsSSAO(in : FullscreenOut) -> @location(0) vec4<f32> {
   let centerZ = linearizeDepth(centerRaw);
   let texel = 1.0 / max(uPost.screenSize.xy, vec2<f32>(1.0));
 
-  // 8-tap rotating spiral kernel in screen space
-  let angNoise = fract(sin(dot(floor(in.uv * uPost.screenSize.xy), vec2<f32>(12.9898, 78.233))) * 43758.5453) * 6.283185;
-  let radiusPx = clamp(uPost.projParams.z / max(centerZ * 0.12, 0.8), 4.0, 26.0);
+  // 8-tap rotating spiral kernel in screen space; world-space radius ~0.45m
+  let angNoise = fract(sin(dot(floor(in.uv * uPost.screenSize.xy * 0.5), vec2<f32>(12.9898, 78.233))) * 43758.5453) * 6.283185;
+  let radiusPx = clamp((uPost.projParams.z * 2.4) / max(centerZ, 2.2), 3.0, 14.0);
+  let maxThickness = clamp(0.32 + centerZ * 0.022, 0.35, 0.90);
+  let minBias = 0.025 + centerZ * 0.002;
 
   var occ = 0.0;
   for (var i = 0; i < 8; i = i + 1) {
     let a = angNoise + f32(i) * 0.785398;
-    let r = radiusPx * (0.35 + 0.65 * (f32(i % 4) / 3.0));
+    let r = radiusPx * (0.30 + 0.70 * (f32(i % 4) / 3.0));
     let off = vec2<f32>(cos(a), sin(a)) * r * texel;
     let sRaw = sampleDepthAtUV(clamp(in.uv + off, vec2<f32>(0.001), vec2<f32>(0.999)));
+    if (sRaw >= 0.9998) {
+      continue;
+    }
     let sZ = linearizeDepth(sRaw);
     let dz = centerZ - sZ;
-    let rangeCheck = smoothstep(3.2, 0.15, abs(dz));
-    if (dz > 0.08 && dz < 2.8) {
+    if (dz > minBias && dz < maxThickness) {
+      let rangeCheck = smoothstep(maxThickness, minBias * 1.5, dz);
       occ += rangeCheck;
     }
   }
-  let ao = clamp(1.0 - (occ / 8.0) * uPost.projParams.w, 0.36, 1.0);
+  let ao = clamp(1.0 - (occ / 8.0) * uPost.projParams.w, 0.42, 1.0);
   return vec4<f32>(ao, ao, ao, 1.0);
 }
 
@@ -135,21 +142,41 @@ fn acesTonemap(x : vec3<f32>) -> vec3<f32> {
 }
 
 // ---------------------------------------------------------------------------
-// Pass 7: HDR + SSAO + Bloom Composite + ACES Filmic Tonemap + Vignette
+// Pass 7: HDR + Depth-Aware Bilateral SSAO + Bloom Composite + ACES Tonemap
 // ---------------------------------------------------------------------------
 @fragment
 fn fsComposite(in : FullscreenOut) -> @location(0) vec4<f32> {
   let hdr = textureSample(texA, texLinearSampler, in.uv).rgb;
   let bloom = textureSample(texB, texLinearSampler, in.uv).rgb;
 
-  // Soft 5-tap blurred half-res SSAO contact occlusion (preserves sky & bright HDR emissives)
-  let ssaoTexel = 2.0 / max(uPost.screenSize.xy, vec2<f32>(1.0));
-  let ao0 = textureSample(texSSAO, texLinearSampler, in.uv).r;
-  let ao1 = textureSample(texSSAO, texLinearSampler, in.uv + vec2<f32>( ssaoTexel.x, 0.0)).r;
-  let ao2 = textureSample(texSSAO, texLinearSampler, in.uv + vec2<f32>(-ssaoTexel.x, 0.0)).r;
-  let ao3 = textureSample(texSSAO, texLinearSampler, in.uv + vec2<f32>(0.0,  ssaoTexel.y)).r;
-  let ao4 = textureSample(texSSAO, texLinearSampler, in.uv + vec2<f32>(0.0, -ssaoTexel.y)).r;
-  let ao = (ao0 * 0.4 + (ao1 + ao2 + ao3 + ao4) * 0.15);
+  // Depth-aware bilateral 5-tap upsample of half-res SSAO so character silhouettes never bleed onto background
+  let centerRaw = sampleDepthAtUV(in.uv);
+  var ao = 1.0;
+  if (centerRaw < 0.9998) {
+    let centerZ = linearizeDepth(centerRaw);
+    let ssaoTexel = 2.0 / max(uPost.screenSize.xy, vec2<f32>(1.0));
+    let offs = array<vec2<f32>, 5>(
+      vec2<f32>(0.0, 0.0),
+      vec2<f32>( ssaoTexel.x, 0.0),
+      vec2<f32>(-ssaoTexel.x, 0.0),
+      vec2<f32>(0.0,  ssaoTexel.y),
+      vec2<f32>(0.0, -ssaoTexel.y)
+    );
+    let baseW = array<f32, 5>(0.40, 0.15, 0.15, 0.15, 0.15);
+    var aoSum = 0.0;
+    var wSum = 0.0;
+    for (var i = 0; i < 5; i = i + 1) {
+      let suv = clamp(in.uv + offs[i], vec2<f32>(0.001), vec2<f32>(0.999));
+      let sAo = textureSample(texSSAO, texLinearSampler, suv).r;
+      let sRaw = sampleDepthAtUV(suv);
+      let sZ = linearizeDepth(sRaw);
+      let depthDiff = abs(sZ - centerZ) / max(1.0, centerZ * 0.12);
+      let bw = baseW[i] * exp(-depthDiff * 8.0);
+      aoSum += sAo * bw;
+      wSum += bw;
+    }
+    ao = select(1.0, aoSum / wSum, wSum > 1e-4);
+  }
 
   let lum = dot(hdr, vec3<f32>(0.2126, 0.7152, 0.0722));
   let aoMask = mix(ao, 1.0, smoothstep(0.55, 1.35, lum));

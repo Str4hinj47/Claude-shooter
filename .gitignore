@@ -3,3 +3,8 @@ dist/
 test/levels-test.bundle.mjs
 test/shots/
 *.log
+native/build*/
+native/westgate_save.json
+imgui.ini
+
+

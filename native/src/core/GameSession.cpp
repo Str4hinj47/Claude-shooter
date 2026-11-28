@@ -1,8 +1,12 @@
 #include "westgate/GameSession.hpp"
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <fstream>
 #include <nlohmann/json.hpp>
+#include <string>
+#include <vector>
 
 namespace westgate {
 
@@ -919,7 +923,7 @@ void GameSession::updateTrafficAndVehicles(float dt, const GameInputFrame& input
         } else if (v.isBoat) {
           pushToast("BOAT: [WASD] Throttle/Steer | [Space] Reverse Brake | [G] Exit", 3.5f);
         } else {
-          pushToast("Driving vehicle — [WASD] Drive | [Space] Brake | [H] Horn/Siren | [G] Exit", 3.0f);
+          pushToast("Driving vehicle - [WASD] Drive | [Space] Brake | [H] Horn/Siren | [G] Exit", 3.0f);
         }
       }
     }
@@ -929,6 +933,9 @@ void GameSession::updateTrafficAndVehicles(float dt, const GameInputFrame& input
 
   for (size_t vi = 0; vi < vehicles_.size(); ++vi) {
     auto& v = vehicles_[vi];
+    if (v.isAircraft) {
+      v.rotorAngleRad += dt * (v.occupiedByPlayer ? 28.0f : 3.5f);
+    }
     if (v.occupiedByPlayer) {
       if (v.isAircraft) {
         // Flyable Helicopter 6-DOF Physics ([Space] climb, [C] descend, [WASD] forward/yaw)
@@ -1443,7 +1450,7 @@ void GameSession::updateIronPit(float dt, const GameInputFrame& input, PlayerCon
             audio->playCrowdCheer(0.95f);
             audio->playCashChime();
           }
-          pushToast("KNOCKOUT! +$" + std::to_string(purseWon + betPayout) + " — Press [R] for next tier!", 4.5f);
+          pushToast("KNOCKOUT! +$" + std::to_string(purseWon + betPayout) + " - Press [R] for next tier!", 4.5f);
         } else {
           ironPit_.animClip = "hit";
           ironPit_.animTime = 0.0f;
@@ -1616,7 +1623,7 @@ void GameSession::updateSpectatorBout(float dt, const WorldData& world, AudioEng
         pushToast("BOOKIE PAYOUT! Won $" + std::to_string(payout) + " on cage bout!", 4.5f);
       } else if (spectatorBout_.betWager > 0) {
         ironPit_.betProfit -= spectatorBout_.betWager;
-        pushToast("Cage bout settled — ticket lost (-$" + std::to_string(spectatorBout_.betWager) + ").", 3.5f);
+        pushToast("Cage bout settled - ticket lost (-$" + std::to_string(spectatorBout_.betWager) + ").", 3.5f);
       }
       spectatorBout_.active = false;
       bool allSettled = true;
@@ -1779,7 +1786,7 @@ void GameSession::update(float dt, const GameInputFrame& input, PlayerController
       activeWeapon_ = input.selectWeaponSlot;
       reloadTimer_ = 0.0f;
     } else {
-      pushToast(weapons_[static_cast<size_t>(input.selectWeaponSlot)].name + " locked — buy in Phone [P] -> Gun Runner!", 2.5f);
+      pushToast(weapons_[static_cast<size_t>(input.selectWeaponSlot)].name + " locked - buy in Phone [P] -> Gun Runner!", 2.5f);
     }
   }
 

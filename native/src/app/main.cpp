@@ -17,7 +17,11 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <string>
 #include <unordered_map>
@@ -42,10 +46,70 @@ std::filesystem::path findAssetsRoot(const char* argv0) {
 } // namespace
 
 int main(int argc, char** argv) {
-  (void)argc;
-  if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
-    std::fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
-    return 1;
+  std::string headlessShotPath;
+  int headlessFrames = 20;
+  bool headlessWalkForward = false;
+  bool headlessShowPhone = false;
+  bool headlessTestReconfigure = false;
+  int headlessSelectSlot = -1;
+  bool hasTeleportOverride = false;
+  glm::vec3 teleportOverridePos{0.0f};
+  float teleportOverrideYawDeg = 0.0f;
+  bool hasCamOverride = false;
+  glm::vec3 camOverridePos{0.0f};
+  glm::vec3 camOverrideTarget{0.0f};
+  std::string todOverride;
+  std::string weatherOverride;
+
+  int headlessW = 1280;
+  int headlessH = 720;
+  for (int i = 1; i < argc; ++i) {
+    const std::string arg = argv[i];
+    if (arg == "--headless-shot" && i + 1 < argc) {
+      headlessShotPath = argv[++i];
+    } else if (arg == "--res" && i + 1 < argc) {
+      int rw = 0, rh = 0;
+      if (std::sscanf(argv[++i], "%dx%d", &rw, &rh) == 2 && rw >= 160 && rh >= 120) {
+        headlessW = rw;
+        headlessH = rh;
+      }
+    } else if (arg == "--frames" && i + 1 < argc) {
+      headlessFrames = std::max(1, std::atoi(argv[++i]));
+    } else if (arg == "--walk-forward") {
+      headlessWalkForward = true;
+    } else if (arg == "--show-phone") {
+      headlessShowPhone = true;
+    } else if (arg == "--test-reconfigure") {
+      headlessTestReconfigure = true;
+    } else if (arg == "--select-slot" && i + 1 < argc) {
+      headlessSelectSlot = std::atoi(argv[++i]);
+    } else if (arg == "--teleport" && i + 1 < argc) {
+      float tx = 0.0f, ty = 0.0f, tz = 0.0f, tyaw = 0.0f;
+      if (std::sscanf(argv[++i], "%f,%f,%f,%f", &tx, &ty, &tz, &tyaw) >= 3) {
+        hasTeleportOverride = true;
+        teleportOverridePos = {tx, ty, tz};
+        teleportOverrideYawDeg = tyaw;
+      }
+    } else if (arg == "--cam" && i + 1 < argc) {
+      float cx = 0.0f, cy = 0.0f, cz = 0.0f, tx = 0.0f, ty = 0.0f, tz = 0.0f;
+      if (std::sscanf(argv[++i], "%f,%f,%f,%f,%f,%f", &cx, &cy, &cz, &tx, &ty, &tz) == 6) {
+        hasCamOverride = true;
+        camOverridePos = {cx, cy, cz};
+        camOverrideTarget = {tx, ty, tz};
+      }
+    } else if (arg == "--tod" && i + 1 < argc) {
+      todOverride = argv[++i];
+    } else if (arg == "--weather" && i + 1 < argc) {
+      weatherOverride = argv[++i];
+    }
+  }
+  const bool headlessMode = !headlessShotPath.empty();
+
+  if (!headlessMode) {
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
+      std::fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
+      return 1;
+    }
   }
 
   const std::filesystem::path assetsRoot = findAssetsRoot(argv[0]);
@@ -137,43 +201,76 @@ int main(int argc, char** argv) {
   streamer.init(world);
 
   westgate::AudioEngine audio;
-  audio.init();
+  if (!headlessMode) {
+    audio.init();
+  }
 
   westgate::GameSession session;
   session.init(world, &player, &physics);
 
   westgate::HudUiState ui;
   ui.savePath = (assetsRoot.parent_path() / "westgate_save.json").string();
-  session.loadFromFile(ui.savePath);
-
-  float scale = SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
-  if (scale <= 0.0f) scale = 1.0f;
-  const int initW = static_cast<int>(1280 * scale);
-  const int initH = static_cast<int>(720 * scale);
-
-  SDL_Window* window = SDL_CreateWindow("Westgate Bay — Custom Native C++20 Engine (SDL3 + wgpu + Jolt)", initW, initH, SDL_WINDOW_RESIZABLE);
-  if (!window) {
-    std::fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
-    SDL_Quit();
-    return 1;
+  if (!headlessMode) {
+    session.loadFromFile(ui.savePath);
+  } else {
+    ui.showPhone = headlessShowPhone;
   }
 
+  if (hasTeleportOverride) {
+    session.teleportTo(teleportOverridePos, teleportOverrideYawDeg, player);
+  }
+  if (!todOverride.empty()) {
+    if (todOverride == "sunset") session.setTimeOfDayPreset(westgate::TimeOfDayPreset::Sunset);
+    else if (todOverride == "night") session.setTimeOfDayPreset(westgate::TimeOfDayPreset::Night);
+    else if (todOverride == "dawn") session.setTimeOfDayPreset(westgate::TimeOfDayPreset::Dawn);
+    else session.setTimeOfDayPreset(westgate::TimeOfDayPreset::Afternoon);
+  }
+  if (!weatherOverride.empty()) {
+    if (weatherOverride == "overcast") session.setWeatherPreset(westgate::WeatherPreset::Overcast);
+    else if (weatherOverride == "rain") session.setWeatherPreset(westgate::WeatherPreset::Rain);
+    else if (weatherOverride == "storm") session.setWeatherPreset(westgate::WeatherPreset::Thunderstorm);
+    else session.setWeatherPreset(westgate::WeatherPreset::Clear);
+  }
+
+  float scale = headlessMode ? 1.0f : SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
+  if (scale <= 0.0f) scale = 1.0f;
+  const int initW = headlessMode ? headlessW : static_cast<int>(1280 * scale);
+  const int initH = headlessMode ? headlessH : static_cast<int>(720 * scale);
+
+  SDL_Window* window = nullptr;
   westgate::WgpuContext gpu;
-  if (!gpu.init(window, static_cast<uint32_t>(initW), static_cast<uint32_t>(initH), &err)) {
-    std::fprintf(stderr, "WgpuContext init failed: %s\n", err.c_str());
-    SDL_DestroyWindow(window);
-    SDL_Quit();
-    return 1;
+  if (headlessMode) {
+    if (!gpu.initOffscreen(static_cast<uint32_t>(initW), static_cast<uint32_t>(initH), &err)) {
+      std::fprintf(stderr, "WgpuContext offscreen init failed: %s\n", err.c_str());
+      physics.shutdown();
+      return 1;
+    }
+  } else {
+    window = SDL_CreateWindow("Westgate Bay - Custom Native C++20 Engine (SDL3 + wgpu + Jolt)", initW, initH, SDL_WINDOW_RESIZABLE);
+    if (!window) {
+      std::fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
+      SDL_Quit();
+      return 1;
+    }
+    if (!gpu.init(window, static_cast<uint32_t>(initW), static_cast<uint32_t>(initH), &err)) {
+      std::fprintf(stderr, "WgpuContext init failed: %s\n", err.c_str());
+      SDL_DestroyWindow(window);
+      SDL_Quit();
+      return 1;
+    }
   }
 
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
   ImGuiIO& io = ImGui::GetIO();
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+  io.Fonts->AddFontDefault();
   ImGui::StyleColorsDark();
   ImGui::GetStyle().ScaleAllSizes(scale);
 
-  ImGui_ImplSDL3_InitForOther(window);
+  if (!headlessMode) {
+    ImGui_ImplSDL3_InitForOther(window);
+  }
   ImGui_ImplWGPU_InitInfo uiInfo{};
   uiInfo.Device = gpu.device();
   uiInfo.NumFramesInFlight = 3;
@@ -196,11 +293,11 @@ int main(int argc, char** argv) {
   if (!renderer.init(gpu, world, shaderPath.string(), renderAssets, &err)) {
     std::fprintf(stderr, "WorldRenderer init failed: %s\n", err.c_str());
     ImGui_ImplWGPU_Shutdown();
-    ImGui_ImplSDL3_Shutdown();
+    if (!headlessMode) ImGui_ImplSDL3_Shutdown();
     ImGui::DestroyContext();
     gpu.shutdown();
-    SDL_DestroyWindow(window);
-    SDL_Quit();
+    if (window) SDL_DestroyWindow(window);
+    if (!headlessMode) SDL_Quit();
     return 1;
   }
 
@@ -237,8 +334,9 @@ int main(int argc, char** argv) {
   std::vector<westgate::SkinnedRenderCharacter> renderChars;
   std::vector<westgate::DynamicPropPose> dynamicProps;
 
+  int headlessStep = 0;
   while (running) {
-    const float dt = static_cast<float>(timer.tickSeconds());
+    const float dt = headlessMode ? (1.0f / 60.0f) : static_cast<float>(timer.tickSeconds());
     elapsedSec += dt;
 
     westgate::GameInputFrame gameInput{};
@@ -246,104 +344,117 @@ int main(int argc, char** argv) {
     float lookDy = 0.0f;
     bool jumpPressed = false;
 
-    SDL_Event ev;
-    while (SDL_PollEvent(&ev)) {
-      ImGui_ImplSDL3_ProcessEvent(&ev);
-      if (ev.type == SDL_EVENT_QUIT) running = false;
-      if (ev.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && ev.window.windowID == SDL_GetWindowID(window)) running = false;
-      if (ev.type == SDL_EVENT_MOUSE_MOTION && ui.mouseCaptured && !ui.showPhone) {
-        lookDx += ev.motion.xrel;
-        lookDy += ev.motion.yrel;
+    if (headlessMode) {
+      if (headlessWalkForward) {
+        gameInput.moveInput.moveForward = 1.0f;
       }
-      if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN && ui.mouseCaptured && !ui.showPhone && ev.button.button == SDL_BUTTON_LEFT) {
-        gameInput.firePressed = true;
+      if (headlessStep == 1 && headlessSelectSlot >= 0) {
+        gameInput.selectWeaponSlot = headlessSelectSlot;
       }
-      if (ev.type == SDL_EVENT_MOUSE_WHEEL && !ui.showPhone) {
-        int slot = session.activeWeaponIdx() + (ev.wheel.y > 0 ? -1 : 1);
-        const int maxS = static_cast<int>(session.weapons().size()) - 1;
-        if (slot < 0) slot = maxS;
-        if (slot > maxS) slot = 0;
-        gameInput.selectWeaponSlot = slot;
+      if (headlessTestReconfigure && headlessStep == 2) {
+        // Simulate Windows swapchain SubOptimal depth recreation mid-movement to verify zero frozen SSAO silhouette
+        gpu.reconfigureSurface(true);
       }
-      if (ev.type == SDL_EVENT_KEY_DOWN && !ev.key.repeat) {
-        const SDL_Scancode sc = ev.key.scancode;
-        if (sc == SDL_SCANCODE_TAB || sc == SDL_SCANCODE_ESCAPE) {
-          if (ui.showPhone) {
-            ui.showPhone = false;
-          } else {
-            ui.mouseCaptured = !ui.mouseCaptured;
-            SDL_SetWindowRelativeMouseMode(window, ui.mouseCaptured);
-          }
-        } else if (sc == SDL_SCANCODE_P) {
-          ui.showPhone = !ui.showPhone;
-          if (ui.showPhone && ui.mouseCaptured) {
-            ui.mouseCaptured = false;
-            SDL_SetWindowRelativeMouseMode(window, false);
-          }
-        } else if (sc == SDL_SCANCODE_F9) {
-          ui.showTelemetry = !ui.showTelemetry;
-        } else if (sc == SDL_SCANCODE_F1) {
-          session.teleportTo({world.fightPitPos.x, world.fightPitPos.y + 1.0f, world.fightPitPos.z - 2.6f}, 0.0f, player);
-        } else if (sc == SDL_SCANCODE_T) {
-          session.cycleTimeOfDay();
-        } else if (sc == SDL_SCANCODE_Y) {
-          session.cycleWeather();
-        } else if (sc == SDL_SCANCODE_SPACE) {
-          jumpPressed = true;
-        } else if (sc == SDL_SCANCODE_G) {
-          gameInput.interactPressed = true;
-        } else if (sc == SDL_SCANCODE_B) {
-          gameInput.actionPressed = true;
-        } else if (sc == SDL_SCANCODE_H) {
-          gameInput.secondaryAction = true;
-        } else if (sc == SDL_SCANCODE_F) {
+    } else {
+      SDL_Event ev;
+      while (SDL_PollEvent(&ev)) {
+        ImGui_ImplSDL3_ProcessEvent(&ev);
+        if (ev.type == SDL_EVENT_QUIT) running = false;
+        if (ev.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && ev.window.windowID == SDL_GetWindowID(window)) running = false;
+        if (ev.type == SDL_EVENT_MOUSE_MOTION && ui.mouseCaptured && !ui.showPhone) {
+          lookDx += ev.motion.xrel;
+          lookDy += ev.motion.yrel;
+        }
+        if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN && ui.mouseCaptured && !ui.showPhone && ev.button.button == SDL_BUTTON_LEFT) {
           gameInput.firePressed = true;
-        } else if (sc == SDL_SCANCODE_Q) {
-          gameInput.uppercutPressed = true;
-        } else if (sc == SDL_SCANCODE_E) {
-          gameInput.kickPressed = true;
-        } else if (sc == SDL_SCANCODE_X) {
-          gameInput.dodgePressed = true;
-        } else if (sc == SDL_SCANCODE_V) {
-          gameInput.takedownPressed = true;
-        } else if (sc == SDL_SCANCODE_Z) {
-          gameInput.grapplePressed = true;
-        } else if (sc == SDL_SCANCODE_U) {
-          gameInput.takedownShootPressed = true;
-        } else if (sc == SDL_SCANCODE_R) {
-          gameInput.reloadPressed = true;
-          gameInput.rematchPressed = true;
-        } else if (sc >= SDL_SCANCODE_1 && sc <= SDL_SCANCODE_6) {
-          gameInput.selectWeaponSlot = static_cast<int>(sc - SDL_SCANCODE_1);
+        }
+        if (ev.type == SDL_EVENT_MOUSE_WHEEL && !ui.showPhone) {
+          int slot = session.activeWeaponIdx() + (ev.wheel.y > 0 ? -1 : 1);
+          const int maxS = static_cast<int>(session.weapons().size()) - 1;
+          if (slot < 0) slot = maxS;
+          if (slot > maxS) slot = 0;
+          gameInput.selectWeaponSlot = slot;
+        }
+        if (ev.type == SDL_EVENT_KEY_DOWN && !ev.key.repeat) {
+          const SDL_Scancode sc = ev.key.scancode;
+          if (sc == SDL_SCANCODE_TAB || sc == SDL_SCANCODE_ESCAPE) {
+            if (ui.showPhone) {
+              ui.showPhone = false;
+            } else {
+              ui.mouseCaptured = !ui.mouseCaptured;
+              SDL_SetWindowRelativeMouseMode(window, ui.mouseCaptured);
+            }
+          } else if (sc == SDL_SCANCODE_P) {
+            ui.showPhone = !ui.showPhone;
+            if (ui.showPhone && ui.mouseCaptured) {
+              ui.mouseCaptured = false;
+              SDL_SetWindowRelativeMouseMode(window, false);
+            }
+          } else if (sc == SDL_SCANCODE_F9) {
+            ui.showTelemetry = !ui.showTelemetry;
+          } else if (sc == SDL_SCANCODE_F1) {
+            session.teleportTo({world.fightPitPos.x, world.fightPitPos.y + 1.0f, world.fightPitPos.z - 2.6f}, 0.0f, player);
+          } else if (sc == SDL_SCANCODE_T) {
+            session.cycleTimeOfDay();
+          } else if (sc == SDL_SCANCODE_Y) {
+            session.cycleWeather();
+          } else if (sc == SDL_SCANCODE_SPACE) {
+            jumpPressed = true;
+          } else if (sc == SDL_SCANCODE_G) {
+            gameInput.interactPressed = true;
+          } else if (sc == SDL_SCANCODE_B) {
+            gameInput.actionPressed = true;
+          } else if (sc == SDL_SCANCODE_H) {
+            gameInput.secondaryAction = true;
+          } else if (sc == SDL_SCANCODE_F) {
+            gameInput.firePressed = true;
+          } else if (sc == SDL_SCANCODE_Q) {
+            gameInput.uppercutPressed = true;
+          } else if (sc == SDL_SCANCODE_E) {
+            gameInput.kickPressed = true;
+          } else if (sc == SDL_SCANCODE_X) {
+            gameInput.dodgePressed = true;
+          } else if (sc == SDL_SCANCODE_V) {
+            gameInput.takedownPressed = true;
+          } else if (sc == SDL_SCANCODE_Z) {
+            gameInput.grapplePressed = true;
+          } else if (sc == SDL_SCANCODE_U) {
+            gameInput.takedownShootPressed = true;
+          } else if (sc == SDL_SCANCODE_R) {
+            gameInput.reloadPressed = true;
+            gameInput.rematchPressed = true;
+          } else if (sc >= SDL_SCANCODE_1 && sc <= SDL_SCANCODE_6) {
+            gameInput.selectWeaponSlot = static_cast<int>(sc - SDL_SCANCODE_1);
+          }
         }
       }
+
+      int pixW = 0, pixH = 0;
+      SDL_GetWindowSizeInPixels(window, &pixW, &pixH);
+      if (pixW <= 0 || pixH <= 0) {
+        SDL_Delay(16);
+        continue;
+      }
+      gpu.resize(static_cast<uint32_t>(pixW), static_cast<uint32_t>(pixH));
+
+      const bool* keys = SDL_GetKeyboardState(nullptr);
+      const SDL_MouseButtonFlags mouseButtons = SDL_GetMouseState(nullptr, nullptr);
+      if (!ui.showPhone) {
+        if (keys[SDL_SCANCODE_W]) gameInput.moveInput.moveForward += 1.0f;
+        if (keys[SDL_SCANCODE_S]) gameInput.moveInput.moveForward -= 1.0f;
+        if (keys[SDL_SCANCODE_D]) gameInput.moveInput.moveRight += 1.0f;
+        if (keys[SDL_SCANCODE_A]) gameInput.moveInput.moveRight -= 1.0f;
+        gameInput.moveInput.sprint = keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT];
+        gameInput.moveInput.crouch = keys[SDL_SCANCODE_C] || keys[SDL_SCANCODE_LCTRL];
+        gameInput.moveInput.jump = jumpPressed || (session.inVehicle() && keys[SDL_SCANCODE_SPACE]);
+        gameInput.moveInput.lookDeltaX = lookDx;
+        gameInput.moveInput.lookDeltaY = lookDy;
+        gameInput.fireDown = ui.mouseCaptured && ((mouseButtons & SDL_BUTTON_LMASK) != 0);
+        gameInput.aimDown = ((mouseButtons & SDL_BUTTON_RMASK) != 0) || keys[SDL_SCANCODE_V];
+      }
     }
 
-    int pixW = 0, pixH = 0;
-    SDL_GetWindowSizeInPixels(window, &pixW, &pixH);
-    if (pixW <= 0 || pixH <= 0) {
-      SDL_Delay(16);
-      continue;
-    }
-    gpu.resize(static_cast<uint32_t>(pixW), static_cast<uint32_t>(pixH));
-
-    const bool* keys = SDL_GetKeyboardState(nullptr);
-    const SDL_MouseButtonFlags mouseButtons = SDL_GetMouseState(nullptr, nullptr);
-    if (!ui.showPhone) {
-      if (keys[SDL_SCANCODE_W]) gameInput.moveInput.moveForward += 1.0f;
-      if (keys[SDL_SCANCODE_S]) gameInput.moveInput.moveForward -= 1.0f;
-      if (keys[SDL_SCANCODE_D]) gameInput.moveInput.moveRight += 1.0f;
-      if (keys[SDL_SCANCODE_A]) gameInput.moveInput.moveRight -= 1.0f;
-      gameInput.moveInput.sprint = keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT];
-      gameInput.moveInput.crouch = keys[SDL_SCANCODE_C] || keys[SDL_SCANCODE_LCTRL];
-      gameInput.moveInput.jump = jumpPressed || (session.inVehicle() && keys[SDL_SCANCODE_SPACE]);
-      gameInput.moveInput.lookDeltaX = lookDx;
-      gameInput.moveInput.lookDeltaY = lookDy;
-      gameInput.fireDown = ui.mouseCaptured && ((mouseButtons & SDL_BUTTON_LMASK) != 0);
-      gameInput.aimDown = ((mouseButtons & SDL_BUTTON_RMASK) != 0) || keys[SDL_SCANCODE_V];
-    }
-
-    session.update(dt, gameInput, player, physics, world, &audio);
+    session.update(dt, gameInput, player, physics, world, headlessMode ? nullptr : &audio);
 
     physicsAccum += dt;
     constexpr float kFixedStep = 1.0f / 60.0f;
@@ -557,53 +668,84 @@ int main(int argc, char** argv) {
       renderChars.push_back({npc.pos, npc.yawRad, tint, part, &npcPalettes[palIdx]});
     }
 
-    ImGui_ImplWGPU_NewFrame();
-    ImGui_ImplSDL3_NewFrame();
-    ImGui::NewFrame();
+    const bool shouldRenderFrame = !headlessMode || (headlessTestReconfigure && headlessStep == 1) || (headlessStep + 1 >= headlessFrames);
+    if (shouldRenderFrame) {
+      ImGui_ImplWGPU_NewFrame();
+      if (headlessMode) {
+        io.DisplaySize = ImVec2(static_cast<float>(gpu.width()), static_cast<float>(gpu.height()));
+        io.DeltaTime = dt;
+      } else {
+        ImGui_ImplSDL3_NewFrame();
+      }
+      ImGui::NewFrame();
 
-    westgate::drawWestgateHud(
-      ui,
-      session,
-      player,
-      physics,
-      world,
-      gpu,
-      renderer.telemetry(),
-      &audio,
-      io.Framerate,
-      elapsedSec
-    );
+      westgate::drawWestgateHud(
+        ui,
+        session,
+        player,
+        physics,
+        world,
+        gpu,
+        renderer.telemetry(),
+        headlessMode ? nullptr : &audio,
+        headlessMode ? 60.0f : io.Framerate,
+        elapsedSec
+      );
 
-    physics.gatherDynamicProps(dynamicProps);
-    ImGui::Render();
-    renderer.render(
-      gpu,
-      world,
-      streamer,
-      session.cameraPosition(player),
-      session.cameraTarget(player),
-      pPos,
-      session.cameraFovDeg(gameInput.aimDown),
-      elapsedSec,
-      session.skyLighting(),
-      renderChars,
-      session.vehicles(),
-      session.gatherWorldMarkers(elapsedSec),
-      session.gatherDynamicLights(world, player, elapsedSec),
-      dynamicProps,
-      true
-    );
+      physics.gatherDynamicProps(dynamicProps);
+      ImGui::Render();
+
+      const glm::vec3 camPos = hasCamOverride ? camOverridePos : session.cameraPosition(player);
+      const glm::vec3 camTgt = hasCamOverride ? camOverrideTarget : session.cameraTarget(player);
+      const glm::vec3 focus = hasCamOverride ? camOverrideTarget : pPos;
+      renderer.render(
+        gpu,
+        world,
+        streamer,
+        camPos,
+        camTgt,
+        focus,
+        session.cameraFovDeg(gameInput.aimDown),
+        elapsedSec,
+        session.skyLighting(),
+        renderChars,
+        session.vehicles(),
+        session.gatherWorldMarkers(elapsedSec),
+        session.gatherDynamicLights(world, player, elapsedSec),
+        dynamicProps,
+        true
+      );
+    }
+
+    if (headlessMode) {
+      ++headlessStep;
+      if (headlessStep >= headlessFrames) {
+        if (!gpu.saveOffscreenPng(headlessShotPath, &err)) {
+          std::fprintf(stderr, "saveOffscreenPng failed: %s\n", err.c_str());
+          running = false;
+        } else {
+          std::printf("[headless-shot] Wrote %ux%u PNG -> %s (GPU: %s, visChunks=%u, bldgs=%u, props=%u, veh=%u, chars=%u)\n",
+                      gpu.width(), gpu.height(), headlessShotPath.c_str(), gpu.adapterName().c_str(),
+                      renderer.telemetry().visibleChunks, renderer.telemetry().drawnBuildings,
+                      renderer.telemetry().drawnProps, renderer.telemetry().drawnVehicles,
+                      renderer.telemetry().drawnCharacters);
+          running = false;
+        }
+      }
+    }
   }
 
-  session.saveToFile(ui.savePath);
+  if (!headlessMode) {
+    session.saveToFile(ui.savePath);
+  }
   renderer.shutdown();
   ImGui_ImplWGPU_Shutdown();
-  ImGui_ImplSDL3_Shutdown();
+  if (!headlessMode) ImGui_ImplSDL3_Shutdown();
   ImGui::DestroyContext();
   gpu.shutdown();
-  audio.shutdown();
+  if (!headlessMode) audio.shutdown();
   physics.shutdown();
-  SDL_DestroyWindow(window);
-  SDL_Quit();
+  if (window) SDL_DestroyWindow(window);
+  if (!headlessMode) SDL_Quit();
   return 0;
 }
