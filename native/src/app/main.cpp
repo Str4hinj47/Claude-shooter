@@ -6,6 +6,7 @@
 #include "westgate/GltfAssetLoader.hpp"
 #include "westgate/PhysicsWorld.hpp"
 #include "westgate/PlayerController.hpp"
+#include "westgate/WeaponSystem3D.hpp"
 #include "westgate/WgpuContext.hpp"
 #include "westgate/WorldData.hpp"
 #include "westgate/WorldRenderer.hpp"
@@ -75,6 +76,19 @@ int main(int argc, char** argv) {
   glm::vec3 camOverrideTarget{0.0f};
   std::string todOverride;
   std::string weatherOverride;
+  bool headlessFirstPerson = false;
+  int headlessGunsmithSlot = -1;
+  int headlessGunsmithPreset = -1;
+  bool hasHeadlessGunsmithYaw = false;
+  float headlessGunsmithYaw = 0.0f;
+  int headlessWepOptic = -1;
+  int headlessWepMuzzle = -1;
+  int headlessWepUnder = -1;
+  int headlessWepMag = -1;
+  int headlessWepBodyFin = -1;
+  int headlessWepAccFin = -1;
+  int headlessWepHwFin = -1;
+  int headlessWepReticle = -1;
 
   int headlessW = 1280;
   int headlessH = 720;
@@ -144,6 +158,33 @@ int main(int argc, char** argv) {
       todOverride = argv[++i];
     } else if (arg == "--weather" && i + 1 < argc) {
       weatherOverride = argv[++i];
+    } else if (arg == "--first-person") {
+      headlessFirstPerson = true;
+    } else if (arg == "--ads") {
+      headlessAimDown = true;
+    } else if (arg == "--gunsmith" && i + 1 < argc) {
+      headlessGunsmithSlot = std::atoi(argv[++i]);
+    } else if (arg == "--gunsmith-preset" && i + 1 < argc) {
+      headlessGunsmithPreset = std::atoi(argv[++i]);
+    } else if (arg == "--gunsmith-yaw" && i + 1 < argc) {
+      hasHeadlessGunsmithYaw = true;
+      headlessGunsmithYaw = static_cast<float>(std::atof(argv[++i]));
+    } else if (arg == "--optic" && i + 1 < argc) {
+      headlessWepOptic = std::atoi(argv[++i]);
+    } else if (arg == "--muzzle" && i + 1 < argc) {
+      headlessWepMuzzle = std::atoi(argv[++i]);
+    } else if (arg == "--underbarrel" && i + 1 < argc) {
+      headlessWepUnder = std::atoi(argv[++i]);
+    } else if (arg == "--mag" && i + 1 < argc) {
+      headlessWepMag = std::atoi(argv[++i]);
+    } else if (arg == "--finish" && i + 1 < argc) {
+      headlessWepBodyFin = std::atoi(argv[++i]);
+    } else if (arg == "--accent-finish" && i + 1 < argc) {
+      headlessWepAccFin = std::atoi(argv[++i]);
+    } else if (arg == "--hardware-finish" && i + 1 < argc) {
+      headlessWepHwFin = std::atoi(argv[++i]);
+    } else if (arg == "--reticle" && i + 1 < argc) {
+      headlessWepReticle = std::atoi(argv[++i]);
     }
   }
   const bool headlessMode = !headlessShotPath.empty();
@@ -323,6 +364,48 @@ int main(int argc, char** argv) {
   if (headlessUnlockWeapons) {
     session.unlockAllWeapons();
   }
+  {
+    const int cfgSlot = (headlessGunsmithSlot >= 1 && headlessGunsmithSlot < static_cast<int>(session.weapons().size()))
+      ? headlessGunsmithSlot
+      : ((headlessSelectSlot >= 1 && headlessSelectSlot < static_cast<int>(session.weapons().size())) ? headlessSelectSlot : 2);
+    const auto& cw = session.weapons()[static_cast<size_t>(cfgSlot)];
+    if (headlessWepOptic >= 0 || headlessWepMuzzle >= 0 || headlessWepUnder >= 0 || headlessWepMag >= 0 || headlessWepBodyFin >= 0) {
+      session.configureWeaponSlot(
+        cfgSlot,
+        headlessWepOptic >= 0 ? static_cast<westgate::WeaponOpticKind>(std::clamp(headlessWepOptic, 0, 4)) : cw.optic,
+        headlessWepMuzzle >= 0 ? static_cast<westgate::WeaponMuzzleKind>(std::clamp(headlessWepMuzzle, 0, 4)) : cw.muzzle,
+        headlessWepUnder >= 0 ? static_cast<westgate::WeaponUnderbarrelKind>(std::clamp(headlessWepUnder, 0, 3)) : cw.underbarrel,
+        headlessWepMag >= 0 ? static_cast<westgate::WeaponMagKind>(std::clamp(headlessWepMag, 0, 2)) : cw.mag,
+        headlessWepBodyFin >= 0 ? static_cast<westgate::WeaponFinishKind>(std::clamp(headlessWepBodyFin, 0, 7)) : cw.bodyFinish
+      );
+    }
+    if (headlessWepAccFin >= 0 || headlessWepHwFin >= 0 || headlessWepReticle >= 0) {
+      const auto& cw2 = session.weapons()[static_cast<size_t>(cfgSlot)];
+      session.configureWeaponZones(
+        cfgSlot,
+        cw2.bodyFinish,
+        headlessWepAccFin >= 0 ? static_cast<westgate::WeaponFinishKind>(std::clamp(headlessWepAccFin, 0, 7)) : cw2.accentFinish,
+        headlessWepHwFin >= 0 ? static_cast<westgate::WeaponFinishKind>(std::clamp(headlessWepHwFin, 0, 7)) : cw2.hardwareFinish,
+        cw2.surfaceSheen,
+        headlessWepReticle >= 0 ? static_cast<uint8_t>(std::clamp(headlessWepReticle, 0, 4)) : cw2.reticleColorIdx
+      );
+    }
+  }
+  if (headlessFirstPerson) {
+    session.setFirstPersonMode(true);
+    player.setPitch(0.0f);
+  }
+  if (headlessGunsmithSlot >= 1 && headlessGunsmithSlot < static_cast<int>(session.weapons().size())) {
+    session.setGunsmithOpen(true);
+    session.setGunsmithSlot(headlessGunsmithSlot);
+    session.setGunsmithAutoRotate(false);
+    if (headlessGunsmithPreset >= 0) {
+      session.setGunsmithCameraPreset(headlessGunsmithPreset);
+    }
+    if (hasHeadlessGunsmithYaw) {
+      session.orbitGunsmith(headlessGunsmithYaw - session.gunsmithYaw(), 0.0f, 0.0f);
+    }
+  }
   if (headlessContractIdx >= 0) {
     session.acceptContract(headlessContractIdx, world);
   }
@@ -471,7 +554,7 @@ int main(int argc, char** argv) {
   std::unordered_map<uint32_t, westgate::CharacterAnimState> npcAnimStates;
   std::vector<westgate::SkinnedRenderCharacter> renderChars;
   std::vector<westgate::DynamicPropPose> dynamicProps;
-  std::vector<westgate::WorldMarkerBox> heldWeaponMarkers;
+  std::vector<westgate::WeaponPartDrawInstance> weaponPartInstances;
 
   int headlessStep = 0;
   while (running) {
@@ -500,6 +583,7 @@ int main(int argc, char** argv) {
       if (headlessAimDown) {
         gameInput.aimDown = true;
       }
+      gameInput.moveInput.firstPersonLook = session.firstPersonMode() && !session.inVehicle();
       if (headlessTestReconfigure && headlessStep == 2) {
         // Simulate Windows swapchain SubOptimal depth recreation mid-movement to verify zero frozen SSAO silhouette
         gpu.reconfigureSurface(true);
@@ -510,30 +594,58 @@ int main(int argc, char** argv) {
         ImGui_ImplSDL3_ProcessEvent(&ev);
         if (ev.type == SDL_EVENT_QUIT) running = false;
         if (ev.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && ev.window.windowID == SDL_GetWindowID(window)) running = false;
-        if (ev.type == SDL_EVENT_MOUSE_MOTION && ui.mouseCaptured && !ui.showPhone) {
-          lookDx += ev.motion.xrel;
-          lookDy += ev.motion.yrel;
+        if (ev.type == SDL_EVENT_MOUSE_MOTION) {
+          if (session.gunsmithOpen()) {
+            if (!io.WantCaptureMouse && (ev.motion.state & SDL_BUTTON_LMASK) != 0) {
+              session.setGunsmithAutoRotate(false);
+              session.orbitGunsmith(-ev.motion.xrel * 0.0085f, ev.motion.yrel * 0.0065f, 0.0f);
+            }
+          } else if (ui.mouseCaptured && !ui.showPhone) {
+            lookDx += ev.motion.xrel;
+            lookDy += ev.motion.yrel;
+          }
         }
-        if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN && ui.mouseCaptured && !ui.showPhone && ev.button.button == SDL_BUTTON_LEFT) {
+        if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN && !session.gunsmithOpen() && ui.mouseCaptured && !ui.showPhone && ev.button.button == SDL_BUTTON_LEFT) {
           gameInput.firePressed = true;
         }
-        if (ev.type == SDL_EVENT_MOUSE_WHEEL && !ui.showPhone) {
-          int slot = session.activeWeaponIdx() + (ev.wheel.y > 0 ? -1 : 1);
-          const int maxS = static_cast<int>(session.weapons().size()) - 1;
-          if (slot < 0) slot = maxS;
-          if (slot > maxS) slot = 0;
-          gameInput.selectWeaponSlot = slot;
+        if (ev.type == SDL_EVENT_MOUSE_WHEEL) {
+          if (session.gunsmithOpen()) {
+            if (!io.WantCaptureMouse) {
+              session.orbitGunsmith(0.0f, 0.0f, -ev.wheel.y * 0.055f);
+            }
+          } else if (!ui.showPhone) {
+            int slot = session.activeWeaponIdx() + (ev.wheel.y > 0 ? -1 : 1);
+            const int maxS = static_cast<int>(session.weapons().size()) - 1;
+            if (slot < 0) slot = maxS;
+            if (slot > maxS) slot = 0;
+            gameInput.selectWeaponSlot = slot;
+          }
         }
         if (ev.type == SDL_EVENT_KEY_DOWN && !ev.key.repeat) {
           const SDL_Scancode sc = ev.key.scancode;
           if (sc == SDL_SCANCODE_TAB || sc == SDL_SCANCODE_ESCAPE) {
-            if (ui.showPhone) {
+            if (session.gunsmithOpen()) {
+              session.setGunsmithOpen(false);
+            } else if (ui.showPhone) {
               ui.showPhone = false;
             } else {
               ui.mouseCaptured = !ui.mouseCaptured;
               SDL_SetWindowRelativeMouseMode(window, ui.mouseCaptured);
             }
+          } else if (sc == SDL_SCANCODE_F2) {
+            const bool nextOpen = !session.gunsmithOpen();
+            session.setGunsmithOpen(nextOpen);
+            if (nextOpen) {
+              ui.showPhone = false;
+              if (ui.mouseCaptured) {
+                ui.mouseCaptured = false;
+                SDL_SetWindowRelativeMouseMode(window, false);
+              }
+            }
+          } else if (sc == SDL_SCANCODE_F5) {
+            session.toggleFirstPersonMode();
           } else if (sc == SDL_SCANCODE_P) {
+            if (session.gunsmithOpen()) session.setGunsmithOpen(false);
             ui.showPhone = !ui.showPhone;
             if (ui.showPhone && ui.mouseCaptured) {
               ui.mouseCaptured = false;
@@ -566,8 +678,10 @@ int main(int argc, char** argv) {
           } else if (sc == SDL_SCANCODE_V) {
             if (session.inVehicle()) {
               session.cycleDriveCameraMode();
-            } else {
+            } else if (session.takedownReady()) {
               gameInput.takedownPressed = true;
+            } else {
+              session.toggleFirstPersonMode();
             }
           } else if (sc == SDL_SCANCODE_Z) {
             gameInput.grapplePressed = true;
@@ -579,7 +693,12 @@ int main(int argc, char** argv) {
             gameInput.reloadPressed = true;
             gameInput.rematchPressed = true;
           } else if (sc >= SDL_SCANCODE_1 && sc <= SDL_SCANCODE_6) {
-            gameInput.selectWeaponSlot = static_cast<int>(sc - SDL_SCANCODE_1);
+            const int chosen = static_cast<int>(sc - SDL_SCANCODE_1);
+            if (session.gunsmithOpen() && chosen >= 1) {
+              session.setGunsmithSlot(chosen);
+            } else {
+              gameInput.selectWeaponSlot = chosen;
+            }
           }
         }
       }
@@ -594,7 +713,7 @@ int main(int argc, char** argv) {
 
       const bool* keys = SDL_GetKeyboardState(nullptr);
       const SDL_MouseButtonFlags mouseButtons = SDL_GetMouseState(nullptr, nullptr);
-      if (!ui.showPhone) {
+      if (!ui.showPhone && !session.gunsmithOpen()) {
         if (keys[SDL_SCANCODE_W]) gameInput.moveInput.moveForward += 1.0f;
         if (keys[SDL_SCANCODE_S]) gameInput.moveInput.moveForward -= 1.0f;
         if (keys[SDL_SCANCODE_D]) gameInput.moveInput.moveRight += 1.0f;
@@ -604,8 +723,9 @@ int main(int argc, char** argv) {
         gameInput.moveInput.jump = jumpPressed || (session.inVehicle() && keys[SDL_SCANCODE_SPACE]);
         gameInput.moveInput.lookDeltaX = lookDx;
         gameInput.moveInput.lookDeltaY = lookDy;
+        gameInput.moveInput.firstPersonLook = session.firstPersonMode() && !session.inVehicle();
         gameInput.fireDown = ui.mouseCaptured && ((mouseButtons & SDL_BUTTON_LMASK) != 0);
-        gameInput.aimDown = ((mouseButtons & SDL_BUTTON_RMASK) != 0) || (!session.inVehicle() && keys[SDL_SCANCODE_V]);
+        gameInput.aimDown = ((mouseButtons & SDL_BUTTON_RMASK) != 0);
         gameInput.useHeld = keys[SDL_SCANCODE_E] || keys[SDL_SCANCODE_F] || keys[SDL_SCANCODE_B];
       }
     }
@@ -691,13 +811,17 @@ int main(int argc, char** argv) {
 
       const glm::vec4 hitFlashCol(1.55f, 0.42f, 0.42f, 1.0f);
       const bool bareKnuckle = session.shouldUseBareKnuckleRig(world, pPos);
-      const bool firstPersonScope = !hasCamOverride && session.isAiming() && session.isRangedWeapon() &&
-                                    session.activeWeapon().optic == westgate::WeaponOpticKind::SniperScope;
+      const bool hidePlayerBody = !hasCamOverride && (
+        session.gunsmithOpen() ||
+        session.firstPersonMode() ||
+        (session.isAiming() && session.isRangedWeapon() &&
+         session.activeWeapon().optic == westgate::WeaponOpticKind::SniperScope)
+      );
       glm::vec3 playerRightHandWorld = pPos + glm::vec3(0.0f, 1.15f, 0.0f);
 
       if (!bareKnuckle && hasSoldier) {
         soldierAnim.evaluateState(playerAnimState, clips, palBody, &playerOverlay);
-        if (!firstPersonScope) {
+        if (!hidePlayerBody) {
           const glm::vec4 suitTint = glm::mix(westgate::GameSession::suitTintColor(session.playerSuit()), hitFlashCol, session.playerHitFlash());
           renderChars.push_back({pPos, player.yaw(), suitTint, westgate::SkinnedPartKind::VanguardSoldier, &palBody});
         }
@@ -709,7 +833,7 @@ int main(int argc, char** argv) {
         const glm::vec4 playerTint = glm::mix(glm::vec4(1.0f), hitFlashCol, session.playerHitFlash());
         if (hasBody) {
           bodyAnim.evaluateState(playerAnimState, clips, palBody, &playerOverlay);
-          if (!firstPersonScope) {
+          if (!hidePlayerBody) {
             renderChars.push_back({pPos, player.yaw(), playerTint, westgate::SkinnedPartKind::PlayerBody, &palBody});
           }
           const glm::vec3 localHand = bodyAnim.animatedBonePos("RightHand", palBody, {0.22f, 1.10f, 0.25f});
@@ -717,18 +841,18 @@ int main(int argc, char** argv) {
                                       glm::rotate(glm::mat4(1.0f), player.yaw(), glm::vec3(0.0f, 1.0f, 0.0f));
           playerRightHandWorld = glm::vec3(charWorld * glm::vec4(localHand, 1.0f));
         }
-        if (hasShorts && !firstPersonScope) {
+        if (hasShorts && !hidePlayerBody) {
           shortsAnim.evaluateState(playerAnimState, clips, palShorts, &playerOverlay);
           renderChars.push_back({pPos, player.yaw(), glm::vec4(0.84f, 0.22f, 0.22f, 1.0f), westgate::SkinnedPartKind::PlayerShorts, &palShorts});
         }
-        if (hasHair && !firstPersonScope) {
+        if (hasHair && !hidePlayerBody) {
           hairAnim.evaluateState(playerAnimState, clips, palHair, &playerOverlay);
           renderChars.push_back({pPos, player.yaw(), glm::vec4(1.0f), westgate::SkinnedPartKind::PlayerHair, &palHair});
         }
       }
-      // Cache playerRightHandWorld on a frame local for 3D modular weapon rendering below!
+      // Cache playerRightHandWorld on a frame local for 3rd-person 3D modular weapon rendering below!
       pHandWorld = playerRightHandWorld;
-      hasPlayerHandWorld = session.isRangedWeapon() && !session.isCarryingBody() && !firstPersonScope;
+      hasPlayerHandWorld = session.isRangedWeapon() && !session.isCarryingBody() && !hidePlayerBody;
     }
 
     auto mapPitClipTime = [&](const std::string& clipId, float stateTime) -> float {
@@ -803,15 +927,36 @@ int main(int argc, char** argv) {
       renderChars.push_back({pit.pos, pit.yawRad, oppTint, westgate::SkinnedPartKind::Business, &palOppBody});
     }
 
-    heldWeaponMarkers.clear();
-    if (hasPlayerHandWorld && !session.inVehicle()) {
-      westgate::GameSession::appendHeldWeaponMarkers(
+    weaponPartInstances.clear();
+    if (session.gunsmithOpen()) {
+      const int gSlot = session.gunsmithSlot();
+      const auto& gw = session.weapons()[static_cast<size_t>(gSlot)];
+      const glm::vec3 gAnchor = session.gunsmithAnchorPos(player) -
+                                glm::vec3(0.0f, 0.0f, session.recoilImpulse() * 0.028f);
+      const glm::quat gRot = glm::angleAxis(-session.recoilImpulse() * 0.085f, glm::vec3(1.0f, 0.0f, 0.0f));
+      westgate::WeaponSystem3D::appendAssembledWeapon(
+        gAnchor,
+        gRot,
+        gw,
+        session.recoilImpulse(),
+        0.0f,
+        1.0f,
+        true,
+        weaponPartInstances
+      );
+    } else if (hasPlayerHandWorld && !session.inVehicle()) {
+      const float aimPitch = -player.pitch() * (session.isAiming() ? 0.85f : 0.35f);
+      const glm::quat wRot = glm::angleAxis(player.yaw(), glm::vec3(0.0f, 1.0f, 0.0f)) *
+                             glm::angleAxis(aimPitch, glm::vec3(1.0f, 0.0f, 0.0f));
+      westgate::WeaponSystem3D::appendAssembledWeapon(
         pHandWorld,
-        player.yaw(),
-        -player.pitch() * (session.isAiming() ? 0.85f : 0.35f),
+        wRot,
         session.activeWeapon(),
         session.recoilImpulse(),
-        heldWeaponMarkers
+        session.reloadProgress01(),
+        1.0f,
+        true,
+        weaponPartInstances
       );
     }
 
@@ -834,16 +979,25 @@ int main(int argc, char** argv) {
     npcRifleTemplate.underbarrel = westgate::WeaponUnderbarrelKind::VerticalGrip;
     npcRifleTemplate.mag = westgate::WeaponMagKind::Standard;
     npcRifleTemplate.finish = westgate::WeaponFinishKind::Obsidian;
+    npcRifleTemplate.bodyFinish = westgate::WeaponFinishKind::Obsidian;
+    npcRifleTemplate.accentFinish = westgate::WeaponFinishKind::Titanium;
+    npcRifleTemplate.hardwareFinish = westgate::WeaponFinishKind::Obsidian;
 
     westgate::WeaponSlotState npcSniperTemplate = npcRifleTemplate;
     npcSniperTemplate.id = "dmr";
     npcSniperTemplate.optic = westgate::WeaponOpticKind::SniperScope;
     npcSniperTemplate.underbarrel = westgate::WeaponUnderbarrelKind::LaserSight;
     npcSniperTemplate.finish = westgate::WeaponFinishKind::Coyote;
+    npcSniperTemplate.bodyFinish = westgate::WeaponFinishKind::Coyote;
+    npcSniperTemplate.accentFinish = westgate::WeaponFinishKind::Olive;
 
     westgate::WeaponSlotState npcBossTemplate = npcSniperTemplate;
     npcBossTemplate.optic = westgate::WeaponOpticKind::Acog;
+    npcBossTemplate.muzzle = westgate::WeaponMuzzleKind::Osprey;
+    npcBossTemplate.mag = westgate::WeaponMagKind::Drum;
     npcBossTemplate.finish = westgate::WeaponFinishKind::Gold;
+    npcBossTemplate.bodyFinish = westgate::WeaponFinishKind::Gold;
+    npcBossTemplate.accentFinish = westgate::WeaponFinishKind::Obsidian;
 
     for (const auto& [dist, idx] : sortedNpcs) {
       if (renderChars.size() >= westgate::kMaxSkinSlots) break;
@@ -912,20 +1066,23 @@ int main(int argc, char** argv) {
         renderChars.push_back({carryPos, player.yaw(), tint, part, &npcPalettes[palIdx], carryRot});
       } else {
         renderChars.push_back({npc.pos, npc.yawRad, tint, part, &npcPalettes[palIdx]});
-        if (npcArmed && dist < 48.0f) {
+        if (!session.gunsmithOpen() && npcArmed && dist < 55.0f) {
           const glm::vec3 localHand = anim->animatedBonePos("RightHand", npcPalettes[palIdx], {0.20f, 1.08f, -0.24f});
           const glm::mat4 npcWorld = glm::translate(glm::mat4(1.0f), npc.pos) *
                                      glm::rotate(glm::mat4(1.0f), npc.yawRad + 3.14159265f, glm::vec3(0.0f, 1.0f, 0.0f));
           const glm::vec3 handW = glm::vec3(npcWorld * glm::vec4(localHand, 1.0f));
           const auto& wpl = (npc.role == westgate::EnemyRole::Boss) ? npcBossTemplate
                           : ((npc.role == westgate::EnemyRole::Sniper) ? npcSniperTemplate : npcRifleTemplate);
-          westgate::GameSession::appendHeldWeaponMarkers(
+          const glm::quat npcGunRot = glm::angleAxis(npc.yawRad, glm::vec3(0.0f, 1.0f, 0.0f));
+          westgate::WeaponSystem3D::appendAssembledWeapon(
             handW,
-            npc.yawRad,
-            0.0f,
+            npcGunRot,
             wpl,
             0.0f,
-            heldWeaponMarkers
+            0.0f,
+            1.0f,
+            dist < 28.0f,
+            weaponPartInstances
           );
         }
       }
@@ -990,11 +1147,33 @@ int main(int argc, char** argv) {
 
       const glm::vec3 camPos = hasCamOverride ? camOverridePos : session.cameraPosition(player);
       const glm::vec3 camTgt = hasCamOverride ? camOverrideTarget : session.cameraTarget(player);
-      const glm::vec3 focus = hasCamOverride ? camOverrideTarget : pPos;
-      auto worldMarkers = session.gatherWorldMarkers(elapsedSec);
-      if (!heldWeaponMarkers.empty()) {
-        worldMarkers.insert(worldMarkers.end(), heldWeaponMarkers.begin(), heldWeaponMarkers.end());
+      const glm::vec3 focus = hasCamOverride ? camOverrideTarget : (session.gunsmithOpen() ? session.gunsmithAnchorPos(player) : pPos);
+
+      // Assemble First-Person 3D Viewmodel + Gloves locked to the exact eye camera (unless in Sniper 8x glass scope)
+      const bool inSniperGlass = session.isAiming() && session.isRangedWeapon() &&
+                                 session.activeWeapon().optic == westgate::WeaponOpticKind::SniperScope;
+      if (!hasCamOverride && !session.gunsmithOpen() && !session.inVehicle() && session.firstPersonMode() && !inSniperGlass) {
+        const bool meleeBlocking = gameInput.aimDown && session.activeWeapon().isMelee;
+        westgate::WeaponSystem3D::appendFirstPersonViewmodel(
+          camPos,
+          camTgt,
+          session.activeWeapon(),
+          session.playerSuit(),
+          session.adsBlend(),
+          session.recoilImpulse(),
+          session.reloadProgress01(),
+          player.speed(),
+          player.sprinting(),
+          session.playerLocomotionTime(),
+          turnBankSmooth,
+          session.playerAttackClip(),
+          session.playerAttackProgress(),
+          meleeBlocking,
+          weaponPartInstances
+        );
       }
+
+      auto worldMarkers = session.gatherWorldMarkers(elapsedSec);
       renderer.render(
         gpu,
         world,
@@ -1011,7 +1190,8 @@ int main(int argc, char** argv) {
         session.gatherDynamicLights(world, player, elapsedSec),
         dynamicProps,
         true,
-        session.gatherDynamicGlbProps(elapsedSec)
+        session.gatherDynamicGlbProps(elapsedSec),
+        weaponPartInstances
       );
     }
 

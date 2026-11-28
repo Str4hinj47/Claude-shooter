@@ -134,24 +134,31 @@ enum class WeaponOpticKind : uint8_t {
   Acog = 3,
   SniperScope = 4,
 };
+static constexpr int kWeaponOpticCount = 5;
 
 enum class WeaponMuzzleKind : uint8_t {
   Standard = 0,
   Suppressor = 1,
   Compensator = 2,
+  Osprey = 3,
+  Wrapped = 4,
 };
+static constexpr int kWeaponMuzzleCount = 5;
 
 enum class WeaponUnderbarrelKind : uint8_t {
   None = 0,
   VerticalGrip = 1,
   LaserSight = 2,
+  AngledGrip = 3,
 };
+static constexpr int kWeaponUnderbarrelCount = 4;
 
 enum class WeaponMagKind : uint8_t {
   Standard = 0,
   Extended = 1,
   Drum = 2,
 };
+static constexpr int kWeaponMagCount = 3;
 
 enum class WeaponFinishKind : uint8_t {
   Obsidian = 0,
@@ -160,8 +167,11 @@ enum class WeaponFinishKind : uint8_t {
   Crimson = 3,
   Gold = 4,
   Titanium = 5,
+  Olive = 6,
+  Cobalt = 7,
 };
-static constexpr int kWeaponFinishCount = 6;
+static constexpr int kWeaponFinishCount = 8;
+static constexpr int kWeaponReticleColorCount = 5;
 
 enum class CrimeKind : uint8_t {
   Gunfire = 0,
@@ -209,6 +219,11 @@ struct WeaponSlotState {
   WeaponUnderbarrelKind underbarrel = WeaponUnderbarrelKind::None;
   WeaponMagKind mag = WeaponMagKind::Standard;
   WeaponFinishKind finish = WeaponFinishKind::Obsidian;
+  WeaponFinishKind bodyFinish = WeaponFinishKind::Obsidian;
+  WeaponFinishKind accentFinish = WeaponFinishKind::Coyote;
+  WeaponFinishKind hardwareFinish = WeaponFinishKind::Titanium;
+  float surfaceSheen = 0.50f;
+  uint8_t reticleColorIdx = 0;
 };
 
 struct VehicleEntity {
@@ -921,7 +936,18 @@ public:
     WeaponMagKind mag,
     WeaponFinishKind finish
   );
+  void configureWeaponZones(
+    int slotIdx,
+    WeaponFinishKind bodyFin,
+    WeaponFinishKind accentFin,
+    WeaponFinishKind hwFin,
+    float sheen,
+    uint8_t reticleColorIdx
+  );
+  void resetWeaponSlotDefaults(int slotIdx);
   static void weaponFinishPalette(WeaponFinishKind finish, glm::vec3& outBody, glm::vec3& outAccent, const char** outName = nullptr);
+  static void weaponFinishPbr(WeaponFinishKind finish, float sheen, glm::vec3& outColor, float& outRoughness, float& outMetallic, const char** outName = nullptr);
+  static glm::vec3 weaponReticleColor(uint8_t idx, const char** outName = nullptr);
   static void appendHeldWeaponMarkers(
     const glm::vec3& handWorldPos,
     float yawRad,
@@ -930,6 +956,29 @@ public:
     float recoil01,
     std::vector<WorldMarkerBox>& out
   );
+
+  // Full On-Foot First-Person Mode & Smooth ADS / Reload State
+  bool firstPersonMode() const { return firstPersonMode_; }
+  void setFirstPersonMode(bool enabled) { firstPersonMode_ = enabled; }
+  void toggleFirstPersonMode() { firstPersonMode_ = !firstPersonMode_; }
+  float adsBlend() const { return adsBlend_; }
+  float reloadProgress01() const;
+
+  // Interactive 3D Gunsmith Design Studio (Turntable Camera + Live PBR Customization)
+  bool gunsmithOpen() const { return gunsmithOpen_; }
+  void setGunsmithOpen(bool open);
+  int gunsmithSlot() const { return gunsmithSlot_; }
+  void setGunsmithSlot(int slotIdx);
+  float gunsmithYaw() const { return gunsmithYaw_; }
+  float gunsmithPitch() const { return gunsmithPitch_; }
+  float gunsmithZoom() const { return gunsmithZoom_; }
+  bool gunsmithAutoRotate() const { return gunsmithAutoRotate_; }
+  void setGunsmithAutoRotate(bool autoRot) { gunsmithAutoRotate_ = autoRot; }
+  void orbitGunsmith(float dYawRad, float dPitchRad, float dZoom);
+  void setGunsmithCameraPreset(int preset); // 0=3/4 Beauty, 1=Side Profile, 2=Optic Zoom, 3=Muzzle Zoom
+  int gunsmithCameraPreset() const { return gunsmithPreset_; }
+  glm::vec3 gunsmithAnchorPos(const PlayerController& player) const;
+  void triggerGunsmithTestFire(AudioEngine* audio = nullptr);
 
   // Player Vanguard Tactical Suit & Outfit Presets
   PlayerSuitPreset playerSuit() const { return playerSuit_; }
@@ -1102,6 +1151,16 @@ private:
   int activePersonalVehicleId_ = -1;
   int selectedPaintIdx_ = 2;
   int driveCamMode_ = 0; // 0 = chase near, 1 = chase far, 2 = hood/bonnet cam
+  bool firstPersonMode_ = false;
+  float adsBlend_ = 0.0f;
+  bool gunsmithOpen_ = false;
+  int gunsmithSlot_ = 2; // defaults to Vanguard M4A1-S
+  float gunsmithYaw_ = 1.18f;
+  float gunsmithPitch_ = 0.16f;
+  float gunsmithZoom_ = 0.62f;
+  bool gunsmithAutoRotate_ = false;
+  int gunsmithPreset_ = 0;
+  glm::vec3 gunsmithTargetOffset_{0.0f, 0.05f, 0.14f};
   int activeVehicleIdx_ = -1;
   float sirenCooldown_ = 0.0f;
 
@@ -1213,6 +1272,7 @@ private:
   std::vector<WildlifeEntity> wildlife_;
   std::vector<BirdFlockMember> birdFlocks_;
   float worldAnimClock_ = 0.0f;
+  glm::vec3 gunsmithCachedAnchor_{0.0f, 318.0f, 0.0f};
 };
 
 } // namespace westgate

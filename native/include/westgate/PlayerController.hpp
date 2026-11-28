@@ -13,12 +13,14 @@ struct PlayerInputState {
   bool sprint = false;
   bool crouch = false;
   bool jump = false;
+  bool firstPersonLook = false;
 };
 
 class PlayerController {
  public:
   void init(PhysicsWorld* physics, const glm::vec3& startPos, float startYawDeg = 0.0f);
   void teleport(const glm::vec3& pos, float yawDeg);
+  void setPitch(float pitchRad) { pitch_ = pitchRad; }
   void update(float dt, const PlayerInputState& input);
 
   glm::vec3 position() const;

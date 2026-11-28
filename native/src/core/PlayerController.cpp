@@ -41,7 +41,9 @@ void PlayerController::update(float dt, const PlayerInputState& input) {
   stepIntensity_ = 0.0f;
 
   yaw_ -= input.lookDeltaX * 0.0024f;
-  pitch_ = std::clamp(pitch_ - input.lookDeltaY * 0.0021f, -0.85f, 0.55f);
+  const float minPitch = input.firstPersonLook ? -1.32f : -0.85f;
+  const float maxPitch = input.firstPersonLook ?  1.28f :  0.55f;
+  pitch_ = std::clamp(pitch_ - input.lookDeltaY * 0.0021f, minPitch, maxPitch);
 
   const glm::vec3 fwd(std::sin(yaw_), 0.0f, std::cos(yaw_));
   const glm::vec3 right(-std::cos(yaw_), 0.0f, std::sin(yaw_));

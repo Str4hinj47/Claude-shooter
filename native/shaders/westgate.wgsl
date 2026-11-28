@@ -387,6 +387,16 @@ fn vsInstanced(in : InstancedVSIn) -> VSOut {
   out.shadowPosFar = computeShadowCoord(uFrame.lightViewProjFar, worldPos);
   out.normal = rotNorm;
 
+  if (in.instMatOvrd.x <= -10.0) {
+    // Procedural Textured 3D Firearm / Viewmodel Mesh (4-map PBR + per-instance Roughness & Metallic)
+    out.color = in.vtxCol * in.instColEm.rgb;
+    out.surfaceKind = 4.0;
+    out.pbrParams = vec2<f32>(clamp(in.instMatOvrd.y, 0.0, 1.0), clamp(-in.instMatOvrd.x - 10.0, 0.05, 0.98));
+    out.uv = in.uv;
+    out.emissiveBoost = in.instColEm.w;
+    return out;
+  }
+
   if (in.instMatOvrd.x >= 0.0) {
     // Procedural Architecture Box (PackedArchBox: FacadeGrammar + CityBuildingKit + Compounds)
     let fam = floor(in.instMatOvrd.y + 0.001);

@@ -4,6 +4,7 @@
 #include "westgate/GltfAssetLoader.hpp"
 #include "westgate/PhysicsWorld.hpp"
 #include "westgate/PlayerController.hpp"
+#include "westgate/WeaponSystem3D.hpp"
 #include "westgate/WorldData.hpp"
 
 #include <algorithm>
@@ -1352,6 +1353,177 @@ int main() {
       WG_CHECK(m5Loaded.randomEventsResolved() == 1);
 
       std::printf("[PASS] Milestone 5 verified: 4 Luxury Apartments (y=260m Jolt Suite), 15 Stashes, 28 Chain Explosives, 10 Speed Traps, Street Events & 3D Wildlife OK\n");
+    }
+
+    // -----------------------------------------------------------------------
+    // 11. First-Person Mode [V], 3D Gunsmith Design Studio & Procedural PBR Weapons
+    // -----------------------------------------------------------------------
+    {
+      static_assert(sizeof(westgate::WeaponPartVertex) == 52, "WeaponPartVertex must match 52-byte ModelVertex layout");
+
+      std::array<westgate::WeaponPbrTextureSet, westgate::kWeaponSurfaceMatCount> wepTex{};
+      westgate::WeaponSystem3D::generateProceduralTextures(wepTex);
+      for (size_t mi = 0; mi < westgate::kWeaponSurfaceMatCount; ++mi) {
+        const auto& ts = wepTex[mi];
+        WG_CHECK(ts.width == 256 && ts.height == 256);
+        const size_t expectedBytes = 256u * 256u * 4u;
+        WG_CHECK(ts.albedoRgba.size() == expectedBytes);
+        WG_CHECK(ts.normalRgba.size() == expectedBytes);
+        WG_CHECK(ts.ormRgba.size() == expectedBytes);
+
+        // Verify real tangent-space micro-normal relief (not a flat 128,128,255 sheet)
+        uint32_t nonFlatNormals = 0;
+        for (size_t px = 0; px < 256u * 256u; ++px) {
+          const int nx = static_cast<int>(ts.normalRgba[px * 4 + 0]) - 128;
+          const int ny = static_cast<int>(ts.normalRgba[px * 4 + 1]) - 128;
+          if (std::abs(nx) >= 2 || std::abs(ny) >= 2) ++nonFlatNormals;
+        }
+        WG_CHECK(nonFlatNormals > 1000);
+      }
+
+      std::array<westgate::WeaponPartCpuMesh, westgate::kWeaponMeshPartCount> wepMeshes{};
+      westgate::WeaponSystem3D::generateAllPartMeshes(wepMeshes);
+      size_t totalWepVerts = 0;
+      size_t totalWepTris = 0;
+      for (size_t pi = 0; pi < westgate::kWeaponMeshPartCount; ++pi) {
+        const auto& m = wepMeshes[pi];
+        WG_CHECK(!m.vertices.empty());
+        WG_CHECK(!m.indices.empty() && (m.indices.size() % 3 == 0));
+        totalWepVerts += m.vertices.size();
+        totalWepTris += m.indices.size() / 3;
+        for (uint32_t idx : m.indices) {
+          WG_CHECK(idx < m.vertices.size());
+        }
+        for (const auto& v : m.vertices) {
+          const float nLen = std::sqrt(v.nx * v.nx + v.ny * v.ny + v.nz * v.nz);
+          WG_CHECK(nLen > 0.90f && nLen < 1.10f);
+          WG_CHECK(v.metallic >= 0.0f && v.metallic <= 1.0f);
+          WG_CHECK(v.roughness >= 0.0f && v.roughness <= 1.0f);
+        }
+      }
+      WG_CHECK(totalWepVerts > 1500 && totalWepTris > 1200);
+
+      westgate::GameSession gs;
+      gs.init(world, &player, &physics);
+      gs.unlockAllWeapons();
+      player.teleport(world.spawnPos, 0.0f);
+
+      // Test First-Person toggle, eye-height camera & smooth ADS alignment
+      WG_CHECK(!gs.firstPersonMode());
+      const glm::vec3 thirdPersonCam = gs.cameraPosition(player);
+      gs.toggleFirstPersonMode();
+      WG_CHECK(gs.firstPersonMode());
+      const glm::vec3 firstPersonCam = gs.cameraPosition(player);
+      WG_CHECK(glm::distance(thirdPersonCam, player.position()) > 2.2f);
+      WG_CHECK(glm::length(glm::vec2(firstPersonCam.x - player.position().x, firstPersonCam.z - player.position().z)) < 0.35f);
+      WG_CHECK(firstPersonCam.y > player.position().y + 1.35f && firstPersonCam.y < player.position().y + 1.85f);
+
+      // Select Vanguard M4A1-S Carbine (slot 2), customize with Holo + Osprey + AngledGrip + Drum + 3-Zone Cerakote + Violet Reticle
+      {
+        westgate::GameInputFrame selIn{};
+        selIn.selectWeaponSlot = 2;
+        gs.update(1.0f / 60.0f, selIn, player, physics, world, nullptr);
+      }
+      gs.configureWeaponSlot(
+        2,
+        westgate::WeaponOpticKind::Holo,
+        westgate::WeaponMuzzleKind::Osprey,
+        westgate::WeaponUnderbarrelKind::AngledGrip,
+        westgate::WeaponMagKind::Drum,
+        westgate::WeaponFinishKind::Gold
+      );
+      gs.configureWeaponZones(
+        2,
+        westgate::WeaponFinishKind::Gold,
+        westgate::WeaponFinishKind::Cobalt,
+        westgate::WeaponFinishKind::Titanium,
+        0.82f,
+        4 // Violet reticle
+      );
+      const auto& carb = gs.weapons()[2];
+      WG_CHECK(carb.id == "carbine" && carb.suppressed);
+      WG_CHECK(carb.bodyFinish == westgate::WeaponFinishKind::Gold);
+      WG_CHECK(carb.accentFinish == westgate::WeaponFinishKind::Cobalt);
+      WG_CHECK(carb.hardwareFinish == westgate::WeaponFinishKind::Titanium);
+      WG_CHECK(std::abs(carb.surfaceSheen - 0.82f) < 0.005f);
+      WG_CHECK(carb.reticleColorIdx == 4);
+
+      // Pump 25 ADS frames in First-Person and verify smooth adsBlend -> 1.0 & zoomed FOV
+      const float hipFov = gs.cameraFovDeg(false);
+      for (int f = 0; f < 25; ++f) {
+        westgate::GameInputFrame adsIn{};
+        adsIn.aimDown = true;
+        adsIn.moveInput.firstPersonLook = true;
+        gs.update(1.0f / 60.0f, adsIn, player, physics, world, nullptr);
+      }
+      WG_CHECK(gs.adsBlend() > 0.92f);
+      WG_CHECK(gs.cameraFovDeg(true) < hipFov - 6.0f);
+
+      // Verify First-Person Viewmodel emits modular Carbine + Holo + Osprey + AngledGrip + Drum + FPV Arms
+      std::vector<westgate::WeaponPartDrawInstance> fpParts;
+      westgate::WeaponSystem3D::appendFirstPersonViewmodel(
+        gs.cameraPosition(player),
+        gs.cameraTarget(player),
+        gs.activeWeapon(),
+        gs.playerSuit(),
+        gs.adsBlend(),
+        0.0f,
+        0.0f,
+        0.0f,
+        false,
+        0.0f,
+        0.0f,
+        "",
+        0.0f,
+        false,
+        fpParts
+      );
+      WG_CHECK(fpParts.size() >= 10);
+      bool sawHolo = false, sawOsprey = false, sawAngled = false, sawDrum = false, sawForearm = false;
+      for (const auto& pt : fpParts) {
+        if (pt.part == westgate::WeaponMeshPartId::Optic_Holo) sawHolo = true;
+        if (pt.part == westgate::WeaponMeshPartId::Muzzle_Osprey) sawOsprey = true;
+        if (pt.part == westgate::WeaponMeshPartId::Under_AngledGrip) sawAngled = true;
+        if (pt.part == westgate::WeaponMeshPartId::Mag_Drum) sawDrum = true;
+        if (pt.part == westgate::WeaponMeshPartId::Fpv_Forearm) sawForearm = true;
+      }
+      WG_CHECK(sawHolo && sawOsprey && sawAngled && sawDrum && sawForearm);
+
+      // Verify 3D Gunsmith Design Studio camera, orbit, presets & v2 JSON save/load persistence
+      gs.setGunsmithOpen(true);
+      gs.setGunsmithSlot(2);
+      WG_CHECK(gs.gunsmithOpen() && gs.gunsmithSlot() == 2);
+      const glm::vec3 gsCam0 = gs.cameraPosition(player);
+      WG_CHECK(gsCam0.y > 315.0f);
+      gs.orbitGunsmith(0.65f, -0.15f, -0.10f);
+      const glm::vec3 gsCam1 = gs.cameraPosition(player);
+      WG_CHECK(glm::distance(gsCam0, gsCam1) > 0.15f);
+      gs.setGunsmithCameraPreset(2);
+      WG_CHECK(gs.gunsmithCameraPreset() == 2 && gs.gunsmithZoom() < 0.36f);
+      gs.setGunsmithOpen(false);
+
+      const std::string gsSave = "/tmp/westgate_gunsmith_fps_v2.json";
+      WG_CHECK(gs.saveToFile(gsSave));
+      westgate::GameSession gsLoaded;
+      gsLoaded.init(world, &player, &physics);
+      WG_CHECK(gsLoaded.loadFromFile(gsSave));
+      WG_CHECK(gsLoaded.firstPersonMode());
+      const auto& loadedCarb = gsLoaded.weapons()[2];
+      WG_CHECK(loadedCarb.optic == westgate::WeaponOpticKind::Holo);
+      WG_CHECK(loadedCarb.muzzle == westgate::WeaponMuzzleKind::Osprey);
+      WG_CHECK(loadedCarb.underbarrel == westgate::WeaponUnderbarrelKind::AngledGrip);
+      WG_CHECK(loadedCarb.mag == westgate::WeaponMagKind::Drum);
+      WG_CHECK(loadedCarb.bodyFinish == westgate::WeaponFinishKind::Gold);
+      WG_CHECK(loadedCarb.accentFinish == westgate::WeaponFinishKind::Cobalt);
+      WG_CHECK(loadedCarb.hardwareFinish == westgate::WeaponFinishKind::Titanium);
+      WG_CHECK(std::abs(loadedCarb.surfaceSheen - 0.82f) < 0.005f);
+      WG_CHECK(loadedCarb.reticleColorIdx == 4);
+
+      gsLoaded.resetWeaponSlotDefaults(2);
+      WG_CHECK(gsLoaded.weapons()[2].bodyFinish == westgate::WeaponFinishKind::Obsidian);
+
+      std::printf("[PASS] First-Person Mode, 3D Gunsmith Studio & 32 Procedural PBR Weapon Meshes (%zu verts / %zu tris) OK\n",
+                  totalWepVerts, totalWepTris);
     }
 
     std::printf("[PASS] GameSession full loop: %zu vehicles, %zu NPCs, driving/gunplay/contracts/sky/save OK\n",

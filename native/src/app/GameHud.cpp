@@ -24,6 +24,264 @@ void drawWestgateHud(
   ImDrawList* bgDraw = ImGui::GetBackgroundDrawList();
   const glm::vec3 pPos = player.position();
 
+  // =========================================================================
+  // 0. Dedicated Interactive 3D Gunsmith Design Studio Mode [F2]
+  // =========================================================================
+  if (session.gunsmithOpen()) {
+    const int slot = session.gunsmithSlot();
+    const auto& w = session.weapons()[static_cast<size_t>(slot)];
+
+    // Subtle studio vignette framing left/bottom around the 3D weapon turntable
+    bgDraw->AddRectFilledMultiColor(
+      {0.0f, 0.0f}, {disp.x, 86.0f},
+      IM_COL32(6, 10, 16, 210), IM_COL32(6, 10, 16, 210),
+      IM_COL32(6, 10, 16, 0),   IM_COL32(6, 10, 16, 0)
+    );
+
+    // Top-Left Studio Header & Camera Preset Controls
+    ImGui::SetNextWindowPos({20.0f, 16.0f}, ImGuiCond_Always);
+    ImGui::SetNextWindowSize({disp.x - 458.0f, 118.0f}, ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.86f);
+    ImGui::Begin("##GunsmithHeader", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
+    ImGui::TextColored({0.38f, 0.92f, 1.0f, 1.0f}, "WESTGATE ARMORY // 3D GUNSMITH DESIGN STUDIO");
+    ImGui::SameLine(ImGui::GetWindowWidth() - 235.0f);
+    ImGui::TextColored({0.42f, 0.96f, 0.62f, 1.0f}, "CREDITS: $%d", session.playerCash());
+    ImGui::TextDisabled("Left-Drag: 360 Orbit  |  Mouse Wheel: Precision Zoom  |  [F2 / ESC] Exit to Field");
+
+    // Weapon platform selector tabs (Slots 1..5)
+    for (int si = 1; si < static_cast<int>(session.weapons().size()); ++si) {
+      if (si > 1) ImGui::SameLine();
+      const auto& sw = session.weapons()[static_cast<size_t>(si)];
+      const bool active = (si == slot);
+      if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16f, 0.52f, 0.72f, 0.98f));
+      char tabLbl[64];
+      std::snprintf(tabLbl, sizeof(tabLbl), "[%d] %s%s", si + 1, sw.name.c_str(), sw.unlocked ? "" : " (LOCKED)");
+      if (ImGui::SmallButton(tabLbl)) {
+        session.setGunsmithSlot(si);
+      }
+      if (active) ImGui::PopStyleColor();
+    }
+
+    // Studio Camera Angles + Spin + Test Fire
+    ImGui::TextDisabled("Camera:");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("3/4 Showcase")) session.setGunsmithCameraPreset(0);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Side Profile")) session.setGunsmithCameraPreset(1);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Optic Sight")) session.setGunsmithCameraPreset(2);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Muzzle & Rail")) session.setGunsmithCameraPreset(3);
+    ImGui::SameLine();
+    bool autoSpin = session.gunsmithAutoRotate();
+    if (ImGui::Checkbox("Turntable", &autoSpin)) session.setGunsmithAutoRotate(autoSpin);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Test Fire Kick")) {
+      session.triggerGunsmithTestFire(audio);
+    }
+    ImGui::End();
+
+    // Bottom-Left Live Ballistics & Acoustic Telemetry
+    ImGui::SetNextWindowPos({20.0f, disp.y - 166.0f}, ImGuiCond_Always);
+    ImGui::SetNextWindowSize({482.0f, 148.0f}, ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.86f);
+    ImGui::Begin("##GunsmithTelemetry", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
+    ImGui::TextColored({0.95f, 0.82f, 0.34f, 1.0f}, "%s // BALLISTICS TELEMETRY", w.name.c_str());
+    ImGui::SameLine(ImGui::GetWindowWidth() - 122.0f);
+    ImGui::TextColored(w.suppressed ? ImVec4(0.35f, 0.96f, 0.68f, 1.0f) : ImVec4(1.0f, 0.52f, 0.36f, 1.0f),
+                       w.suppressed ? "[SUBSONIC SD]" : "[UNSUPPRESSED]");
+
+    float dmgMul = 1.0f;
+    if (w.muzzle == WeaponMuzzleKind::Suppressor) dmgMul = 0.94f;
+    else if (w.muzzle == WeaponMuzzleKind::Osprey) dmgMul = 0.96f;
+    else if (w.muzzle == WeaponMuzzleKind::Wrapped) dmgMul = 0.98f;
+    const float effDmg = w.damage * dmgMul * static_cast<float>(std::max(1, w.pellets));
+
+    float spreadMul = 1.0f;
+    if (w.muzzle == WeaponMuzzleKind::Compensator) spreadMul *= 0.76f;
+    if (w.muzzle == WeaponMuzzleKind::Wrapped) spreadMul *= 0.88f;
+    if (w.underbarrel == WeaponUnderbarrelKind::VerticalGrip) spreadMul *= 0.78f;
+    if (w.underbarrel == WeaponUnderbarrelKind::LaserSight) spreadMul *= 0.82f;
+    if (w.underbarrel == WeaponUnderbarrelKind::AngledGrip) spreadMul *= 0.84f;
+    if (w.optic == WeaponOpticKind::RedDot || w.optic == WeaponOpticKind::Holo) spreadMul *= 0.88f;
+    if (w.optic == WeaponOpticKind::Acog) spreadMul *= 0.75f;
+    if (w.optic == WeaponOpticKind::SniperScope) spreadMul *= 0.58f;
+    const float effSpread = w.spread * spreadMul;
+    const float acc01 = std::clamp(1.0f - effSpread / 0.065f, 0.08f, 0.99f);
+    const float rpm = w.rpm;
+
+    char buf[96];
+    std::snprintf(buf, sizeof(buf), "Terminal Damage: %.0f", effDmg);
+    ImGui::ProgressBar(std::clamp(effDmg / 120.0f, 0.05f, 1.0f), {-1.0f, 15.0f}, buf);
+    std::snprintf(buf, sizeof(buf), "Precision & Recoil Control: %.0f%%", acc01 * 100.0f);
+    ImGui::ProgressBar(acc01, {-1.0f, 15.0f}, buf);
+    std::snprintf(buf, sizeof(buf), "Cyclic Rate: %.0f RPM   |   Capacity: %d + %d rnds", rpm, w.magSize, w.reserveAmmo);
+    ImGui::ProgressBar(std::clamp(rpm / 900.0f, 0.08f, 1.0f), {-1.0f, 15.0f}, buf);
+    ImGui::TextDisabled("PBR: CNC Anodized + Laser-Stippled Polymer + Sapphire Lens");
+    ImGui::End();
+
+    // Right-Side Modular Workbench Inspector
+    ImGui::SetNextWindowPos({disp.x - 422.0f, 16.0f}, ImGuiCond_Always);
+    ImGui::SetNextWindowSize({404.0f, disp.y - 32.0f}, ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.92f);
+    ImGui::Begin("##GunsmithInspector", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
+    ImGui::TextColored({0.45f, 0.92f, 1.0f, 1.0f}, "MODULAR ATTACHMENTS & CERAKOTE");
+    ImGui::Separator();
+
+    // Purchase / Ammo row
+    if (!w.unlocked) {
+      char buyLbl[80];
+      std::snprintf(buyLbl, sizeof(buyLbl), "Unlock %s ($%d)", w.name.c_str(), w.price);
+      if (ImGui::Button(buyLbl, {-1.0f, 28.0f})) {
+        session.buyWeaponOrAmmo(slot, audio);
+      }
+    } else {
+      char ammoLbl[80];
+      std::snprintf(ammoLbl, sizeof(ammoLbl), "Refill Magazines ($%d) [%d/%d]", w.ammoPrice, w.magAmmo, w.reserveAmmo);
+      if (ImGui::Button(ammoLbl, {-1.0f, 25.0f})) {
+        session.buyWeaponOrAmmo(slot, audio);
+      }
+    }
+
+    ImGui::Spacing();
+    static const char* kOpticLabels[5] = {"Iron Sights", "Red Dot", "Holo EOTech", "4x ACOG", "8x Sniper"};
+    static const char* kMuzzleLabels[5] = {"Standard", "Suppressor", "Compensator", "Osprey Box", "Thermal Wrap"};
+    static const char* kUnderLabels[4] = {"Clean Rail", "Vert Grip", "PEQ Laser", "Angled Grip"};
+    static const char* kMagLabels[3] = {"Standard", "Extended", "Drum Mag"};
+
+    ImGui::TextColored({0.86f, 0.90f, 0.98f, 1.0f}, "1. OPTIC SIGHT RAIL");
+    for (int oi = 0; oi < 5; ++oi) {
+      if (oi > 0 && oi != 3) ImGui::SameLine();
+      const bool sel = (static_cast<int>(w.optic) == oi);
+      if (sel) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.56f, 0.78f, 1.0f));
+      if (ImGui::Button(kOpticLabels[oi], {oi < 3 ? 124.0f : 190.0f, 23.0f})) {
+        session.configureWeaponSlot(slot, static_cast<WeaponOpticKind>(oi), w.muzzle, w.underbarrel, w.mag, w.bodyFinish);
+      }
+      if (sel) ImGui::PopStyleColor();
+    }
+
+    // Illuminated Reticle Color Swatches (5 colors)
+    ImGui::Text("Reticle Illumination:");
+    ImGui::SameLine();
+    for (int ri = 0; ri < static_cast<int>(kWeaponReticleColorCount); ++ri) {
+      if (ri > 0) ImGui::SameLine();
+      const char* rName = nullptr;
+      const glm::vec3 rc = GameSession::weaponReticleColor(static_cast<uint8_t>(ri), &rName);
+      ImGui::PushID(8100 + ri);
+      const int flags = (w.reticleColorIdx == ri) ? 0 : ImGuiColorEditFlags_NoBorder;
+      if (ImGui::ColorButton(rName ? rName : "Reticle", ImVec4(rc.r, rc.g, rc.b, 1.0f), flags, {22.0f, 18.0f})) {
+        session.configureWeaponZones(slot, w.bodyFinish, w.accentFinish, w.hardwareFinish, w.surfaceSheen, static_cast<uint8_t>(ri));
+      }
+      if (w.reticleColorIdx == ri) {
+        ImGui::GetWindowDrawList()->AddRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), IM_COL32(255, 255, 255, 255), 2.0f, 0, 2.0f);
+      }
+      ImGui::PopID();
+    }
+
+    ImGui::Spacing();
+    ImGui::TextColored({0.86f, 0.90f, 0.98f, 1.0f}, "2. MUZZLE DEVICE");
+    for (int mi = 0; mi < 5; ++mi) {
+      if (mi > 0 && mi != 3) ImGui::SameLine();
+      const bool sel = (static_cast<int>(w.muzzle) == mi);
+      if (sel) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.56f, 0.78f, 1.0f));
+      if (ImGui::Button(kMuzzleLabels[mi], {mi < 3 ? 124.0f : 190.0f, 23.0f})) {
+        session.configureWeaponSlot(slot, w.optic, static_cast<WeaponMuzzleKind>(mi), w.underbarrel, w.mag, w.bodyFinish);
+      }
+      if (sel) ImGui::PopStyleColor();
+    }
+
+    ImGui::Spacing();
+    ImGui::TextColored({0.86f, 0.90f, 0.98f, 1.0f}, "3. UNDERBARREL ACCESSORY");
+    for (int uiIdx = 0; uiIdx < 4; ++uiIdx) {
+      if (uiIdx % 2 == 1) ImGui::SameLine();
+      const bool sel = (static_cast<int>(w.underbarrel) == uiIdx);
+      if (sel) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.56f, 0.78f, 1.0f));
+      if (ImGui::Button(kUnderLabels[uiIdx], {190.0f, 23.0f})) {
+        session.configureWeaponSlot(slot, w.optic, w.muzzle, static_cast<WeaponUnderbarrelKind>(uiIdx), w.mag, w.bodyFinish);
+      }
+      if (sel) ImGui::PopStyleColor();
+    }
+
+    ImGui::Spacing();
+    ImGui::TextColored({0.86f, 0.90f, 0.98f, 1.0f}, "4. MAGAZINE SYSTEM");
+    for (int mgi = 0; mgi < 3; ++mgi) {
+      if (mgi > 0) ImGui::SameLine();
+      const bool sel = (static_cast<int>(w.mag) == mgi);
+      if (sel) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.56f, 0.78f, 1.0f));
+      if (ImGui::Button(kMagLabels[mgi], {124.0f, 23.0f})) {
+        session.configureWeaponSlot(slot, w.optic, w.muzzle, w.underbarrel, static_cast<WeaponMagKind>(mgi), w.bodyFinish);
+      }
+      if (sel) ImGui::PopStyleColor();
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::TextColored({0.98f, 0.82f, 0.36f, 1.0f}, "5. 3-ZONE CERAKOTE & ANODIZED FINISH");
+
+    static int sPaintZone = 0; // 0 = All Zones, 1 = Receiver Body, 2 = Handguard/Grip, 3 = Barrel/Hardware
+    const char* zoneTabs[4] = {"All Zones", "Receiver", "Handguard", "Hardware"};
+    for (int zi = 0; zi < 4; ++zi) {
+      if (zi > 0) ImGui::SameLine();
+      const bool zSel = (sPaintZone == zi);
+      if (zSel) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.68f, 0.48f, 0.14f, 1.0f));
+      if (ImGui::Button(zoneTabs[zi], {91.0f, 22.0f})) sPaintZone = zi;
+      if (zSel) ImGui::PopStyleColor();
+    }
+
+    WeaponFinishKind activeZoneFin = w.bodyFinish;
+    if (sPaintZone == 2) activeZoneFin = w.accentFinish;
+    else if (sPaintZone == 3) activeZoneFin = w.hardwareFinish;
+
+    static const char* kShortSwatchNames[8] = {
+      "Obsidian", "Coyote", "Arctic", "Crimson",
+      "24K Gold", "Titanium", "OD Olive", "Cobalt"
+    };
+    for (int fi = 0; fi < static_cast<int>(kWeaponFinishCount); ++fi) {
+      if (fi % 4 != 0) ImGui::SameLine();
+      const auto fk = static_cast<WeaponFinishKind>(fi);
+      const char* fName = nullptr;
+      glm::vec3 fc{0.2f};
+      float fMet = 0.5f, fRgh = 0.5f;
+      GameSession::weaponFinishPbr(fk, w.surfaceSheen, fc, fRgh, fMet, &fName);
+      ImGui::PushID(8200 + fi);
+      ImGui::BeginGroup();
+      if (ImGui::ColorButton(fName ? fName : "Cerakote", ImVec4(fc.r, fc.g, fc.b, 1.0f), 0, {88.0f, 22.0f})) {
+        WeaponFinishKind nb = w.bodyFinish;
+        WeaponFinishKind na = w.accentFinish;
+        WeaponFinishKind nh = w.hardwareFinish;
+        if (sPaintZone == 0) { nb = fk; na = fk; nh = fk; }
+        else if (sPaintZone == 1) { nb = fk; }
+        else if (sPaintZone == 2) { na = fk; }
+        else { nh = fk; }
+        session.configureWeaponZones(slot, nb, na, nh, w.surfaceSheen, w.reticleColorIdx);
+      }
+      if (fk == activeZoneFin) {
+        ImGui::GetWindowDrawList()->AddRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), IM_COL32(255, 232, 125, 255), 3.0f, 0, 2.2f);
+      }
+      ImGui::TextDisabled(" %s", kShortSwatchNames[fi]);
+      ImGui::EndGroup();
+      ImGui::PopID();
+    }
+
+    float sheenPct = w.surfaceSheen * 100.0f;
+    if (ImGui::SliderFloat("Surface Sheen", &sheenPct, 0.0f, 100.0f, "%.0f%% Polish")) {
+      session.configureWeaponZones(slot, w.bodyFinish, w.accentFinish, w.hardwareFinish, sheenPct * 0.01f, w.reticleColorIdx);
+    }
+
+    ImGui::Spacing();
+    if (ImGui::Button("Factory Reset", {130.0f, 28.0f})) {
+      session.resetWeaponSlotDefaults(slot);
+    }
+    ImGui::SameLine();
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.54f, 0.36f, 1.0f));
+    if (ImGui::Button("Save & Return to Field [F2]", {-1.0f, 28.0f})) {
+      session.setGunsmithOpen(false);
+    }
+    ImGui::PopStyleColor();
+    ImGui::End();
+    return;
+  }
+
   // -------------------------------------------------------------------------
   // 1. Center Crosshair, Sniper Scope Overlay & Hitmarker
   // -------------------------------------------------------------------------
@@ -32,26 +290,43 @@ void drawWestgateHud(
     const auto& actW = session.activeWeapon();
     const bool armed = !actW.isMelee && !session.inVehicle();
     const bool scopeAds = armed && session.isAiming() && actW.optic == WeaponOpticKind::SniperScope;
+    const bool fpOpticalAds = session.firstPersonMode() && armed && session.adsBlend() > 0.68f && !scopeAds;
+    const glm::vec3 retRgb = GameSession::weaponReticleColor(actW.reticleColorIdx);
+    const ImU32 retU32 = IM_COL32(
+      static_cast<int>(retRgb.r * 255.0f),
+      static_cast<int>(retRgb.g * 255.0f),
+      static_cast<int>(retRgb.b * 255.0f),
+      235
+    );
 
     if (scopeAds) {
-      const float r = std::min(disp.x, disp.y) * 0.39f;
-      bgDraw->AddCircle(c, r, IM_COL32(18, 28, 36, 245), 64, 18.0f);
-      bgDraw->AddCircle(c, r - 9.0f, IM_COL32(95, 225, 255, 190), 64, 1.5f);
-      bgDraw->AddLine({c.x - r, c.y}, {c.x + r, c.y}, IM_COL32(20, 35, 45, 215), 1.3f);
-      bgDraw->AddLine({c.x, c.y - r}, {c.x, c.y + r}, IM_COL32(20, 35, 45, 215), 1.3f);
+      const float r = std::min(disp.x, disp.y) * 0.41f;
+      // Dark tactical scope surround in First-Person & 3rd-Person 8x ADS
+      bgDraw->AddRectFilled({0.0f, 0.0f}, {c.x - r, disp.y}, IM_COL32(5, 8, 12, 225));
+      bgDraw->AddRectFilled({c.x + r, 0.0f}, {disp.x, disp.y}, IM_COL32(5, 8, 12, 225));
+      bgDraw->AddCircle(c, r + 14.0f, IM_COL32(8, 12, 18, 245), 72, 32.0f);
+      bgDraw->AddCircle(c, r - 8.0f, retU32, 72, 1.6f);
+      bgDraw->AddLine({c.x - r, c.y}, {c.x + r, c.y}, IM_COL32(18, 28, 38, 225), 1.4f);
+      bgDraw->AddLine({c.x, c.y - r}, {c.x, c.y + r}, IM_COL32(18, 28, 38, 225), 1.4f);
       for (int md = -4; md <= 4; ++md) {
         if (md == 0) continue;
-        bgDraw->AddCircleFilled({c.x + md * 24.0f, c.y}, 2.0f, IM_COL32(95, 235, 255, 210));
-        bgDraw->AddCircleFilled({c.x, c.y + md * 24.0f}, 2.0f, IM_COL32(95, 235, 255, 210));
+        bgDraw->AddCircleFilled({c.x + md * 24.0f, c.y}, 2.0f, retU32);
+        bgDraw->AddCircleFilled({c.x, c.y + md * 24.0f}, 2.0f, retU32);
       }
-      bgDraw->AddCircleFilled(c, 2.4f, IM_COL32(255, 65, 65, 245));
-    } else {
-      const ImU32 crossCol = armed ? IM_COL32(235, 245, 255, 210) : IM_COL32(220, 220, 220, 120);
-      bgDraw->AddLine({c.x - 9.0f, c.y}, {c.x - 3.0f, c.y}, crossCol, 1.8f);
-      bgDraw->AddLine({c.x + 3.0f, c.y}, {c.x + 9.0f, c.y}, crossCol, 1.8f);
-      bgDraw->AddLine({c.x, c.y - 9.0f}, {c.x, c.y - 3.0f}, crossCol, 1.8f);
-      bgDraw->AddLine({c.x, c.y + 3.0f}, {c.x, c.y + 9.0f}, crossCol, 1.8f);
-      bgDraw->AddCircleFilled(c, 1.8f, crossCol);
+      bgDraw->AddCircleFilled(c, 2.6f, retU32);
+    } else if (!fpOpticalAds) {
+      // Fade hip crosshair smoothly as First-Person ADS brings the true 3D iron/holo sight onto center screen
+      const float fade = session.firstPersonMode() ? std::clamp(1.0f - session.adsBlend() * 1.45f, 0.0f, 1.0f) : 1.0f;
+      const int alpha = static_cast<int>((armed ? 210.0f : 125.0f) * fade);
+      if (alpha > 8) {
+        const float spreadPx = armed ? (7.0f + (session.isAiming() ? 0.0f : 4.0f)) : 7.0f;
+        const ImU32 crossCol = IM_COL32(235, 245, 255, alpha);
+        bgDraw->AddLine({c.x - spreadPx - 5.0f, c.y}, {c.x - spreadPx + 1.0f, c.y}, crossCol, 1.8f);
+        bgDraw->AddLine({c.x + spreadPx - 1.0f, c.y}, {c.x + spreadPx + 5.0f, c.y}, crossCol, 1.8f);
+        bgDraw->AddLine({c.x, c.y - spreadPx - 5.0f}, {c.x, c.y - spreadPx + 1.0f}, crossCol, 1.8f);
+        bgDraw->AddLine({c.x, c.y + spreadPx - 1.0f}, {c.x, c.y + spreadPx + 5.0f}, crossCol, 1.8f);
+        bgDraw->AddCircleFilled(c, 1.7f, crossCol);
+      }
     }
 
     if (session.hitmarkerTimer() > 0.0f) {
@@ -423,8 +698,19 @@ void drawWestgateHud(
                 physics.staticBodyCount(), physics.dynamicBodyCount(), telemetry.activePointLights,
                 telemetry.glbPropTypesLoaded, session.timeOfDayLabel().c_str(), session.weatherLabel().c_str());
     ImGui::Separator();
-    ImGui::Text("[TAB] Mouse Look: %s | [1-6] Weapons | [G] Vehicle | [T] Sky | [Y] Weather | [P] Phone", ui.mouseCaptured ? "ON" : "OFF");
+    ImGui::Text("[TAB] Mouse: %s | [V] %s | [F2] 3D Gunsmith | [1-6] Weapons | [G] Vehicle | [P] Phone",
+                ui.mouseCaptured ? "ON" : "OFF",
+                session.firstPersonMode() ? "1ST-PERSON" : "3RD-PERSON");
     if (ImGui::Button("Toggle Phone [P]")) ui.showPhone = !ui.showPhone;
+    ImGui::SameLine();
+    if (session.firstPersonMode()) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16f, 0.56f, 0.78f, 1.0f));
+    if (ImGui::Button(session.firstPersonMode() ? "1st-Person [V]" : "3rd-Person [V]")) session.toggleFirstPersonMode();
+    if (session.firstPersonMode()) ImGui::PopStyleColor();
+    ImGui::SameLine();
+    if (ImGui::Button("3D Gunsmith [F2]")) {
+      ui.showPhone = false;
+      session.setGunsmithOpen(true);
+    }
     ImGui::SameLine();
     if (ImGui::Button("Cycle Sky [T]")) session.cycleTimeOfDay();
     ImGui::SameLine();
@@ -613,22 +899,35 @@ void drawWestgateHud(
             session.buyArmorAndMedkit(audio);
           }
           ImGui::SameLine();
+          ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16f, 0.54f, 0.78f, 1.0f));
+          if (ImGui::Button("Launch 3D Gunsmith Studio [F2]")) {
+            ui.showPhone = false;
+            session.setGunsmithOpen(true);
+            session.setGunsmithSlot(session.activeWeaponIdx() > 0 ? session.activeWeaponIdx() : 2);
+          }
+          ImGui::PopStyleColor();
           ImGui::Text("Headshots: %d | Bodies Hidden: %d", session.totalHeadshots(), session.bodiesDisposedCount());
           ImGui::Separator();
 
           static const char* kOpticNames[5] = {"Irons", "Red Dot", "Holo", "ACOG", "8x Scope"};
-          static const char* kMuzzleNames[3] = {"Std", "Suppressor", "Compensator"};
-          static const char* kUnderNames[3] = {"None", "Vert Grip", "Laser"};
+          static const char* kMuzzleNames[5] = {"Std", "Suppressor", "Compensator", "Osprey SD", "Wrapped SD"};
+          static const char* kUnderNames[4] = {"None", "Vert Grip", "PEQ Laser", "Angled Grip"};
           static const char* kMagNames[3] = {"Std Mag", "Ext Mag", "Drum"};
-          static const char* kFinishNames[6] = {"Obsidian", "Coyote", "Arctic", "Crimson", "Gold", "Titanium"};
+          static const char* kFinishNames[8] = {"Obsidian", "Coyote", "Arctic", "Crimson", "Gold", "Titanium", "Olive", "Cobalt"};
 
-          ImGui::BeginChild("ArmoryWorkbench", {0, 295}, true);
+          ImGui::BeginChild("ArmoryWorkbench", {0, 275}, true);
           for (size_t i = 1; i < session.weapons().size(); ++i) {
             const auto& w = session.weapons()[i];
             ImGui::PushID(static_cast<int>(200 + i));
             ImGui::TextColored(w.unlocked ? ImVec4(0.45f, 0.96f, 0.65f, 1.0f) : ImVec4(0.88f, 0.88f, 0.92f, 1.0f),
                                "[%zu] %s  |  DMG %.0f  |  %d rnd  %s",
                                i + 1, w.name.c_str(), w.damage, w.magSize, w.suppressed ? "[SD]" : "[LOUD]");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Inspect 3D")) {
+              ui.showPhone = false;
+              session.setGunsmithOpen(true);
+              session.setGunsmithSlot(static_cast<int>(i));
+            }
             if (!w.unlocked) {
               char lbl[64];
               std::snprintf(lbl, sizeof(lbl), "Unlock ($%d)", w.price);
@@ -639,22 +938,22 @@ void drawWestgateHud(
               if (ImGui::SmallButton(lbl)) session.buyWeaponOrAmmo(static_cast<int>(i), audio);
               ImGui::SameLine();
               if (ImGui::SmallButton((std::string("Optic: ") + kOpticNames[static_cast<int>(w.optic)]).c_str())) {
-                session.configureWeaponSlot(static_cast<int>(i), static_cast<WeaponOpticKind>((static_cast<int>(w.optic) + 1) % 5), w.muzzle, w.underbarrel, w.mag, w.finish);
+                session.configureWeaponSlot(static_cast<int>(i), static_cast<WeaponOpticKind>((static_cast<int>(w.optic) + 1) % 5), w.muzzle, w.underbarrel, w.mag, w.bodyFinish);
               }
               ImGui::SameLine();
               if (ImGui::SmallButton((std::string("Muz: ") + kMuzzleNames[static_cast<int>(w.muzzle)]).c_str())) {
-                session.configureWeaponSlot(static_cast<int>(i), w.optic, static_cast<WeaponMuzzleKind>((static_cast<int>(w.muzzle) + 1) % 3), w.underbarrel, w.mag, w.finish);
+                session.configureWeaponSlot(static_cast<int>(i), w.optic, static_cast<WeaponMuzzleKind>((static_cast<int>(w.muzzle) + 1) % 5), w.underbarrel, w.mag, w.bodyFinish);
               }
               if (ImGui::SmallButton((std::string("Under: ") + kUnderNames[static_cast<int>(w.underbarrel)]).c_str())) {
-                session.configureWeaponSlot(static_cast<int>(i), w.optic, w.muzzle, static_cast<WeaponUnderbarrelKind>((static_cast<int>(w.underbarrel) + 1) % 3), w.mag, w.finish);
+                session.configureWeaponSlot(static_cast<int>(i), w.optic, w.muzzle, static_cast<WeaponUnderbarrelKind>((static_cast<int>(w.underbarrel) + 1) % 4), w.mag, w.bodyFinish);
               }
               ImGui::SameLine();
               if (ImGui::SmallButton((std::string("Mag: ") + kMagNames[static_cast<int>(w.mag)]).c_str())) {
-                session.configureWeaponSlot(static_cast<int>(i), w.optic, w.muzzle, w.underbarrel, static_cast<WeaponMagKind>((static_cast<int>(w.mag) + 1) % 3), w.finish);
+                session.configureWeaponSlot(static_cast<int>(i), w.optic, w.muzzle, w.underbarrel, static_cast<WeaponMagKind>((static_cast<int>(w.mag) + 1) % 3), w.bodyFinish);
               }
               ImGui::SameLine();
-              if (ImGui::SmallButton((std::string("Finish: ") + kFinishNames[static_cast<int>(w.finish)]).c_str())) {
-                session.configureWeaponSlot(static_cast<int>(i), w.optic, w.muzzle, w.underbarrel, w.mag, static_cast<WeaponFinishKind>((static_cast<int>(w.finish) + 1) % 6));
+              if (ImGui::SmallButton((std::string("Finish: ") + kFinishNames[static_cast<int>(w.bodyFinish)]).c_str())) {
+                session.configureWeaponSlot(static_cast<int>(i), w.optic, w.muzzle, w.underbarrel, w.mag, static_cast<WeaponFinishKind>((static_cast<int>(w.bodyFinish) + 1) % 8));
               }
             }
             ImGui::Separator();

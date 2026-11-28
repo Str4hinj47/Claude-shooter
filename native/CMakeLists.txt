@@ -94,6 +94,7 @@ add_library(westgate_core STATIC
   src/core/GameSession.cpp
   src/core/GameSessionCampaign.cpp
   src/core/GameSessionWorld.cpp
+  src/render/WeaponSystem3D.cpp
 )
 
 target_include_directories(westgate_core PUBLIC

@@ -594,7 +594,7 @@ void GameSession::updateLivingWorld(
         useApartmentWardrobe(audio);
       }
     } else if (glm::distance(player.position(), armoryPos) < 2.5f) {
-      contextPrompt_ = "[B] Gunsmith Armory Bench (Refill All Magazines)";
+      contextPrompt_ = "[B] Armory Refill  |  [F2] Open 3D Gunsmith Studio";
       if (input.actionPressed) {
         useApartmentArmoryBench(audio);
       }

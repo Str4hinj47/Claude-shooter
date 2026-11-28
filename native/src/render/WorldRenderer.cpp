@@ -2014,6 +2014,65 @@ void WorldRenderer::buildPropAndVehicleBatches(WgpuContext& ctx, const WorldData
       db.shadowNearStaging.reserve(db.maxInstances);
     }
   }
+
+  // 6. Procedural 256x256 PBR Weapon Textures (Brushed CNC, Hex Laser-Stipple, Knurled Barrel, Coated Sapphire Lens)
+  //    + 32 High-Detail Smooth 3D Firearm & First-Person Viewmodel Part Meshes
+  {
+    std::array<WeaponPbrTextureSet, kWeaponSurfaceMatCount> wepTex{};
+    WeaponSystem3D::generateProceduralTextures(wepTex);
+    weaponMatTextures_.reserve(kWeaponSurfaceMatCount * 3);
+    for (size_t mi = 0; mi < kWeaponSurfaceMatCount; ++mi) {
+      const auto& ts = wepTex[mi];
+      GpuTextureBinding alb = createRgbaTexture(ctx, ts.width, ts.height, ts.albedoRgba.data(), false);
+      GpuTextureBinding nrm = createRgbaTexture(ctx, ts.width, ts.height, ts.normalRgba.data(), false);
+      GpuTextureBinding orm = createRgbaTexture(ctx, ts.width, ts.height, ts.ormRgba.data(), false);
+      weaponMatTextures_.push_back(alb);
+      weaponMatTextures_.push_back(nrm);
+      weaponMatTextures_.push_back(orm);
+      weaponMatBindGroups_[mi] = createPbrMatBindGroup(
+        ctx,
+        alb.view,
+        nrm.view,
+        orm.view,
+        defaultWhiteTex_.view
+      );
+    }
+
+    std::array<WeaponPartCpuMesh, kWeaponMeshPartCount> wepMeshes{};
+    WeaponSystem3D::generateAllPartMeshes(wepMeshes);
+    constexpr uint32_t kMaxWepInst = 96;
+    for (size_t pi = 0; pi < kWeaponMeshPartCount; ++pi) {
+      const auto& cpuM = wepMeshes[pi];
+      if (cpuM.vertices.empty() || cpuM.indices.empty()) continue;
+      auto& wb = weaponPartBatches_[pi];
+      wb.protoId = "wep_part_" + std::to_string(pi);
+      wb.maxInstances = kMaxWepInst;
+      wb.indexCount = static_cast<uint32_t>(cpuM.indices.size());
+      wb.vbo = createBufferWithData(
+        ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex,
+        cpuM.vertices.data(), cpuM.vertices.size() * sizeof(WeaponPartVertex)
+      );
+      wb.ibo = createBufferWithData(
+        ctx.device(), ctx.queue(), WGPUBufferUsage_Index,
+        cpuM.indices.data(), cpuM.indices.size() * sizeof(uint32_t)
+      );
+      wb.instVbo = createBufferWithData(
+        ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex,
+        nullptr, kMaxWepInst * sizeof(InstanceAttrib)
+      );
+      wb.shadowNearInstVbo = createBufferWithData(
+        ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex,
+        nullptr, kMaxWepInst * sizeof(InstanceAttrib)
+      );
+      GlbSubmesh sub{};
+      sub.indexOffset = 0;
+      sub.indexCount = wb.indexCount;
+      sub.texBindGroup = weaponMatBindGroups_[static_cast<size_t>(cpuM.material)];
+      wb.submeshes.push_back(sub);
+      wb.visibleStaging.reserve(kMaxWepInst);
+      wb.shadowNearStaging.reserve(kMaxWepInst);
+    }
+  }
 }
 
 void WorldRenderer::buildSkinnedMesh(WgpuContext& ctx, const GltfModel& model, SkinnedMeshGpu& outMesh) {
@@ -2114,10 +2173,12 @@ void WorldRenderer::render(
   const std::vector<DynamicPointLight>& pointLights,
   const std::vector<DynamicPropPose>& dynamicProps,
   bool drawUiCallback,
-  const std::vector<DynamicGlbPropInstance>& dynGlbProps
+  const std::vector<DynamicGlbPropInstance>& dynGlbProps,
+  const std::vector<WeaponPartDrawInstance>& weaponParts
 ) {
   const float aspect = static_cast<float>(ctx.width()) / static_cast<float>(std::max(1u, ctx.height()));
-  const glm::mat4 proj = glm::perspectiveZO(glm::radians(fovDeg), aspect, 0.25f, 2800.0f);
+  constexpr float kCameraZNear = 0.045f;
+  const glm::mat4 proj = glm::perspectiveZO(glm::radians(fovDeg), aspect, kCameraZNear, 2800.0f);
   const glm::mat4 view = glm::lookAt(camPos, camTarget, glm::vec3(0.0f, 1.0f, 0.0f));
   const glm::mat4 vp = proj * view;
 
@@ -2383,6 +2444,41 @@ void WorldRenderer::render(
     }
   }
 
+  // 4c. Upload 3D Modular Textured Weapons & First-Person Viewmodel Parts
+  for (auto& wb : weaponPartBatches_) {
+    wb.visibleStaging.clear();
+    wb.shadowNearStaging.clear();
+  }
+  for (const auto& wp : weaponParts) {
+    const size_t pi = static_cast<size_t>(wp.part);
+    if (pi >= kWeaponMeshPartCount) continue;
+    auto& wb = weaponPartBatches_[pi];
+    if (!wb.vbo || wb.visibleStaging.size() >= wb.maxInstances) continue;
+    InstanceAttrib attr = makeInst(
+      wp.pos.x, wp.pos.y, wp.pos.z,
+      wp.scale.x, wp.scale.y, wp.scale.z,
+      wp.rot,
+      wp.color.r, wp.color.g, wp.color.b,
+      wp.emissive
+    );
+    attr.overrideRoughness = -10.0f - std::clamp(wp.roughness, 0.05f, 0.98f);
+    attr.familyAndMetal = std::clamp(wp.metallic, 0.0f, 1.0f);
+    wb.visibleStaging.push_back(attr);
+    if (wp.castShadow && wb.shadowNearStaging.size() < wb.maxInstances) {
+      wb.shadowNearStaging.push_back(attr);
+    }
+  }
+  for (auto& wb : weaponPartBatches_) {
+    wb.instanceCount = static_cast<uint32_t>(wb.visibleStaging.size());
+    wb.shadowNearCount = static_cast<uint32_t>(wb.shadowNearStaging.size());
+    if (wb.instanceCount > 0 && wb.instVbo) {
+      wgpuQueueWriteBuffer(ctx.queue(), wb.instVbo, 0, wb.visibleStaging.data(), wb.instanceCount * sizeof(InstanceAttrib));
+    }
+    if (wb.shadowNearCount > 0 && wb.shadowNearInstVbo) {
+      wgpuQueueWriteBuffer(ctx.queue(), wb.shadowNearInstVbo, 0, wb.shadowNearStaging.data(), wb.shadowNearCount * sizeof(InstanceAttrib));
+    }
+  }
+
   // 5. Upload articulated dynamic vehicles across all 20 GLB models (chassis + steered/spinning wheels + rotors!)
   uint32_t totalVehiclesDrawn = 0;
   for (auto& va : vehicleAssets_) {
@@ -2489,7 +2585,7 @@ void WorldRenderer::render(
 
   PostUniforms postUbo{};
   postUbo.screenSize = glm::vec4(static_cast<float>(ctx.width()), static_cast<float>(ctx.height()), 1.05f, 0.26f);
-  postUbo.projParams = glm::vec4(0.25f, 2800.0f, 16.0f, 0.72f);
+  postUbo.projParams = glm::vec4(kCameraZNear, 2800.0f, 16.0f, 0.72f);
   wgpuQueueWriteBuffer(ctx.queue(), postUbo_, 0, &postUbo, sizeof(postUbo));
 
   const uint32_t charCount = static_cast<uint32_t>(std::min<size_t>(characters.size(), kMaxSkinSlots));
@@ -2648,6 +2744,13 @@ void WorldRenderer::render(
         wgpuRenderPassEncoderSetVertexBuffer(spass, 1, db.shadowNearInstVbo, 0, WGPU_WHOLE_SIZE);
         wgpuRenderPassEncoderSetIndexBuffer(spass, db.ibo, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
         wgpuRenderPassEncoderDrawIndexed(spass, db.indexCount, db.shadowNearCount, 0, 0, 0);
+      }
+      for (const auto& wb : weaponPartBatches_) {
+        if (wb.shadowNearCount == 0 || !wb.shadowNearInstVbo || !wb.vbo) continue;
+        wgpuRenderPassEncoderSetVertexBuffer(spass, 0, wb.vbo, 0, WGPU_WHOLE_SIZE);
+        wgpuRenderPassEncoderSetVertexBuffer(spass, 1, wb.shadowNearInstVbo, 0, WGPU_WHOLE_SIZE);
+        wgpuRenderPassEncoderSetIndexBuffer(spass, wb.ibo, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
+        wgpuRenderPassEncoderDrawIndexed(spass, wb.indexCount, wb.shadowNearCount, 0, 0, 0);
       }
     }
 
@@ -2821,6 +2924,9 @@ void WorldRenderer::render(
     }
     for (const auto& db : dynGlbBatches_) {
       drawGlbBatch(db, db.instanceCount);
+    }
+    for (const auto& wb : weaponPartBatches_) {
+      drawGlbBatch(wb, wb.instanceCount);
     }
     if (!markerStaging_.empty() && markerInstVbo_) {
       wgpuRenderPassEncoderSetBindGroup(pass, 2, defaultWhiteTex_.bindGroup, 0, nullptr);
@@ -3017,6 +3123,12 @@ void WorldRenderer::shutdown() {
   glbPropBatches_.clear();
   for (auto& hb : houseBatches_) relBatch(hb);
   for (auto& db : dynGlbBatches_) relBatch(db);
+  for (auto& wb : weaponPartBatches_) relBatch(wb);
+  for (auto& bg : weaponMatBindGroups_) {
+    if (bg) { wgpuBindGroupRelease(bg); bg = nullptr; }
+  }
+  for (auto& wt : weaponMatTextures_) relTex(wt);
+  weaponMatTextures_.clear();
   for (auto& va : vehicleAssets_) {
     for (auto& w : va.wheels) relBatch(w.batch);
     va.wheels.clear();

@@ -196,20 +196,67 @@ void GameSession::weaponFinishPalette(WeaponFinishKind finish, glm::vec3& outBod
       if (outName) *outName = "Arctic Ghost";
       break;
     case WeaponFinishKind::Crimson:
-      outBody = {0.48f, 0.11f, 0.13f};
+      outBody = {0.54f, 0.12f, 0.15f};
       outAccent = {0.16f, 0.16f, 0.18f};
-      if (outName) *outName = "Crimson Carbon";
+      if (outName) *outName = "Crimson Cerakote";
       break;
     case WeaponFinishKind::Gold:
-      outBody = {0.84f, 0.66f, 0.20f};
+      outBody = {0.88f, 0.69f, 0.22f};
       outAccent = {0.15f, 0.15f, 0.17f};
-      if (outName) *outName = "Syndicate Gold";
+      if (outName) *outName = "24K Syndicate Gold";
       break;
     case WeaponFinishKind::Titanium:
-      outBody = {0.46f, 0.50f, 0.56f};
+      outBody = {0.52f, 0.56f, 0.62f};
       outAccent = {0.20f, 0.23f, 0.27f};
       if (outName) *outName = "Brushed Titanium";
       break;
+    case WeaponFinishKind::Olive:
+      outBody = {0.27f, 0.34f, 0.23f};
+      outAccent = {0.17f, 0.19f, 0.16f};
+      if (outName) *outName = "OD Ranger Olive";
+      break;
+    case WeaponFinishKind::Cobalt:
+      outBody = {0.17f, 0.32f, 0.52f};
+      outAccent = {0.16f, 0.19f, 0.24f};
+      if (outName) *outName = "Cobalt Tactical";
+      break;
+  }
+}
+
+void GameSession::weaponFinishPbr(
+  WeaponFinishKind finish,
+  float sheen,
+  glm::vec3& outColor,
+  float& outRoughness,
+  float& outMetallic,
+  const char** outName
+) {
+  glm::vec3 dummyAcc(0.2f);
+  weaponFinishPalette(finish, outColor, dummyAcc, outName);
+  const float s = std::clamp(sheen, 0.0f, 1.0f);
+  float baseRough = 0.42f;
+  float baseMetal = 0.85f;
+  switch (finish) {
+    case WeaponFinishKind::Obsidian: baseRough = 0.40f; baseMetal = 0.86f; break;
+    case WeaponFinishKind::Coyote:   baseRough = 0.58f; baseMetal = 0.22f; break;
+    case WeaponFinishKind::Arctic:   baseRough = 0.44f; baseMetal = 0.48f; break;
+    case WeaponFinishKind::Crimson:  baseRough = 0.36f; baseMetal = 0.62f; break;
+    case WeaponFinishKind::Gold:     baseRough = 0.22f; baseMetal = 0.96f; break;
+    case WeaponFinishKind::Titanium: baseRough = 0.28f; baseMetal = 0.92f; break;
+    case WeaponFinishKind::Olive:    baseRough = 0.62f; baseMetal = 0.18f; break;
+    case WeaponFinishKind::Cobalt:   baseRough = 0.35f; baseMetal = 0.70f; break;
+  }
+  outRoughness = std::clamp(baseRough * glm::mix(1.32f, 0.56f, s), 0.08f, 0.92f);
+  outMetallic = std::clamp(baseMetal + (s - 0.5f) * 0.22f, 0.05f, 0.99f);
+}
+
+glm::vec3 GameSession::weaponReticleColor(uint8_t idx, const char** outName) {
+  switch (idx % kWeaponReticleColorCount) {
+    case 0: if (outName) *outName = "Cyan";    return {0.13f, 0.83f, 0.94f};
+    case 1: if (outName) *outName = "Crimson"; return {1.00f, 0.23f, 0.19f};
+    case 2: if (outName) *outName = "Emerald"; return {0.18f, 0.84f, 0.62f};
+    case 3: if (outName) *outName = "Amber";   return {0.95f, 0.68f, 0.20f};
+    default:if (outName) *outName = "Violet";  return {0.68f, 0.36f, 0.98f};
   }
 }
 
@@ -256,12 +303,18 @@ void GameSession::configureWeaponSlot(
 ) {
   if (slotIdx < 1 || slotIdx >= static_cast<int>(weapons_.size())) return;
   auto& w = weapons_[static_cast<size_t>(slotIdx)];
+  const bool finishChanged = (w.finish != finish);
   w.optic = optic;
   w.muzzle = muzzle;
   w.underbarrel = underbarrel;
   w.mag = mag;
   w.finish = finish;
-  w.suppressed = (muzzle == WeaponMuzzleKind::Suppressor);
+  if (finishChanged) {
+    w.bodyFinish = finish;
+  }
+  w.suppressed = (muzzle == WeaponMuzzleKind::Suppressor ||
+                  muzzle == WeaponMuzzleKind::Osprey ||
+                  muzzle == WeaponMuzzleKind::Wrapped);
   w.noiseRadius = w.suppressed ? (w.id == "pistol" ? 3.8f : 6.8f) : 38.0f;
 
   const int baseMag = std::max(4, w.baseMagSize);
@@ -273,6 +326,124 @@ void GameSession::configureWeaponSlot(
     w.magSize = baseMag;
   }
   w.magAmmo = std::min(w.magAmmo, w.magSize);
+}
+
+void GameSession::configureWeaponZones(
+  int slotIdx,
+  WeaponFinishKind bodyFin,
+  WeaponFinishKind accentFin,
+  WeaponFinishKind hwFin,
+  float sheen,
+  uint8_t reticleColorIdx
+) {
+  if (slotIdx < 1 || slotIdx >= static_cast<int>(weapons_.size())) return;
+  auto& w = weapons_[static_cast<size_t>(slotIdx)];
+  w.finish = bodyFin;
+  w.bodyFinish = bodyFin;
+  w.accentFinish = accentFin;
+  w.hardwareFinish = hwFin;
+  w.surfaceSheen = std::clamp(sheen, 0.0f, 1.0f);
+  w.reticleColorIdx = static_cast<uint8_t>(reticleColorIdx % kWeaponReticleColorCount);
+}
+
+void GameSession::resetWeaponSlotDefaults(int slotIdx) {
+  if (slotIdx < 1 || slotIdx >= static_cast<int>(weapons_.size())) return;
+  auto& w = weapons_[static_cast<size_t>(slotIdx)];
+  if (w.id == "pistol") {
+    configureWeaponSlot(slotIdx, WeaponOpticKind::RedDot, WeaponMuzzleKind::Suppressor, WeaponUnderbarrelKind::LaserSight, WeaponMagKind::Standard, WeaponFinishKind::Obsidian);
+    configureWeaponZones(slotIdx, WeaponFinishKind::Obsidian, WeaponFinishKind::Obsidian, WeaponFinishKind::Titanium, 0.52f, 0);
+  } else if (w.id == "carbine") {
+    configureWeaponSlot(slotIdx, WeaponOpticKind::Holo, WeaponMuzzleKind::Suppressor, WeaponUnderbarrelKind::VerticalGrip, WeaponMagKind::Standard, WeaponFinishKind::Obsidian);
+    configureWeaponZones(slotIdx, WeaponFinishKind::Obsidian, WeaponFinishKind::Coyote, WeaponFinishKind::Titanium, 0.50f, 0);
+  } else if (w.id == "smg") {
+    configureWeaponSlot(slotIdx, WeaponOpticKind::RedDot, WeaponMuzzleKind::Osprey, WeaponUnderbarrelKind::LaserSight, WeaponMagKind::Extended, WeaponFinishKind::Titanium);
+    configureWeaponZones(slotIdx, WeaponFinishKind::Titanium, WeaponFinishKind::Obsidian, WeaponFinishKind::Obsidian, 0.58f, 2);
+  } else if (w.id == "shotgun") {
+    configureWeaponSlot(slotIdx, WeaponOpticKind::RedDot, WeaponMuzzleKind::Compensator, WeaponUnderbarrelKind::AngledGrip, WeaponMagKind::Standard, WeaponFinishKind::Coyote);
+    configureWeaponZones(slotIdx, WeaponFinishKind::Obsidian, WeaponFinishKind::Coyote, WeaponFinishKind::Titanium, 0.45f, 1);
+  } else {
+    configureWeaponSlot(slotIdx, WeaponOpticKind::SniperScope, WeaponMuzzleKind::Wrapped, WeaponUnderbarrelKind::LaserSight, WeaponMagKind::Standard, WeaponFinishKind::Coyote);
+    configureWeaponZones(slotIdx, WeaponFinishKind::Coyote, WeaponFinishKind::Olive, WeaponFinishKind::Obsidian, 0.44f, 3);
+  }
+}
+
+float GameSession::reloadProgress01() const {
+  if (reloadTimer_ <= 0.0f || activeWeapon_ < 0 || activeWeapon_ >= static_cast<int>(weapons_.size())) return 0.0f;
+  const float dur = std::max(0.15f, weapons_[static_cast<size_t>(activeWeapon_)].reloadTime);
+  return std::clamp(1.0f - (reloadTimer_ / dur), 0.0f, 1.0f);
+}
+
+void GameSession::setGunsmithOpen(bool open) {
+  gunsmithOpen_ = open;
+  if (open) {
+    if (activeWeapon_ >= 1 && activeWeapon_ < static_cast<int>(weapons_.size())) {
+      gunsmithSlot_ = activeWeapon_;
+    } else if (gunsmithSlot_ < 1 || gunsmithSlot_ >= static_cast<int>(weapons_.size())) {
+      gunsmithSlot_ = 1;
+    }
+    setGunsmithCameraPreset(0);
+  }
+}
+
+void GameSession::setGunsmithSlot(int slotIdx) {
+  if (slotIdx < 1 || slotIdx >= static_cast<int>(weapons_.size())) return;
+  gunsmithSlot_ = slotIdx;
+  if (weapons_[static_cast<size_t>(slotIdx)].unlocked) {
+    activeWeapon_ = slotIdx;
+  }
+}
+
+void GameSession::orbitGunsmith(float dYawRad, float dPitchRad, float dZoom) {
+  gunsmithYaw_ += dYawRad;
+  gunsmithPitch_ = std::clamp(gunsmithPitch_ + dPitchRad, -0.72f, 0.78f);
+  gunsmithZoom_ = std::clamp(gunsmithZoom_ + dZoom, 0.24f, 1.65f);
+}
+
+void GameSession::setGunsmithCameraPreset(int preset) {
+  gunsmithPreset_ = std::clamp(preset, 0, 3);
+  const auto& w = weapons_[static_cast<size_t>(std::clamp(gunsmithSlot_, 1, static_cast<int>(weapons_.size()) - 1))];
+  const bool isPistol = (w.id == "pistol" || w.id == "pistol_sd");
+  const bool isLongRifle = (w.id == "dmr" || w.id == "shotgun");
+  switch (gunsmithPreset_) {
+    case 0: // 3/4 Full-Weapon Studio Showcase
+      gunsmithYaw_ = 1.12f;
+      gunsmithPitch_ = 0.17f;
+      gunsmithZoom_ = isPistol ? 0.50f : (isLongRifle ? 1.28f : 1.12f);
+      gunsmithTargetOffset_ = isPistol ? glm::vec3(0.0f, 0.025f, 0.065f) : glm::vec3(0.0f, 0.032f, 0.225f);
+      break;
+    case 1: // Clean Orthogonal Full Side Profile
+      gunsmithYaw_ = 1.5708f;
+      gunsmithPitch_ = 0.04f;
+      gunsmithZoom_ = isPistol ? 0.48f : (isLongRifle ? 1.34f : 1.18f);
+      gunsmithTargetOffset_ = isPistol ? glm::vec3(0.0f, 0.025f, 0.065f) : glm::vec3(0.0f, 0.032f, 0.225f);
+      break;
+    case 2: // Zoom Optic, Mount & Glowing Reticle
+      gunsmithYaw_ = 0.48f;
+      gunsmithPitch_ = 0.12f;
+      gunsmithZoom_ = 0.30f;
+      gunsmithTargetOffset_ = isPistol ? glm::vec3(0.0f, 0.072f, 0.035f) : glm::vec3(0.0f, 0.112f, 0.095f);
+      break;
+    default: // Zoom Muzzle, Fluted Barrel & Forend Rail
+      gunsmithYaw_ = 1.05f;
+      gunsmithPitch_ = 0.12f;
+      gunsmithZoom_ = isPistol ? 0.32f : 0.46f;
+      gunsmithTargetOffset_ = isPistol ? glm::vec3(0.0f, 0.045f, 0.185f) : glm::vec3(0.0f, 0.052f, 0.485f);
+      break;
+  }
+}
+
+glm::vec3 GameSession::gunsmithAnchorPos(const PlayerController& player) const {
+  const glm::vec3 p = player.position();
+  return glm::vec3(p.x, 318.0f, p.z);
+}
+
+void GameSession::triggerGunsmithTestFire(AudioEngine* audio) {
+  recoilImpulse_ = 1.0f;
+  muzzleFlashTimer_ = 0.075f;
+  if (audio) {
+    const auto& w = weapons_[static_cast<size_t>(std::clamp(gunsmithSlot_, 1, static_cast<int>(weapons_.size()) - 1))];
+    audio->playGunshot(w.suppressed, w.id == "shotgun" ? 0.72f : (w.id == "pistol" ? 1.25f : 1.0f));
+  }
 }
 
 void GameSession::appendHeldWeaponMarkers(
@@ -417,6 +588,11 @@ void GameSession::init(const WorldData& world, PlayerController* player, Physics
     w.magSize = magSz; w.baseMagSize = magSz; w.magAmmo = magSz;
     w.reserveAmmo = resAmmo; w.reserveMax = resMax;
     w.optic = optic; w.muzzle = muzzle; w.underbarrel = under; w.mag = mag; w.finish = fin;
+    w.bodyFinish = fin;
+    w.accentFinish = (fin == WeaponFinishKind::Obsidian) ? WeaponFinishKind::Coyote : WeaponFinishKind::Obsidian;
+    w.hardwareFinish = WeaponFinishKind::Titanium;
+    w.surfaceSheen = 0.50f;
+    w.reticleColorIdx = 0;
     return w;
   };
   weapons_.push_back(makeWep("unarmed", "Iron Pit Boxing", "Fists", 0, 0, 18.0f, 1, 180.0f, 0.0f, 0.0f, 0.0f, 2.5f, false, true, true, true, 0, 0, 0, WeaponOpticKind::IronSights, WeaponMuzzleKind::Standard, WeaponUnderbarrelKind::None, WeaponMagKind::Standard, WeaponFinishKind::Obsidian));
@@ -425,6 +601,11 @@ void GameSession::init(const WorldData& world, PlayerController* player, Physics
   weapons_.push_back(makeWep("smg", "Spectre MP5-SD", "MP5-SD", 650, 75, 29.0f, 1, 780.0f, 0.011f, 0.003f, 1.85f, 5.5f, true, true, false, false, 30, 150, 240, WeaponOpticKind::RedDot, WeaponMuzzleKind::Suppressor, WeaponUnderbarrelKind::LaserSight, WeaponMagKind::Extended, WeaponFinishKind::Titanium));
   weapons_.push_back(makeWep("shotgun", "Breacher 870", "870 Tac", 700, 70, 19.0f, 8, 85.0f, 0.055f, 0.032f, 2.3f, 32.0f, false, false, false, false, 8, 40, 64, WeaponOpticKind::RedDot, WeaponMuzzleKind::Compensator, WeaponUnderbarrelKind::VerticalGrip, WeaponMagKind::Standard, WeaponFinishKind::Coyote));
   weapons_.push_back(makeWep("dmr", "MK14 EBR", "MK14", 1200, 110, 68.0f, 1, 240.0f, 0.005f, 0.0008f, 2.35f, 38.0f, false, false, false, false, 20, 80, 120, WeaponOpticKind::SniperScope, WeaponMuzzleKind::Compensator, WeaponUnderbarrelKind::LaserSight, WeaponMagKind::Standard, WeaponFinishKind::Coyote));
+  firstPersonMode_ = false;
+  adsBlend_ = 0.0f;
+  gunsmithOpen_ = false;
+  gunsmithSlot_ = 2;
+  gunsmithAutoRotate_ = false;
   carriedNpcId_ = -1;
   bodiesDisposedCount_ = 0;
   oceanDisposalsCount_ = 0;
@@ -1523,7 +1704,9 @@ void GameSession::fireActiveWeapon(PlayerController& player, PhysicsWorld& physi
 
   float kickAdd = (w.id == "shotgun" || w.id == "dmr" || w.id == "sniper") ? 0.92f : (w.id == "carbine" || w.id == "smg") ? 0.42f : 0.52f;
   if (w.muzzle == WeaponMuzzleKind::Compensator) kickAdd *= 0.78f;
+  if (w.muzzle == WeaponMuzzleKind::Wrapped) kickAdd *= 0.92f;
   if (w.underbarrel == WeaponUnderbarrelKind::VerticalGrip) kickAdd *= 0.82f;
+  if (w.underbarrel == WeaponUnderbarrelKind::AngledGrip) kickAdd *= 0.90f;
   recoilImpulse_ = std::min(1.0f, recoilImpulse_ + kickAdd);
   if (audio) audio->playGunshot(w.suppressed, 1.0f);
 
@@ -1535,6 +1718,7 @@ void GameSession::fireActiveWeapon(PlayerController& player, PhysicsWorld& physi
   float spread = aiming_ ? w.adsSpread : w.spread;
   spread *= (1.0f - 0.24f * (bodyStatValue(BodyStatKind::Marksmanship) / 100.0f));
   if (w.underbarrel == WeaponUnderbarrelKind::VerticalGrip) spread *= 0.80f;
+  if (w.underbarrel == WeaponUnderbarrelKind::AngledGrip) spread *= 0.86f;
   if (w.underbarrel == WeaponUnderbarrelKind::LaserSight && !aiming_) spread *= 0.68f;
   const float dmgAttachMul = ((w.muzzle == WeaponMuzzleKind::Compensator) ? 1.14f : 1.0f) * upgradeDamageMult();
 
@@ -3310,6 +3494,7 @@ void GameSession::update(float dt, const GameInputFrame& input, PlayerController
   fireCooldown_ = std::max(0.0f, fireCooldown_ - dt);
   muzzleFlashTimer_ = std::max(0.0f, muzzleFlashTimer_ - dt);
   lastCamFocus_ = cameraPosition(player);
+  gunsmithCachedAnchor_ = gunsmithAnchorPos(player);
 
   // Sync foot stride clock with real ground velocity & clip cycle duration to prevent foot skate
   const float spd = player.speed();
@@ -3378,7 +3563,12 @@ void GameSession::update(float dt, const GameInputFrame& input, PlayerController
     }
   }
 
-  aiming_ = input.aimDown && !inVehicle();
+  aiming_ = input.aimDown && !inVehicle() && !gunsmithOpen_;
+  const float targetAds = (aiming_ && reloadTimer_ <= 0.0f && !weapons_[static_cast<size_t>(activeWeapon_)].isMelee) ? 1.0f : 0.0f;
+  adsBlend_ += (targetAds - adsBlend_) * std::min(1.0f, dt * 13.5f);
+  if (gunsmithOpen_ && gunsmithAutoRotate_) {
+    gunsmithYaw_ += dt * 0.55f;
+  }
 
   // Reloading
   auto& activeW = weapons_[static_cast<size_t>(activeWeapon_)];
@@ -3396,9 +3586,9 @@ void GameSession::update(float dt, const GameInputFrame& input, PlayerController
     }
   }
 
-  // Movement: on foot vs inside vehicle
+  // Movement: on foot vs inside vehicle (freeze movement while in 3D Gunsmith Studio)
   if (!inVehicle()) {
-    PlayerInputState footMove = input.moveInput;
+    PlayerInputState footMove = gunsmithOpen_ ? PlayerInputState{} : input.moveInput;
     if (isCarryingBody()) {
       footMove.moveForward *= 0.78f;
       footMove.moveRight *= 0.78f;
@@ -3462,6 +3652,17 @@ void GameSession::update(float dt, const GameInputFrame& input, PlayerController
 }
 
 glm::vec3 GameSession::cameraPosition(const PlayerController& player) const {
+  if (gunsmithOpen_) {
+    const glm::vec3 anchor = gunsmithAnchorPos(player) + gunsmithTargetOffset_;
+    const glm::vec3 orbitDir(
+      std::sin(gunsmithYaw_) * std::cos(gunsmithPitch_),
+      std::sin(gunsmithPitch_),
+      std::cos(gunsmithYaw_) * std::cos(gunsmithPitch_)
+    );
+    const glm::vec3 right = glm::normalize(glm::cross(-orbitDir, glm::vec3(0.0f, 1.0f, 0.0f)));
+    // Frame weapon slightly left of center so the right-side Gunsmith Studio UI panel never overlaps the barrel
+    return anchor + orbitDir * gunsmithZoom_ + right * (gunsmithZoom_ * 0.22f);
+  }
   if (activeVehicleIdx_ >= 0 && activeVehicleIdx_ < static_cast<int>(vehicles_.size())) {
     const auto& v = vehicles_[static_cast<size_t>(activeVehicleIdx_)];
     const VehicleSpec& sp = vehicleSpec(v.kind);
@@ -3476,6 +3677,16 @@ glm::vec3 GameSession::cameraPosition(const PlayerController& player) const {
     const float dist = v.isAircraft ? 12.0f : (driveCamMode_ == 1 ? (8.8f + sp.length * 0.38f) : (5.8f + sp.length * 0.28f));
     const float upH = v.isAircraft ? 3.2f : (driveCamMode_ == 1 ? (2.35f + sp.height * 0.35f) : (1.65f + sp.height * 0.28f));
     return v.pos + glm::vec3(0.0f, upH + v.suspHeave * 0.45f, 0.0f) - fwd * dist;
+  }
+  if (firstPersonMode_) {
+    const float yaw = player.yaw();
+    const float pitch = player.pitch();
+    const glm::vec3 fwdXZ(std::sin(yaw), 0.0f, std::cos(yaw));
+    const float spd01 = std::clamp(player.speed() / 8.6f, 0.0f, 1.0f) * (1.0f - adsBlend_ * 0.78f);
+    const float bobY = std::sin(playerLocomotionClock_ * (player.sprinting() ? 14.5f : 10.5f)) * 0.016f * spd01;
+    const float eyeH = (player.crouching() ? 1.06f : 1.62f) + bobY;
+    const float pitchLean = std::sin(pitch) * 0.04f;
+    return player.position() + glm::vec3(0.0f, eyeH + pitchLean, 0.0f) + fwdXZ * 0.09f;
   }
   if (aiming_ && !weapons_[static_cast<size_t>(activeWeapon_)].isMelee) {
     const auto& w = weapons_[static_cast<size_t>(activeWeapon_)];
@@ -3493,6 +3704,16 @@ glm::vec3 GameSession::cameraPosition(const PlayerController& player) const {
 }
 
 glm::vec3 GameSession::cameraTarget(const PlayerController& player) const {
+  if (gunsmithOpen_) {
+    const glm::vec3 anchor = gunsmithAnchorPos(player) + gunsmithTargetOffset_;
+    const glm::vec3 orbitDir(
+      std::sin(gunsmithYaw_) * std::cos(gunsmithPitch_),
+      std::sin(gunsmithPitch_),
+      std::cos(gunsmithYaw_) * std::cos(gunsmithPitch_)
+    );
+    const glm::vec3 right = glm::normalize(glm::cross(-orbitDir, glm::vec3(0.0f, 1.0f, 0.0f)));
+    return anchor + right * (gunsmithZoom_ * 0.22f);
+  }
   if (activeVehicleIdx_ >= 0 && activeVehicleIdx_ < static_cast<int>(vehicles_.size())) {
     const auto& v = vehicles_[static_cast<size_t>(activeVehicleIdx_)];
     const VehicleSpec& sp = vehicleSpec(v.kind);
@@ -3502,10 +3723,19 @@ glm::vec3 GameSession::cameraTarget(const PlayerController& player) const {
     }
     return v.pos + glm::vec3(0.0f, sp.height * 0.72f + 0.35f + v.suspHeave * 0.35f, 0.0f);
   }
+  if (firstPersonMode_) {
+    const float yaw = player.yaw();
+    const float pitch = player.pitch();
+    const glm::vec3 fwd(std::sin(yaw) * std::cos(pitch), std::sin(pitch), std::cos(yaw) * std::cos(pitch));
+    return cameraPosition(player) + fwd * 14.0f;
+  }
   return player.cameraTarget();
 }
 
 float GameSession::cameraFovDeg(bool aiming) const {
+  if (gunsmithOpen_) {
+    return 40.0f;
+  }
   if (inVehicle()) {
     if (const auto* cv = currentVehicle()) {
       const float spdFrac = std::clamp(std::abs(cv->speed) / 52.0f, 0.0f, 1.0f);
@@ -3513,16 +3743,19 @@ float GameSession::cameraFovDeg(bool aiming) const {
     }
     return 68.0f;
   }
+  const float baseFov = firstPersonMode_ ? 68.0f : 60.0f;
   if (aiming && !weapons_[static_cast<size_t>(activeWeapon_)].isMelee) {
+    float adsFov = 48.0f;
     switch (weapons_[static_cast<size_t>(activeWeapon_)].optic) {
-      case WeaponOpticKind::IronSights:  return 54.0f;
-      case WeaponOpticKind::RedDot:      return 48.0f;
-      case WeaponOpticKind::Holo:        return 43.0f;
-      case WeaponOpticKind::Acog:        return 30.0f;
-      case WeaponOpticKind::SniperScope: return 18.0f;
+      case WeaponOpticKind::IronSights:  adsFov = 54.0f; break;
+      case WeaponOpticKind::RedDot:      adsFov = 48.0f; break;
+      case WeaponOpticKind::Holo:        adsFov = 43.0f; break;
+      case WeaponOpticKind::Acog:        adsFov = 30.0f; break;
+      case WeaponOpticKind::SniperScope: adsFov = 18.0f; break;
     }
+    return firstPersonMode_ ? glm::mix(baseFov, adsFov, adsBlend_) : adsFov;
   }
-  return 60.0f;
+  return firstPersonMode_ ? glm::mix(baseFov, 48.0f, adsBlend_) : baseFov;
 }
 
 std::string GameSession::playerAnimClip(const PlayerController& player, bool blocking) const {
@@ -3623,6 +3856,67 @@ std::vector<WorldMarkerBox> GameSession::gatherWorldMarkers(float elapsedSec) co
     }
   }
 
+  if (gunsmithOpen_) {
+    // Sleek dark Gunsmith Studio booth, brushed carbon pedestal & neon accent bars around the 3D firearm
+    const glm::vec3 anchor = gunsmithCachedAnchor_;
+    const glm::vec3 orbitDir(
+      std::sin(gunsmithYaw_) * std::cos(gunsmithPitch_),
+      std::sin(gunsmithPitch_),
+      std::cos(gunsmithYaw_) * std::cos(gunsmithPitch_)
+    );
+    const glm::vec3 backPos = anchor + gunsmithTargetOffset_ - orbitDir * 2.35f;
+    // Wide matte obsidian studio cyclorama wall facing the camera so the weapon silhouette is 100% isolated
+    WorldMarkerBox wall{};
+    wall.pos = backPos;
+    wall.scale = {9.0f, 6.2f, 0.08f};
+    wall.yawRad = gunsmithYaw_;
+    wall.pitchRad = -gunsmithPitch_;
+    wall.color = {0.038f, 0.044f, 0.058f};
+    wall.roughness = 0.78f;
+    wall.metallic = 0.22f;
+    out.push_back(wall);
+
+    // Dark brushed carbon-slate workbench plinth + subtle 6mm cyan perimeter edge trim
+    WorldMarkerBox plinth{};
+    plinth.pos = anchor + glm::vec3(0.0f, -0.205f, 0.18f);
+    plinth.scale = {1.55f, 0.06f, 1.55f};
+    plinth.color = {0.052f, 0.058f, 0.072f};
+    plinth.roughness = 0.42f;
+    plinth.metallic = 0.58f;
+    out.push_back(plinth);
+
+    const glm::vec3 pTop = anchor + glm::vec3(0.0f, -0.172f, 0.18f);
+    const float halfEdge = 0.74f;
+    WorldMarkerBox trimZ{};
+    trimZ.scale = {1.49f, 0.006f, 0.008f};
+    trimZ.color = {0.14f, 0.78f, 0.96f};
+    trimZ.emissive = 1.6f;
+    trimZ.pos = pTop + glm::vec3(0.0f, 0.0f,  halfEdge);
+    out.push_back(trimZ);
+    trimZ.pos = pTop + glm::vec3(0.0f, 0.0f, -halfEdge);
+    out.push_back(trimZ);
+
+    WorldMarkerBox trimX = trimZ;
+    trimX.scale = {0.008f, 0.006f, 1.49f};
+    trimX.pos = pTop + glm::vec3( halfEdge, 0.0f, 0.0f);
+    out.push_back(trimX);
+    trimX.pos = pTop + glm::vec3(-halfEdge, 0.0f, 0.0f);
+    out.push_back(trimX);
+
+    // Display stand risers under receiver & handguard
+    WorldMarkerBox standRear{};
+    standRear.pos = anchor + glm::vec3(0.0f, -0.110f, 0.02f);
+    standRear.scale = {0.020f, 0.135f, 0.020f};
+    standRear.color = {0.20f, 0.23f, 0.28f};
+    standRear.roughness = 0.28f;
+    standRear.metallic = 0.88f;
+    out.push_back(standRear);
+
+    WorldMarkerBox standFront = standRear;
+    standFront.pos = anchor + glm::vec3(0.0f, -0.110f, 0.30f);
+    out.push_back(standFront);
+  }
+
   appendCampaignMarkers(elapsedSec, out);
   appendLivingWorldMarkers(elapsedSec, out);
   return out;
@@ -3631,6 +3925,17 @@ std::vector<WorldMarkerBox> GameSession::gatherWorldMarkers(float elapsedSec) co
 std::vector<DynamicPointLight> GameSession::gatherDynamicLights(const WorldData& world, const PlayerController& player, float elapsedSec) const {
   std::vector<DynamicPointLight> lights;
   lights.reserve(24);
+
+  if (gunsmithOpen_) {
+    const glm::vec3 anchor = gunsmithAnchorPos(player) + gunsmithTargetOffset_;
+    // 3-Point Gunsmith Studio Rig: Overhead Warm-White Key + Cyan Rim + Soft Amber Under-Fill
+    lights.push_back({anchor + glm::vec3( 0.55f,  0.75f,  0.55f), 5.5f, {1.00f, 0.97f, 0.92f}, 2.85f});
+    lights.push_back({anchor + glm::vec3(-0.65f,  0.42f, -0.55f), 5.0f, {0.32f, 0.82f, 1.00f}, 2.15f});
+    lights.push_back({anchor + glm::vec3( 0.00f, -0.35f,  0.45f), 4.2f, {1.00f, 0.78f, 0.48f}, 1.35f});
+    if (muzzleFlashTimer_ > 0.0f) {
+      lights.push_back({anchor + glm::vec3(0.0f, 0.05f, 0.55f), 4.5f, {1.0f, 0.76f, 0.32f}, 4.8f});
+    }
+  }
 
   const SkyLightingState sky = skyLighting();
   const float pitY = world.heightfield.sampleHeight(world.fightPitPos.x, world.fightPitPos.z);
@@ -3728,6 +4033,7 @@ bool GameSession::saveToFile(const std::string& path) const {
     j["ironPitWins"] = ironPit_.wins;
     j["timeOfDayHours"] = timeOfDayHours_;
     j["playerSuit"] = static_cast<int>(playerSuit_);
+    j["firstPersonMode"] = firstPersonMode_;
     j["storyStep"] = storyStep_;
     j["difficulty"] = static_cast<int>(difficulty_);
     j["epilogueChoice"] = static_cast<int>(epilogueChoice_);
@@ -3744,6 +4050,11 @@ bool GameSession::saveToFile(const std::string& path) const {
         {"underbarrel", static_cast<int>(w.underbarrel)},
         {"magKind", static_cast<int>(w.mag)},
         {"finish", static_cast<int>(w.finish)},
+        {"bodyFinish", static_cast<int>(w.bodyFinish)},
+        {"accentFinish", static_cast<int>(w.accentFinish)},
+        {"hardwareFinish", static_cast<int>(w.hardwareFinish)},
+        {"surfaceSheen", w.surfaceSheen},
+        {"reticleColorIdx", static_cast<int>(w.reticleColorIdx)},
       });
     }
     j["weapons"] = wArr;
@@ -3823,6 +4134,7 @@ bool GameSession::loadFromFile(const std::string& path) {
     ironPit_.wins = j.value("ironPitWins", ironPit_.wins);
     timeOfDayHours_ = j.value("timeOfDayHours", timeOfDayHours_);
     playerSuit_ = static_cast<PlayerSuitPreset>(std::clamp(j.value("playerSuit", static_cast<int>(playerSuit_)), 0, kPlayerSuitCount - 1));
+    firstPersonMode_ = j.value("firstPersonMode", firstPersonMode_);
     storyStep_ = std::clamp(j.value("storyStep", storyStep_), 0, 9);
     difficulty_ = static_cast<DifficultyMode>(std::clamp(j.value("difficulty", static_cast<int>(difficulty_)), 0, 2));
     epilogueChoice_ = static_cast<EpilogueChoice>(std::clamp(j.value("epilogueChoice", static_cast<int>(epilogueChoice_)), 0, 2));
@@ -3845,13 +4157,20 @@ bool GameSession::loadFromFile(const std::string& path) {
           if (jw.value("id", "") == w.id) {
             w.unlocked = jw.value("unlocked", w.unlocked);
             if (!w.isMelee && jw.contains("optic")) {
+              const auto fin = static_cast<WeaponFinishKind>(std::clamp(jw.value("finish", static_cast<int>(w.finish)), 0, kWeaponFinishCount - 1));
               configureWeaponSlot(
                 static_cast<int>(wi),
-                static_cast<WeaponOpticKind>(std::clamp(jw.value("optic", static_cast<int>(w.optic)), 0, 4)),
-                static_cast<WeaponMuzzleKind>(std::clamp(jw.value("muzzle", static_cast<int>(w.muzzle)), 0, 2)),
-                static_cast<WeaponUnderbarrelKind>(std::clamp(jw.value("underbarrel", static_cast<int>(w.underbarrel)), 0, 2)),
-                static_cast<WeaponMagKind>(std::clamp(jw.value("magKind", static_cast<int>(w.mag)), 0, 2)),
-                static_cast<WeaponFinishKind>(std::clamp(jw.value("finish", static_cast<int>(w.finish)), 0, kWeaponFinishCount - 1)));
+                static_cast<WeaponOpticKind>(std::clamp(jw.value("optic", static_cast<int>(w.optic)), 0, kWeaponOpticCount - 1)),
+                static_cast<WeaponMuzzleKind>(std::clamp(jw.value("muzzle", static_cast<int>(w.muzzle)), 0, kWeaponMuzzleCount - 1)),
+                static_cast<WeaponUnderbarrelKind>(std::clamp(jw.value("underbarrel", static_cast<int>(w.underbarrel)), 0, kWeaponUnderbarrelCount - 1)),
+                static_cast<WeaponMagKind>(std::clamp(jw.value("magKind", static_cast<int>(w.mag)), 0, kWeaponMagCount - 1)),
+                fin);
+              const auto bFin = static_cast<WeaponFinishKind>(std::clamp(jw.value("bodyFinish", static_cast<int>(fin)), 0, kWeaponFinishCount - 1));
+              const auto aFin = static_cast<WeaponFinishKind>(std::clamp(jw.value("accentFinish", static_cast<int>(w.accentFinish)), 0, kWeaponFinishCount - 1));
+              const auto hFin = static_cast<WeaponFinishKind>(std::clamp(jw.value("hardwareFinish", static_cast<int>(w.hardwareFinish)), 0, kWeaponFinishCount - 1));
+              const float sheen = std::clamp(jw.value("surfaceSheen", w.surfaceSheen), 0.0f, 1.0f);
+              const uint8_t retIdx = static_cast<uint8_t>(std::clamp(jw.value("reticleColorIdx", static_cast<int>(w.reticleColorIdx)), 0, kWeaponReticleColorCount - 1));
+              configureWeaponZones(static_cast<int>(wi), bFin, aFin, hFin, sheen, retIdx);
             }
             w.magAmmo = std::clamp(jw.value("mag", w.magAmmo), 0, w.magSize);
             w.reserveAmmo = std::clamp(jw.value("reserve", w.reserveAmmo), 0, w.reserveMax);

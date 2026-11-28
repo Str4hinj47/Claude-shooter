@@ -4,6 +4,7 @@
 #include "westgate/GameSession.hpp"
 #include "westgate/GltfAssetLoader.hpp"
 #include "westgate/PhysicsWorld.hpp"
+#include "westgate/WeaponSystem3D.hpp"
 #include "westgate/WgpuContext.hpp"
 #include "westgate/WorldData.hpp"
 #include <array>
@@ -113,7 +114,8 @@ public:
     const std::vector<DynamicPointLight>& pointLights,
     const std::vector<DynamicPropPose>& dynamicProps,
     bool drawUiCallback,
-    const std::vector<DynamicGlbPropInstance>& dynGlbProps = {}
+    const std::vector<DynamicGlbPropInstance>& dynGlbProps = {},
+    const std::vector<WeaponPartDrawInstance>& weaponParts = {}
   );
 
   const RenderTelemetry& telemetry() const { return telemetry_; }
@@ -395,6 +397,9 @@ private:
   std::array<std::vector<InstanceAttrib>, kNumHouseGlbs> houseStaging_{};
   std::array<VehicleGpuAsset, kVehicleModelCount> vehicleAssets_{};
   std::array<InstancedGlbBatch, kDynamicGlbPropCount> dynGlbBatches_{};
+  std::vector<GpuTextureBinding> weaponMatTextures_;
+  std::array<WGPUBindGroup, kWeaponSurfaceMatCount> weaponMatBindGroups_{};
+  std::array<InstancedGlbBatch, kWeaponMeshPartCount> weaponPartBatches_{};
 
   SkinnedMeshGpu playerBodyGpu_;
   SkinnedMeshGpu playerShortsGpu_;
