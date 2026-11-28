@@ -93,6 +93,7 @@ add_library(westgate_core STATIC
   src/core/PlayerController.cpp
   src/core/GameSession.cpp
   src/core/GameSessionCampaign.cpp
+  src/core/GameSessionWorld.cpp
 )
 
 target_include_directories(westgate_core PUBLIC

@@ -1177,6 +1177,183 @@ int main() {
       std::printf("[PASS] Milestone 4 verified: 10-Chapter Campaign (Ch00-Ch09), Surveillance H1, Ally Brick, Gen. Kovac Mortar Phase, Epilogue & Save v2 OK\n");
     }
 
+    // -----------------------------------------------------------------------
+    // Milestone 5 Verification:
+    //   1. Quadruped GLTF Wildlife Rigs (dog_husky.glb 49 joints + deer.glb 46 joints) & Direct Embedded Clip Evaluation
+    //   2. 4 Purchasable Luxury Apartments + Walk-In Sky-Suite (y=260m Jolt floor) + Bed/Wardrobe/Armory/Exit
+    //   3. 15 Hidden Cash Stashes (stash_bag.glb), Medkits (medkit.glb) & 28 Chain-Explosive Fuel Tanks/Gas Cans
+    //   4. 10 Radar Speed Traps + Dynamic Street Random Events + Wildlife Flee + Save v2 Persistence
+    // -----------------------------------------------------------------------
+    {
+      westgate::GameSession m5;
+      m5.init(world, &player, &physics);
+
+      // 1. Quadruped wildlife GLB loading + direct embedded animation clip evaluation
+      westgate::GltfModel dogM, deerM, birdM, stashM, tankM;
+      WG_CHECK(westgate::GltfAssetLoader::loadGlb(std::string(WESTGATE_SOURCE_ROOT) + "/public/models/dog_husky.glb", dogM, true, nullptr));
+      WG_CHECK(westgate::GltfAssetLoader::loadGlb(std::string(WESTGATE_SOURCE_ROOT) + "/public/models/deer.glb", deerM, true, nullptr));
+      WG_CHECK(westgate::GltfAssetLoader::loadGlb(std::string(WESTGATE_SOURCE_ROOT) + "/public/models/bird.glb", birdM, false, nullptr));
+      WG_CHECK(westgate::GltfAssetLoader::loadGlb(std::string(WESTGATE_SOURCE_ROOT) + "/public/models/stash_bag.glb", stashM, false, nullptr));
+      WG_CHECK(westgate::GltfAssetLoader::loadGlb(std::string(WESTGATE_SOURCE_ROOT) + "/public/models/fuel_tank.glb", tankM, false, nullptr));
+      WG_CHECK(dogM.skin.valid && dogM.skin.jointNodeIndices.size() >= 45 && !dogM.animations.empty());
+      WG_CHECK(deerM.skin.valid && deerM.skin.jointNodeIndices.size() >= 40 && !deerM.animations.empty());
+
+      westgate::CharacterAnimator dogAnim, deerAnim;
+      dogAnim.initForTarget(dogM);
+      deerAnim.initForTarget(deerM);
+      std::array<glm::mat4, westgate::kMaxSkinBones> dogPal0{}, dogPal1{}, deerPal{};
+      dogAnim.evaluateDirectEmbeddedClip("Walk", 0.0f, dogPal0);
+      dogAnim.evaluateDirectEmbeddedClip("Gallop", 0.35f, dogPal1);
+      deerAnim.evaluateDirectEmbeddedClip("Eating", 0.45f, deerPal);
+      float maxDiff = 0.0f;
+      for (size_t bi = 0; bi < 16; ++bi) {
+        for (int c = 0; c < 4; ++c) {
+          for (int r = 0; r < 4; ++r) {
+            maxDiff = std::max(maxDiff, std::abs(dogPal1[bi][c][r] - dogPal0[bi][c][r]));
+          }
+        }
+      }
+      WG_CHECK(maxDiff > 0.01f); // Walk vs Gallop produces real skeletal articulation!
+
+      // Verify quadruped skinned vertex bounds normalize cleanly to real-world meter heights (~0.68m Husky, ~1.28m Deer)
+      auto verifySkinnedHeight = [](const westgate::GltfModel& mdl,
+                                    const std::array<glm::mat4, westgate::kMaxSkinBones>& pal,
+                                    float targetH) -> bool {
+        float minY = 1e9f, maxY = -1e9f;
+        for (const auto& prim : mdl.primitives) {
+          for (const auto& v : prim.vertices) {
+            const glm::mat4 m =
+              pal[std::min<uint32_t>(v.joints.x, westgate::kMaxSkinBones - 1)] * v.weights.x +
+              pal[std::min<uint32_t>(v.joints.y, westgate::kMaxSkinBones - 1)] * v.weights.y +
+              pal[std::min<uint32_t>(v.joints.z, westgate::kMaxSkinBones - 1)] * v.weights.z +
+              pal[std::min<uint32_t>(v.joints.w, westgate::kMaxSkinBones - 1)] * v.weights.w;
+            const float py = (m * glm::vec4(v.position, 1.0f)).y;
+            minY = std::min(minY, py);
+            maxY = std::max(maxY, py);
+          }
+        }
+        const float spanY = maxY - minY;
+        if (!(spanY > 0.01f)) return false;
+        const float scale = targetH / spanY;
+        const float yOff = -minY * scale;
+        const float groundedMinY = minY * scale + yOff;
+        const float groundedMaxY = maxY * scale + yOff;
+        return std::abs(groundedMinY) < 1e-4f && std::abs(groundedMaxY - targetH) < 1e-3f;
+      };
+      WG_CHECK(verifySkinnedHeight(dogM, dogPal0, 0.68f));
+      WG_CHECK(verifySkinnedHeight(deerM, deerPal, 1.28f));
+
+      WG_CHECK(m5.apartments().size() == 4);
+      WG_CHECK(m5.totalStashes() == 15 && m5.stashesFound() == 0);
+      WG_CHECK(m5.explosiveProps().size() == 28);
+      WG_CHECK(m5.speedTraps().size() == 10);
+      WG_CHECK(m5.wildlife().size() == 9 && m5.birdFlocks().size() == 16);
+      const auto dynProps0 = m5.gatherDynamicGlbProps(0.5f);
+      WG_CHECK(dynProps0.size() >= 15 + 8 + 28 + 16);
+
+      // 2. Buy Sovereign Sky Penthouse ($950), Enter Sky-Suite at y=260m, verify Jolt floor grounding & stations
+      m5.grantCurrencies(5000, 0, 0);
+      WG_CHECK(m5.buyApartment(3, nullptr));
+      WG_CHECK(m5.apartments()[3].owned);
+      WG_CHECK(m5.enterApartment(3, player, nullptr));
+      WG_CHECK(m5.activeApartmentIdx() == 3);
+      for (int step = 0; step < 20; ++step) {
+        westgate::GameInputFrame idle{};
+        m5.update(1.0f / 60.0f, idle, player, physics, world, nullptr);
+        physics.step(1.0f / 60.0f);
+      }
+      WG_CHECK(player.position().y > 259.5f && player.position().y < 261.2f);
+      WG_CHECK(physics.isCharacterGrounded());
+
+      const auto prevSuit = m5.playerSuit();
+      m5.useApartmentWardrobe(nullptr);
+      WG_CHECK(m5.playerSuit() != prevSuit);
+      m5.useApartmentArmoryBench(nullptr);
+      WG_CHECK(m5.weapons()[2].unlocked && m5.weapons()[2].magAmmo == m5.weapons()[2].magSize);
+      m5.useApartmentBed(nullptr);
+      WG_CHECK(m5.playerArmor() >= 99.9f && m5.wantedStars() == 0);
+      m5.exitApartment(player, nullptr);
+      WG_CHECK(m5.activeApartmentIdx() == -1);
+      WG_CHECK(glm::distance(glm::vec2(player.position().x, player.position().z),
+                             glm::vec2(m5.apartments()[3].doorPos.x, m5.apartments()[3].doorPos.z)) < 4.5f);
+
+      // 3. Collect Hidden Cash Stash (+$350 +6 Intel) + Chain-Detonate Explosive Fuel Tanks (+Salvage)
+      const int cashBeforeStash = m5.playerCash();
+      const int intelBeforeStash = m5.playerIntel();
+      m5.teleportTo(m5.collectibles()[0].pos + glm::vec3(0.0f, 0.2f, 0.0f), 0.0f, player);
+      {
+        westgate::GameInputFrame stepIn{};
+        m5.update(1.0f / 60.0f, stepIn, player, physics, world, nullptr);
+      }
+      WG_CHECK(m5.stashesFound() == 1);
+      WG_CHECK(m5.playerCash() == cashBeforeStash + 350 && m5.playerIntel() == intelBeforeStash + 6);
+
+      // Pair 0 & 1 of explosiveProps_ are (548, 176) and (552, 178) (~4.47m apart < 6.2m chain radius!)
+      const int salvageBeforeBlast = m5.playerSalvage();
+      m5.detonateExplosiveProp(0, world, &player, &physics, nullptr);
+      WG_CHECK(m5.explosiveProps()[0].exploded && m5.explosiveProps()[1].exploded);
+      WG_CHECK(m5.playerSalvage() >= salvageBeforeBlast + 4);
+
+      // 4. Radar Speed Trap Record + Wildlife Flee + Street Random Event + Save v2 Persistence
+      m5.grantVehicleOwnership(westgate::VehicleModelKind::Ferrari);
+      const auto trapPos = m5.speedTraps()[0].pos;
+      m5.teleportTo(trapPos + glm::vec3(0.0f, 0.5f, -35.0f), 0.0f, player);
+      const int vehId = m5.spawnPersonalVehicle(westgate::VehicleModelKind::Ferrari, 2, player, world, nullptr, true);
+      WG_CHECK(vehId > 0 && m5.inVehicle());
+      // Accelerate straight over the Pacific Coast North radar speed trap!
+      for (int f = 0; f < 220; ++f) {
+        westgate::GameInputFrame gas{};
+        gas.moveInput.moveForward = 1.0f;
+        m5.update(1.0f / 60.0f, gas, player, physics, world, nullptr);
+        if (f == 90) {
+          // Teleport moving supercar onto the trap gate at full speed!
+          for (auto& v : const_cast<std::vector<westgate::VehicleEntity>&>(m5.vehicles())) {
+            if (v.occupiedByPlayer) {
+              v.pos = trapPos;
+              v.vxLocal = 46.0f;
+              v.speed = 46.0f; // 165.6 km/h > 150 km/h target!
+            }
+          }
+        }
+        if (m5.speedTraps()[0].bestKmh >= 150) break;
+      }
+      WG_CHECK(m5.speedTraps()[0].bestKmh >= 150 && m5.speedTrapsBeatenCount() >= 1);
+      // Exit vehicle
+      {
+        westgate::GameInputFrame exitV{};
+        exitV.interactPressed = true;
+        m5.update(1.0f / 60.0f, exitV, player, physics, world, nullptr);
+      }
+
+      // Wildlife alert flee test
+      const glm::vec3 deerPos = m5.wildlife().back().pos;
+      m5.alertWildlifeNear(deerPos + glm::vec3(2.0f, 0.0f, 2.0f), 26.0f);
+      WG_CHECK(m5.wildlife().back().fleeTimer > 3.5f && m5.wildlife().back().activeClip == "Gallop");
+
+      // Street Random Event (ArmoredTruck cash case pickup)
+      WG_CHECK(m5.spawnRandomEvent(westgate::RandomEventKind::ArmoredTruck, player.position(), world, nullptr));
+      WG_CHECK(m5.activeRandomEvent().active && m5.activeRandomEvent().pickupReady);
+      m5.teleportTo(m5.activeRandomEvent().pickupPos + glm::vec3(0.0f, 0.2f, 0.0f), 0.0f, player);
+      {
+        westgate::GameInputFrame grab{};
+        m5.update(1.0f / 60.0f, grab, player, physics, world, nullptr);
+      }
+      WG_CHECK(!m5.activeRandomEvent().active && m5.randomEventsResolved() == 1);
+
+      // Save & Load Milestone 5 state
+      const std::string m5Save = "/tmp/westgate_m5_roundtrip.json";
+      WG_CHECK(m5.saveToFile(m5Save));
+      westgate::GameSession m5Loaded;
+      m5Loaded.init(world, &player, &physics);
+      WG_CHECK(m5Loaded.loadFromFile(m5Save));
+      WG_CHECK(m5Loaded.apartments()[3].owned);
+      WG_CHECK(m5Loaded.stashesFound() == 1);
+      WG_CHECK(m5Loaded.speedTraps()[0].bestKmh >= 150);
+      WG_CHECK(m5Loaded.randomEventsResolved() == 1);
+
+      std::printf("[PASS] Milestone 5 verified: 4 Luxury Apartments (y=260m Jolt Suite), 15 Stashes, 28 Chain Explosives, 10 Speed Traps, Street Events & 3D Wildlife OK\n");
+    }
+
     std::printf("[PASS] GameSession full loop: %zu vehicles, %zu NPCs, driving/gunplay/contracts/sky/save OK\n",
                 session.vehicles().size(), session.npcs().size());
   }

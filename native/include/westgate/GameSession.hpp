@@ -659,6 +659,125 @@ struct WorldMarkerBox {
   glm::quat rot{1.0f, 0.0f, 0.0f, 0.0f};
 };
 
+enum class DynamicGlbPropKind : uint8_t {
+  StashBag = 0,
+  Medkit = 1,
+  FuelTank = 2,
+  GasCan = 3,
+  Bird = 4,
+};
+constexpr size_t kDynamicGlbPropCount = 5;
+
+struct DynamicGlbPropInstance {
+  DynamicGlbPropKind kind = DynamicGlbPropKind::StashBag;
+  glm::vec3 pos{0.0f};
+  float yawRad = 0.0f;
+  float pitchRad = 0.0f;
+  float scale = 1.0f;
+  float emissive = 0.0f;
+  glm::vec3 tint{1.0f};
+};
+
+struct ApartmentDef {
+  std::string id;
+  std::string name;
+  std::string district;
+  int price = 0;
+  glm::vec3 doorPos{0.0f};
+  float doorYaw = 0.0f;
+  glm::vec3 interiorOrigin{0.0f};
+  glm::vec3 accentColor{0.8f, 0.5f, 0.2f};
+  std::string vibe;
+  bool owned = false;
+};
+
+enum class CollectibleKind : uint8_t {
+  Stash = 0,
+  Medkit = 1,
+  CashDrop = 2,
+};
+
+struct CollectiblePickup {
+  std::string id;
+  CollectibleKind kind = CollectibleKind::Stash;
+  glm::vec3 pos{0.0f};
+  int cashValue = 350;
+  int intelValue = 6;
+  bool collected = false;
+  float ttl = -1.0f;
+};
+
+struct ExplosivePropEntity {
+  std::string id;
+  DynamicGlbPropKind kind = DynamicGlbPropKind::FuelTank;
+  glm::vec3 pos{0.0f};
+  float yawRad = 0.0f;
+  float hp = 50.0f;
+  float maxHp = 50.0f;
+  bool exploded = false;
+  float respawnTimer = 0.0f;
+};
+
+struct SpeedTrapSpec {
+  std::string id;
+  std::string name;
+  glm::vec3 pos{0.0f};
+  int targetKmh = 120;
+  int bestKmh = 0;
+  float cooldown = 0.0f;
+};
+
+enum class RandomEventKind : uint8_t {
+  PurseSnatcher = 0,
+  ArmoredTruck = 1,
+  StreetBrawl = 2,
+};
+
+struct ActiveRandomEvent {
+  bool active = false;
+  RandomEventKind kind = RandomEventKind::PurseSnatcher;
+  std::string title;
+  glm::vec3 origin{0.0f};
+  float timer = 0.0f;
+  int rewardCash = 400;
+  int rewardIntel = 4;
+  std::vector<int> npcIds;
+  int vehicleId = -1;
+  bool pickupReady = false;
+  glm::vec3 pickupPos{0.0f};
+};
+
+enum class WildlifeKind : uint8_t {
+  DogHusky = 0,
+  Deer = 1,
+};
+
+struct WildlifeEntity {
+  int id = 0;
+  WildlifeKind kind = WildlifeKind::DogHusky;
+  glm::vec3 center{0.0f};
+  float radius = 9.0f;
+  float phase = 0.0f;
+  float speed = 0.35f;
+  glm::vec3 pos{0.0f};
+  float yawRad = 0.0f;
+  float animClock = 0.0f;
+  float pauseTimer = 0.0f;
+  float fleeTimer = 0.0f;
+  float fleeYaw = 0.0f;
+  std::string activeClip = "Walk";
+};
+
+struct BirdFlockMember {
+  glm::vec3 center{0.0f};
+  float radius = 28.0f;
+  float height = 34.0f;
+  float phase = 0.0f;
+  float angularSpeed = 0.32f;
+  glm::vec3 pos{0.0f};
+  float yawRad = 0.0f;
+};
+
 class GameSession {
 public:
   void init(const WorldData& world, PlayerController* player, PhysicsWorld* physics);
@@ -754,6 +873,35 @@ public:
   SkyLightingState skyLighting() const;
   std::vector<WorldMarkerBox> gatherWorldMarkers(float elapsedSec) const;
   std::vector<DynamicPointLight> gatherDynamicLights(const WorldData& world, const PlayerController& player, float elapsedSec) const;
+  std::vector<DynamicGlbPropInstance> gatherDynamicGlbProps(float elapsedSec) const;
+
+  // Milestone 5: Luxury Apartments, Stash Collectibles, Explosive Props, Speed Traps, Random Events & Wildlife
+  const std::vector<ApartmentDef>& apartments() const { return apartments_; }
+  int activeApartmentIdx() const { return activeApartmentIdx_; }
+  bool buyApartment(int aptIdx, AudioEngine* audio);
+  bool enterApartment(int aptIdx, PlayerController& player, AudioEngine* audio);
+  void exitApartment(PlayerController& player, AudioEngine* audio);
+  void useApartmentBed(AudioEngine* audio);
+  void useApartmentWardrobe(AudioEngine* audio);
+  void useApartmentArmoryBench(AudioEngine* audio);
+
+  const std::vector<CollectiblePickup>& collectibles() const { return collectibles_; }
+  int stashesFound() const { return stashesFound_; }
+  int totalStashes() const { return totalStashes_; }
+  const std::vector<ExplosivePropEntity>& explosiveProps() const { return explosiveProps_; }
+  void spawnMedkitDrop(const glm::vec3& pos);
+  void detonateExplosiveProp(size_t idx, const WorldData& world, PlayerController* player, PhysicsWorld* physics, AudioEngine* audio);
+
+  const std::vector<SpeedTrapSpec>& speedTraps() const { return speedTraps_; }
+  int speedTrapsBeatenCount() const;
+
+  const ActiveRandomEvent& activeRandomEvent() const { return activeRandomEvent_; }
+  int randomEventsResolved() const { return randomEventsResolved_; }
+  bool spawnRandomEvent(RandomEventKind kind, const glm::vec3& nearPos, const WorldData& world, AudioEngine* audio);
+
+  const std::vector<WildlifeEntity>& wildlife() const { return wildlife_; }
+  const std::vector<BirdFlockMember>& birdFlocks() const { return birdFlocks_; }
+  void alertWildlifeNear(const glm::vec3& pos, float radius = 26.0f);
 
   const std::vector<WeaponSlotState>& weapons() const { return weapons_; }
   int activeWeaponIdx() const { return activeWeapon_; }
@@ -1043,6 +1191,28 @@ private:
   std::array<float, kBodyStatCount> bodyStats_{12.0f, 15.0f, 12.0f, 10.0f, 12.0f, 15.0f, 14.0f, 10.0f};
   std::array<float, kBodyStatCount> bodyStatsXp_{};
   uint32_t rng_ = 0x9E3779B9u;
+
+  // Milestone 5: Living World Systems (GameSessionWorld.cpp)
+  void initLivingWorld(const WorldData& world);
+  void updateLivingWorld(float dt, const GameInputFrame& input, PlayerController& player, PhysicsWorld& physics, const WorldData& world, AudioEngine* audio);
+  bool damageExplosivePropsOnRay(const glm::vec3& rayOrig, const glm::vec3& rayDir, float maxDist, float dmg, const WorldData& world, PlayerController* player, PhysicsWorld* physics, AudioEngine* audio);
+  void appendLivingWorldMarkers(float elapsedSec, std::vector<WorldMarkerBox>& out) const;
+  void appendLivingWorldLights(float elapsedSec, std::vector<DynamicPointLight>& out) const;
+
+  std::vector<ApartmentDef> apartments_;
+  int activeApartmentIdx_ = -1;
+  std::vector<CollectiblePickup> collectibles_;
+  int stashesFound_ = 0;
+  int totalStashes_ = 15;
+  int dropSeq_ = 1;
+  std::vector<ExplosivePropEntity> explosiveProps_;
+  std::vector<SpeedTrapSpec> speedTraps_;
+  ActiveRandomEvent activeRandomEvent_;
+  float randomEventCooldown_ = 28.0f;
+  int randomEventsResolved_ = 0;
+  std::vector<WildlifeEntity> wildlife_;
+  std::vector<BirdFlockMember> birdFlocks_;
+  float worldAnimClock_ = 0.0f;
 };
 
 } // namespace westgate

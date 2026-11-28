@@ -58,6 +58,7 @@ int main(int argc, char** argv) {
   int headlessSuitIdx = -1;
   int headlessContractIdx = -1;
   int headlessStartChapter = -1;
+  int headlessEnterApartment = -1;
   int headlessSpawnVehKind = -1;
   int headlessPaintIdx = -1;
   bool headlessBoardVeh = false;
@@ -123,6 +124,8 @@ int main(int argc, char** argv) {
       headlessContractIdx = std::atoi(argv[++i]);
     } else if (arg == "--start-chapter" && i + 1 < argc) {
       headlessStartChapter = std::atoi(argv[++i]);
+    } else if (arg == "--enter-apartment" && i + 1 < argc) {
+      headlessEnterApartment = std::atoi(argv[++i]);
     } else if (arg == "--teleport" && i + 1 < argc) {
       float tx = 0.0f, ty = 0.0f, tz = 0.0f, tyaw = 0.0f;
       if (std::sscanf(argv[++i], "%f,%f,%f,%f", &tx, &ty, &tz, &tyaw) >= 3) {
@@ -193,6 +196,9 @@ int main(int argc, char** argv) {
   const bool hasMil = westgate::GltfAssetLoader::loadGlb(resolveAsset("characters/military.glb").string(), milModel, true, nullptr);
   const bool hasCon = westgate::GltfAssetLoader::loadGlb(resolveAsset("characters/construction.glb").string(), conModel, true, nullptr);
   const bool hasSpt = westgate::GltfAssetLoader::loadGlb(resolveAsset("characters/sports.glb").string(), sptModel, true, nullptr);
+  westgate::GltfModel dogModel, deerModel;
+  const bool hasDog = westgate::GltfAssetLoader::loadGlb(resolveAsset("models/dog_husky.glb").string(), dogModel, true, nullptr);
+  const bool hasDeer = westgate::GltfAssetLoader::loadGlb(resolveAsset("models/deer.glb").string(), deerModel, true, nullptr);
 
   std::unordered_map<std::string, westgate::CharacterAnimator::SourceClip> clips;
   if (hasBiz) {
@@ -247,6 +253,38 @@ int main(int argc, char** argv) {
   if (hasMil) milAnim.initForTarget(milModel);
   if (hasCon) conAnim.initForTarget(conModel);
   if (hasSpt) sptAnim.initForTarget(sptModel);
+  westgate::CharacterAnimator dogAnim, deerAnim;
+  if (hasDog) dogAnim.initForTarget(dogModel);
+  if (hasDeer) deerAnim.initForTarget(deerModel);
+
+  auto computeSkinnedScaleAndGround = [](const westgate::GltfModel& mdl, const westgate::CharacterAnimator& anim, float targetH, float& outScale, float& outYOff) {
+    outScale = 1.0f;
+    outYOff = 0.0f;
+    std::array<glm::mat4, westgate::kMaxSkinBones> restPal{};
+    anim.evaluateRest(restPal);
+    float minY = 1e9f, maxY = -1e9f;
+    for (const auto& prim : mdl.primitives) {
+      for (const auto& v : prim.vertices) {
+        const glm::mat4 m =
+          restPal[std::min<uint32_t>(v.joints.x, westgate::kMaxSkinBones - 1)] * v.weights.x +
+          restPal[std::min<uint32_t>(v.joints.y, westgate::kMaxSkinBones - 1)] * v.weights.y +
+          restPal[std::min<uint32_t>(v.joints.z, westgate::kMaxSkinBones - 1)] * v.weights.z +
+          restPal[std::min<uint32_t>(v.joints.w, westgate::kMaxSkinBones - 1)] * v.weights.w;
+        const float py = (m * glm::vec4(v.position, 1.0f)).y;
+        minY = std::min(minY, py);
+        maxY = std::max(maxY, py);
+      }
+    }
+    const float spanY = maxY - minY;
+    if (spanY > 1e-4f) {
+      outScale = targetH / spanY;
+      outYOff = -minY * outScale;
+    }
+  };
+  float dogScale = 1.0f, dogGroundOff = 0.0f;
+  float deerScale = 1.0f, deerGroundOff = 0.0f;
+  if (hasDog) computeSkinnedScaleAndGround(dogModel, dogAnim, 0.68f, dogScale, dogGroundOff);
+  if (hasDeer) computeSkinnedScaleAndGround(deerModel, deerAnim, 1.28f, deerScale, deerGroundOff);
 
   westgate::PhysicsWorld physics;
   if (!physics.initFromWorld(world, &err)) {
@@ -290,6 +328,11 @@ int main(int argc, char** argv) {
   }
   if (headlessStartChapter >= 0) {
     session.startStoryChapter(headlessStartChapter, player, world, nullptr, true);
+  }
+  if (headlessEnterApartment >= 0) {
+    session.grantCurrencies(5000, 0, 0);
+    session.buyApartment(headlessEnterApartment, nullptr);
+    session.enterApartment(headlessEnterApartment, player, nullptr);
   }
   if (hasTeleportOverride) {
     session.teleportTo(teleportOverridePos, teleportOverrideYawDeg, player);
@@ -377,6 +420,8 @@ int main(int argc, char** argv) {
   renderAssets.militaryModel = hasMil ? &milModel : nullptr;
   renderAssets.constructionModel = hasCon ? &conModel : nullptr;
   renderAssets.sportsModel = hasSpt ? &sptModel : nullptr;
+  renderAssets.dogHuskyModel = hasDog ? &dogModel : nullptr;
+  renderAssets.deerModel = hasDeer ? &deerModel : nullptr;
 
   westgate::WorldRenderer renderer;
   std::filesystem::path shaderPath = assetsRoot / "shaders" / "westgate.wgsl";
@@ -886,6 +931,36 @@ int main(int argc, char** argv) {
       }
     }
 
+    // Living-World Quadruped Wildlife (Siberian Huskies & Alpine Deer with direct embedded clip skinning)
+    for (const auto& w : session.wildlife()) {
+      if (renderChars.size() >= westgate::kMaxSkinSlots) break;
+      if (glm::distance(pPos, w.pos) > 150.0f) continue;
+      const size_t palIdx = renderChars.size();
+      if (w.kind == westgate::WildlifeKind::DogHusky && hasDog) {
+        dogAnim.evaluateDirectEmbeddedClip(w.activeClip, w.animClock, npcPalettes[palIdx]);
+        renderChars.push_back({
+          w.pos + glm::vec3(0.0f, dogGroundOff, 0.0f),
+          w.yawRad,
+          glm::vec4(1.42f, 1.42f, 1.46f, 1.0f),
+          westgate::SkinnedPartKind::DogHusky,
+          &npcPalettes[palIdx],
+          glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
+          dogScale
+        });
+      } else if (w.kind == westgate::WildlifeKind::Deer && hasDeer) {
+        deerAnim.evaluateDirectEmbeddedClip(w.activeClip, w.animClock, npcPalettes[palIdx]);
+        renderChars.push_back({
+          w.pos + glm::vec3(0.0f, deerGroundOff, 0.0f),
+          w.yawRad,
+          glm::vec4(1.32f, 1.28f, 1.24f, 1.0f),
+          westgate::SkinnedPartKind::Deer,
+          &npcPalettes[palIdx],
+          glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
+          deerScale
+        });
+      }
+    }
+
     const bool shouldRenderFrame = !headlessMode || (headlessTestReconfigure && headlessStep == 1) || (headlessStep + 2 >= headlessFrames);
     if (shouldRenderFrame) {
       ImGui_ImplWGPU_NewFrame();
@@ -935,7 +1010,8 @@ int main(int argc, char** argv) {
         worldMarkers,
         session.gatherDynamicLights(world, player, elapsedSec),
         dynamicProps,
-        true
+        true,
+        session.gatherDynamicGlbProps(elapsedSec)
       );
     }
 

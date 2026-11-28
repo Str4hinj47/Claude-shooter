@@ -862,6 +862,8 @@ bool WorldRenderer::init(
   if (assets.militaryModel) buildSkinnedMesh(ctx, *assets.militaryModel, militaryGpu_);
   if (assets.constructionModel) buildSkinnedMesh(ctx, *assets.constructionModel, constructionGpu_);
   if (assets.sportsModel) buildSkinnedMesh(ctx, *assets.sportsModel, sportsGpu_);
+  if (assets.dogHuskyModel) buildSkinnedMesh(ctx, *assets.dogHuskyModel, dogHuskyGpu_);
+  if (assets.deerModel) buildSkinnedMesh(ctx, *assets.deerModel, deerGpu_);
 
   return terrainPipeline_ != nullptr && instancedPipeline_ != nullptr && skinnedPipeline_ != nullptr;
 }
@@ -1988,6 +1990,30 @@ void WorldRenderer::buildPropAndVehicleBatches(WgpuContext& ctx, const WorldData
       vehicleAssets_[vi]
     );
   }
+
+  // 5. Dynamic Living-World GLB Props (stash_bag.glb, medkit.glb, fuel_tank.glb, gas_can.glb, bird.glb)
+  struct DynGlbSpec {
+    const char* file;
+    float targetSpan;
+    uint32_t maxInst;
+  };
+  constexpr DynGlbSpec kDynSpecs[kDynamicGlbPropCount] = {
+    {"stash_bag.glb", 0.78f, 32},
+    {"medkit.glb",    0.62f, 32},
+    {"fuel_tank.glb", 1.05f, 48},
+    {"gas_can.glb",   0.48f, 48},
+    {"bird.glb",      0.85f, 32},
+  };
+  for (size_t di = 0; di < kDynamicGlbPropCount; ++di) {
+    std::vector<InstanceAttrib> cap(kDynSpecs[di].maxInst);
+    auto& db = dynGlbBatches_[di];
+    db.protoId = kDynSpecs[di].file;
+    const std::string p = (std::filesystem::path(assetsRoot) / "models" / kDynSpecs[di].file).string();
+    if (loadGlbBatch(ctx, p, cap, db, kDynSpecs[di].targetSpan, true, false, 0.0f, true)) {
+      db.visibleStaging.reserve(db.maxInstances);
+      db.shadowNearStaging.reserve(db.maxInstances);
+    }
+  }
 }
 
 void WorldRenderer::buildSkinnedMesh(WgpuContext& ctx, const GltfModel& model, SkinnedMeshGpu& outMesh) {
@@ -2087,7 +2113,8 @@ void WorldRenderer::render(
   const std::vector<WorldMarkerBox>& markers,
   const std::vector<DynamicPointLight>& pointLights,
   const std::vector<DynamicPropPose>& dynamicProps,
-  bool drawUiCallback
+  bool drawUiCallback,
+  const std::vector<DynamicGlbPropInstance>& dynGlbProps
 ) {
   const float aspect = static_cast<float>(ctx.width()) / static_cast<float>(std::max(1u, ctx.height()));
   const glm::mat4 proj = glm::perspectiveZO(glm::radians(fovDeg), aspect, 0.25f, 2800.0f);
@@ -2315,6 +2342,47 @@ void WorldRenderer::render(
   }
   telemetry_.dynamicPhysicsProps = static_cast<uint32_t>(dynPropStaging_.size());
 
+  // 4b. Upload dynamic Living-World GLB props (stashes, medkits, explosive tanks/cans, coastal birds)
+  for (auto& db : dynGlbBatches_) {
+    db.visibleStaging.clear();
+    db.shadowNearStaging.clear();
+    db.instanceCount = 0;
+    db.shadowNearCount = 0;
+  }
+  for (const auto& dp : dynGlbProps) {
+    const size_t k = static_cast<size_t>(dp.kind);
+    if (k >= kDynamicGlbPropCount) continue;
+    auto& db = dynGlbBatches_[k];
+    if (!db.vbo || db.visibleStaging.size() >= db.maxInstances) continue;
+    const float d = glm::distance(dp.pos, camPos);
+    if (d > 420.0f) continue;
+    const float rCull = 1.5f * dp.scale;
+    if (!frustum.intersectsAABB(AABB{dp.pos - glm::vec3(rCull), dp.pos + glm::vec3(rCull)})) continue;
+    const glm::quat q = glm::angleAxis(dp.yawRad, glm::vec3(0.0f, 1.0f, 0.0f)) *
+                        glm::angleAxis(dp.pitchRad, glm::vec3(1.0f, 0.0f, 0.0f));
+    const InstanceAttrib attr = makeInst(
+      dp.pos.x, dp.pos.y, dp.pos.z,
+      dp.scale, dp.scale, dp.scale,
+      q,
+      dp.tint.r, dp.tint.g, dp.tint.b,
+      dp.emissive
+    );
+    db.visibleStaging.push_back(attr);
+    if (d < 70.0f && db.shadowNearStaging.size() < db.maxInstances) {
+      db.shadowNearStaging.push_back(attr);
+    }
+  }
+  for (auto& db : dynGlbBatches_) {
+    db.instanceCount = static_cast<uint32_t>(db.visibleStaging.size());
+    db.shadowNearCount = static_cast<uint32_t>(db.shadowNearStaging.size());
+    if (db.instanceCount > 0 && db.instVbo) {
+      wgpuQueueWriteBuffer(ctx.queue(), db.instVbo, 0, db.visibleStaging.data(), db.instanceCount * sizeof(InstanceAttrib));
+    }
+    if (db.shadowNearCount > 0 && db.shadowNearInstVbo) {
+      wgpuQueueWriteBuffer(ctx.queue(), db.shadowNearInstVbo, 0, db.shadowNearStaging.data(), db.shadowNearCount * sizeof(InstanceAttrib));
+    }
+  }
+
   // 5. Upload articulated dynamic vehicles across all 20 GLB models (chassis + steered/spinning wheels + rotors!)
   uint32_t totalVehiclesDrawn = 0;
   for (auto& va : vehicleAssets_) {
@@ -2441,7 +2509,8 @@ void WorldRenderer::render(
     }
     su.model = glm::translate(glm::mat4(1.0f), ch.position) *
                glm::rotate(glm::mat4(1.0f), modelYaw, glm::vec3(0.0f, 1.0f, 0.0f)) *
-               glm::mat4_cast(ch.extraLocalRot);
+               glm::mat4_cast(ch.extraLocalRot) *
+               glm::scale(glm::mat4(1.0f), glm::vec3(ch.uniformScale));
     su.tint = ch.tint;
     if (ch.part == SkinnedPartKind::PlayerHair) {
       su.tint.a = 2.0f;
@@ -2572,6 +2641,15 @@ void WorldRenderer::render(
       wgpuRenderPassEncoderSetIndexBuffer(spass, batch.ibo, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
       wgpuRenderPassEncoderDrawIndexed(spass, batch.indexCount, cnt, 0, 0, 0);
     }
+    if (isNear) {
+      for (const auto& db : dynGlbBatches_) {
+        if (db.shadowNearCount == 0 || !db.shadowNearInstVbo || !db.vbo) continue;
+        wgpuRenderPassEncoderSetVertexBuffer(spass, 0, db.vbo, 0, WGPU_WHOLE_SIZE);
+        wgpuRenderPassEncoderSetVertexBuffer(spass, 1, db.shadowNearInstVbo, 0, WGPU_WHOLE_SIZE);
+        wgpuRenderPassEncoderSetIndexBuffer(spass, db.ibo, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
+        wgpuRenderPassEncoderDrawIndexed(spass, db.indexCount, db.shadowNearCount, 0, 0, 0);
+      }
+    }
 
     auto drawVehShadowPart = [&](const InstancedGlbBatch& b, uint32_t cnt) {
       if (cnt == 0 || !b.vbo || !b.instVbo) return;
@@ -2618,6 +2696,8 @@ void WorldRenderer::render(
           case SkinnedPartKind::Military: drawSkinShadow(militaryGpu_); break;
           case SkinnedPartKind::Construction: drawSkinShadow(constructionGpu_); break;
           case SkinnedPartKind::Sports: drawSkinShadow(sportsGpu_); break;
+          case SkinnedPartKind::DogHusky: drawSkinShadow(dogHuskyGpu_); break;
+          case SkinnedPartKind::Deer: drawSkinShadow(deerGpu_); break;
         }
       }
     }
@@ -2739,6 +2819,9 @@ void WorldRenderer::render(
     for (const auto& batch : glbPropBatches_) {
       drawGlbBatch(batch, batch.instanceCount);
     }
+    for (const auto& db : dynGlbBatches_) {
+      drawGlbBatch(db, db.instanceCount);
+    }
     if (!markerStaging_.empty() && markerInstVbo_) {
       wgpuRenderPassEncoderSetBindGroup(pass, 2, defaultWhiteTex_.bindGroup, 0, nullptr);
       wgpuRenderPassEncoderSetVertexBuffer(pass, 0, unitBoxVbo_, 0, WGPU_WHOLE_SIZE);
@@ -2790,6 +2873,8 @@ void WorldRenderer::render(
           case SkinnedPartKind::Military: drawSkinFwd(militaryGpu_); break;
           case SkinnedPartKind::Construction: drawSkinFwd(constructionGpu_); break;
           case SkinnedPartKind::Sports: drawSkinFwd(sportsGpu_); break;
+          case SkinnedPartKind::DogHusky: drawSkinFwd(dogHuskyGpu_); break;
+          case SkinnedPartKind::Deer: drawSkinFwd(deerGpu_); break;
         }
       }
     }
@@ -2931,6 +3016,7 @@ void WorldRenderer::shutdown() {
   for (auto& b : glbPropBatches_) relBatch(b);
   glbPropBatches_.clear();
   for (auto& hb : houseBatches_) relBatch(hb);
+  for (auto& db : dynGlbBatches_) relBatch(db);
   for (auto& va : vehicleAssets_) {
     for (auto& w : va.wheels) relBatch(w.batch);
     va.wheels.clear();
@@ -2951,6 +3037,8 @@ void WorldRenderer::shutdown() {
   relSkin(militaryGpu_);
   relSkin(constructionGpu_);
   relSkin(sportsGpu_);
+  relSkin(dogHuskyGpu_);
+  relSkin(deerGpu_);
   relTex(defaultWhiteTex_);
   relTex(defaultFlatNormalTex_);
 

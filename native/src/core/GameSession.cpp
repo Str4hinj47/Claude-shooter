@@ -733,6 +733,7 @@ void GameSession::init(const WorldData& world, PlayerController* player, Physics
   waypointPos_ = world.fightPitPos;
   waypointLabel_ = "Iron Pit Arena (Tier 1)";
   initCampaignAndProgression(world);
+  initLivingWorld(world);
   pushToast("Welcome to Westgate Bay! Press [P] for SkyPhone & Campaign, [G] to Drive, [1-6] Weapons.", 5.0f);
 
   if (player) {
@@ -1612,6 +1613,10 @@ void GameSession::fireActiveWeapon(PlayerController& player, PhysicsWorld& physi
       hitAnything = true;
       continue;
     }
+    if (damageExplosivePropsOnRay(camPos, rayDir, std::max(bestT + 1.6f, 12.0f), w.damage * dmgAttachMul, world, &player, &physics, audio)) {
+      hitAnything = true;
+      continue;
+    }
     if (worldHit.hit && hitNpcIdx < 0 && hitVehIdx < 0 && !hitIronOpp) {
       spawnSparks(worldHit.position, worldHit.normal, {1.0f, 0.78f, 0.32f}, 5);
       physics.applyImpulseNear(worldHit.position, rayDir * (w.damage * 0.65f), 1.6f);
@@ -1653,6 +1658,9 @@ void GameSession::fireActiveWeapon(PlayerController& player, PhysicsWorld& physi
         if (activeMission_.active && npc.contractIdx == -2) {
           activeMission_.missionKills++;
           playerSalvage_ += 2;
+        }
+        if ((npc.id % 4) == 0 && npc.role != EnemyRole::Civilian) {
+          spawnMedkitDrop(npc.pos);
         }
         if (commsCooldown_ <= 0.0f) {
           for (const auto& ally : npcs_) {
@@ -1704,7 +1712,9 @@ void GameSession::fireActiveWeapon(PlayerController& player, PhysicsWorld& physi
   }
   if (!w.suppressed) {
     reportCrime(CrimeKind::Gunfire, player.position(), world, audio);
+    alertWildlifeNear(player.position(), 28.0f);
   } else {
+    alertWildlifeNear(player.position(), 8.5f);
     // Suppressed rounds only alert guards within w.noiseRadius * upgradeNoiseMult()
     const glm::vec3 pPos = player.position();
     const float effNoise = w.noiseRadius * upgradeNoiseMult();
@@ -3440,6 +3450,7 @@ void GameSession::update(float dt, const GameInputFrame& input, PlayerController
   updateSpectatorBout(dt, world, audio);
   updateActivitiesAndShops(dt, input, player, world, audio);
   updateCampaignAndSurveillance(dt, input, player, physics, world, audio);
+  updateLivingWorld(dt, input, player, physics, world, audio);
   takedownReady_ = !isCarryingBody() && (takedownCooldown_ <= 0.0f) && (findTakedownNpcIndex(player.position()) >= 0);
   if (isCarryingBody()) {
     contextPrompt_ = "[J/E] Drop Body  (Carry to Dumpster, Car Trunk, or Ocean Water to Dispose!)";
@@ -3613,6 +3624,7 @@ std::vector<WorldMarkerBox> GameSession::gatherWorldMarkers(float elapsedSec) co
   }
 
   appendCampaignMarkers(elapsedSec, out);
+  appendLivingWorldMarkers(elapsedSec, out);
   return out;
 }
 
@@ -3699,6 +3711,7 @@ std::vector<DynamicPointLight> GameSession::gatherDynamicLights(const WorldData&
   }
 
   appendCampaignLights(elapsedSec, lights);
+  appendLivingWorldLights(elapsedSec, lights);
   return lights;
 }
 
@@ -3765,6 +3778,27 @@ bool GameSession::saveToFile(const std::string& path) const {
       rArr.push_back({{"id", r.id}, {"won", r.won}});
     }
     j["races"] = rArr;
+
+    nlohmann::json aptArr = nlohmann::json::array();
+    for (const auto& apt : apartments_) {
+      aptArr.push_back({{"id", apt.id}, {"owned", apt.owned}});
+    }
+    j["apartments"] = aptArr;
+
+    nlohmann::json stashArr = nlohmann::json::array();
+    for (const auto& cp : collectibles_) {
+      if (cp.kind == CollectibleKind::Stash && cp.collected) {
+        stashArr.push_back(cp.id);
+      }
+    }
+    j["collectedStashes"] = stashArr;
+
+    nlohmann::json trapArr = nlohmann::json::array();
+    for (const auto& tr : speedTraps_) {
+      trapArr.push_back({{"id", tr.id}, {"bestKmh", tr.bestKmh}});
+    }
+    j["speedTraps"] = trapArr;
+    j["randomEventsResolved"] = randomEventsResolved_;
 
     std::ofstream out(path);
     if (!out.is_open()) return false;
@@ -3857,6 +3891,38 @@ bool GameSession::loadFromFile(const std::string& path) {
         }
       }
     }
+    if (j.contains("apartments") && j["apartments"].is_array()) {
+      for (const auto& ja : j["apartments"]) {
+        const std::string id = ja.value("id", "");
+        for (auto& apt : apartments_) {
+          if (apt.id == id) apt.owned = ja.value("owned", apt.owned);
+        }
+      }
+    }
+    if (j.contains("collectedStashes") && j["collectedStashes"].is_array()) {
+      stashesFound_ = 0;
+      for (auto& cp : collectibles_) {
+        if (cp.kind == CollectibleKind::Stash) cp.collected = false;
+      }
+      for (const auto& sid : j["collectedStashes"]) {
+        const std::string id = sid.get<std::string>();
+        for (auto& cp : collectibles_) {
+          if (cp.kind == CollectibleKind::Stash && cp.id == id && !cp.collected) {
+            cp.collected = true;
+            ++stashesFound_;
+          }
+        }
+      }
+    }
+    if (j.contains("speedTraps") && j["speedTraps"].is_array()) {
+      for (const auto& jt : j["speedTraps"]) {
+        const std::string id = jt.value("id", "");
+        for (auto& tr : speedTraps_) {
+          if (tr.id == id) tr.bestKmh = jt.value("bestKmh", tr.bestKmh);
+        }
+      }
+    }
+    randomEventsResolved_ = j.value("randomEventsResolved", randomEventsResolved_);
     return true;
   } catch (...) {
     return false;

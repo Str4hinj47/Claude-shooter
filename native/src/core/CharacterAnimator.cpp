@@ -493,6 +493,49 @@ void CharacterAnimator::evaluateRest(std::array<glm::mat4, kMaxSkinBones>& outPa
   buildPaletteFromTargetLocals(localT, localR, localS, outPalette);
 }
 
+void CharacterAnimator::evaluateDirectEmbeddedClip(
+  const std::string& nameSubstr,
+  float timeSec,
+  std::array<glm::mat4, kMaxSkinBones>& outPalette
+) const {
+  outPalette.fill(glm::mat4(1.0f));
+  if (!target_ || !target_->skin.valid || target_->nodes.empty()) return;
+  const size_t n = target_->nodes.size();
+  std::vector<glm::vec3> localT(n);
+  std::vector<glm::quat> localR(n);
+  std::vector<glm::vec3> localS(n);
+  for (size_t i = 0; i < n; ++i) {
+    localT[i] = target_->nodes[i].restT;
+    localR[i] = target_->nodes[i].restR;
+    localS[i] = target_->nodes[i].restS;
+  }
+
+  const GltfAnimationClip* chosen = nullptr;
+  for (const auto& anim : target_->animations) {
+    if (anim.name.find(nameSubstr) != std::string::npos) {
+      chosen = &anim;
+      break;
+    }
+  }
+  if (!chosen && !target_->animations.empty()) {
+    chosen = &target_->animations.front();
+  }
+  if (chosen) {
+    const float t = (chosen->duration > 1e-4f) ? std::fmod(std::max(0.0f, timeSec), chosen->duration) : 0.0f;
+    for (const auto& ch : chosen->channels) {
+      if (ch.targetNode < 0 || static_cast<size_t>(ch.targetNode) >= n) continue;
+      if (ch.path == GltfAnimPath::Rotation) {
+        sampleChannelQuat(ch, t, localR[ch.targetNode]);
+      } else if (ch.path == GltfAnimPath::Translation) {
+        sampleChannelVec3(ch, t, localT[ch.targetNode]);
+      } else if (ch.path == GltfAnimPath::Scale) {
+        sampleChannelVec3(ch, t, localS[ch.targetNode]);
+      }
+    }
+  }
+  buildPaletteFromTargetLocals(localT, localR, localS, outPalette);
+}
+
 void CharacterAnimator::sampleSourcePose(
   const SourceClip& src,
   float timeSec,

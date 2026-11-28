@@ -157,6 +157,13 @@ class CharacterAnimator {
     const CharacterPoseOverlay* overlay = nullptr
   ) const;
 
+  /** Evaluate an embedded GLTF animation clip directly on target_'s own node hierarchy (e.g. quadruped wildlife). */
+  void evaluateDirectEmbeddedClip(
+    const std::string& nameSubstr,
+    float timeSec,
+    std::array<glm::mat4, kMaxSkinBones>& outPalette
+  ) const;
+
   /** Return the animated meter-space character-local position of a canonical bone (e.g. "RightHand", "Head"). */
   glm::vec3 animatedBonePos(
     const std::string& canonicalName,

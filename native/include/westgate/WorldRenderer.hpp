@@ -55,6 +55,8 @@ enum class SkinnedPartKind : uint8_t {
   Military = 8,
   Construction = 9,
   Sports = 10,
+  DogHusky = 11,
+  Deer = 12,
 };
 
 struct SkinnedRenderCharacter {
@@ -64,6 +66,7 @@ struct SkinnedRenderCharacter {
   SkinnedPartKind part = SkinnedPartKind::PlayerBody;
   const std::array<glm::mat4, kMaxSkinBones>* palette = nullptr;
   glm::quat extraLocalRot{1.0f, 0.0f, 0.0f, 0.0f};
+  float uniformScale = 1.0f;
 };
 
 struct WorldRenderAssets {
@@ -79,6 +82,8 @@ struct WorldRenderAssets {
   const GltfModel* militaryModel = nullptr;
   const GltfModel* constructionModel = nullptr;
   const GltfModel* sportsModel = nullptr;
+  const GltfModel* dogHuskyModel = nullptr;
+  const GltfModel* deerModel = nullptr;
 };
 
 class WorldRenderer {
@@ -107,7 +112,8 @@ public:
     const std::vector<WorldMarkerBox>& markers,
     const std::vector<DynamicPointLight>& pointLights,
     const std::vector<DynamicPropPose>& dynamicProps,
-    bool drawUiCallback
+    bool drawUiCallback,
+    const std::vector<DynamicGlbPropInstance>& dynGlbProps = {}
   );
 
   const RenderTelemetry& telemetry() const { return telemetry_; }
@@ -388,6 +394,7 @@ private:
   std::array<InstancedGlbBatch, kNumHouseGlbs> houseBatches_{};
   std::array<std::vector<InstanceAttrib>, kNumHouseGlbs> houseStaging_{};
   std::array<VehicleGpuAsset, kVehicleModelCount> vehicleAssets_{};
+  std::array<InstancedGlbBatch, kDynamicGlbPropCount> dynGlbBatches_{};
 
   SkinnedMeshGpu playerBodyGpu_;
   SkinnedMeshGpu playerShortsGpu_;
@@ -400,6 +407,8 @@ private:
   SkinnedMeshGpu militaryGpu_;
   SkinnedMeshGpu constructionGpu_;
   SkinnedMeshGpu sportsGpu_;
+  SkinnedMeshGpu dogHuskyGpu_;
+  SkinnedMeshGpu deerGpu_;
 
   RenderTelemetry telemetry_;
 };

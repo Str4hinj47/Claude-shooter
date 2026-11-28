@@ -131,6 +131,25 @@ void drawWestgateHud(
       }
     }
 
+    // Luxury Apartments, Nearby Unfound Stashes & Active Street Random Event
+    for (const auto& apt : session.apartments()) {
+      const ImVec2 ap = worldToMap(apt.doorPos.x, apt.doorPos.z);
+      bgDraw->AddRectFilled({ap.x - 3.6f, ap.y - 3.6f}, {ap.x + 3.6f, ap.y + 3.6f},
+                            apt.owned ? IM_COL32(55, 235, 145, 240) : IM_COL32(245, 185, 55, 215), 1.5f);
+    }
+    for (const auto& cp : session.collectibles()) {
+      if (cp.collected || cp.kind != CollectibleKind::Stash) continue;
+      if (glm::distance(glm::vec2(pPos.x, pPos.z), glm::vec2(cp.pos.x, cp.pos.z)) < 110.0f) {
+        const ImVec2 sp = worldToMap(cp.pos.x, cp.pos.z);
+        bgDraw->AddCircleFilled(sp, 3.4f, IM_COL32(250, 195, 45, 240));
+      }
+    }
+    if (session.activeRandomEvent().active) {
+      const ImVec2 ep = worldToMap(session.activeRandomEvent().origin.x, session.activeRandomEvent().origin.z);
+      bgDraw->AddCircleFilled(ep, 4.8f, IM_COL32(255, 105, 55, 245));
+      bgDraw->AddCircle(ep, 7.6f, IM_COL32(255, 225, 120, 220), 12, 1.5f);
+    }
+
     // GPS Waypoint
     if (session.hasGpsWaypoint()) {
       const glm::vec3 wp = session.gpsWaypoint();
@@ -419,8 +438,8 @@ void drawWestgateHud(
   // 6. Tactical Phone Overlay [P] (Contracts, Races, Gun Runner, GPS/Save)
   // -------------------------------------------------------------------------
   if (ui.showPhone) {
-    ImGui::SetNextWindowPos({disp.x * 0.5f - 285.0f, disp.y * 0.5f - 225.0f}, ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize({570.0f, 455.0f}, ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos({disp.x * 0.5f - 315.0f, disp.y * 0.5f - 230.0f}, ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize({630.0f, 465.0f}, ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowBgAlpha(0.92f);
     if (ImGui::Begin("Westgate Tactical SkyPhone [P]", &ui.showPhone)) {
       if (ImGui::BeginTabBar("PhoneTabs")) {
@@ -694,6 +713,89 @@ void drawWestgateHud(
             ImGui::Separator();
             ImGui::PopID();
           }
+          ImGui::EndChild();
+          ImGui::EndTabItem();
+        }
+
+        const ImGuiTabItemFlags realtyTabFlags = (ui.forcePhoneTab == 7) ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
+        if (ImGui::BeginTabItem("Realty & World", nullptr, realtyTabFlags)) {
+          if (ui.forcePhoneTab == 7) ui.forcePhoneTab = -1;
+          ImGui::BeginChild("RealtyWorldScroll", {0, 390}, true);
+
+          if (session.activeApartmentIdx() >= 0) {
+            const auto& curApt = session.apartments()[static_cast<size_t>(session.activeApartmentIdx())];
+            ImGui::TextColored({0.35f, 0.96f, 0.65f, 1.0f}, "INSIDE SAFEHOUSE: %s (%s)", curApt.name.c_str(), curApt.district.c_str());
+            if (ImGui::SmallButton("Rest +6h & Heal")) session.useApartmentBed(audio);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Wardrobe Suit")) session.useApartmentWardrobe(audio);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Armory Refill")) session.useApartmentArmoryBench(audio);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Exit Suite")) session.exitApartment(player, audio);
+            ImGui::Separator();
+          }
+
+          ImGui::TextColored({0.98f, 0.78f, 0.28f, 1.0f}, "WESTGATE LUXURY REALTY (SAFEHOUSES):");
+          for (size_t ai = 0; ai < session.apartments().size(); ++ai) {
+            const auto& apt = session.apartments()[ai];
+            ImGui::PushID(static_cast<int>(1200 + ai));
+            ImGui::TextColored(apt.owned ? ImVec4(0.42f, 0.96f, 0.62f, 1.0f) : ImVec4(0.94f, 0.94f, 0.98f, 1.0f),
+                               "%s [%s]  %s", apt.name.c_str(), apt.district.c_str(), apt.owned ? "[OWNED]" : "");
+            ImGui::TextDisabled("%s", apt.vibe.c_str());
+            if (!apt.owned) {
+              char buyAptLbl[64];
+              std::snprintf(buyAptLbl, sizeof(buyAptLbl), "Buy Deed ($%d)", apt.price);
+              if (ImGui::SmallButton(buyAptLbl)) session.buyApartment(static_cast<int>(ai), audio);
+            } else {
+              if (ImGui::SmallButton("Enter Sky-Suite")) {
+                session.enterApartment(static_cast<int>(ai), player, audio);
+                ui.showPhone = false;
+              }
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("GPS Door")) session.setGpsWaypoint(apt.doorPos, apt.name);
+            ImGui::Separator();
+            ImGui::PopID();
+          }
+
+          ImGui::TextColored({0.42f, 0.90f, 1.0f, 1.0f}, "LIVING WORLD EXPLORATION:");
+          char stashBar[64];
+          std::snprintf(stashBar, sizeof(stashBar), "Hidden Cash Stashes: %d / %d", session.stashesFound(), session.totalStashes());
+          ImGui::ProgressBar(static_cast<float>(session.stashesFound()) / static_cast<float>(std::max(1, session.totalStashes())), {-1, 15}, stashBar);
+          if (ImGui::SmallButton("Ping Nearest Unfound Stash GPS")) {
+            float bestD = 1e9f;
+            glm::vec3 bestP = pPos;
+            for (const auto& cp : session.collectibles()) {
+              if (!cp.collected && cp.kind == CollectibleKind::Stash) {
+                const float d = glm::distance(pPos, cp.pos);
+                if (d < bestD) { bestD = d; bestP = cp.pos; }
+              }
+            }
+            if (bestD < 1e8f) session.setGpsWaypoint(bestP, "Hidden Cash Stash");
+          }
+          ImGui::SameLine();
+          if (ImGui::SmallButton("Dispatch Street Event")) {
+            const auto nextKind = static_cast<RandomEventKind>(session.randomEventsResolved() % 3);
+            session.spawnRandomEvent(nextKind, pPos, world, audio);
+          }
+          ImGui::Text("Street Events Resolved: %d  |  3D Wildlife Active: %zu Quadrupeds + %zu Birds",
+                      session.randomEventsResolved(), session.wildlife().size(), session.birdFlocks().size());
+
+          ImGui::Separator();
+          ImGui::TextColored({0.98f, 0.68f, 0.24f, 1.0f}, "RADAR SPEED TRAPS (%d / %zu Target Beaten):",
+                             session.speedTrapsBeatenCount(), session.speedTraps().size());
+          for (size_t ti = 0; ti < session.speedTraps().size(); ++ti) {
+            const auto& tr = session.speedTraps()[ti];
+            const bool beaten = tr.bestKmh >= tr.targetKmh;
+            ImGui::PushID(static_cast<int>(1300 + ti));
+            if (ImGui::SmallButton("GPS")) session.setGpsWaypoint(tr.pos, tr.name);
+            ImGui::SameLine();
+            ImGui::TextColored(beaten ? ImVec4(0.42f, 0.96f, 0.62f, 1.0f) : ImVec4(0.88f, 0.88f, 0.92f, 1.0f),
+                               "%s: Best %d / %d km/h %s",
+                               tr.name.c_str(), tr.bestKmh, tr.targetKmh, beaten ? "[RECORD]" : "");
+            ImGui::PopID();
+          }
+
           ImGui::EndChild();
           ImGui::EndTabItem();
         }

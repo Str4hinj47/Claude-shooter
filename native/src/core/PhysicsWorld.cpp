@@ -317,6 +317,35 @@ bool PhysicsWorld::initFromWorld(const WorldData& world, std::string* err) {
     addWalkInRoom(world.spawnPos.x - 13.0f, world.spawnPos.z - 11.0f, 4.8f, 4.2f, 3.4f);
   }
 
+  // 3b. Luxury Apartment Sky-Suites (y = 260m): solid floor slab + 4 perimeter walls so Voss walks inside!
+  {
+    auto addSkyBox = [&](const glm::vec3& c, const glm::vec3& halfExt) {
+      JPH::ShapeRefC s = JPH::BoxShapeSettings(JPH::Vec3(halfExt.x, halfExt.y, halfExt.z)).Create().Get();
+      bodyInterface.CreateAndAddBody(
+        JPH::BodyCreationSettings(s, JPH::RVec3(c.x, c.y, c.z), JPH::Quat::sIdentity(), JPH::EMotionType::Static, Layers::NON_MOVING),
+        JPH::EActivation::DontActivate
+      );
+      ++staticBodyCount_;
+    };
+    const glm::vec3 aptOrigins[4] = {
+      {-360.0f, 260.0f,  180.0f}, // Crescent Brick Flat
+      {-342.0f, 260.0f,  -78.0f}, // Midtown Horizon Loft
+      {-620.0f, 260.0f,  -25.0f}, // Del Sol Oceanfront Condo
+      { -18.0f, 260.0f, -238.0f}, // Sovereign Sky Penthouse
+    };
+    constexpr float kHalfW = 9.0f;
+    constexpr float kHalfD = 7.5f;
+    constexpr float kWallH = 3.6f;
+    for (const auto& ao : aptOrigins) {
+      addSkyBox({ao.x, ao.y - 0.20f, ao.z}, {kHalfW + 0.4f, 0.20f, kHalfD + 0.4f}); // Floor slab (top at y = 260.0)
+      addSkyBox({ao.x, ao.y + kWallH + 0.20f, ao.z}, {kHalfW + 0.4f, 0.20f, kHalfD + 0.4f}); // Ceiling slab
+      addSkyBox({ao.x - kHalfW, ao.y + kWallH * 0.5f, ao.z}, {0.20f, kWallH * 0.5f, kHalfD});
+      addSkyBox({ao.x + kHalfW, ao.y + kWallH * 0.5f, ao.z}, {0.20f, kWallH * 0.5f, kHalfD});
+      addSkyBox({ao.x, ao.y + kWallH * 0.5f, ao.z - kHalfD}, {kHalfW, kWallH * 0.5f, 0.20f});
+      addSkyBox({ao.x, ao.y + kWallH * 0.5f, ao.z + kHalfD}, {kHalfW, kWallH * 0.5f, 0.20f});
+    }
+  }
+
   // 4. Iron Pit Arena Platform + Bleachers + Cage Posts colliders
   {
     const float pitY = world.heightfield.sampleHeight(world.fightPitPos.x, world.fightPitPos.z);
