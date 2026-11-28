@@ -209,6 +209,36 @@ private:
     WGPUBindGroup bindGroup = nullptr;
   };
 
+  struct ArticulatedWheelGpu {
+    InstancedGlbBatch batch;
+    std::vector<InstanceAttrib> staging;
+    glm::vec3 pivotVeh{0.0f}; // vehicle-local meter pivot (+Z fwd, +X left, +Y up)
+    float radius = 0.35f;
+    bool isFront = false;
+    int cornerIdx = 0; // 0=FL, 1=FR, 2=RL, 3=RR
+  };
+
+  struct VehicleGpuAsset {
+    InstancedGlbBatch chassis;
+    std::vector<InstanceAttrib> chassisStaging;
+    std::vector<ArticulatedWheelGpu> wheels;
+    bool hasMainRotor = false;
+    InstancedGlbBatch mainRotor;
+    std::vector<InstanceAttrib> mainRotorStaging;
+    glm::vec3 mainRotorPivotVeh{0.0f};
+    bool hasTailRotor = false;
+    InstancedGlbBatch tailRotor;
+    std::vector<InstanceAttrib> tailRotorStaging;
+    glm::vec3 tailRotorPivotVeh{0.0f};
+  };
+
+  bool loadVehicleAsset(
+    WgpuContext& ctx,
+    const std::string& glbPath,
+    const VehicleSpec& spec,
+    VehicleGpuAsset& outAsset
+  );
+
   void buildTerrainAndOceanBuffers(WgpuContext& ctx, const WorldData& world);
   void buildRoadAndArenaBuffers(WgpuContext& ctx, const WorldData& world);
   void buildCustomWorldMeshBuffers(WgpuContext& ctx, const WorldData& world);
@@ -348,8 +378,7 @@ private:
   std::vector<InstancedGlbBatch> glbPropBatches_;
   std::array<InstancedGlbBatch, kNumHouseGlbs> houseBatches_{};
   std::array<std::vector<InstanceAttrib>, kNumHouseGlbs> houseStaging_{};
-  std::array<InstancedGlbBatch, kVehicleModelCount> vehicleBatches_{};
-  std::array<std::vector<InstanceAttrib>, kVehicleModelCount> vehicleStaging_{};
+  std::array<VehicleGpuAsset, kVehicleModelCount> vehicleAssets_{};
 
   SkinnedMeshGpu playerBodyGpu_;
   SkinnedMeshGpu playerShortsGpu_;

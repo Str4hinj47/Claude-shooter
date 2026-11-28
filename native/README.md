@@ -36,16 +36,18 @@ winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --passi
 
 ## Controls & Gameplay
 - `TAB` or `ESC`: Toggle mouse-look camera (or close Tactical Phone)
-- `W A S D`: Move / Drive (`Shift` sprint, `C` / `Ctrl` crouch, `Space` jump or vehicle handbrake)
-- `G`: Enter / Exit nearest vehicle (`Mustang`, `Ferrari`, `Range Rover`, `Sedan`, `Taxi`, `Police Cruiser`)
-- `1`–`6` or Mouse Wheel: Switch weapons (`1: Boxing`, `2: Apex P226-SD`, `3: Vanguard M4A1-S`, `4: MP5-SD`, `5: Breacher 870`, `6: MK14 EBR`)
+- `W A S D`: Move / Drive / Boat Throttle & Rudder / Helicopter Cyclic (`Shift` sprint, `C` / `Ctrl` crouch or Heli descend, `Space` jump, handbrake drift, or Heli climb)
+- `G`: Enter / Exit nearest vehicle across all **20 3D GLB Vehicles, Boats & Helicopter** (`Golf R`, `Mercedes S63`, `Baja 4x4`, `KrAZ 6x6`, `Mustang`, `Ferrari`, `R8`, `Challenger`, `RS7`, `Range Rover`, `Sedan`, `Taxi`, `Police Cruiser`, upgraded `VW LT Ambulance`, `Firetruck`, `Delivery Van`, `Semi`, `Cigarette Speedboat`, `Harbor Cruiser`, `Bell 407 Helicopter`)
+- `V`: Cycle **Driving Camera** (`Chase` -> `Cinematic Wide` -> `Hood/Bonnet`) while driving; **Rear Silent Takedown** / Block on foot
+- `1`–`6` or Mouse Wheel: Switch weapons (`1: Boxing & Grappling`, `2: Apex P226-SD`, `3: Vanguard M4A1-S`, `4: MP5-SD`, `5: Breacher 870`, `6: MK14 EBR`)
 - `Left Click` / `F`: Fire firearm or throw Jab → Cross → Hook combo
-- `Right Click` / `V`: Aim down sights (firearms) or Block (boxing)
-- `Q` / `E`: Uppercut / Kick (boxing)
+- `Right Click`: Aim down sights (firearms) or Block (boxing)
+- `Q` / `E` / `X`: Uppercut / Kick / Directional Dodge Roll
+- `Z` / `U`: Clinch Grapple & Body Slam / Double-Leg Takedown & Guillotine Choke
 - `R`: Reload firearm or start next Iron Pit opponent tier
-- `B`: Buy Medkit + Armor at 24/7 Westgate Marts, or Repair & Respray at Westgate Customs Garages
-- `H`: Horn / Siren while driving, or Rob 24/7 Mart register
-- `P`: Open Tactical Phone (`Contracts`, `Street Races`, `Iron Pit`, `Gun Runner`, `GPS & Save`)
-- `T`: Cycle Sky Time of Day (`Afternoon`, `Sunset`, `Night`, `Dawn`)
+- `B`: Buy Medkit + Armor at 24/7 Westgate Marts, Free Repair & Respray at Westgate Customs Garages, or Free Starter Golf R Valet at the Luxury Auto Dealership `(56, -118)`
+- `H`: Horn / Emergency Strobe Siren while driving, **Stage 1–3 Turbo Engine Upgrade** inside Westgate Customs, or Rob 24/7 Mart register
+- `P`: Open Tactical Phone (`Contracts`, `Races & Pit`, `Gun Runner`, **`Autos & Garage`** Dealership + Personal Valet, `GPS & Save`)
+- `T` / `Y`: Cycle Sky Time of Day (`Afternoon`, `Sunset`, `Night`, `Dawn`) / Weather (`Clear`, `Overcast`, `Rain`, `Thunderstorm`)
 - `F1`: Quick teleport to Westgate Iron Pit (`722, 115`)
 - `F9`: Toggle Engine Telemetry overlay

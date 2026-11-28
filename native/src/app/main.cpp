@@ -50,8 +50,17 @@ int main(int argc, char** argv) {
   int headlessFrames = 20;
   bool headlessWalkForward = false;
   bool headlessShowPhone = false;
+  int headlessPhoneTab = -1;
   bool headlessTestReconfigure = false;
   int headlessSelectSlot = -1;
+  int headlessSpawnVehKind = -1;
+  int headlessPaintIdx = -1;
+  bool headlessBoardVeh = false;
+  bool hasHeadlessDrive = false;
+  float headlessDriveFwd = 0.0f;
+  float headlessDriveRight = 0.0f;
+  bool headlessDriveJump = false;
+  int headlessDriveCam = -1;
   bool hasTeleportOverride = false;
   glm::vec3 teleportOverridePos{0.0f};
   float teleportOverrideYawDeg = 0.0f;
@@ -79,6 +88,22 @@ int main(int argc, char** argv) {
       headlessWalkForward = true;
     } else if (arg == "--show-phone") {
       headlessShowPhone = true;
+    } else if (arg == "--phone-tab" && i + 1 < argc) {
+      headlessShowPhone = true;
+      headlessPhoneTab = std::atoi(argv[++i]);
+    } else if (arg == "--spawn-vehicle" && i + 1 < argc) {
+      headlessSpawnVehKind = std::atoi(argv[++i]);
+    } else if (arg == "--paint" && i + 1 < argc) {
+      headlessPaintIdx = std::atoi(argv[++i]);
+    } else if (arg == "--board-vehicle") {
+      headlessBoardVeh = true;
+    } else if (arg == "--drive" && i + 1 < argc) {
+      int jmp = 0, cm = 0;
+      if (std::sscanf(argv[++i], "%f,%f,%d,%d", &headlessDriveFwd, &headlessDriveRight, &jmp, &cm) >= 2) {
+        hasHeadlessDrive = true;
+        headlessDriveJump = (jmp != 0);
+        headlessDriveCam = cm;
+      }
     } else if (arg == "--test-reconfigure") {
       headlessTestReconfigure = true;
     } else if (arg == "--select-slot" && i + 1 < argc) {
@@ -225,10 +250,22 @@ int main(int argc, char** argv) {
     session.loadFromFile(ui.savePath);
   } else {
     ui.showPhone = headlessShowPhone;
+    ui.forcePhoneTab = headlessPhoneTab;
   }
 
   if (hasTeleportOverride) {
     session.teleportTo(teleportOverridePos, teleportOverrideYawDeg, player);
+  }
+  if (headlessPaintIdx >= 0) {
+    session.setSelectedPaintIdx(headlessPaintIdx);
+  }
+  if (headlessSpawnVehKind >= 0 && headlessSpawnVehKind < static_cast<int>(westgate::kVehicleModelCount)) {
+    const auto hk = static_cast<westgate::VehicleModelKind>(headlessSpawnVehKind);
+    session.grantVehicleOwnership(hk);
+    session.spawnPersonalVehicle(hk, session.selectedPaintIdx(), player, world, nullptr, headlessBoardVeh);
+  }
+  if (headlessDriveCam > 0) {
+    for (int ci = 0; ci < headlessDriveCam; ++ci) session.cycleDriveCameraMode();
   }
   if (!todOverride.empty()) {
     if (todOverride == "sunset") session.setTimeOfDayPreset(westgate::TimeOfDayPreset::Sunset);
@@ -362,6 +399,11 @@ int main(int argc, char** argv) {
       if (headlessWalkForward) {
         gameInput.moveInput.moveForward = 1.0f;
       }
+      if (hasHeadlessDrive) {
+        gameInput.moveInput.moveForward = headlessDriveFwd;
+        gameInput.moveInput.moveRight = headlessDriveRight;
+        gameInput.moveInput.jump = headlessDriveJump;
+      }
       if (headlessStep == 1 && headlessSelectSlot >= 0) {
         gameInput.selectWeaponSlot = headlessSelectSlot;
       }
@@ -429,7 +471,11 @@ int main(int argc, char** argv) {
           } else if (sc == SDL_SCANCODE_X) {
             gameInput.dodgePressed = true;
           } else if (sc == SDL_SCANCODE_V) {
-            gameInput.takedownPressed = true;
+            if (session.inVehicle()) {
+              session.cycleDriveCameraMode();
+            } else {
+              gameInput.takedownPressed = true;
+            }
           } else if (sc == SDL_SCANCODE_Z) {
             gameInput.grapplePressed = true;
           } else if (sc == SDL_SCANCODE_U) {
@@ -464,7 +510,7 @@ int main(int argc, char** argv) {
         gameInput.moveInput.lookDeltaX = lookDx;
         gameInput.moveInput.lookDeltaY = lookDy;
         gameInput.fireDown = ui.mouseCaptured && ((mouseButtons & SDL_BUTTON_LMASK) != 0);
-        gameInput.aimDown = ((mouseButtons & SDL_BUTTON_RMASK) != 0) || keys[SDL_SCANCODE_V];
+        gameInput.aimDown = ((mouseButtons & SDL_BUTTON_RMASK) != 0) || (!session.inVehicle() && keys[SDL_SCANCODE_V]);
       }
     }
 
@@ -682,7 +728,7 @@ int main(int argc, char** argv) {
       renderChars.push_back({npc.pos, npc.yawRad, tint, part, &npcPalettes[palIdx]});
     }
 
-    const bool shouldRenderFrame = !headlessMode || (headlessTestReconfigure && headlessStep == 1) || (headlessStep + 1 >= headlessFrames);
+    const bool shouldRenderFrame = !headlessMode || (headlessTestReconfigure && headlessStep == 1) || (headlessStep + 2 >= headlessFrames);
     if (shouldRenderFrame) {
       ImGui_ImplWGPU_NewFrame();
       if (headlessMode) {

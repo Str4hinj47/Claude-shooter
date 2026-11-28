@@ -666,25 +666,44 @@ int main() {
       std::fprintf(stderr, "FAIL loadFromFile round-trip\n");
       return 1;
     }
-    // Verify all upgraded & native vehicle GLBs load cleanly in C++20 (Meshopt + textures + automotive material tags)
-    const char* vehicleGlbs[] = {
-      "rangerover.glb", "sedan.glb", "offroad.glb", "audi.glb", "mercedes.glb",
-      "r8.glb", "ferrari.glb", "golf.glb", "semi.glb", "kraz.glb",
-      "mustang.glb", "challenger.glb", "police_cruiser.glb", "taxi.glb",
-      "ambulance.glb", "firetruck.glb", "delivery.glb"
-    };
-    for (const char* vf : vehicleGlbs) {
+    // Verify all 20 native vehicle/watercraft/aircraft GLBs load cleanly in C++20 (Meshopt + textures + node hierarchy + material tags)
+    for (size_t vi = 0; vi < westgate::kVehicleModelCount; ++vi) {
+      const auto kind = static_cast<westgate::VehicleModelKind>(vi);
+      const auto& sp = westgate::GameSession::vehicleSpec(kind);
       westgate::GltfModel vm;
-      const std::string vpath = std::string(WESTGATE_SOURCE_ROOT) + "/public/models/" + vf;
+      const std::string vpath = std::string(WESTGATE_SOURCE_ROOT) + "/public/" + sp.glbFile;
       std::string verr;
       if (!westgate::GltfAssetLoader::loadGlb(vpath, vm, true, &verr) || vm.primitives.empty()) {
-        std::fprintf(stderr, "FAIL vehicle GLB load (%s): %s\n", vf, verr.c_str());
+        std::fprintf(stderr, "FAIL vehicle GLB load (%s): %s\n", sp.glbFile, verr.c_str());
         return 1;
       }
       const glm::vec3 sz = vm.boundsMax - vm.boundsMin;
       if (!std::isfinite(sz.x) || sz.x < 0.5f || sz.y < 0.5f || sz.z < 0.5f) {
-        std::fprintf(stderr, "FAIL vehicle GLB bounds (%s): %.2fx%.2fx%.2f\n", vf, sz.x, sz.y, sz.z);
+        std::fprintf(stderr, "FAIL vehicle GLB bounds (%s): %.2fx%.2fx%.2f\n", sp.glbFile, sz.x, sz.y, sz.z);
         return 1;
+      }
+      if (kind == westgate::VehicleModelKind::Ambulance) {
+        // Upgraded VW LT Paramedic Ambulance: grounded minY ~ 0, ~5.33m length, textured PBR + beacons + spinning tires/rims
+        if (std::abs(vm.boundsMin.y) > 0.03f || sz.z < 5.1f || vm.textures.empty()) {
+          std::fprintf(stderr, "FAIL upgraded ambulance.glb boundsMinY=%.3f sz.z=%.2f textures=%zu\n",
+                       vm.boundsMin.y, sz.z, vm.textures.size());
+          return 1;
+        }
+      }
+      if (kind == westgate::VehicleModelKind::Helicopter) {
+        bool foundMainRotor = false, foundTailRotor = false;
+        for (const auto& pr : vm.primitives) {
+          int32_t cur = pr.nodeIndex;
+          while (cur >= 0 && static_cast<size_t>(cur) < vm.nodes.size()) {
+            if (vm.nodes[static_cast<size_t>(cur)].name == "Cube004") foundMainRotor = true;
+            if (vm.nodes[static_cast<size_t>(cur)].name == "Cube002") foundTailRotor = true;
+            cur = vm.nodes[static_cast<size_t>(cur)].parent;
+          }
+        }
+        if (!foundMainRotor || !foundTailRotor) {
+          std::fprintf(stderr, "FAIL heli.glb rotor node hierarchy missing (main=%d tail=%d)\n", foundMainRotor, foundTailRotor);
+          return 1;
+        }
       }
     }
     // Verify rangerover.glb & semi.glb carry paint__/rim__/tire__/headlight__/taillight__ materials
@@ -707,7 +726,100 @@ int main() {
         return 1;
       }
     }
-    std::printf("[PASS] Vehicle GLBs verified in C++20 (17 models, Meshopt + textures + material tags)\n");
+    std::printf("[PASS] All 20 Vehicle/Boat/Heli GLBs verified in C++20 (upgraded Ambulance + Heli rotor subtrees)\n");
+
+    // Milestone 2 Verification:
+    // 1) 4-Phase Traffic Signals, Dealership Purchase, Valet Delivery, Suspension/Drivetrain & Westgate Customs Stage Tuning
+    {
+      assert(session.signalIntersections().size() >= 12);
+      const auto& sig0 = session.signalIntersections()[0];
+      const auto aspNS = session.signalAspectForHeading(sig0, glm::vec2(0.0f, 1.0f));
+      const auto aspEW = session.signalAspectForHeading(sig0, glm::vec2(1.0f, 0.0f));
+      assert(!(aspNS == westgate::TrafficSignalAspect::Green && aspEW == westgate::TrafficSignalAspect::Green));
+
+      // Starter Golf owned; purchase Golf/Baja Offroad (or Sedan) & spawn via Personal Valet
+      assert(session.ownsVehicle(westgate::VehicleModelKind::Golf));
+      assert(!session.ownsVehicle(westgate::VehicleModelKind::Sedan));
+      const bool boughtSedan = session.buyDealershipVehicle(westgate::VehicleModelKind::Sedan, nullptr);
+      assert(boughtSedan && session.ownsVehicle(westgate::VehicleModelKind::Sedan));
+
+      // Teleport near Westgate Customs (112, -135) and auto-board personal Golf R
+      session.teleportTo({112.0f, world.heightfield.sampleHeight(112.0f, -125.0f) + 1.0f, -125.0f}, 180.0f, player);
+      const int pvId = session.spawnPersonalVehicle(westgate::VehicleModelKind::Golf, 2, player, world, nullptr, true);
+      assert(pvId > 0 && session.inVehicle() && session.currentVehicle() != nullptr);
+
+      // Accelerate + steer left + drift to exercise wheel spin, steering angle, RPM/gearbox, suspension & drive camera FOV
+      for (int f = 0; f < 55; ++f) {
+        westgate::GameInputFrame drv{};
+        drv.moveInput.moveForward = 1.0f;
+        drv.moveInput.moveRight = (f > 20) ? -0.85f : 0.0f;
+        drv.moveInput.jump = (f > 38); // handbrake drift
+        session.update(1.0f / 60.0f, drv, player, physics, world, nullptr);
+      }
+      const auto* cv = session.currentVehicle();
+      assert(cv != nullptr);
+      assert(cv->speed > 6.0f && cv->wheelSpinRad > 3.0f && cv->steerAngle > 0.12f);
+      assert(cv->rpm > 1800.0f && cv->gear >= 1);
+      assert(std::abs(cv->suspPitch) > 1e-5f || std::abs(cv->suspRoll) > 1e-5f);
+      assert(session.cameraFovDeg(false) > 66.2f);
+      session.cycleDriveCameraMode();
+      assert(session.driveCameraMode() == 1);
+      session.cycleDriveCameraMode();
+      assert(session.driveCameraMode() == 2);
+      session.cycleDriveCameraMode();
+      assert(session.driveCameraMode() == 0);
+
+      // Apply Stage 1 Turbo at Westgate Customs & verify persistence of owned dealership vehicles
+      const bool stgOk = session.upgradeCurrentVehicleStage(nullptr);
+      assert(stgOk && session.currentVehicle()->engineStage == 1);
+
+      const std::string m2Save = "/tmp/westgate_m2_save.json";
+      assert(session.saveToFile(m2Save));
+      westgate::GameSession m2Loaded;
+      m2Loaded.init(world, &player, &physics);
+      assert(m2Loaded.loadFromFile(m2Save) && m2Loaded.ownsVehicle(westgate::VehicleModelKind::Sedan));
+
+      // Exit personal car, test watercraft planing, then test vehicle explosion & chain blast damage
+      westgate::GameInputFrame exitCar{};
+      exitCar.interactPressed = true;
+      session.update(1.0f / 60.0f, exitCar, player, physics, world, nullptr);
+      assert(!session.inVehicle());
+
+      // Watercraft planing check
+      size_t boatIdx = session.vehicles().size();
+      for (size_t i = 0; i < session.vehicles().size(); ++i) {
+        if (session.vehicles()[i].isBoat && !session.vehicles()[i].destroyed) { boatIdx = i; break; }
+      }
+      assert(boatIdx < session.vehicles().size());
+      player.teleport(session.vehicles()[boatIdx].pos + glm::vec3(1.5f, 0.8f, 0.0f), 0.0f);
+      westgate::GameInputFrame boardBoat{};
+      boardBoat.interactPressed = true;
+      session.update(1.0f / 60.0f, boardBoat, player, physics, world, nullptr);
+      assert(session.inVehicle() && session.currentVehicle()->isBoat);
+      for (int f = 0; f < 45; ++f) {
+        westgate::GameInputFrame throttleBoat{};
+        throttleBoat.moveInput.moveForward = 1.0f;
+        throttleBoat.moveInput.moveRight = -0.6f;
+        session.update(1.0f / 60.0f, throttleBoat, player, physics, world, nullptr);
+      }
+      assert(session.currentVehicle()->speed > 5.0f && session.currentVehicle()->pitchRad < -0.01f);
+      session.update(1.0f / 60.0f, exitCar, player, physics, world, nullptr);
+
+      // Vehicle destruction & chain blast damage check on an unoccupied car
+      size_t targetVeh = session.vehicles().size();
+      for (size_t i = 0; i < session.vehicles().size(); ++i) {
+        if (!session.vehicles()[i].occupiedByPlayer && !session.vehicles()[i].destroyed && !session.vehicles()[i].isBoat) {
+          targetVeh = i;
+          break;
+        }
+      }
+      assert(targetVeh < session.vehicles().size());
+      session.damageVehicle(targetVeh, 150.0f, world, &player, nullptr, false);
+      assert(session.vehicles()[targetVeh].destroyed && session.vehicles()[targetVeh].hp <= 0.0f);
+
+      std::printf("[PASS] Milestone 2 verified: %zu signal intersections, Dealership/Valet, Stage-1 tuning, suspension/spin/steer, boat planing & vehicle blast OK\n",
+                  session.signalIntersections().size());
+    }
 
     std::printf("[PASS] GameSession full loop: %zu vehicles, %zu NPCs, driving/gunplay/contracts/sky/save OK\n",
                 session.vehicles().size(), session.npcs().size());

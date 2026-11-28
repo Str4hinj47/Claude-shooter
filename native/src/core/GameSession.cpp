@@ -35,7 +35,124 @@ float moveTowardAngle(float current, float target, float maxStep) {
   return wrapAnglePi(current + (diff > 0.0f ? maxStep : -maxStep));
 }
 
+constexpr float kPi = 3.14159265359f;
+
+const std::array<VehicleSpec, kVehicleModelCount> kVehicleSpecs = {{
+  // 0: PoliceCruiser (+Z)
+  {VehicleModelKind::PoliceCruiser, "police_cruiser", "WSPD Interceptor V8", "models/police_cruiser.glb", "Emergency",
+   0.0f, 1.14f, 2.02f, 1.48f, 4.78f, 2.86f, 46.0f, 23.5f, 32.0f, 1.04f, 0.42f, 6, 820.0f, 6600.0f, 12.2f, 0.42f, 0.0038f, 0.0048f, 18500, false, true, false, false},
+  // 1: Taxi (+Z)
+  {VehicleModelKind::Taxi, "taxi", "Westgate Yellow Cab", "models/taxi.glb", "Sedan",
+   0.0f, 1.0f, 1.88f, 1.44f, 4.48f, 2.74f, 36.0f, 18.0f, 27.0f, 0.96f, 0.32f, 6, 780.0f, 6200.0f, 11.2f, 0.36f, 0.0044f, 0.0056f, 7500, false, false, false, false},
+  // 2: Sedan (+Z)
+  {VehicleModelKind::Sedan, "sedan", "Bavaria 330i Saloon", "models/sedan.glb", "Sedan",
+   0.0f, 1.0f, 2.00f, 1.39f, 4.49f, 2.76f, 40.0f, 20.5f, 29.0f, 1.00f, 0.45f, 7, 780.0f, 6800.0f, 11.8f, 0.38f, 0.0040f, 0.0052f, 950, true, false, false, false},
+  // 3: Mustang (-Z -> pi)
+  {VehicleModelKind::Mustang, "mustang", "GT500 Fastback V8", "models/mustang.glb", "Muscle",
+   kPi, 1.0f, 1.87f, 1.33f, 4.78f, 2.72f, 47.0f, 25.0f, 31.0f, 0.98f, 0.78f, 6, 850.0f, 7200.0f, 12.0f, 0.39f, 0.0042f, 0.0054f, 2200, true, false, false, false},
+  // 4: Ferrari (+Z)
+  {VehicleModelKind::Ferrari, "ferrari", "Scuderia 458 GTB", "models/ferrari.glb", "Supercar",
+   0.0f, 1.0f, 1.84f, 1.12f, 4.11f, 2.65f, 56.0f, 31.0f, 36.0f, 1.14f, 0.62f, 7, 980.0f, 8900.0f, 14.2f, 0.45f, 0.0026f, 0.0036f, 5800, true, false, false, false},
+  // 5: RangeRover (+Z)
+  {VehicleModelKind::RangeRover, "rangerover", "Autobiography SVR", "models/rangerover.glb", "SUV",
+   0.0f, 1.0f, 2.29f, 1.82f, 4.96f, 2.92f, 41.0f, 21.0f, 28.0f, 1.02f, 0.30f, 8, 760.0f, 6500.0f, 9.8f, 0.35f, 0.0052f, 0.0068f, 2400, true, false, false, false},
+  // 6: Speedboat (+Z)
+  {VehicleModelKind::Speedboat, "speedboat", "Del Sol Cigarette 32", "models/speedboat.glb", "Marine",
+   0.0f, 1.0f, 1.97f, 1.71f, 6.20f, 3.80f, 40.0f, 22.0f, 20.0f, 1.0f, 0.25f, 1, 900.0f, 5800.0f, 8.0f, 0.35f, 0.004f, 0.006f, 2600, true, false, true, false},
+  // 7: CruiserBoat (+Z)
+  {VehicleModelKind::CruiserBoat, "cruiser_boat", "Harbor Patrol RIB", "models/cruiser_boat.glb", "Marine",
+   0.0f, 1.0f, 4.26f, 2.03f, 9.50f, 5.40f, 32.0f, 16.5f, 18.0f, 1.0f, 0.20f, 1, 850.0f, 5400.0f, 7.5f, 0.35f, 0.004f, 0.006f, 3100, false, true, true, false},
+  // 8: Helicopter (+Z)
+  {VehicleModelKind::Helicopter, "heli", "Bell 407 Executive", "models/heli.glb", "Aircraft",
+   0.0f, 1.0f, 8.70f, 2.83f, 10.84f, 4.20f, 54.0f, 25.0f, 20.0f, 1.0f, 0.0f, 1, 1200.0f, 9200.0f, 8.0f, 0.5f, 0.0f, 0.0f, 6500, true, true, false, true},
+  // 9: Ambulance (+Z — upgraded VW LT EMS)
+  {VehicleModelKind::Ambulance, "ambulance", "VW LT Paramedic Unit", "models/ambulance.glb", "Emergency",
+   0.0f, 1.0f, 2.16f, 2.38f, 5.33f, 3.25f, 35.0f, 16.5f, 25.0f, 0.92f, 0.22f, 6, 760.0f, 5200.0f, 9.6f, 0.35f, 0.0054f, 0.0070f, 15000, false, true, false, false},
+  // 10: Firetruck (+Z)
+  {VehicleModelKind::Firetruck, "firetruck", "Westgate Engine Co. 4", "models/firetruck.glb", "Emergency",
+   0.0f, 1.85f, 2.75f, 3.10f, 6.05f, 3.85f, 31.0f, 14.0f, 23.0f, 0.88f, 0.18f, 6, 700.0f, 4400.0f, 9.2f, 0.36f, 0.0050f, 0.0065f, 20000, false, true, false, false},
+  // 11: Delivery (+Z)
+  {VehicleModelKind::Delivery, "delivery", "Bay Freight Box Van", "models/delivery.glb", "Heavy",
+   0.0f, 1.65f, 2.45f, 2.70f, 5.40f, 3.35f, 32.0f, 14.5f, 23.5f, 0.90f, 0.20f, 6, 740.0f, 4800.0f, 9.5f, 0.35f, 0.0052f, 0.0068f, 12000, false, false, false, false},
+  // 12: Semi (-Z -> pi)
+  {VehicleModelKind::Semi, "semi", "Peterbilt Hauler 6x4", "models/semi.glb", "Heavy",
+   kPi, 1.0f, 2.45f, 3.15f, 12.50f, 6.40f, 29.0f, 11.5f, 21.0f, 0.86f, 0.18f, 8, 650.0f, 2800.0f, 8.8f, 0.36f, 0.0045f, 0.0060f, 28000, false, false, false, false},
+  // 13: Audi (+Z)
+  {VehicleModelKind::Audi, "audi", "RS7 Sportback Quattro", "models/audi.glb", "Supercar",
+   0.0f, 1.0f, 2.11f, 1.49f, 4.99f, 2.93f, 49.0f, 27.5f, 33.5f, 1.10f, 0.34f, 8, 820.0f, 7100.0f, 13.4f, 0.43f, 0.0030f, 0.0040f, 3400, true, false, false, false},
+  // 14: Challenger (+Z)
+  {VehicleModelKind::Challenger, "challenger", "SRT Hellcat Widebody", "models/challenger.glb", "Muscle",
+   0.0f, 1.0f, 2.20f, 1.48f, 5.03f, 2.95f, 48.5f, 26.5f, 30.5f, 0.95f, 0.84f, 8, 860.0f, 6600.0f, 11.6f, 0.38f, 0.0044f, 0.0056f, 2600, true, false, false, false},
+  // 15: R8 (+Z)
+  {VehicleModelKind::R8, "r8", "R8 V10 Performance", "models/r8.glb", "Supercar",
+   0.0f, 1.0f, 2.12f, 1.20f, 4.43f, 2.65f, 55.0f, 31.5f, 36.0f, 1.15f, 0.40f, 7, 950.0f, 8700.0f, 14.0f, 0.44f, 0.0028f, 0.0038f, 4900, true, false, false, false},
+  // 16: Golf (-Z -> pi)
+  {VehicleModelKind::Golf, "golf", "VW Golf R Turbo AWD", "models/golf.glb", "Compact",
+   kPi, 1.0f, 1.83f, 1.50f, 4.15f, 2.63f, 41.5f, 23.0f, 31.0f, 1.06f, 0.35f, 7, 800.0f, 6900.0f, 12.4f, 0.40f, 0.0036f, 0.0048f, 0, true, false, false, false},
+  // 17: Mercedes (-Z -> pi)
+  {VehicleModelKind::Mercedes, "mercedes", "S63 AMG Biturbo", "models/mercedes.glb", "Sedan",
+   kPi, 1.0f, 2.11f, 1.48f, 5.25f, 3.16f, 46.5f, 24.5f, 32.0f, 1.03f, 0.48f, 7, 760.0f, 6600.0f, 11.0f, 0.40f, 0.0038f, 0.0048f, 2900, true, false, false, false},
+  // 18: Offroad (+Z)
+  {VehicleModelKind::Offroad, "offroad", "Baja Trail 4x4", "models/offroad.glb", "SUV",
+   0.0f, 1.0f, 2.22f, 1.87f, 4.60f, 2.85f, 39.0f, 21.5f, 27.5f, 1.02f, 0.40f, 6, 780.0f, 6200.0f, 9.4f, 0.34f, 0.0056f, 0.0072f, 1450, true, false, false, false},
+  // 19: Kraz (-Z -> pi)
+  {VehicleModelKind::Kraz, "kraz", "KrAZ-255 6x6 Heavy", "models/kraz.glb", "Heavy",
+   kPi, 1.0f, 2.55f, 3.16f, 8.00f, 4.60f, 30.5f, 14.0f, 23.0f, 0.94f, 0.22f, 6, 680.0f, 3200.0f, 9.0f, 0.35f, 0.0048f, 0.0062f, 3200, true, false, false, false},
+}};
+
+struct CustomPaintPreset {
+  const char* name;
+  glm::vec3 rgb;
+};
+
+const std::array<CustomPaintPreset, GameSession::kCustomPaintCount> kCustomPaintPresets = {{
+  {"Pearl Glacier",  {0.93f, 0.95f, 0.98f}},
+  {"Obsidian Black", {0.14f, 0.15f, 0.18f}},
+  {"Crimson Corsa",  {0.86f, 0.14f, 0.17f}},
+  {"Midnight Cobalt",{0.15f, 0.44f, 0.92f}},
+  {"Solar Amber",    {0.96f, 0.72f, 0.14f}},
+  {"Emerald Venom",  {0.12f, 0.74f, 0.44f}},
+  {"Titanium Silver",{0.68f, 0.71f, 0.76f}},
+  {"Violet Dusk",    {0.56f, 0.24f, 0.90f}},
+}};
+
 } // namespace
+
+const VehicleSpec& GameSession::vehicleSpec(VehicleModelKind kind) {
+  const size_t idx = std::min<size_t>(static_cast<size_t>(kind), kVehicleModelCount - 1);
+  return kVehicleSpecs[idx];
+}
+
+const glm::vec3& GameSession::customPaintColor(int paintIdx, const char** outName) {
+  const int idx = ((paintIdx % kCustomPaintCount) + kCustomPaintCount) % kCustomPaintCount;
+  if (outName) *outName = kCustomPaintPresets[static_cast<size_t>(idx)].name;
+  return kCustomPaintPresets[static_cast<size_t>(idx)].rgb;
+}
+
+bool GameSession::ownsVehicle(VehicleModelKind kind) const {
+  const size_t idx = static_cast<size_t>(kind);
+  return idx < kVehicleModelCount && ownedVehicles_[idx];
+}
+
+TrafficSignalAspect GameSession::signalAspectForHeading(const SignalIntersection& node, const glm::vec2& headingXZ) const {
+  constexpr float kCycle = 24.0f;
+  constexpr float kGreen = 9.2f;
+  constexpr float kAmber = 2.4f;
+  constexpr float kHalf = 12.0f;
+  const float t = std::fmod(animClock_ + static_cast<float>(node.phaseOffset) * 6.0f, kCycle);
+  TrafficSignalAspect ns = TrafficSignalAspect::Red;
+  TrafficSignalAspect ew = TrafficSignalAspect::Red;
+  if (t < kGreen) {
+    ns = TrafficSignalAspect::Green;
+  } else if (t < kGreen + kAmber) {
+    ns = TrafficSignalAspect::Amber;
+  } else if (t >= kHalf && t < kHalf + kGreen) {
+    ew = TrafficSignalAspect::Green;
+  } else if (t >= kHalf + kGreen && t < kHalf + kGreen + kAmber) {
+    ew = TrafficSignalAspect::Amber;
+  }
+  return (std::abs(headingXZ.y) >= std::abs(headingXZ.x)) ? ns : ew;
+}
 
 void GameSession::pushToast(const std::string& msg, float duration) {
   toastText_ = msg;
@@ -53,8 +170,53 @@ void GameSession::init(const WorldData& world, PlayerController* player, Physics
 
   activeWeapon_ = 0;
   vehicles_.clear();
+  signalNodes_.clear();
   npcs_.clear();
   tracers_.clear();
+  ownedVehicles_.fill(false);
+  ownedVehicles_[static_cast<size_t>(VehicleModelKind::Golf)] = true; // Free starter car in Personal Garage!
+  activePersonalVehicleId_ = -1;
+
+  // Build signalized road intersections across Westgate Bay where distinct roads cross or meet
+  for (size_t i = 0; i < world.roads.size(); ++i) {
+    const auto& rA = world.roads[i];
+    if (rA.isBridge || rA.samples.size() < 3) continue;
+    for (size_t j = i + 1; j < world.roads.size(); ++j) {
+      const auto& rB = world.roads[j];
+      if (rB.isBridge || rB.samples.size() < 3) continue;
+      for (size_t sa = 0; sa < rA.samples.size(); sa += 2) {
+        const glm::vec3 pA = rA.samples[sa].pos;
+        for (size_t sb = 0; sb < rB.samples.size(); sb += 2) {
+          const glm::vec3 pB = rB.samples[sb].pos;
+          if (glm::distance(glm::vec2(pA.x, pA.z), glm::vec2(pB.x, pB.z)) > 11.5f) continue;
+          const size_t saNext = std::min(sa + 1, rA.samples.size() - 1);
+          const size_t saPrev = sa > 0 ? sa - 1 : 0;
+          const size_t sbNext = std::min(sb + 1, rB.samples.size() - 1);
+          const size_t sbPrev = sb > 0 ? sb - 1 : 0;
+          const glm::vec2 dA = glm::normalize(glm::vec2(rA.samples[saNext].pos.x - rA.samples[saPrev].pos.x,
+                                                        rA.samples[saNext].pos.z - rA.samples[saPrev].pos.z) + glm::vec2(1e-5f, 0.0f));
+          const glm::vec2 dB = glm::normalize(glm::vec2(rB.samples[sbNext].pos.x - rB.samples[sbPrev].pos.x,
+                                                        rB.samples[sbNext].pos.z - rB.samples[sbPrev].pos.z) + glm::vec2(0.0f, 1e-5f));
+          if (std::abs(glm::dot(dA, dB)) > 0.78f) continue; // nearly parallel
+          const glm::vec3 mid = 0.5f * (pA + pB);
+          bool dup = false;
+          for (const auto& existing : signalNodes_) {
+            if (glm::distance(glm::vec2(existing.pos.x, existing.pos.z), glm::vec2(mid.x, mid.z)) < 34.0f) {
+              dup = true;
+              break;
+            }
+          }
+          if (!dup && signalNodes_.size() < 64) {
+            SignalIntersection node;
+            node.id = static_cast<int>(signalNodes_.size());
+            node.pos = glm::vec3(mid.x, world.heightfield.sampleHeight(mid.x, mid.z), mid.z);
+            node.phaseOffset = static_cast<int>(signalNodes_.size() % 4);
+            signalNodes_.push_back(node);
+          }
+        }
+      }
+    }
+  }
 
   // Collect driveable road splines
   std::vector<size_t> longRoads;
@@ -62,83 +224,121 @@ void GameSession::init(const WorldData& world, PlayerController* player, Physics
     if (world.roads[ri].samples.size() >= 6) longRoads.push_back(ri);
   }
 
-  // 64 ambient traffic vehicles across 14 road vehicle models (dense Westgate Bay traffic!)
+  // 72 ambient traffic vehicles across all 17 road vehicle models (Golf, Mercedes, Offroad, Kraz, upgraded Ambulance, etc.)
   if (!longRoads.empty()) {
-    const VehicleModelKind trafficKinds[14] = {
+    const VehicleModelKind trafficKinds[18] = {
+      VehicleModelKind::Golf,
       VehicleModelKind::Sedan,
       VehicleModelKind::Taxi,
+      VehicleModelKind::Mercedes,
       VehicleModelKind::RangeRover,
       VehicleModelKind::PoliceCruiser,
+      VehicleModelKind::Offroad,
       VehicleModelKind::Audi,
       VehicleModelKind::Challenger,
       VehicleModelKind::Delivery,
       VehicleModelKind::R8,
-      VehicleModelKind::Sedan,
+      VehicleModelKind::Golf,
       VehicleModelKind::Ambulance,
       VehicleModelKind::Firetruck,
+      VehicleModelKind::Kraz,
       VehicleModelKind::Semi,
       VehicleModelKind::Mustang,
-      VehicleModelKind::Taxi,
+      VehicleModelKind::Ferrari,
     };
-    const glm::vec3 trafficTints[6] = {
-      {1.0f, 1.0f, 1.0f}, {0.20f, 0.45f, 0.85f}, {0.82f, 0.18f, 0.20f},
-      {0.25f, 0.65f, 0.42f}, {0.86f, 0.72f, 0.18f}, {0.42f, 0.44f, 0.48f},
+    const glm::vec3 trafficTints[8] = {
+      {0.93f, 0.95f, 0.98f}, {0.18f, 0.44f, 0.88f}, {0.84f, 0.16f, 0.19f}, {0.17f, 0.19f, 0.23f},
+      {0.18f, 0.66f, 0.42f}, {0.70f, 0.73f, 0.78f}, {0.92f, 0.68f, 0.15f}, {0.42f, 0.25f, 0.72f},
     };
-    for (int i = 0; i < 64; ++i) {
+    for (int i = 0; i < 72; ++i) {
       VehicleEntity v;
       v.id = nextVehicleId_++;
-      v.kind = trafficKinds[i % 14];
+      v.kind = trafficKinds[i % 18];
+      const VehicleSpec& sp = vehicleSpec(v.kind);
       v.isAmbientTraffic = true;
       v.roadIdx = longRoads[static_cast<size_t>(i) % longRoads.size()];
-      const float maxS = static_cast<float>(world.roads[v.roadIdx].samples.size() - 1);
+      const auto& seg = world.roads[v.roadIdx];
+      const float maxS = static_cast<float>(seg.samples.size() - 1);
       v.samplePos = std::fmod(static_cast<float>(i) * 2.13f, std::max(1.0f, maxS - 0.1f));
-      v.speed = (v.kind == VehicleModelKind::Semi || v.kind == VehicleModelKind::Firetruck)
-        ? 9.0f + static_cast<float>(i % 4)
-        : 11.0f + static_cast<float>((i * 5) % 8);
+      v.speed = (v.kind == VehicleModelKind::Semi || v.kind == VehicleModelKind::Firetruck || v.kind == VehicleModelKind::Kraz)
+        ? 9.5f + static_cast<float>(i % 4)
+        : 12.0f + static_cast<float>((i * 5) % 8);
+      v.vxLocal = v.speed;
       v.forward = (i % 2) == 0;
-      v.maxSpeed = (v.kind == VehicleModelKind::PoliceCruiser || v.kind == VehicleModelKind::R8) ? 44.0f : 34.0f;
-      v.colorTint = (v.kind == VehicleModelKind::PoliceCruiser || v.kind == VehicleModelKind::Taxi ||
-                     v.kind == VehicleModelKind::Ambulance || v.kind == VehicleModelKind::Firetruck)
-        ? glm::vec3(1.0f)
-        : trafficTints[i % 6];
+      v.laneOffset = std::clamp(seg.width * 0.26f, 2.2f, 3.8f);
+      v.maxSpeed = sp.maxSpeed;
+      v.accel = sp.accel;
+      v.rpm = sp.idleRpm + 900.0f;
+      if (v.kind == VehicleModelKind::Taxi) {
+        v.colorTint = {0.98f, 0.78f, 0.14f};
+      } else if (v.kind == VehicleModelKind::PoliceCruiser || v.kind == VehicleModelKind::Ambulance ||
+                 v.kind == VehicleModelKind::Firetruck || v.kind == VehicleModelKind::Delivery) {
+        v.colorTint = glm::vec3(1.0f);
+      } else {
+        v.colorTint = trafficTints[i % 8];
+      }
+      // Initialize initial world pose on road spline so frame 0 has exact positions
+      const size_t i0 = std::min<size_t>(static_cast<size_t>(v.samplePos), seg.samples.size() - 2);
+      const float f = std::clamp(v.samplePos - static_cast<float>(i0), 0.0f, 1.0f);
+      const auto& s0 = seg.samples[i0];
+      const auto& s1 = seg.samples[i0 + 1];
+      const glm::vec3 p = glm::mix(s0.pos, s1.pos, f);
+      const glm::vec3 delta = s1.pos - s0.pos;
+      const float dLen = glm::length(delta);
+      const glm::vec3 dir = (dLen > 1e-4f) ? ((v.forward ? 1.0f : -1.0f) * (delta / dLen)) : glm::vec3(0.0f, 0.0f, 1.0f);
+      const glm::vec3 wp = p + glm::vec3(s0.rx, 0.0f, s0.rz) * (v.forward ? v.laneOffset : -v.laneOffset);
+      const float roadY = seg.isBridge ? wp.y : world.heightfield.sampleHeight(wp.x, wp.z);
+      v.pos = glm::vec3(wp.x, roadY + 0.03f, wp.z);
+      v.yawRad = std::atan2(dir.x, dir.z);
       vehicles_.push_back(v);
     }
   }
 
-  // 10 parked hero & street vehicles + 4 docked Boats + 2 flyable Helicopters
-  struct ParkedSpec { VehicleModelKind kind; float x; float z; float yaw; glm::vec3 tint; float maxSpd; float acc; bool boat; bool heli; };
+  // Parked hero, Dealership showcase & district vehicles + 5 docked Boats + 3 flyable Helicopters
+  struct ParkedSpec { VehicleModelKind kind; float x; float z; float yaw; glm::vec3 tint; };
   const ParkedSpec parked[] = {
-    {VehicleModelKind::Mustang, world.spawnPos.x + 7.0f, world.spawnPos.z + 5.5f, 0.35f, {0.85f, 0.14f, 0.18f}, 44.0f, 24.0f, false, false},
-    {VehicleModelKind::RangeRover, world.spawnPos.x - 9.0f, world.spawnPos.z + 6.5f, -0.4f, {0.16f, 0.18f, 0.22f}, 36.0f, 20.0f, false, false},
-    {VehicleModelKind::R8, 34.0f, -86.0f, 1.57f, {0.92f, 0.88f, 0.90f}, 54.0f, 31.0f, false, false},
-    {VehicleModelKind::PoliceCruiser, 196.0f, 44.0f, 1.57f, {1.0f, 1.0f, 1.0f}, 42.0f, 23.0f, false, false},
-    {VehicleModelKind::Taxi, -402.0f, -74.0f, 0.0f, {1.0f, 1.0f, 1.0f}, 35.0f, 19.0f, false, false},
-    {VehicleModelKind::Challenger, -692.0f, 36.0f, -1.57f, {0.18f, 0.42f, 0.88f}, 46.0f, 25.0f, false, false},
-    {VehicleModelKind::Mustang, world.fightPitPos.x - 16.0f, world.fightPitPos.z - 8.0f, 0.7f, {0.12f, 0.48f, 0.88f}, 44.0f, 24.0f, false, false},
-    {VehicleModelKind::Ferrari, 625.0f, 425.0f, 0.0f, {0.95f, 0.78f, 0.12f}, 52.0f, 29.0f, false, false},
-    {VehicleModelKind::Audi, -120.0f, 835.0f, 0.0f, {0.82f, 0.84f, 0.88f}, 45.0f, 25.0f, false, false},
-    {VehicleModelKind::RangeRover, -955.0f, 365.0f, 0.8f, {0.18f, 0.42f, 0.30f}, 38.0f, 21.0f, false, false}, // Pelican Key SUV!
+    {VehicleModelKind::Mustang, world.spawnPos.x + 7.0f, world.spawnPos.z + 5.5f, 0.35f, {0.85f, 0.14f, 0.18f}},
+    {VehicleModelKind::Golf, world.spawnPos.x - 9.0f, world.spawnPos.z + 6.5f, -0.4f, {0.15f, 0.44f, 0.92f}},
+    {VehicleModelKind::R8, 34.0f, -86.0f, 1.57f, {0.92f, 0.88f, 0.90f}},
+    // Westgate Luxury Motorsport Showroom (Downtown 56, -118)
+    {VehicleModelKind::Ferrari, 52.0f, -118.0f, 0.45f, {0.88f, 0.12f, 0.15f}},
+    {VehicleModelKind::Mercedes, 60.0f, -118.0f, -0.45f, {0.16f, 0.17f, 0.20f}},
+    {VehicleModelKind::Ambulance, 188.0f, 44.0f, 1.57f, {1.0f, 1.0f, 1.0f}},
+    {VehicleModelKind::PoliceCruiser, 196.0f, 44.0f, 1.57f, {1.0f, 1.0f, 1.0f}},
+    {VehicleModelKind::Taxi, -402.0f, -74.0f, 0.0f, {0.98f, 0.78f, 0.14f}},
+    {VehicleModelKind::Challenger, -692.0f, 36.0f, -1.57f, {0.18f, 0.42f, 0.88f}},
+    {VehicleModelKind::Mustang, world.fightPitPos.x - 16.0f, world.fightPitPos.z - 8.0f, 0.7f, {0.12f, 0.48f, 0.88f}},
+    {VehicleModelKind::Kraz, 625.0f, 425.0f, 0.0f, {0.28f, 0.36f, 0.24f}},
+    {VehicleModelKind::Audi, -120.0f, 835.0f, 0.0f, {0.82f, 0.84f, 0.88f}},
+    {VehicleModelKind::Offroad, -126.0f, -958.0f, 2.4f, {0.90f, 0.55f, 0.14f}}, // Foothills Observatory 4x4!
+    {VehicleModelKind::RangeRover, -955.0f, 365.0f, 0.8f, {0.18f, 0.42f, 0.30f}}, // Pelican Key SUV!
     // Docked Speedboats & Cruisers
-    {VehicleModelKind::Speedboat, -748.0f, 42.0f, -1.57f, {0.95f, 0.95f, 0.98f}, 38.0f, 22.0f, true, false},
-    {VehicleModelKind::CruiserBoat, -752.0f, -12.0f, -1.45f, {0.92f, 0.94f, 0.96f}, 30.0f, 16.0f, true, false},
-    {VehicleModelKind::Speedboat, 655.0f, 465.0f, 1.2f, {0.92f, 0.22f, 0.20f}, 38.0f, 22.0f, true, false},
-    {VehicleModelKind::Speedboat, -912.0f, 305.0f, -0.7f, {0.20f, 0.65f, 0.95f}, 38.0f, 22.0f, true, false},
-    // Flyable Helicopters (Downtown Helipad & Westgate Airport)
-    {VehicleModelKind::Helicopter, 32.0f, -108.0f, 0.0f, {0.20f, 0.24f, 0.30f}, 48.0f, 24.0f, false, true},
-    {VehicleModelKind::Helicopter, 24.0f, 935.0f, 3.14f, {0.85f, 0.22f, 0.18f}, 52.0f, 26.0f, false, true},
+    {VehicleModelKind::Speedboat, -748.0f, 42.0f, -1.57f, {0.95f, 0.95f, 0.98f}},
+    {VehicleModelKind::CruiserBoat, -752.0f, -12.0f, -1.45f, {0.92f, 0.94f, 0.96f}},
+    {VehicleModelKind::Speedboat, 655.0f, 465.0f, 1.2f, {0.92f, 0.22f, 0.20f}},
+    {VehicleModelKind::Speedboat, -912.0f, 305.0f, -0.7f, {0.20f, 0.65f, 0.95f}},
+    {VehicleModelKind::CruiserBoat, -612.0f, 252.0f, 0.25f, {0.94f, 0.95f, 0.97f}}, // Venice Canals Marina
+    // Flyable Helicopters (Downtown Plaza Helipad, Foothills Observatory & Westgate Airport)
+    {VehicleModelKind::Helicopter, 32.0f, -108.0f, 0.0f, {0.20f, 0.24f, 0.30f}},
+    {VehicleModelKind::Helicopter, -104.0f, -966.0f, 2.8f, {0.15f, 0.44f, 0.90f}},
+    {VehicleModelKind::Helicopter, 24.0f, 935.0f, 3.14f, {0.85f, 0.22f, 0.18f}},
   };
   for (const auto& ps : parked) {
+    const VehicleSpec& sp = vehicleSpec(ps.kind);
     VehicleEntity v;
     v.id = nextVehicleId_++;
     v.kind = ps.kind;
-    v.isBoat = ps.boat;
-    v.isAircraft = ps.heli;
-    const float y = ps.boat ? 0.05f : (world.heightfield.sampleHeight(ps.x, ps.z) + 0.05f);
+    v.isBoat = sp.isBoat;
+    v.isAircraft = sp.isAircraft;
+    const float y = sp.isBoat
+      ? (oceanWaveHeight(ps.x, ps.z, 0.0f) + 0.05f)
+      : (world.heightfield.sampleHeight(ps.x, ps.z) + 0.03f);
     v.pos = glm::vec3(ps.x, y, ps.z);
     v.yawRad = ps.yaw;
     v.colorTint = ps.tint;
-    v.maxSpeed = ps.maxSpd;
-    v.accel = ps.acc;
+    v.maxSpeed = sp.maxSpeed;
+    v.accel = sp.accel;
+    v.rpm = sp.idleRpm;
     vehicles_.push_back(v);
   }
 
@@ -716,7 +916,248 @@ void GameSession::damagePlayer(float amount, const WorldData& world, PlayerContr
   }
 }
 
-void GameSession::fireActiveWeapon(const PlayerController& player, PhysicsWorld& physics, const WorldData& world, AudioEngine* audio) {
+bool GameSession::buyDealershipVehicle(VehicleModelKind kind, AudioEngine* audio) {
+  const VehicleSpec& sp = vehicleSpec(kind);
+  const size_t idx = static_cast<size_t>(kind);
+  if (idx >= kVehicleModelCount) return false;
+  if (ownedVehicles_[idx]) {
+    pushToast(std::string(sp.displayName) + " already in your Personal Garage!", 2.5f);
+    return true;
+  }
+  if (!sp.purchasable || playerCash_ < sp.dealershipPrice) {
+    pushToast("Need $" + std::to_string(sp.dealershipPrice) + " for " + sp.displayName, 2.5f);
+    return false;
+  }
+  playerCash_ -= sp.dealershipPrice;
+  ownedVehicles_[idx] = true;
+  if (audio) audio->playCashChime();
+  pushToast("PURCHASED: " + std::string(sp.displayName) + " (-$" + std::to_string(sp.dealershipPrice) + ")!", 3.5f);
+  return true;
+}
+
+int GameSession::spawnPersonalVehicle(VehicleModelKind kind, int paintIdx, PlayerController& player, const WorldData& world, AudioEngine* audio, bool autoBoard) {
+  const size_t kIdx = static_cast<size_t>(kind);
+  if (kIdx >= kVehicleModelCount || !ownedVehicles_[kIdx]) {
+    pushToast("Vehicle locked - purchase in Dealership first!", 2.5f);
+    return -1;
+  }
+  const VehicleSpec& sp = vehicleSpec(kind);
+  selectedPaintIdx_ = ((paintIdx % kCustomPaintCount) + kCustomPaintCount) % kCustomPaintCount;
+  const glm::vec3 pPos = player.position();
+  const float pYaw = player.yaw();
+  const glm::vec3 fwd(std::sin(pYaw), 0.0f, std::cos(pYaw));
+  const glm::vec3 right(fwd.z, 0.0f, -fwd.x);
+
+  glm::vec3 spawnPos = pPos + fwd * 6.2f + right * 2.2f;
+  float spawnYaw = pYaw;
+  if (sp.isBoat) {
+    // Deliver boat to nearest open water or Del SolMarina if player is inland
+    if (world.heightfield.sampleHeight(spawnPos.x, spawnPos.z) > -0.2f) {
+      spawnPos = glm::vec3(-746.0f, oceanWaveHeight(-746.0f, 34.0f, animClock_) + 0.05f, 34.0f);
+      spawnYaw = -1.57f;
+    } else {
+      spawnPos.y = oceanWaveHeight(spawnPos.x, spawnPos.z, animClock_) + 0.05f;
+    }
+  } else {
+    spawnPos.x = std::clamp(spawnPos.x, world.worldMin + 25.0f, world.worldMax - 25.0f);
+    spawnPos.z = std::clamp(spawnPos.z, world.worldMin + 25.0f, world.worldMax - 25.0f);
+    float groundY = world.heightfield.sampleHeight(spawnPos.x, spawnPos.z);
+    if (pPos.y > groundY + 2.5f) {
+      groundY = pPos.y - 1.0f; // elevated deck / Del Sol Pier / overpass
+    } else if (!sp.isAircraft) {
+      // Snap Valet road vehicles onto the nearest asphalt road centerline/curb lane within 32m so they never clip buildings
+      float bestD2 = 32.0f * 32.0f;
+      glm::vec3 bestRoadPos = spawnPos;
+      float bestRoadYaw = spawnYaw;
+      bool foundRoad = false;
+      for (const auto& road : world.roads) {
+        for (size_t si = 0; si + 1 < road.samples.size(); ++si) {
+          const glm::vec3 a = road.samples[si].pos;
+          const glm::vec3 b = road.samples[si + 1].pos;
+          const glm::vec2 ab(b.x - a.x, b.z - a.z);
+          const float len2 = glm::dot(ab, ab);
+          if (len2 < 0.25f) continue;
+          const float t = std::clamp(glm::dot(glm::vec2(spawnPos.x - a.x, spawnPos.z - a.z), ab) / len2, 0.0f, 1.0f);
+          const glm::vec3 proj = glm::mix(a, b, t);
+          const float dx = spawnPos.x - proj.x;
+          const float dz = spawnPos.z - proj.z;
+          const float d2 = dx * dx + dz * dz;
+          if (d2 < bestD2) {
+            bestD2 = d2;
+            const glm::vec2 dir = ab / std::sqrt(len2);
+            const float align = dir.x * fwd.x + dir.y * fwd.z;
+            const glm::vec2 travelDir = (align >= 0.0f) ? dir : -dir;
+            const glm::vec2 rightLane(travelDir.y, -travelDir.x);
+            const float laneOff = std::min(road.width * 0.24f, 2.8f);
+            bestRoadPos = glm::vec3(proj.x + rightLane.x * laneOff, proj.y, proj.z + rightLane.y * laneOff);
+            bestRoadYaw = std::atan2(travelDir.x, travelDir.y);
+            foundRoad = true;
+          }
+        }
+      }
+      if (foundRoad) {
+        spawnPos.x = bestRoadPos.x;
+        spawnPos.z = bestRoadPos.z;
+        groundY = std::max(bestRoadPos.y, world.heightfield.sampleHeight(spawnPos.x, spawnPos.z));
+        spawnYaw = bestRoadYaw;
+      }
+    }
+    spawnPos.y = groundY + 0.05f;
+  }
+
+  // Reuse existing personal vehicle slot if not currently occupied by player, otherwise append
+  int slot = -1;
+  if (activePersonalVehicleId_ > 0) {
+    for (size_t i = 0; i < vehicles_.size(); ++i) {
+      if (vehicles_[i].id == activePersonalVehicleId_ && !vehicles_[i].occupiedByPlayer) {
+        slot = static_cast<int>(i);
+        break;
+      }
+    }
+  }
+
+  VehicleEntity v;
+  v.id = (slot >= 0) ? vehicles_[static_cast<size_t>(slot)].id : nextVehicleId_++;
+  v.kind = kind;
+  v.pos = spawnPos;
+  v.yawRad = spawnYaw;
+  v.isBoat = sp.isBoat;
+  v.isAircraft = sp.isAircraft;
+  v.maxSpeed = sp.maxSpeed;
+  v.accel = sp.accel;
+  v.rpm = sp.idleRpm;
+  v.hp = 100.0f;
+  v.colorTint = (kind == VehicleModelKind::Taxi) ? glm::vec3(0.98f, 0.78f, 0.14f) : customPaintColor(selectedPaintIdx_);
+
+  if (slot >= 0) {
+    vehicles_[static_cast<size_t>(slot)] = v;
+  } else {
+    slot = static_cast<int>(vehicles_.size());
+    vehicles_.push_back(v);
+  }
+  activePersonalVehicleId_ = v.id;
+
+  if (autoBoard && !inVehicle()) {
+    hasWaypoint_ = false;
+    auto& spawned = vehicles_[static_cast<size_t>(slot)];
+    spawned.occupiedByPlayer = true;
+    if (spawned.isAircraft) spawned.rotorRpm01 = 0.65f;
+    activeVehicleIdx_ = slot;
+    player.teleport(spawned.pos + glm::vec3(0.0f, 0.65f, 0.0f), glm::degrees(spawned.yawRad));
+  } else {
+    setGpsWaypoint(v.pos, std::string("Valet: ") + sp.displayName);
+  }
+
+  if (audio) audio->playCashChime();
+  pushToast(std::string("VALET DELIVERED: ") + sp.displayName + "!", 3.2f);
+  return slot;
+}
+
+bool GameSession::upgradeCurrentVehicleStage(AudioEngine* audio) {
+  if (!inVehicle() || activeVehicleIdx_ < 0) return false;
+  auto& v = vehicles_[static_cast<size_t>(activeVehicleIdx_)];
+  if (v.engineStage >= 3) {
+    pushToast("Engine already at Max Stage 3 Twin-Turbo!", 2.5f);
+    return false;
+  }
+  const int cost = 400 + v.engineStage * 300;
+  if (playerCash_ < cost) {
+    pushToast("Need $" + std::to_string(cost) + " for Stage " + std::to_string(v.engineStage + 1) + " Tune", 2.5f);
+    return false;
+  }
+  playerCash_ -= cost;
+  v.engineStage++;
+  const VehicleSpec& sp = vehicleSpec(v.kind);
+  const float mult = 1.0f + 0.10f * static_cast<float>(v.engineStage);
+  v.maxSpeed = sp.maxSpeed * mult;
+  v.accel = sp.accel * (1.0f + 0.12f * static_cast<float>(v.engineStage));
+  v.hp = 100.0f;
+  v.destroyed = false;
+  if (audio) audio->playCashChime();
+  pushToast("WESTGATE CUSTOMS: Stage " + std::to_string(v.engineStage) + " ECU + Turbo Installed!", 3.2f);
+  return true;
+}
+
+void GameSession::damageVehicle(size_t vehIdx, float amount, const WorldData& world, PlayerController* player, AudioEngine* audio, bool fromPlayer) {
+  if (vehIdx >= vehicles_.size() || amount <= 0.0f) return;
+  auto& v = vehicles_[vehIdx];
+  if (v.destroyed) return;
+
+  v.hp = std::max(0.0f, v.hp - amount);
+  if (v.hp > 0.0f) {
+    if (v.hp < 25.0f && v.occupiedByPlayer) {
+      pushToast("WARNING: ENGINE ON FIRE - EXIT VEHICLE [G]!", 1.8f);
+    }
+    return;
+  }
+
+  // Detonate vehicle: scorched wreck, upward blast impulse, radial damage & chain-reaction blast!
+  v.destroyed = true;
+  v.wreckTimer = 0.0f;
+  v.speed *= 0.2f;
+  v.vxLocal *= 0.2f;
+  v.vyLocal = 0.0f;
+  v.braking = false;
+  v.sirenActive = false;
+  v.headlightsOn = false;
+  v.colorTint = glm::vec3(0.12f, 0.12f, 0.13f);
+  v.suspHeaveVel = 5.8f;
+  v.suspPitchVel = 1.6f;
+  v.suspRollVel = 1.2f;
+
+  const glm::vec3 blastPos = v.pos + glm::vec3(0.0f, 1.0f, 0.0f);
+  spawnSparks(blastPos, {0.0f, 1.0f, 0.0f}, {1.0f, 0.52f, 0.12f}, 24);
+  spawnSparks(blastPos + glm::vec3(0.0f, 0.6f, 0.0f), {0.0f, 1.0f, 0.0f}, {0.22f, 0.22f, 0.24f}, 14);
+  muzzleFlashPos_ = blastPos + glm::vec3(0.0f, 1.2f, 0.0f);
+  muzzleFlashTimer_ = 0.22f;
+  if (audio) audio->playExplosion(blastPos);
+
+  if (v.occupiedByPlayer && player) {
+    v.occupiedByPlayer = false;
+    activeVehicleIdx_ = -1;
+    const glm::vec3 leftDir(-std::cos(v.yawRad), 0.0f, std::sin(v.yawRad));
+    glm::vec3 ejectPos = v.pos + leftDir * 2.8f;
+    ejectPos.y = world.heightfield.sampleHeight(ejectPos.x, ejectPos.z) + 0.6f;
+    player->teleport(ejectPos, glm::degrees(v.yawRad));
+    damagePlayer(62.0f, world, *player, audio);
+  } else if (player) {
+    const float pDist = glm::distance(player->position(), blastPos);
+    if (pDist < 13.0f) {
+      damagePlayer((1.0f - pDist / 13.0f) * 58.0f, world, *player, audio);
+    }
+  }
+
+  // Radial blast against nearby NPCs
+  for (auto& npc : npcs_) {
+    if (!npc.alive) continue;
+    const float d = glm::distance(npc.pos, blastPos);
+    if (d < 13.5f) {
+      npc.hp -= (1.0f - d / 13.5f) * 140.0f;
+      npc.hitFlash = 1.0f;
+      if (npc.hp <= 0.0f) {
+        npc.alive = false;
+        npc.deadTimer = 0.0f;
+        npc.animClip = "knockdown";
+        npc.animTime = 0.0f;
+      }
+    }
+  }
+
+  // Chain-reaction blast to adjacent vehicles within 10.5m
+  for (size_t oj = 0; oj < vehicles_.size(); ++oj) {
+    if (oj == vehIdx || vehicles_[oj].destroyed) continue;
+    const float od = glm::distance(vehicles_[oj].pos, blastPos);
+    if (od < 10.5f) {
+      damageVehicle(oj, (1.0f - od / 10.5f) * 85.0f, world, player, audio, fromPlayer);
+    }
+  }
+
+  if (fromPlayer) {
+    reportCrime(v.kind == VehicleModelKind::PoliceCruiser ? CrimeKind::CopHit : CrimeKind::Gunfire, blastPos, world);
+  }
+}
+
+void GameSession::fireActiveWeapon(PlayerController& player, PhysicsWorld& physics, const WorldData& world, AudioEngine* audio) {
   auto& w = weapons_[static_cast<size_t>(activeWeapon_)];
   if (w.isMelee || !w.unlocked || reloadTimer_ > 0.0f) return;
   if (w.magAmmo <= 0) {
@@ -753,6 +1194,7 @@ void GameSession::fireActiveWeapon(const PlayerController& player, PhysicsWorld&
     float bestT = worldHit.hit ? worldHit.distance : kMaxRange;
 
     int hitNpcIdx = -1;
+    int hitVehIdx = -1;
     bool hitIronOpp = false;
 
     for (size_t ni = 0; ni < npcs_.size(); ++ni) {
@@ -762,6 +1204,21 @@ void GameSession::fireActiveWeapon(const PlayerController& player, PhysicsWorld&
       if (t > 0.5f && t < bestT) {
         bestT = t;
         hitNpcIdx = static_cast<int>(ni);
+        hitVehIdx = -1;
+        hitIronOpp = false;
+      }
+    }
+
+    for (size_t vi = 0; vi < vehicles_.size(); ++vi) {
+      const auto& veh = vehicles_[vi];
+      if (veh.destroyed || veh.occupiedByPlayer) continue;
+      const VehicleSpec& vsp = vehicleSpec(veh.kind);
+      const float hitRad = std::clamp(0.42f * std::max(vsp.width, vsp.length * 0.62f), 1.45f, 3.2f);
+      const float tV = raySphereHit(camPos, rayDir, veh.pos + glm::vec3(0.0f, vsp.height * 0.45f, 0.0f), hitRad);
+      if (tV > 0.8f && tV < bestT) {
+        bestT = tV;
+        hitVehIdx = static_cast<int>(vi);
+        hitNpcIdx = -1;
         hitIronOpp = false;
       }
     }
@@ -771,18 +1228,23 @@ void GameSession::fireActiveWeapon(const PlayerController& player, PhysicsWorld&
       if (tPit > 0.5f && tPit < bestT) {
         bestT = tPit;
         hitNpcIdx = -1;
+        hitVehIdx = -1;
         hitIronOpp = true;
       }
     }
 
     const glm::vec3 endPt = camPos + rayDir * bestT;
     tracers_.push_back({muzzle, endPt, w.suppressed ? glm::vec3(0.65f, 0.92f, 1.0f) : glm::vec3(1.0f, 0.85f, 0.30f), 0.085f});
-    if (worldHit.hit && hitNpcIdx < 0 && !hitIronOpp) {
+    if (worldHit.hit && hitNpcIdx < 0 && hitVehIdx < 0 && !hitIronOpp) {
       spawnSparks(worldHit.position, worldHit.normal, {1.0f, 0.78f, 0.32f}, 5);
       physics.applyImpulseNear(worldHit.position, rayDir * (w.damage * 0.65f), 1.6f);
     }
 
-    if (hitNpcIdx >= 0) {
+    if (hitVehIdx >= 0) {
+      hitAnything = true;
+      spawnSparks(endPt, -rayDir, {1.0f, 0.75f, 0.28f}, 6);
+      damageVehicle(static_cast<size_t>(hitVehIdx), w.damage * 0.82f, world, &player, audio, true);
+    } else if (hitNpcIdx >= 0) {
       hitAnything = true;
       auto& npc = npcs_[static_cast<size_t>(hitNpcIdx)];
       npc.hp -= w.damage;
@@ -899,24 +1361,31 @@ bool GameSession::trySilentTakedown(PlayerController& player, const WorldData& w
 }
 
 void GameSession::updateTrafficAndVehicles(float dt, const GameInputFrame& input, PlayerController& player, PhysicsWorld& physics, const WorldData& world, AudioEngine* audio) {
-  // Enter / Exit nearest vehicle on G
+  const float clampedDt = std::clamp(dt, 1e-4f, 0.05f);
+  const bool darkOrWet = (skyLighting().nightFactor > 0.16f) || (rainIntensity_ > 0.18f);
+
+  // Enter / Exit nearest intact vehicle on G
   if (input.interactPressed) {
-    if (activeVehicleIdx_ >= 0) {
+    if (activeVehicleIdx_ >= 0 && activeVehicleIdx_ < static_cast<int>(vehicles_.size())) {
       auto& v = vehicles_[static_cast<size_t>(activeVehicleIdx_)];
       v.occupiedByPlayer = false;
+      v.braking = false;
+      v.handbrakeDown = false;
       v.speed *= 0.45f;
-      const glm::vec3 leftDir(-std::cos(v.yawRad), 0.0f, std::sin(v.yawRad));
-      glm::vec3 exitPos = v.pos + leftDir * 2.1f;
-      exitPos.y = world.heightfield.sampleHeight(exitPos.x, exitPos.z) + 0.5f;
+      v.vxLocal = v.speed;
+      v.vyLocal *= 0.25f;
+      const glm::vec3 leftDir(std::cos(v.yawRad), 0.0f, -std::sin(v.yawRad));
+      glm::vec3 exitPos = v.pos + leftDir * (vehicleSpec(v.kind).width * 0.58f + 0.95f);
+      exitPos.y = std::max(world.heightfield.sampleHeight(exitPos.x, exitPos.z), v.pos.y - 0.35f) + 0.5f;
       player.teleport(exitPos, glm::degrees(v.yawRad));
       activeVehicleIdx_ = -1;
     } else {
-      const glm::vec3 pPos = player.position();
+      const glm::vec3 pPos0 = player.position();
       int bestIdx = -1;
-      float bestDist = 4.6f;
+      float bestDist = 5.2f;
       for (size_t i = 0; i < vehicles_.size(); ++i) {
-        if (vehicles_[i].isRacer) continue;
-        const float d = glm::distance(pPos, vehicles_[i].pos);
+        if (vehicles_[i].isRacer || vehicles_[i].destroyed) continue;
+        const float d = glm::distance(pPos0, vehicles_[i].pos);
         if (d < bestDist) {
           bestDist = d;
           bestIdx = static_cast<int>(i);
@@ -930,157 +1399,437 @@ void GameSession::updateTrafficAndVehicles(float dt, const GameInputFrame& input
         v.isAmbientTraffic = false;
         v.isPolicePursuit = false;
         v.occupiedByPlayer = true;
+        if (v.isAircraft) v.rotorRpm01 = std::max(v.rotorRpm01, 0.58f);
         activeVehicleIdx_ = bestIdx;
+        const VehicleSpec& sp = vehicleSpec(v.kind);
         if (v.isAircraft) {
-          pushToast("HELICOPTER: [WASD] Fly/Yaw | [Space] Climb | [C] Descend | [G] Exit", 4.0f);
+          pushToast(std::string(sp.displayName) + ": [WASD] Cyclic/Yaw | [Space] Climb | [C] Descend | [G] Exit", 4.0f);
         } else if (v.isBoat) {
-          pushToast("BOAT: [WASD] Throttle/Steer | [Space] Reverse Brake | [G] Exit", 3.5f);
+          pushToast(std::string(sp.displayName) + ": [WASD] Throttle/Steer | [Space] Brake | [G] Exit", 3.5f);
         } else {
-          pushToast("Driving vehicle - [WASD] Drive | [Space] Brake | [H] Horn/Siren | [G] Exit", 3.0f);
+          pushToast(std::string(sp.displayName) + ": [WASD] Drive | [Space] Handbrake Drift | [H] Horn/Siren | [G] Exit", 3.2f);
         }
       }
     }
   }
 
   const glm::vec3 pPos = player.position();
+  const float roadGripWeather = 1.0f - wetness_ * 0.24f;
+
+  auto sampleDriveSurfaceY = [&](float x, float z, float refY) -> float {
+    float groundY = world.heightfield.sampleHeight(x, z);
+    const RaycastHit deckHit = physics.raycast(glm::vec3(x, refY + 2.8f, z), glm::vec3(0.0f, -1.0f, 0.0f), 16.0f);
+    if (deckHit.hit && deckHit.position.y > groundY + 0.30f && deckHit.position.y < refY + 2.5f) {
+      groundY = deckHit.position.y;
+    }
+    return groundY;
+  };
+
+  auto stepFourCornerSuspension = [&](VehicleEntity& v, const VehicleSpec& sp, float lonAccel, float latAccel, bool detailedRay) {
+    const float fx = std::sin(v.yawRad);
+    const float fz = std::cos(v.yawRad);
+    const float lx = std::cos(v.yawRad);
+    const float lz = -std::sin(v.yawRad);
+    const float hw = sp.width * 0.40f;
+    const float hl = sp.length * 0.34f;
+    const auto hAt = [&](float x, float z) -> float {
+      return detailedRay ? sampleDriveSurfaceY(x, z, v.pos.y) : world.heightfield.sampleHeight(x, z);
+    };
+    const float hFL = hAt(v.pos.x + fx * hl + lx * hw, v.pos.z + fz * hl + lz * hw);
+    const float hFR = hAt(v.pos.x + fx * hl - lx * hw, v.pos.z + fz * hl - lz * hw);
+    const float hRL = hAt(v.pos.x - fx * hl + lx * hw, v.pos.z - fz * hl + lz * hw);
+    const float hRR = hAt(v.pos.x - fx * hl - lx * hw, v.pos.z - fz * hl - lz * hw);
+    const float avgFront = 0.5f * (hFL + hFR);
+    const float avgRear = 0.5f * (hRL + hRR);
+    const float avgLeft = 0.5f * (hFL + hRL);
+    const float avgRight = 0.5f * (hFR + hRR);
+    const float avgGround = 0.25f * (hFL + hFR + hRL + hRR);
+
+    // +pitch tilts nose DOWN around +X_veh (since +Z_veh is forward and +X_veh is left: X x Z = -Y!)
+    const float slopePitch = std::clamp(-std::atan2(avgFront - avgRear, std::max(1.2f, 2.0f * hl)), -0.42f, 0.42f);
+    // +roll tilts LEFT side UP / RIGHT side DOWN around +Z_veh
+    const float slopeRoll = std::clamp(std::atan2(avgLeft - avgRight, std::max(0.9f, 2.0f * hw)), -0.38f, 0.38f);
+
+    // Load-transfer target pitch (+lonAccel squats rear -> negative pitch; braking dives nose -> positive pitch)
+    const float targetDynPitch = std::clamp(-lonAccel * sp.pitchGain, -0.11f, 0.11f);
+    const float targetDynRoll = std::clamp(latAccel * sp.rollGain, -0.14f, 0.14f);
+
+    const float omega = sp.suspOmega;
+    const float dampC = 2.0f * sp.suspZeta * omega;
+    v.suspHeaveVel += (-omega * omega * v.suspHeave - dampC * v.suspHeaveVel) * clampedDt;
+    v.suspHeave = std::clamp(v.suspHeave + v.suspHeaveVel * clampedDt, -0.22f, 0.28f);
+
+    v.suspPitchVel += (omega * omega * (targetDynPitch - v.suspPitch) - dampC * v.suspPitchVel) * clampedDt;
+    v.suspPitch = std::clamp(v.suspPitch + v.suspPitchVel * clampedDt, -0.22f, 0.22f);
+
+    v.suspRollVel += (omega * omega * (targetDynRoll - v.suspRoll) - dampC * v.suspRollVel) * clampedDt;
+    v.suspRoll = std::clamp(v.suspRoll + v.suspRollVel * clampedDt, -0.24f, 0.24f);
+
+    v.pitchRad = slopePitch + v.suspPitch;
+    v.rollRad = slopeRoll + v.suspRoll;
+
+    v.wheelSuspOffsets[0] = std::clamp(hFL - avgGround - v.suspHeave, -0.16f, 0.16f);
+    v.wheelSuspOffsets[1] = std::clamp(hFR - avgGround - v.suspHeave, -0.16f, 0.16f);
+    v.wheelSuspOffsets[2] = std::clamp(hRL - avgGround - v.suspHeave, -0.16f, 0.16f);
+    v.wheelSuspOffsets[3] = std::clamp(hRR - avgGround - v.suspHeave, -0.16f, 0.16f);
+    return avgGround;
+  };
 
   for (size_t vi = 0; vi < vehicles_.size(); ++vi) {
     auto& v = vehicles_[vi];
-    if (v.isAircraft) {
-      v.rotorAngleRad += dt * (v.occupiedByPlayer ? 28.0f : 3.5f);
+    const VehicleSpec& sp = vehicleSpec(v.kind);
+
+    // Wrecked vehicle smoke & traffic recycle
+    if (v.destroyed) {
+      v.wreckTimer += clampedDt;
+      v.speed *= (1.0f - std::min(1.0f, 3.5f * clampedDt));
+      v.suspHeaveVel -= 14.0f * clampedDt;
+      v.suspHeave = std::max(0.0f, v.suspHeave + v.suspHeaveVel * clampedDt);
+      if (v.suspHeave <= 0.0f && v.suspHeaveVel < 0.0f) v.suspHeaveVel *= -0.25f;
+      v.smokeEmitAccum += clampedDt;
+      if (v.smokeEmitAccum > 0.14f && glm::distance(v.pos, pPos) < 120.0f) {
+        v.smokeEmitAccum = 0.0f;
+        spawnSparks(v.pos + glm::vec3(0.0f, 1.0f, 0.0f), {0.0f, 0.8f, 0.0f},
+                    (v.wreckTimer < 6.0f) ? glm::vec3(0.95f, 0.42f, 0.12f) : glm::vec3(0.24f, 0.24f, 0.26f), 2);
+      }
+      if (v.isAmbientTraffic && v.wreckTimer > 22.0f && glm::distance(v.pos, pPos) > 75.0f) {
+        v.destroyed = false;
+        v.hp = 100.0f;
+        v.wreckTimer = 0.0f;
+        v.colorTint = customPaintColor(v.id);
+      }
+      continue;
     }
+
+    // Engine smoke & fire DoT when critically damaged
+    if (v.hp < 55.0f) {
+      v.smokeEmitAccum += clampedDt;
+      const float interval = (v.hp < 25.0f) ? 0.09f : 0.22f;
+      if (v.smokeEmitAccum >= interval && glm::distance(v.pos, pPos) < 130.0f) {
+        v.smokeEmitAccum = 0.0f;
+        const glm::vec3 fwd(std::sin(v.yawRad), 0.0f, std::cos(v.yawRad));
+        const glm::vec3 hood = v.pos + fwd * (sp.length * 0.32f) + glm::vec3(0.0f, sp.height * 0.58f, 0.0f);
+        const glm::vec3 col = (v.hp < 25.0f) ? glm::vec3(1.0f, 0.46f, 0.12f) : glm::vec3(0.45f, 0.47f, 0.50f);
+        spawnSparks(hood, {0.0f, 0.9f, 0.0f}, col, (v.hp < 25.0f) ? 3 : 1);
+      }
+      if (v.hp < 22.0f) {
+        damageVehicle(vi, 5.5f * clampedDt, world, &player, audio, false);
+        if (v.destroyed) continue;
+      }
+    }
+
+    // Helicopter rotor spooling & articulation
+    if (v.isAircraft) {
+      const float targetRpm = v.occupiedByPlayer ? 1.0f : 0.08f;
+      v.rotorRpm01 += (targetRpm - v.rotorRpm01) * std::min(1.0f, clampedDt * (v.occupiedByPlayer ? 2.6f : 0.65f));
+      v.rotorAngleRad = std::fmod(v.rotorAngleRad + clampedDt * (3.2f + v.rotorRpm01 * 28.5f), 6283.185f);
+      v.headlightsOn = v.occupiedByPlayer || darkOrWet;
+      v.sirenActive = v.occupiedByPlayer && v.sirenActive;
+    }
+
     if (v.occupiedByPlayer) {
       if (v.isAircraft) {
-        // Flyable Helicopter 6-DOF Physics ([Space] climb, [C] descend, [WASD] forward/yaw)
+        // 6-DOF Helicopter Flight Dynamics (Cyclic pitch/bank, Collective climb/sink, Pedals yaw)
         const float collective = (input.moveInput.jump ? 1.0f : 0.0f) - (input.moveInput.crouch ? 1.0f : 0.0f);
-        const float thrust = input.moveInput.moveForward;
-        const float yawInput = -input.moveInput.moveRight;
-        v.yawRad = wrapAnglePi(v.yawRad + yawInput * 1.95f * dt);
-        v.speed = std::clamp(v.speed + thrust * v.accel * dt, -14.0f, v.maxSpeed);
-        v.speed *= (1.0f - std::min(1.0f, 0.85f * dt));
-        v.verticalVel = std::clamp(v.verticalVel + (collective * 16.0f - v.verticalVel * 2.2f) * dt, -18.0f, 22.0f);
+        const float cyclicFwd = input.moveInput.moveForward;
+        const float yawPedal = -input.moveInput.moveRight;
+        if (input.secondaryAction && sirenCooldown_ <= 0.0f) {
+          sirenCooldown_ = 0.30f;
+          v.sirenActive = !v.sirenActive;
+        }
+        v.yawRate += (yawPedal * 2.15f - v.yawRate) * std::min(1.0f, clampedDt * 6.5f);
+        v.yawRad = wrapAnglePi(v.yawRad + v.yawRate * clampedDt);
 
-        v.pitchRad = thrust * 0.20f;
-        v.rollRad = yawInput * -0.22f;
+        const float liftReady = std::clamp(v.rotorRpm01 * 1.25f, 0.35f, 1.0f);
+        v.speed = std::clamp(v.speed + cyclicFwd * v.accel * liftReady * clampedDt, -16.0f, v.maxSpeed);
+        v.speed *= (1.0f - std::min(1.0f, 0.78f * clampedDt));
+        v.vxLocal = v.speed;
+        v.vyLocal += (yawPedal * 3.8f - v.vyLocal) * std::min(1.0f, clampedDt * 2.5f);
+        v.verticalVel = std::clamp(v.verticalVel + (collective * 17.5f * liftReady - v.verticalVel * 2.1f) * clampedDt, -18.0f, 24.0f);
+
+        const float targetPitch = cyclicFwd * 0.22f + std::clamp(v.speed / v.maxSpeed, -0.3f, 1.0f) * 0.06f;
+        const float targetRoll = -yawPedal * 0.26f;
+        v.pitchRad += (targetPitch - v.pitchRad) * std::min(1.0f, clampedDt * 6.0f);
+        v.rollRad += (targetRoll - v.rollRad) * std::min(1.0f, clampedDt * 6.0f);
+        v.suspPitch = v.pitchRad;
+        v.suspRoll = v.rollRad;
+        v.rpm = sp.idleRpm + (sp.redlineRpm - sp.idleRpm) * v.rotorRpm01;
 
         const glm::vec3 fwd(std::sin(v.yawRad), 0.0f, std::cos(v.yawRad));
-        v.pos += fwd * (v.speed * dt);
+        const glm::vec3 left(std::cos(v.yawRad), 0.0f, -std::sin(v.yawRad));
+        v.pos += (fwd * v.speed + left * (v.vyLocal * 0.25f)) * clampedDt;
         v.pos.x = std::clamp(v.pos.x, world.worldMin + 20.0f, world.worldMax - 20.0f);
         v.pos.z = std::clamp(v.pos.z, world.worldMin + 20.0f, world.worldMax - 20.0f);
-        const float floorY = std::max(0.2f, world.heightfield.sampleHeight(v.pos.x, v.pos.z)) + 0.05f;
-        v.pos.y = std::clamp(v.pos.y + v.verticalVel * dt, floorY, 320.0f);
-        if (v.pos.y <= floorY + 0.02f && v.verticalVel < 0.0f) {
+        const float floorY = std::max(0.2f, sampleDriveSurfaceY(v.pos.x, v.pos.z, v.pos.y)) + 0.05f;
+        v.pos.y = std::clamp(v.pos.y + v.verticalVel * clampedDt, floorY, 340.0f);
+        if (v.pos.y <= floorY + 0.03f && v.verticalVel < 0.0f) {
+          if (v.verticalVel < -13.0f) {
+            damageVehicle(vi, (-v.verticalVel - 11.0f) * 3.5f, world, &player, audio, false);
+          }
           v.verticalVel = 0.0f;
-          v.pitchRad *= 0.2f;
-          v.rollRad *= 0.2f;
+          v.pitchRad *= 0.25f;
+          v.rollRad *= 0.25f;
+          v.suspPitch = v.pitchRad;
+          v.suspRoll = v.rollRad;
         }
         player.teleport(v.pos + glm::vec3(0.0f, 1.0f, 0.0f), glm::degrees(v.yawRad));
         continue;
       }
 
       if (v.isBoat) {
-        // Wave-buoyant Speedboat / Cruiser Physics
+        // Wave-buoyant Speedboat / Patrol RIB Physics with planing trim, turn banking & wake foam
         const float throttle = input.moveInput.moveForward;
         const float steer = -input.moveInput.moveRight;
+        v.braking = input.moveInput.jump || (throttle < -0.1f && v.speed > 1.0f);
+        v.headlightsOn = darkOrWet || v.occupiedByPlayer;
         if (input.moveInput.jump) {
-          v.speed *= (1.0f - std::min(1.0f, 4.5f * dt));
+          v.speed *= (1.0f - std::min(1.0f, 4.2f * clampedDt));
         } else if (std::abs(throttle) > 0.01f) {
-          v.speed = std::clamp(v.speed + throttle * v.accel * dt, -10.0f, v.maxSpeed);
+          v.speed = std::clamp(v.speed + throttle * v.accel * clampedDt, -11.0f, v.maxSpeed);
         } else {
-          v.speed *= (1.0f - std::min(1.0f, 1.4f * dt));
+          v.speed *= (1.0f - std::min(1.0f, 1.25f * clampedDt));
         }
-        const float turnAmt = std::clamp(std::abs(v.speed) / 4.0f, 0.25f, 1.0f) * (v.speed >= 0.0f ? 1.0f : -1.0f);
-        v.yawRad = wrapAnglePi(v.yawRad + steer * 1.85f * turnAmt * dt);
+        v.vxLocal = v.speed;
+        const float speedFrac = std::clamp(std::abs(v.speed) / std::max(1.0f, v.maxSpeed), 0.0f, 1.0f);
+        v.rpm = sp.idleRpm + (sp.redlineRpm - sp.idleRpm) * std::clamp(speedFrac * 0.85f + std::max(0.0f, std::abs(throttle)) * 0.2f, 0.0f, 1.0f);
+
+        const float turnAmt = std::clamp(std::abs(v.speed) / 3.8f, 0.22f, 1.0f) * (v.speed >= 0.0f ? 1.0f : -1.0f);
+        v.steerAngle += (steer * 0.45f - v.steerAngle) * std::min(1.0f, clampedDt * 8.0f);
+        v.yawRad = wrapAnglePi(v.yawRad + steer * 1.90f * turnAmt * clampedDt);
+
         const glm::vec3 fwd(std::sin(v.yawRad), 0.0f, std::cos(v.yawRad));
-        const glm::vec3 nextXZ = v.pos + fwd * (v.speed * dt);
+        const glm::vec3 left(std::cos(v.yawRad), 0.0f, -std::sin(v.yawRad));
+        const glm::vec3 nextXZ = v.pos + fwd * (v.speed * clampedDt);
         const float terrainNext = world.heightfield.sampleHeight(nextXZ.x, nextXZ.z);
-        if (terrainNext < -0.25f) {
+        if (terrainNext < -0.22f) {
           v.pos.x = std::clamp(nextXZ.x, world.worldMin + 15.0f, world.worldMax - 15.0f);
           v.pos.z = std::clamp(nextXZ.z, world.worldMin + 15.0f, world.worldMax - 15.0f);
         } else {
-          v.speed *= -0.25f;
+          if (std::abs(v.speed) > 9.0f) {
+            damageVehicle(vi, std::abs(v.speed) * 0.7f, world, &player, audio, false);
+          }
+          v.speed *= -0.28f;
         }
-        const float wH = oceanWaveHeight(v.pos.x, v.pos.z, animClock_);
-        const float wFwd = oceanWaveHeight(v.pos.x + fwd.x * 2.0f, v.pos.z + fwd.z * 2.0f, animClock_);
-        v.pos.y = wH + 0.05f;
-        v.pitchRad = std::atan2(wFwd - wH, 2.0f) - std::clamp(v.speed / v.maxSpeed, 0.0f, 1.0f) * 0.08f;
-        v.rollRad = steer * -0.14f * std::clamp(std::abs(v.speed) / 18.0f, 0.0f, 1.0f);
-        if (std::abs(v.speed) > 9.0f && static_cast<int>(animClock_ * 20.0f) % 2 == 0) {
-          spawnSparks(v.pos - fwd * 2.3f + glm::vec3(0.0f, 0.2f, 0.0f), {0.0f, 0.8f, 0.0f}, {0.82f, 0.94f, 1.0f}, 2);
+        const float wCenter = oceanWaveHeight(v.pos.x, v.pos.z, animClock_);
+        const float wBow = oceanWaveHeight(v.pos.x + fwd.x * 2.4f, v.pos.z + fwd.z * 2.4f, animClock_);
+        const float wPort = oceanWaveHeight(v.pos.x + left.x * 1.1f, v.pos.z + left.z * 1.1f, animClock_);
+        const float wStbd = oceanWaveHeight(v.pos.x - left.x * 1.1f, v.pos.z - left.z * 1.1f, animClock_);
+        const float planingLift = std::clamp((v.speed - 6.0f) / 26.0f, 0.0f, 1.0f);
+        v.pos.y = wCenter + 0.06f + planingLift * 0.14f;
+        // Planing lifts bow UP -> negative pitch around +X_veh; turning left (+steer) banks hull inward (-roll)
+        const float targetPitch = -std::atan2(wBow - wCenter, 2.4f) - planingLift * 0.095f;
+        const float targetRoll = std::atan2(wPort - wStbd, 2.2f) - steer * 0.22f * speedFrac;
+        v.suspPitch += (targetPitch - v.suspPitch) * std::min(1.0f, clampedDt * 7.5f);
+        v.suspRoll += (targetRoll - v.suspRoll) * std::min(1.0f, clampedDt * 7.5f);
+        v.pitchRad = v.suspPitch;
+        v.rollRad = v.suspRoll;
+
+        if (std::abs(v.speed) > 6.5f && static_cast<int>(animClock_ * 24.0f) % 2 == 0) {
+          const glm::vec3 stern = v.pos - fwd * (sp.length * 0.46f) + glm::vec3(0.0f, 0.18f, 0.0f);
+          spawnSparks(stern + left * 0.55f, {0.0f, 0.65f, 0.0f}, {0.84f, 0.95f, 1.0f}, 1);
+          spawnSparks(stern - left * 0.55f, {0.0f, 0.65f, 0.0f}, {0.84f, 0.95f, 1.0f}, 1);
         }
         player.teleport(v.pos + glm::vec3(0.0f, 0.65f, 0.0f), glm::degrees(v.yawRad));
         continue;
       }
 
-      // Player ground car driving physics
-      const float throttle = input.moveInput.moveForward;
-      const float steer = -input.moveInput.moveRight; // +yaw is left
-      if (input.moveInput.jump) {
-        // Handbrake
-        v.speed = std::max(0.0f, std::abs(v.speed) - 34.0f * dt) * (v.speed >= 0.0f ? 1.0f : -1.0f);
-      } else if (std::abs(throttle) > 0.01f) {
-        v.speed = std::clamp(v.speed + throttle * v.accel * dt, -14.0f, v.maxSpeed);
-      } else {
-        const float drag = std::min(1.0f, 2.2f * dt);
-        v.speed *= (1.0f - drag);
-      }
+      // -----------------------------------------------------------------------
+      // Player 4-Wheel Combined-Slip Drivetrain, Handbrake Drift & Suspension
+      // -----------------------------------------------------------------------
+      const float cmdInput = input.moveInput.moveForward;
+      const float steerInput = -input.moveInput.moveRight; // +1 = left, -1 = right
+      v.handbrakeDown = input.moveInput.jump;
+      v.headlightsOn = darkOrWet || v.occupiedByPlayer;
 
       if (input.secondaryAction && sirenCooldown_ <= 0.0f) {
         sirenCooldown_ = 0.32f;
+        if (sp.hasEmergencyStrobe) v.sirenActive = !v.sirenActive;
         if (audio) audio->playSirenPulse();
       }
 
-      const float steerFactor = std::clamp(std::abs(v.speed) / 6.0f, 0.0f, 1.0f) * (v.speed >= 0.0f ? 1.0f : -1.0f);
-      v.yawRad = wrapAnglePi(v.yawRad + steer * 2.25f * steerFactor * dt);
-      const glm::vec3 fwd(std::sin(v.yawRad), 0.0f, std::cos(v.yawRad));
+      // Speed-sensitive Ackermann steering rack
+      const float absVx = std::abs(v.vxLocal);
+      const float maxSteerRad = glm::mix(0.58f, 0.22f, std::clamp(absVx / 42.0f, 0.0f, 1.0f));
+      const float desiredSteer = steerInput * maxSteerRad;
+      v.steerAngle += (desiredSteer - v.steerAngle) * std::min(1.0f, clampedDt * 10.5f);
 
-      const glm::vec3 nextXZ = v.pos + fwd * (v.speed * dt);
-      // Real Jolt collision sweep against buildings/trees/pit walls + dynamic rigid-body crate/barrel smashing
-      if (std::abs(v.speed) > 0.3f) {
+      // Throttle vs service brake vs reverse logic
+      const bool wantsReverse = (cmdInput < -0.05f) && (v.vxLocal <= 1.2f);
+      const bool serviceBraking = (cmdInput < -0.05f && v.vxLocal > 1.2f) || (cmdInput > 0.05f && v.vxLocal < -1.2f);
+      v.braking = serviceBraking || v.handbrakeDown;
+
+      const float prevVx = v.vxLocal;
+      const float effGrip = sp.grip * roadGripWeather;
+
+      if (serviceBraking) {
+        const float decel = sp.brakeDecel * effGrip * std::abs(cmdInput);
+        if (v.vxLocal > 0.0f) v.vxLocal = std::max(0.0f, v.vxLocal - decel * clampedDt);
+        else v.vxLocal = std::min(0.0f, v.vxLocal + decel * clampedDt);
+      } else if (v.handbrakeDown) {
+        // Rear wheels lock: moderate longitudinal decel + strong lateral drift kick!
+        const float hbDecel = sp.brakeDecel * 0.58f * effGrip;
+        if (v.vxLocal > 0.0f) v.vxLocal = std::max(0.0f, v.vxLocal - hbDecel * clampedDt);
+        else v.vxLocal = std::min(0.0f, v.vxLocal + hbDecel * clampedDt);
+      } else if (wantsReverse) {
+        v.vxLocal = std::max(-15.5f, v.vxLocal + cmdInput * (v.accel * 0.72f) * clampedDt);
+      } else if (cmdInput > 0.01f) {
+        // Torque curve tapers smoothly near top speed with aero drag
+        const float speedRatio = std::clamp(v.vxLocal / std::max(1.0f, v.maxSpeed), 0.0f, 1.05f);
+        const float torqueEnvelope = 1.0f - 0.52f * speedRatio * speedRatio;
+        const float shiftCut = (v.shiftTimer > 0.0f) ? 0.35f : 1.0f;
+        v.vxLocal = std::min(v.maxSpeed, v.vxLocal + cmdInput * v.accel * torqueEnvelope * shiftCut * clampedDt);
+      } else {
+        // Rolling resistance + aerodynamic drag
+        const float dragDecel = 1.65f + 0.018f * v.vxLocal * std::abs(v.vxLocal);
+        if (std::abs(v.vxLocal) <= dragDecel * clampedDt) v.vxLocal = 0.0f;
+        else v.vxLocal -= (v.vxLocal > 0.0f ? 1.0f : -1.0f) * dragDecel * clampedDt;
+      }
+
+      // Automatic multi-speed gearbox & RPM synthesis
+      v.shiftTimer = std::max(0.0f, v.shiftTimer - clampedDt);
+      if (v.vxLocal < -0.4f) {
+        v.gear = -1;
+        v.rpm = sp.idleRpm + (sp.redlineRpm - sp.idleRpm) * std::clamp(-v.vxLocal / 15.5f, 0.0f, 0.92f);
+      } else {
+        const int numGears = std::max(1, sp.gears);
+        const float normSpd = std::clamp(v.vxLocal / std::max(1.0f, v.maxSpeed), 0.0f, 0.999f);
+        const int targetGear = std::clamp(1 + static_cast<int>(normSpd * static_cast<float>(numGears)), 1, numGears);
+        if (targetGear != v.gear && v.shiftTimer <= 0.0f) {
+          v.gear = targetGear;
+          v.shiftTimer = 0.11f;
+        }
+        const float gearLo = static_cast<float>(v.gear - 1) / static_cast<float>(numGears);
+        const float gearHi = static_cast<float>(v.gear) / static_cast<float>(numGears);
+        const float inGear = std::clamp((normSpd - gearLo) / std::max(0.08f, gearHi - gearLo), 0.0f, 1.0f);
+        const float targetRpm = sp.idleRpm + (sp.redlineRpm - sp.idleRpm) * (0.24f + 0.74f * inGear);
+        v.rpm += (targetRpm - v.rpm) * std::min(1.0f, clampedDt * 14.0f);
+      }
+
+      // Planar bicycle + lateral slip / handbrake drift solver
+      const float moveSign = (v.vxLocal >= -0.05f) ? 1.0f : -1.0f;
+      const float steerAuthority = std::clamp(std::abs(v.vxLocal) / 3.4f, 0.0f, 1.0f);
+      const float kinematicYawRate = (std::abs(v.vxLocal) / std::max(1.8f, sp.wheelbase)) * std::tan(v.steerAngle) * moveSign * steerAuthority;
+      const float driftBoost = (v.handbrakeDown && absVx > 6.5f) ? (1.45f + 0.55f * sp.driftFactor) : 1.0f;
+      const float targetYawRate = std::clamp(kinematicYawRate * driftBoost, -3.4f, 3.4f);
+      v.yawRate += (targetYawRate - v.yawRate) * std::min(1.0f, clampedDt * (v.handbrakeDown ? 7.5f : 11.5f));
+      if (!v.airborne) {
+        v.yawRad = wrapAnglePi(v.yawRad + v.yawRate * clampedDt);
+      }
+
+      // Lateral velocity vyLocal: builds up during high-G cornering & handbrake slides, damped by rear tire cornering stiffness
+      const float centrifugalKick = -v.yawRate * v.vxLocal * (v.handbrakeDown ? 0.34f : (0.07f + 0.09f * sp.driftFactor));
+      const float lateralDamp = (v.handbrakeDown ? 2.4f : (8.8f * effGrip));
+      v.vyLocal += (centrifugalKick - v.vyLocal * lateralDamp) * clampedDt;
+      v.vyLocal = std::clamp(v.vyLocal, -14.0f, 14.0f);
+
+      v.speed = v.vxLocal;
+      const float wheelRadius = std::clamp(sp.height * 0.23f, 0.31f, 0.54f);
+      v.wheelSpinRad = std::fmod(v.wheelSpinRad + (v.handbrakeDown ? v.vxLocal * 0.35f : v.vxLocal) / wheelRadius * clampedDt, 6283.185f);
+
+      const float lonAccel = (v.vxLocal - prevVx) / clampedDt;
+      const float latAccel = v.yawRate * v.vxLocal;
+      v.slipIntensity = std::clamp((std::abs(v.vyLocal) / 6.5f) + (v.handbrakeDown && absVx > 5.0f ? 0.65f : 0.0f), 0.0f, 1.0f);
+
+      // Emit tire smoke / hot sparks during hard drift or burnout
+      if (!v.airborne && v.slipIntensity > 0.48f && absVx > 6.0f && static_cast<int>(animClock_ * 30.0f) % 2 == 0) {
+        const glm::vec3 fwd0(std::sin(v.yawRad), 0.0f, std::cos(v.yawRad));
+        const glm::vec3 left0(std::cos(v.yawRad), 0.0f, -std::sin(v.yawRad));
+        const glm::vec3 rearAxle = v.pos - fwd0 * (sp.length * 0.33f) + glm::vec3(0.0f, 0.16f, 0.0f);
+        spawnSparks(rearAxle + left0 * (sp.width * 0.42f), {0.0f, 0.45f, 0.0f}, {0.82f, 0.84f, 0.88f}, 1);
+        spawnSparks(rearAxle - left0 * (sp.width * 0.42f), {0.0f, 0.45f, 0.0f}, {0.82f, 0.84f, 0.88f}, 1);
+      }
+
+      const glm::vec3 fwd(std::sin(v.yawRad), 0.0f, std::cos(v.yawRad));
+      const glm::vec3 left(std::cos(v.yawRad), 0.0f, -std::sin(v.yawRad));
+      const glm::vec3 worldVelXZ = fwd * v.vxLocal + left * v.vyLocal;
+      const glm::vec3 nextXZ = v.pos + worldVelXZ * clampedDt;
+
+      // Jolt building/wall collision resolution + impact damage
+      if (glm::length(glm::vec2(worldVelXZ.x, worldVelXZ.z)) > 0.25f) {
         glm::vec3 pushXZ(0.0f);
         float impactScale = 1.0f;
-        if (physics.resolveVehicleCollision(nextXZ, 2.15f, pushXZ, impactScale)) {
+        const float colRad = std::clamp(sp.width * 0.98f, 1.85f, 2.55f);
+        if (physics.resolveVehicleCollision(nextXZ, colRad, pushXZ, impactScale)) {
           v.pos.x = std::clamp(nextXZ.x + pushXZ.x, world.worldMin + 15.0f, world.worldMax - 15.0f);
           v.pos.z = std::clamp(nextXZ.z + pushXZ.z, world.worldMin + 15.0f, world.worldMax - 15.0f);
-          if (std::abs(v.speed) > 8.0f) {
-            spawnSparks(v.pos + fwd * 1.6f + glm::vec3(0.0f, 0.7f, 0.0f), -fwd, {1.0f, 0.72f, 0.25f}, 7);
-            if (audio) audio->playVehicleCrash(std::min(1.1f, std::abs(v.speed) / 28.0f));
+          const float impactSpd = std::abs(v.vxLocal);
+          if (impactSpd > 7.5f) {
+            spawnSparks(v.pos + fwd * (sp.length * 0.42f) + glm::vec3(0.0f, 0.65f, 0.0f), -fwd, {1.0f, 0.72f, 0.25f}, 8);
+            if (audio) audio->playVehicleCrash(std::min(1.15f, impactSpd / 28.0f));
+            damageVehicle(vi, (impactSpd - 6.5f) * 0.85f, world, &player, audio, false);
+            if (v.destroyed) continue;
           }
-          v.speed *= -0.32f;
+          // Slide glancing blows along walls instead of dead-stopping on slight scrapes
+          const float nLen = glm::length(glm::vec2(pushXZ.x, pushXZ.z));
+          if (nLen > 1e-4f) {
+            const glm::vec2 nDir = glm::vec2(pushXZ.x, pushXZ.z) / nLen;
+            const float headOn = std::abs(glm::dot(glm::vec2(fwd.x, fwd.z), nDir));
+            v.vxLocal *= (headOn > 0.65f) ? -0.28f : (1.0f - headOn * 0.55f);
+            v.speed = v.vxLocal;
+          }
         } else {
           v.pos.x = std::clamp(nextXZ.x, world.worldMin + 15.0f, world.worldMax - 15.0f);
           v.pos.z = std::clamp(nextXZ.z, world.worldMin + 15.0f, world.worldMax - 15.0f);
         }
-        // Knock dynamic Jolt crates & barrels flying on impact!
-        if (std::abs(v.speed) > 2.5f) {
-          physics.applyImpulseNear(v.pos + fwd * 1.2f, fwd * (v.speed * 1.4f), 2.8f);
+        if (absVx > 2.5f) {
+          physics.applyImpulseNear(v.pos + fwd * (sp.length * 0.35f), fwd * (v.vxLocal * 1.4f), 2.8f);
         }
       }
 
-      // Check elevated bridge decks via Jolt raycast before falling back to terrain heightfield
-      float groundY = world.heightfield.sampleHeight(v.pos.x, v.pos.z);
-      const RaycastHit deckHit = physics.raycast(glm::vec3(v.pos.x, v.pos.y + 3.2f, v.pos.z), glm::vec3(0.0f, -1.0f, 0.0f), 18.0f);
-      if (deckHit.hit && deckHit.position.y > groundY + 0.35f) {
-        groundY = deckHit.position.y;
+      // Vehicle-to-vehicle collision impulse & damage
+      for (size_t oj = 0; oj < vehicles_.size(); ++oj) {
+        if (oj == vi) continue;
+        auto& other = vehicles_[oj];
+        if (other.isAircraft || other.isBoat) continue;
+        const glm::vec2 diff(v.pos.x - other.pos.x, v.pos.z - other.pos.z);
+        const float dist = glm::length(diff);
+        const float minSep = 0.46f * (sp.width + vehicleSpec(other.kind).width) + 0.85f;
+        if (dist > 0.05f && dist < minSep && std::abs(v.pos.y - other.pos.y) < 2.4f) {
+          const glm::vec2 n = diff / dist;
+          const float overlap = minSep - dist;
+          v.pos.x += n.x * overlap * 0.55f;
+          v.pos.z += n.y * overlap * 0.55f;
+          other.pos.x -= n.x * overlap * 0.45f;
+          other.pos.z -= n.y * overlap * 0.45f;
+          const float relImpact = std::abs(v.vxLocal - other.speed);
+          if (relImpact > 6.5f) {
+            spawnSparks(0.5f * (v.pos + other.pos) + glm::vec3(0.0f, 0.7f, 0.0f), {0.0f, 1.0f, 0.0f}, {1.0f, 0.76f, 0.30f}, 6);
+            if (audio) audio->playVehicleCrash(std::min(1.0f, relImpact / 26.0f));
+            damageVehicle(oj, relImpact * 0.75f, world, &player, audio, true);
+            damageVehicle(vi, relImpact * 0.38f, world, &player, audio, false);
+            if (v.destroyed) break;
+          }
+          v.vxLocal *= 0.62f;
+          v.speed = v.vxLocal;
+        }
       }
-      // Stunt jump ramp check & airtime tracking
+      if (v.destroyed) continue;
+
+      const float groundY = stepFourCornerSuspension(v, sp, lonAccel, latAccel, true);
+
+      // Stunt jump ramp check & ballistic flight
       if (!v.airborne) {
         for (auto& sj : stuntJumps_) {
-          if (glm::distance(glm::vec2(v.pos.x, v.pos.z), glm::vec2(sj.pos.x, sj.pos.z)) < 5.5f && std::abs(v.speed) > 16.0f) {
+          if (glm::distance(glm::vec2(v.pos.x, v.pos.z), glm::vec2(sj.pos.x, sj.pos.z)) < 5.8f && std::abs(v.speed) > 15.5f) {
             v.airborne = true;
             v.airStartPos = v.pos;
             v.airPeakY = v.pos.y;
-            v.pos.y += 3.2f;
+            v.verticalVel = 7.8f + std::min(6.0f, std::abs(v.speed) * 0.14f);
+            v.pos.y += 0.45f;
             break;
           }
         }
       }
       if (v.airborne) {
-        v.pos.y += (8.5f - 9.8f * 0.45f) * dt;
+        v.verticalVel -= 13.8f * clampedDt;
+        v.pos.y += v.verticalVel * clampedDt;
         v.airPeakY = std::max(v.airPeakY, v.pos.y);
-        if (v.pos.y <= groundY + 0.06f) {
-          v.pos.y = groundY + 0.05f;
+        v.pitchRad = std::clamp(-v.verticalVel * 0.032f, -0.35f, 0.35f);
+        if (v.pos.y <= groundY + 0.05f) {
+          v.pos.y = groundY + 0.03f;
           v.airborne = false;
+          v.suspHeaveVel = -std::clamp( std::abs(v.verticalVel) * 0.25f, 0.5f, 2.8f);
+          v.verticalVel = 0.0f;
           const float dist = glm::distance(glm::vec2(v.airStartPos.x, v.airStartPos.z), glm::vec2(v.pos.x, v.pos.z));
           if (dist > 14.0f) {
             const int bonus = static_cast<int>(dist * 15.0f);
@@ -1090,64 +1839,212 @@ void GameSession::updateTrafficAndVehicles(float dt, const GameInputFrame& input
           }
         }
       } else {
-        v.pos.y = groundY + 0.05f;
+        v.pos.y = groundY + 0.03f;
       }
 
       player.teleport(v.pos + glm::vec3(0.0f, 0.55f, 0.0f), glm::degrees(v.yawRad));
     } else if (v.isPolicePursuit) {
-      // Pursuing police cruiser steers toward player
+      // Pursuing police cruiser with active red/blue strobes
+      v.sirenActive = true;
+      v.headlightsOn = true;
       const glm::vec3 toP = pPos - v.pos;
       const float dist = glm::length(glm::vec2(toP.x, toP.z));
-      if (dist > 10.0f) {
+      if (dist > 9.5f) {
         const float targetYaw = std::atan2(toP.x, toP.z);
-        v.yawRad = moveTowardAngle(v.yawRad, targetYaw, 2.4f * dt);
-        v.speed = std::min(v.maxSpeed, 25.0f + static_cast<float>(wantedStars_) * 2.5f);
+        const float prevYaw = v.yawRad;
+        v.yawRad = moveTowardAngle(v.yawRad, targetYaw, 2.45f * clampedDt);
+        v.steerAngle = std::clamp(wrapAnglePi(v.yawRad - prevYaw) / clampedDt * 0.22f, -0.45f, 0.45f);
+        v.speed = std::min(v.maxSpeed, 24.0f + static_cast<float>(wantedStars_) * 2.6f);
+        v.braking = false;
         const glm::vec3 fwd(std::sin(v.yawRad), 0.0f, std::cos(v.yawRad));
-        v.pos += fwd * (v.speed * dt);
-        v.pos.y = world.heightfield.sampleHeight(v.pos.x, v.pos.z) + 0.05f;
+        v.pos += fwd * (v.speed * clampedDt);
       } else {
-        v.speed *= 0.85f;
+        v.speed *= 0.84f;
+        v.braking = true;
       }
+      v.vxLocal = v.speed;
+      const float wRad = std::clamp(sp.height * 0.23f, 0.31f, 0.52f);
+      v.wheelSpinRad = std::fmod(v.wheelSpinRad + (v.speed / wRad) * clampedDt, 6283.185f);
+      const float gY = stepFourCornerSuspension(v, sp, 0.0f, 0.0f, false);
+      v.pos.y = gY + 0.03f;
     } else if (v.isRacer && activeRaceIdx_ >= 0) {
+      v.headlightsOn = darkOrWet;
       const auto& race = races_[static_cast<size_t>(activeRaceIdx_)];
       if (v.racerCheckpoint < static_cast<int>(race.checkpoints.size())) {
         const glm::vec3 cp = race.checkpoints[static_cast<size_t>(v.racerCheckpoint)];
         const glm::vec3 toCp = cp - v.pos;
         const float dist = glm::length(glm::vec2(toCp.x, toCp.z));
         const float targetYaw = std::atan2(toCp.x, toCp.z);
-        v.yawRad = moveTowardAngle(v.yawRad, targetYaw, 2.8f * dt);
-        v.speed = std::min(v.maxSpeed, v.speed + 18.0f * dt);
+        const float prevYaw = v.yawRad;
+        v.yawRad = moveTowardAngle(v.yawRad, targetYaw, 2.85f * clampedDt);
+        v.steerAngle = std::clamp(wrapAnglePi(v.yawRad - prevYaw) / clampedDt * 0.22f, -0.45f, 0.45f);
+        v.speed = std::min(v.maxSpeed, v.speed + 18.5f * clampedDt);
+        v.vxLocal = v.speed;
         const glm::vec3 fwd(std::sin(v.yawRad), 0.0f, std::cos(v.yawRad));
-        v.pos += fwd * (v.speed * dt);
-        v.pos.y = world.heightfield.sampleHeight(v.pos.x, v.pos.z) + 0.05f;
+        v.pos += fwd * (v.speed * clampedDt);
+        const float wRad = std::clamp(sp.height * 0.23f, 0.31f, 0.52f);
+        v.wheelSpinRad = std::fmod(v.wheelSpinRad + (v.speed / wRad) * clampedDt, 6283.185f);
+        v.pos.y = stepFourCornerSuspension(v, sp, 0.0f, 0.0f, false) + 0.03f;
         if (dist < 11.0f) {
           v.racerCheckpoint++;
         }
       }
     } else if (v.isAmbientTraffic && v.roadIdx < world.roads.size()) {
-      const auto& seg = world.roads[v.roadIdx];
-      if (seg.samples.size() >= 2) {
-        const float maxS = static_cast<float>(seg.samples.size() - 1);
-        v.samplePos += (v.forward ? 1.0f : -1.0f) * (v.speed / 12.0f) * dt;
-        if (v.samplePos >= maxS) { v.samplePos = maxS - 0.01f; v.forward = false; }
-        if (v.samplePos <= 0.0f) { v.samplePos = 0.01f; v.forward = true; }
+      // -----------------------------------------------------------------------
+      // Smart Multi-Lane AI Traffic: Live Signals + IDM Car-Following + Turns!
+      // -----------------------------------------------------------------------
+      v.headlightsOn = darkOrWet;
+      v.sirenActive = (v.kind == VehicleModelKind::PoliceCruiser && wantedStars_ >= 2);
+      const auto* segPtr = &world.roads[v.roadIdx];
+      if (segPtr->samples.size() >= 2) {
+        const glm::vec3 fwdCur(std::sin(v.yawRad), 0.0f, std::cos(v.yawRad));
+        const glm::vec3 rightCur(fwdCur.z, 0.0f, -fwdCur.x);
+        const float cruiseSpeed = (v.kind == VehicleModelKind::Semi || v.kind == VehicleModelKind::Firetruck || v.kind == VehicleModelKind::Kraz)
+          ? 10.5f
+          : (segPtr->tier == "highway" || segPtr->tier == "arterial" ? 15.5f : 12.5f);
+        float desiredSpeed = cruiseSpeed * roadGripWeather;
 
-        const size_t i0 = std::min<size_t>(static_cast<size_t>(v.samplePos), seg.samples.size() - 2);
+        // 1. Live Intersection Traffic Signal Compliance (Red / Amber stop bar)
+        if (!v.sirenActive) {
+          for (const auto& sig : signalNodes_) {
+            const glm::vec2 toSig(sig.pos.x - v.pos.x, sig.pos.z - v.pos.z);
+            const float along = toSig.x * fwdCur.x + toSig.y * fwdCur.z;
+            const float lat = std::abs(toSig.x * rightCur.x + toSig.y * rightCur.z);
+            if (along > 5.0f && along < 22.0f && lat < 9.5f) {
+              const TrafficSignalAspect aspect = signalAspectForHeading(sig, {fwdCur.x, fwdCur.z});
+              if (aspect == TrafficSignalAspect::Red || (aspect == TrafficSignalAspect::Amber && along > 9.5f)) {
+                const float stopGap = std::max(0.0f, along - 6.8f);
+                desiredSpeed = std::min(desiredSpeed, stopGap * 0.72f);
+                if (stopGap < 1.4f) desiredSpeed = 0.0f;
+              }
+              break;
+            }
+          }
+        }
+
+        // 2. IDM Car-Following: maintain safe gap behind slower/stopped cars in same lane
+        const float myHalfLen = sp.length * 0.5f;
+        for (size_t oj = 0; oj < vehicles_.size(); ++oj) {
+          if (oj == vi) continue;
+          const auto& lead = vehicles_[oj];
+          if (lead.isAircraft || lead.isBoat) continue;
+          if (std::abs(lead.pos.y - v.pos.y) > 3.0f) continue;
+          const glm::vec2 rel(lead.pos.x - v.pos.x, lead.pos.z - v.pos.z);
+          const float along = rel.x * fwdCur.x + rel.y * fwdCur.z;
+          if (along <= 0.5f || along > 24.0f) continue;
+          const float lat = std::abs(rel.x * rightCur.x + rel.y * rightCur.z);
+          if (lat > 2.35f) continue;
+          const float leadHalfLen = vehicleSpec(lead.kind).length * 0.5f;
+          const float bumperGap = along - myHalfLen - leadHalfLen;
+          if (bumperGap < 3.4f) {
+            desiredSpeed = 0.0f;
+          } else if (bumperGap < 16.0f) {
+            const float leadAlongVel = std::max(0.0f, lead.speed * ( std::sin(lead.yawRad) * fwdCur.x + std::cos(lead.yawRad) * fwdCur.z ));
+            desiredSpeed = std::min(desiredSpeed, leadAlongVel + (bumperGap - 3.4f) * 0.65f);
+          }
+        }
+
+        // 3. Pedestrian & on-foot Player crosswalk yielding
+        if (!inVehicle()) {
+          const glm::vec2 toPlayer(pPos.x - v.pos.x, pPos.z - v.pos.z);
+          const float alongP = toPlayer.x * fwdCur.x + toPlayer.y * fwdCur.z;
+          const float latP = std::abs(toPlayer.x * rightCur.x + toPlayer.y * rightCur.z);
+          if (alongP > 1.0f && alongP < 11.5f && latP < 2.2f && std::abs(pPos.y - v.pos.y) < 2.2f) {
+            desiredSpeed = 0.0f;
+          }
+        }
+
+        const float prevSpd = v.speed;
+        if (v.speed > desiredSpeed + 0.25f) {
+          v.speed = std::max(desiredSpeed, v.speed - 16.5f * clampedDt);
+          v.braking = true;
+        } else {
+          v.speed = std::min(desiredSpeed, v.speed + 7.5f * clampedDt);
+          v.braking = (v.speed < 0.35f && desiredSpeed < 0.2f);
+        }
+        v.vxLocal = v.speed;
+
+        // Advance along road spline & seamlessly turn onto connected roads at endpoints!
+        const size_t curI = std::min<size_t>(static_cast<size_t>(v.samplePos), segPtr->samples.size() - 2);
+        const float segStepLen = std::max(2.0f, glm::length(segPtr->samples[curI + 1].pos - segPtr->samples[curI].pos));
+        const float maxS = static_cast<float>(segPtr->samples.size() - 1);
+        v.samplePos += (v.forward ? 1.0f : -1.0f) * (v.speed / segStepLen) * clampedDt;
+
+        if (v.samplePos >= maxS || v.samplePos <= 0.0f) {
+          const glm::vec3 endPt = (v.samplePos >= maxS) ? segPtr->samples.back().pos : segPtr->samples.front().pos;
+          bool switchedRoad = false;
+          const size_t startSearch = static_cast<size_t>(v.id * 7) % std::max<size_t>(1, world.roads.size());
+          for (size_t k = 0; k < world.roads.size(); ++k) {
+            const size_t candIdx = (startSearch + k) % world.roads.size();
+            if (candIdx == v.roadIdx || world.roads[candIdx].samples.size() < 4) continue;
+            const auto& cand = world.roads[candIdx];
+            if (glm::distance(glm::vec2(endPt.x, endPt.z), glm::vec2(cand.samples.front().pos.x, cand.samples.front().pos.z)) < 20.0f) {
+              v.roadIdx = candIdx;
+              v.samplePos = 0.25f;
+              v.forward = true;
+              v.laneOffset = std::clamp(cand.width * 0.26f, 2.2f, 3.8f);
+              segPtr = &cand;
+              switchedRoad = true;
+              break;
+            }
+            if (glm::distance(glm::vec2(endPt.x, endPt.z), glm::vec2(cand.samples.back().pos.x, cand.samples.back().pos.z)) < 20.0f) {
+              v.roadIdx = candIdx;
+              v.samplePos = static_cast<float>(cand.samples.size() - 1) - 0.25f;
+              v.forward = false;
+              v.laneOffset = std::clamp(cand.width * 0.26f, 2.2f, 3.8f);
+              segPtr = &cand;
+              switchedRoad = true;
+              break;
+            }
+          }
+          if (!switchedRoad) {
+            if (v.samplePos >= maxS) { v.samplePos = maxS - 0.02f; v.forward = false; }
+            if (v.samplePos <= 0.0f) { v.samplePos = 0.02f; v.forward = true; }
+          }
+        }
+
+        const size_t i0 = std::min<size_t>(static_cast<size_t>(std::max(0.0f, v.samplePos)), segPtr->samples.size() - 2);
         const float f = std::clamp(v.samplePos - static_cast<float>(i0), 0.0f, 1.0f);
-        const auto& s0 = seg.samples[i0];
-        const auto& s1 = seg.samples[i0 + 1];
+        const auto& s0 = segPtr->samples[i0];
+        const auto& s1 = segPtr->samples[i0 + 1];
         const glm::vec3 p = glm::mix(s0.pos, s1.pos, f);
         const glm::vec3 delta = s1.pos - s0.pos;
         const float dLen = glm::length(delta);
         const glm::vec3 dir = (dLen > 1e-4f) ? ((v.forward ? 1.0f : -1.0f) * (delta / dLen)) : glm::vec3(0.0f, 0.0f, 1.0f);
-        const glm::vec3 laneOffset = glm::vec3(s0.rx, 0.0f, s0.rz) * (v.forward ? 2.2f : -2.2f);
-        const glm::vec3 wp = p + laneOffset;
-        const float roadY = seg.isBridge ? wp.y : world.heightfield.sampleHeight(wp.x, wp.z);
-        v.pos = glm::vec3(wp.x, roadY + 0.05f, wp.z);
-        v.yawRad = std::atan2(dir.x, dir.z);
+        const glm::vec3 rightVec = glm::normalize(glm::vec3(s0.rx, 0.0f, s0.rz) + glm::vec3(1e-5f, 0.0f, 0.0f));
+        const glm::vec3 wp = p + rightVec * (v.forward ? v.laneOffset : -v.laneOffset);
+        const float roadY = segPtr->isBridge ? wp.y : world.heightfield.sampleHeight(wp.x, wp.z);
+        v.pos = glm::vec3(wp.x, roadY + 0.03f, wp.z);
+
+        const float targetYaw = std::atan2(dir.x, dir.z);
+        const float prevYaw = v.yawRad;
+        v.yawRad = moveTowardAngle(v.yawRad, targetYaw, 4.2f * clampedDt);
+        v.steerAngle = std::clamp(wrapAnglePi(v.yawRad - prevYaw) / clampedDt * 0.25f, -0.42f, 0.42f);
+
+        const float wRad = std::clamp(sp.height * 0.23f, 0.31f, 0.54f);
+        v.wheelSpinRad = std::fmod(v.wheelSpinRad + (v.speed / wRad) * clampedDt, 6283.185f);
+        if (glm::distance(glm::vec2(v.pos.x, v.pos.z), glm::vec2(pPos.x, pPos.z)) < 140.0f) {
+          const float lonA = (v.speed - prevSpd) / clampedDt;
+          stepFourCornerSuspension(v, sp, lonA, 0.0f, false);
+          if (segPtr->isBridge) v.pitchRad = v.suspPitch;
+        }
       }
     } else if (v.isBoat) {
-      v.pos.y = oceanWaveHeight(v.pos.x, v.pos.z, animClock_) + 0.05f;
+      const glm::vec3 fwd(std::sin(v.yawRad), 0.0f, std::cos(v.yawRad));
+      const float wH = oceanWaveHeight(v.pos.x, v.pos.z, animClock_);
+      const float wBow = oceanWaveHeight(v.pos.x + fwd.x * 2.2f, v.pos.z + fwd.z * 2.2f, animClock_);
+      v.pos.y = wH + 0.05f;
+      v.pitchRad = -std::atan2(wBow - wH, 2.2f);
+      v.rollRad = 0.035f * std::sin(animClock_ * 1.4f + static_cast<float>(v.id));
+    } else {
+      // Parked land vehicle: settle suspension & keep grounded
+      v.speed *= (1.0f - std::min(1.0f, 4.0f * clampedDt));
+      v.vxLocal = v.speed;
+      v.braking = false;
+      v.headlightsOn = false;
+      if (std::abs(v.suspHeave) > 0.002f || std::abs(v.suspPitch) > 0.002f) {
+        stepFourCornerSuspension(v, sp, 0.0f, 0.0f, false);
+      }
     }
   }
 }
@@ -1676,33 +2573,54 @@ void GameSession::updateActivitiesAndShops(float dt, const GameInputFrame& input
     }
   }
 
+  // Clear custom GPS waypoint on arrival (when not tracking an active contract or street race)
+  if (hasWaypoint_ && activeRaceIdx_ < 0 && activeContractIdx_ < 0) {
+    if (glm::distance(glm::vec2(pPos.x, pPos.z), glm::vec2(waypointPos_.x, waypointPos_.z)) < 13.0f) {
+      hasWaypoint_ = false;
+    }
+  }
+
   // Vehicle entry prompt when on foot
   if (!inVehicle()) {
     for (const auto& v : vehicles_) {
-      if (!v.isRacer && glm::distance(pPos, v.pos) < 4.3f) {
-        contextPrompt_ = "[G] Enter Vehicle";
+      if (!v.isRacer && !v.destroyed && glm::distance(pPos, v.pos) < 4.5f) {
+        contextPrompt_ = std::string("[G] Enter ") + vehicleSpec(v.kind).displayName;
         break;
       }
     }
   }
 
-  // Shops & Garages
+  // Luxury Auto Dealership Showroom (56, -118)
+  if (glm::distance(glm::vec2(pPos.x, pPos.z), glm::vec2(56.0f, -118.0f)) < 8.5f) {
+    contextPrompt_ = "[B] Valet Deliver Golf R (Free)  |  [P] Browse Luxury Dealership Catalog";
+    if (input.actionPressed) {
+      spawnPersonalVehicle(VehicleModelKind::Golf, selectedPaintIdx_, player, world, audio, false);
+    }
+  }
+
+  // Shops & Westgate Customs Garages
   for (auto& s : shops_) {
     s.robCooldown = std::max(0.0f, s.robCooldown - dt);
-    if (glm::distance(glm::vec2(pPos.x, pPos.z), glm::vec2(s.pos.x, s.pos.z)) < 7.5f) {
-      if (s.isGarage && inVehicle()) {
-        contextPrompt_ = "[B] Repair & Respray Vehicle (Free)";
-        if (input.actionPressed && activeVehicleIdx_ >= 0) {
-          auto& v = vehicles_[static_cast<size_t>(activeVehicleIdx_)];
+    if (glm::distance(glm::vec2(pPos.x, pPos.z), glm::vec2(s.pos.x, s.pos.z)) < 8.0f) {
+      if (s.isGarage && inVehicle() && activeVehicleIdx_ >= 0) {
+        auto& v = vehicles_[static_cast<size_t>(activeVehicleIdx_)];
+        const int nextCost = 400 + v.engineStage * 300;
+        if (v.engineStage < 3) {
+          contextPrompt_ = "[B] Repair & Respray (Free)  |  [H] Stage " + std::to_string(v.engineStage + 1) + " Turbo ($" + std::to_string(nextCost) + ")";
+        } else {
+          contextPrompt_ = "[B] Repair & Respray (Free)  |  [MAX STAGE 3 TWIN-TURBO]";
+        }
+        if (input.actionPressed) {
           v.hp = 100.0f;
-          rng_ = rng_ * 1664525u + 1013904223u;
-          static const glm::vec3 kPaints[6] = {
-            {0.85f, 0.14f, 0.18f}, {0.14f, 0.45f, 0.92f}, {0.12f, 0.72f, 0.42f},
-            {0.96f, 0.72f, 0.14f}, {0.55f, 0.25f, 0.88f}, {0.90f, 0.92f, 0.96f},
-          };
-          v.colorTint = kPaints[rng_ % 6];
+          v.destroyed = false;
+          selectedPaintIdx_ = (selectedPaintIdx_ + 1) % kCustomPaintCount;
+          v.colorTint = customPaintColor(selectedPaintIdx_);
           if (audio) audio->playCashChime();
-          pushToast("Westgate Customs: Vehicle Repaired & Resprayed!", 3.0f);
+          const char* pName = nullptr;
+          customPaintColor(selectedPaintIdx_, &pName);
+          pushToast(std::string("Westgate Customs: Repaired + Resprayed (") + (pName ? pName : "Custom") + ")!", 3.0f);
+        } else if (input.secondaryAction) {
+          upgradeCurrentVehicleStage(audio);
         }
       } else if (!s.isGarage) {
         contextPrompt_ = "[B] Buy Medkit+Armor ($150)  |  [H] Rob Register";
@@ -1862,10 +2780,18 @@ void GameSession::update(float dt, const GameInputFrame& input, PlayerController
 glm::vec3 GameSession::cameraPosition(const PlayerController& player) const {
   if (activeVehicleIdx_ >= 0 && activeVehicleIdx_ < static_cast<int>(vehicles_.size())) {
     const auto& v = vehicles_[static_cast<size_t>(activeVehicleIdx_)];
+    const VehicleSpec& sp = vehicleSpec(v.kind);
+    if (driveCamMode_ == 2 && !v.isAircraft) {
+      // Hood / Bonnet camera
+      const glm::vec3 vFwd(std::sin(v.yawRad), -std::sin(v.pitchRad), std::cos(v.yawRad));
+      return v.pos + glm::vec3(0.0f, sp.height * 0.84f + v.suspHeave, 0.0f) + vFwd * (sp.length * 0.14f);
+    }
     const float yaw = player.yaw();
     const float pitch = player.pitch();
     const glm::vec3 fwd(std::sin(yaw) * std::cos(pitch), std::sin(pitch), std::cos(yaw) * std::cos(pitch));
-    return v.pos + glm::vec3(0.0f, 1.9f, 0.0f) - fwd * 6.8f;
+    const float dist = v.isAircraft ? 12.0f : (driveCamMode_ == 1 ? (8.8f + sp.length * 0.38f) : (5.8f + sp.length * 0.28f));
+    const float upH = v.isAircraft ? 3.2f : (driveCamMode_ == 1 ? (2.35f + sp.height * 0.35f) : (1.65f + sp.height * 0.28f));
+    return v.pos + glm::vec3(0.0f, upH + v.suspHeave * 0.45f, 0.0f) - fwd * dist;
   }
   if (aiming_ && !weapons_[static_cast<size_t>(activeWeapon_)].isMelee) {
     const glm::vec3 tgt = player.cameraTarget();
@@ -1878,13 +2804,24 @@ glm::vec3 GameSession::cameraPosition(const PlayerController& player) const {
 glm::vec3 GameSession::cameraTarget(const PlayerController& player) const {
   if (activeVehicleIdx_ >= 0 && activeVehicleIdx_ < static_cast<int>(vehicles_.size())) {
     const auto& v = vehicles_[static_cast<size_t>(activeVehicleIdx_)];
-    return v.pos + glm::vec3(0.0f, 1.4f, 0.0f);
+    const VehicleSpec& sp = vehicleSpec(v.kind);
+    if (driveCamMode_ == 2 && !v.isAircraft) {
+      const glm::vec3 vFwd(std::sin(v.yawRad), -std::sin(v.pitchRad), std::cos(v.yawRad));
+      return v.pos + glm::vec3(0.0f, sp.height * 0.78f + v.suspHeave, 0.0f) + vFwd * 18.0f;
+    }
+    return v.pos + glm::vec3(0.0f, sp.height * 0.72f + 0.35f + v.suspHeave * 0.35f, 0.0f);
   }
   return player.cameraTarget();
 }
 
 float GameSession::cameraFovDeg(bool aiming) const {
-  if (inVehicle()) return 68.0f;
+  if (inVehicle()) {
+    if (const auto* cv = currentVehicle()) {
+      const float spdFrac = std::clamp(std::abs(cv->speed) / 52.0f, 0.0f, 1.0f);
+      return 66.0f + spdFrac * 9.0f;
+    }
+    return 68.0f;
+  }
   if (aiming && !weapons_[static_cast<size_t>(activeWeapon_)].isMelee) return 44.0f;
   return 60.0f;
 }

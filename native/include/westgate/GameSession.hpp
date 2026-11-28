@@ -45,9 +45,56 @@ enum class VehicleModelKind : uint8_t {
   Audi = 13,
   Challenger = 14,
   R8 = 15,
+  Golf = 16,
+  Mercedes = 17,
+  Offroad = 18,
+  Kraz = 19,
 };
 
-constexpr size_t kVehicleModelCount = 16;
+constexpr size_t kVehicleModelCount = 20;
+
+enum class TrafficSignalAspect : uint8_t {
+  Green = 0,
+  Amber = 1,
+  Red = 2,
+};
+
+struct SignalIntersection {
+  int id = 0;
+  glm::vec3 pos{0.0f};
+  int phaseOffset = 0; // 0..3 staggered 6s offsets on 24s cycle
+};
+
+struct VehicleSpec {
+  VehicleModelKind kind = VehicleModelKind::Sedan;
+  const char* id = "sedan";
+  const char* displayName = "Executive Sedan";
+  const char* glbFile = "models/sedan.glb";
+  const char* category = "Sedan";
+  float yawOffsetRad = 0.0f; // 0 for +Z native GLBs, pi for -Z native GLBs
+  float visualScale = 1.0f;
+  float width = 1.95f;
+  float height = 1.45f;
+  float length = 4.65f;
+  float wheelbase = 2.78f;
+  float maxSpeed = 38.0f;
+  float accel = 18.0f;
+  float brakeDecel = 28.0f;
+  float grip = 1.0f;
+  float driftFactor = 0.45f; // 0 = planted AWD/FWD, 1 = tail-happy RWD muscle/exotic
+  int gears = 6;
+  float idleRpm = 800.0f;
+  float redlineRpm = 6800.0f;
+  float suspOmega = 11.8f;
+  float suspZeta = 0.38f;
+  float pitchGain = 0.0040f;
+  float rollGain = 0.0052f;
+  int dealershipPrice = 12000;
+  bool purchasable = true;
+  bool hasEmergencyStrobe = false;
+  bool isBoat = false;
+  bool isAircraft = false;
+};
 
 enum class NpcModelKind : uint8_t {
   Business = 0,
@@ -103,15 +150,38 @@ struct VehicleEntity {
   VehicleModelKind kind = VehicleModelKind::Sedan;
   glm::vec3 pos{0.0f};
   float yawRad = 0.0f;
-  float pitchRad = 0.0f;
-  float rollRad = 0.0f;
+  float pitchRad = 0.0f; // composite terrain + suspension pitch (+ = nose down, - = nose up)
+  float rollRad = 0.0f;  // composite terrain + suspension roll
   float verticalVel = 0.0f;
-  float speed = 0.0f;      // m/s signed
-  float steerAngle = 0.0f; // visual/turn state
+  float speed = 0.0f;      // m/s signed forward velocity
+  float vxLocal = 0.0f;    // body-frame forward velocity [m/s]
+  float vyLocal = 0.0f;    // body-frame lateral velocity [m/s] (+ = left)
+  float yawRate = 0.0f;    // angular velocity [rad/s]
+  float steerAngle = 0.0f; // front wheel steer angle [rad] (+ = left)
+  float wheelSpinRad = 0.0f; // cumulative tire rotation [rad]
+  float suspHeave = 0.0f;
+  float suspHeaveVel = 0.0f;
+  float suspPitch = 0.0f;
+  float suspPitchVel = 0.0f;
+  float suspRoll = 0.0f;
+  float suspRollVel = 0.0f;
+  std::array<float, 4> wheelSuspOffsets{0.0f, 0.0f, 0.0f, 0.0f}; // FL, FR, RL, RR
+  float rpm = 850.0f;
+  int gear = 1;            // -1 = R, 0 = N, 1..8
+  float shiftTimer = 0.0f;
+  float slipIntensity = 0.0f; // 0..1 tire slip / drift intensity
   glm::vec3 colorTint{1.0f};
   float hp = 100.0f;
   float maxSpeed = 34.0f;
   float accel = 18.0f;
+  int engineStage = 0;     // 0..3 Westgate Customs tuning stage
+  bool braking = false;
+  bool handbrakeDown = false;
+  bool sirenActive = false;
+  bool headlightsOn = false;
+  bool destroyed = false;
+  float wreckTimer = 0.0f;
+  float smokeEmitAccum = 0.0f;
   bool occupiedByPlayer = false;
   bool isAmbientTraffic = false;
   bool isPolicePursuit = false;
@@ -119,11 +189,13 @@ struct VehicleEntity {
   bool isBoat = false;
   bool isAircraft = false;
   float rotorAngleRad = 0.0f;
+  float rotorRpm01 = 0.0f;
   int racerRank = 0;
   int racerCheckpoint = 0;
   size_t roadIdx = 0;
   float samplePos = 0.0f;
   bool forward = true;
+  float laneOffset = 3.1f;
   bool airborne = false;
   glm::vec3 airStartPos{0.0f};
   float airPeakY = 0.0f;
@@ -337,6 +409,27 @@ public:
   bool buyArmorAndMedkit(AudioEngine* audio);
   void teleportTo(const glm::vec3& pos, float yawDeg, PlayerController& player);
 
+  // Vehicle Catalog, Dealership, Personal Garage & Traffic Signals
+  static const VehicleSpec& vehicleSpec(VehicleModelKind kind);
+  static const glm::vec3& customPaintColor(int paintIdx, const char** outName = nullptr);
+  static constexpr int kCustomPaintCount = 8;
+  bool ownsVehicle(VehicleModelKind kind) const;
+  bool buyDealershipVehicle(VehicleModelKind kind, AudioEngine* audio);
+  int spawnPersonalVehicle(VehicleModelKind kind, int paintIdx, PlayerController& player, const WorldData& world, AudioEngine* audio, bool autoBoard = false);
+  bool upgradeCurrentVehicleStage(AudioEngine* audio);
+  void damageVehicle(size_t vehIdx, float amount, const WorldData& world, PlayerController* player, AudioEngine* audio, bool fromPlayer = false);
+  const std::vector<SignalIntersection>& signalIntersections() const { return signalNodes_; }
+  TrafficSignalAspect signalAspectForHeading(const SignalIntersection& node, const glm::vec2& headingXZ) const;
+  void cycleDriveCameraMode() { driveCamMode_ = (driveCamMode_ + 1) % 3; }
+  int driveCameraMode() const { return driveCamMode_; }
+  int selectedPaintIdx() const { return selectedPaintIdx_; }
+  void setSelectedPaintIdx(int idx) { selectedPaintIdx_ = std::clamp(idx, 0, kCustomPaintCount - 1); }
+  int activePersonalVehicleId() const { return activePersonalVehicleId_; }
+  void grantVehicleOwnership(VehicleModelKind kind) {
+    const size_t idx = static_cast<size_t>(kind);
+    if (idx < kVehicleModelCount) ownedVehicles_[idx] = true;
+  }
+
   // Persistence
   bool saveToFile(const std::string& path) const;
   bool loadFromFile(const std::string& path);
@@ -446,7 +539,7 @@ private:
   void pushToast(const std::string& msg, float duration = 3.5f);
   void reportCrime(CrimeKind kind, const glm::vec3& pos, const WorldData& world);
   void spawnIronPitTier(int tier, const WorldData& world);
-  void fireActiveWeapon(const PlayerController& player, PhysicsWorld& physics, const WorldData& world, AudioEngine* audio);
+  void fireActiveWeapon(PlayerController& player, PhysicsWorld& physics, const WorldData& world, AudioEngine* audio);
   void damagePlayer(float amount, const WorldData& world, PlayerController& player, AudioEngine* audio);
   int findTakedownNpcIndex(const glm::vec3& playerPos) const;
   bool trySilentTakedown(PlayerController& player, const WorldData& world, AudioEngine* audio);
@@ -486,8 +579,13 @@ private:
   float animClock_ = 0.0f;
   float playerLocomotionClock_ = 0.0f;
 
-  // Vehicle driving state
+  // Vehicle driving state, traffic signals & garage ownership
   std::vector<VehicleEntity> vehicles_;
+  std::vector<SignalIntersection> signalNodes_;
+  std::array<bool, kVehicleModelCount> ownedVehicles_{};
+  int activePersonalVehicleId_ = -1;
+  int selectedPaintIdx_ = 2;
+  int driveCamMode_ = 0; // 0 = chase near, 1 = chase far, 2 = hood/bonnet cam
   int activeVehicleIdx_ = -1;
   float sirenCooldown_ = 0.0f;
 

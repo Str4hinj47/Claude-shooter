@@ -114,7 +114,6 @@ function prepareNpcModel(scene: THREE.Group, id: TrafficId): void {
   const kenneyScale: Partial<Record<TrafficId, number>> = {
     van: 1.55,
     delivery: 1.65,
-    ambulance: 1.68,
     firetruck: 1.85,
     garbage_truck: 1.85,
   };
@@ -125,7 +124,7 @@ function prepareNpcModel(scene: THREE.Group, id: TrafficId): void {
       const mesh = o as THREE.Mesh;
       if (!mesh.isMesh || Array.isArray(mesh.material)) return;
       const matName = mesh.material.name || "";
-      if (/^(paint|glass|headlight|taillight|tire|rim|brake|trim|plate|chrome)__/i.test(matName)) return;
+      if (/^(paint|glass|headlight|taillight|tire|rim|brake|trim|plate|chrome|livery)__/i.test(matName)) return;
       const cloned = mesh.material.clone();
       cloned.name = /^wheel-/.test(mesh.name) ? `tire__${id}` : `trim__${id}_livery`;
       mesh.material = cloned;

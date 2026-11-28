@@ -42,6 +42,7 @@ struct GltfPrimitive {
   std::vector<GltfVertex> vertices;
   std::vector<uint32_t> indices;
   int32_t materialIndex = -1;
+  int32_t nodeIndex = -1;
   bool hasSkin = false;
 };
 

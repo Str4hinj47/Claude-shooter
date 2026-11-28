@@ -74,10 +74,29 @@ void drawWestgateHud(
       }
     }
 
-    // Shops & Garages
+    // Shops, Garages & Luxury Auto Dealership
     for (const auto& s : session.shops()) {
       const ImVec2 sp = worldToMap(s.pos.x, s.pos.z);
       bgDraw->AddCircleFilled(sp, 3.5f, s.isGarage ? IM_COL32(175, 95, 255, 235) : IM_COL32(45, 215, 115, 235));
+    }
+    {
+      const ImVec2 dp = worldToMap(56.0f, -118.0f);
+      bgDraw->AddCircleFilled(dp, 4.2f, IM_COL32(255, 198, 52, 245));
+      bgDraw->AddCircle(dp, 6.2f, IM_COL32(255, 245, 190, 210), 12, 1.3f);
+    }
+
+    // Personal Vehicle & Active Police Pursuit Cruisers on Minimap
+    for (const auto& v : session.vehicles()) {
+      if (v.destroyed) continue;
+      if (v.id == session.activePersonalVehicleId() && !v.occupiedByPlayer) {
+        const ImVec2 vp = worldToMap(v.pos.x, v.pos.z);
+        bgDraw->AddCircleFilled(vp, 4.4f, IM_COL32(72, 215, 255, 250));
+        bgDraw->AddCircle(vp, 6.4f, IM_COL32(255, 255, 255, 215), 12, 1.3f);
+      } else if (v.isPolicePursuit) {
+        const ImVec2 vp = worldToMap(v.pos.x, v.pos.z);
+        const bool flash = std::fmod(elapsedSec * 6.0f, 1.0f) < 0.5f;
+        bgDraw->AddCircleFilled(vp, 4.0f, flash ? IM_COL32(255, 50, 50, 255) : IM_COL32(55, 145, 255, 255));
+      }
     }
 
     // NPCs / Police / Contract Target
@@ -130,31 +149,50 @@ void drawWestgateHud(
   }
 
   // -------------------------------------------------------------------------
-  // 3. Bottom-Right Cash / Vitals / Weapon / Speedometer
+  // 3. Bottom-Right Cash / Vitals / Weapon / Drivetrain Speedometer & RPM
   // -------------------------------------------------------------------------
   {
-    ImGui::SetNextWindowPos({disp.x - 275.0f, disp.y - 148.0f}, ImGuiCond_Always);
-    ImGui::SetNextWindowSize({259.0f, 132.0f}, ImGuiCond_Always);
-    ImGui::SetNextWindowBgAlpha(0.78f);
+    const bool drivingHud = session.inVehicle() && session.currentVehicle() != nullptr;
+    const float boxH = drivingHud ? 174.0f : 132.0f;
+    ImGui::SetNextWindowPos({disp.x - 324.0f, disp.y - boxH - 16.0f}, ImGuiCond_Always);
+    ImGui::SetNextWindowSize({308.0f, boxH}, ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.80f);
     ImGui::Begin("##StatusBox", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar);
     ImGui::TextColored({0.35f, 0.94f, 0.52f, 1.0f}, "$%d   |   %s (%02d:%02d)",
                        session.playerCash(),
                        session.timeOfDayLabel().c_str(),
                        static_cast<int>(session.timeOfDayHours()) % 24,
                        static_cast<int>((session.timeOfDayHours() - std::floor(session.timeOfDayHours())) * 60.0f));
-    ImGui::ProgressBar(session.playerHp() / session.playerMaxHp(), {-1, 14}, "HP");
-    ImGui::ProgressBar(session.playerArmor() / 100.0f, {-1, 14}, "ARMOR");
-    if (session.inVehicle() && session.currentVehicle()) {
+    ImGui::ProgressBar(session.playerHp() / session.playerMaxHp(), {-1, 13}, "PLAYER HP");
+    if (drivingHud) {
       const auto* cv = session.currentVehicle();
+      const auto& sp = GameSession::vehicleSpec(cv->kind);
+      char vehHpLabel[64];
+      std::snprintf(vehHpLabel, sizeof(vehHpLabel), "CHASSIS %.0f%%", std::clamp(cv->hp, 0.0f, 100.0f));
+      ImGui::ProgressBar(std::clamp(cv->hp / 100.0f, 0.0f, 1.0f), {-1, 13}, vehHpLabel);
+
       const float kmh = glm::length(glm::vec3(cv->speed, cv->verticalVel, 0.0f)) * 3.6f;
       if (cv->isAircraft) {
-        ImGui::Text("HELI: %.0f KM/H | ALT %.0fm  ([Space/C] Alt, [G] Exit)", kmh, std::max(0.0f, cv->pos.y));
+        ImGui::TextColored({0.95f, 0.84f, 0.36f, 1.0f}, "%s  |  %.0f KM/H  |  ALT %.0fm",
+                           sp.displayName, kmh, std::max(0.0f, cv->pos.y));
+        ImGui::TextDisabled("[Space/C] Climb/Descend  [V] Cam  [G] Exit");
       } else if (cv->isBoat) {
-        ImGui::Text("BOAT: %.0f KTS  ([W/A/S/D] Steer, [G] Exit)", kmh * 0.54f);
+        ImGui::TextColored({0.42f, 0.88f, 0.98f, 1.0f}, "%s  |  %.0f KTS (%.0f KM/H)",
+                           sp.displayName, kmh * 0.54f, kmh);
+        ImGui::TextDisabled("[W/S] Throttle  [A/D] Rudder  [V] Cam  [G] Exit");
       } else {
-        ImGui::Text("DRIVING: %.0f KM/H  ([G] Exit)", std::abs(cv->speed) * 3.6f);
+        const char gearCh = (cv->gear < 0) ? 'R' : static_cast<char>('0' + std::clamp(cv->gear, 1, 9));
+        char stageTag[16] = "";
+        if (cv->engineStage > 0) std::snprintf(stageTag, sizeof(stageTag), " [STG%d]", cv->engineStage);
+        ImGui::TextColored({0.96f, 0.86f, 0.40f, 1.0f}, "%s%s  |  %.0f KM/H  [G%c]",
+                           sp.displayName, stageTag, std::abs(cv->speed) * 3.6f, gearCh);
+        char rpmLbl[48];
+        std::snprintf(rpmLbl, sizeof(rpmLbl), "%.0f RPM  ([Space] Drift  [V] Cam)", cv->rpm);
+        const float rpmNorm = std::clamp((cv->rpm - sp.idleRpm) / std::max(500.0f, sp.redlineRpm - sp.idleRpm), 0.0f, 1.0f);
+        ImGui::ProgressBar(rpmNorm, {-1, 13}, rpmLbl);
       }
     } else {
+      ImGui::ProgressBar(session.playerArmor() / 100.0f, {-1, 13}, "ARMOR");
       const auto& w = session.activeWeapon();
       if (w.isMelee) {
         ImGui::Text("WEAPON: %s  (Stamina %.0f%%)", w.shortName.c_str(), session.playerStamina());
@@ -259,8 +297,8 @@ void drawWestgateHud(
   // 6. Tactical Phone Overlay [P] (Contracts, Races, Gun Runner, GPS/Save)
   // -------------------------------------------------------------------------
   if (ui.showPhone) {
-    ImGui::SetNextWindowPos({disp.x * 0.5f - 240.0f, disp.y * 0.5f - 210.0f}, ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize({480.0f, 430.0f}, ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos({disp.x * 0.5f - 260.0f, disp.y * 0.5f - 215.0f}, ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize({520.0f, 435.0f}, ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowBgAlpha(0.92f);
     if (ImGui::Begin("Westgate Tactical Phone [P]", &ui.showPhone)) {
       if (ImGui::BeginTabBar("PhoneTabs")) {
@@ -356,6 +394,59 @@ void drawWestgateHud(
             }
             ImGui::PopID();
           }
+          ImGui::EndTabItem();
+        }
+
+        const ImGuiTabItemFlags garageTabFlags = (ui.forcePhoneTab == 4) ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
+        if (ImGui::BeginTabItem("Autos & Garage", nullptr, garageTabFlags)) {
+          if (ui.forcePhoneTab == 4) ui.forcePhoneTab = -1;
+          ImGui::TextColored({0.95f, 0.82f, 0.32f, 1.0f}, "Westgate Luxury Dealership & Personal Valet");
+          const char* paintNames[8] = {
+            "Glacier White", "Obsidian", "Corsa Red", "Cobalt Blue",
+            "Solar Amber", "Emerald", "Titanium", "Violet Dusk"
+          };
+          ImGui::Text("Custom Paint:");
+          for (int pi = 0; pi < 8; ++pi) {
+            if (pi == 4) ImGui::NewLine();
+            else if (pi > 0) ImGui::SameLine();
+            ImGui::PushID(700 + pi);
+            const bool sel = (session.selectedPaintIdx() == pi);
+            if (sel) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.24f, 0.58f, 0.34f, 1.0f));
+            if (ImGui::SmallButton(paintNames[pi])) session.setSelectedPaintIdx(pi);
+            if (sel) ImGui::PopStyleColor();
+            ImGui::PopID();
+          }
+          ImGui::Separator();
+          ImGui::BeginChild("AutoCatalogList", {0, 295}, true);
+          for (size_t k = 0; k < kVehicleModelCount; ++k) {
+            const auto kind = static_cast<VehicleModelKind>(k);
+            const auto& sp = GameSession::vehicleSpec(kind);
+            if (!sp.purchasable) continue;
+            const bool owned = session.ownsVehicle(kind);
+            ImGui::PushID(static_cast<int>(800 + k));
+            ImGui::TextColored(owned ? ImVec4(0.45f, 0.96f, 0.62f, 1.0f) : ImVec4(0.92f, 0.92f, 0.95f, 1.0f),
+                               "%s  [%s]  %.0f KM/H",
+                               sp.displayName, sp.category, sp.maxSpeed * 3.6f);
+            if (!owned) {
+              char buyLbl[64];
+              std::snprintf(buyLbl, sizeof(buyLbl), "Buy ($%d)", sp.dealershipPrice);
+              if (ImGui::Button(buyLbl)) {
+                session.buyDealershipVehicle(kind, audio);
+              }
+            } else {
+              if (ImGui::Button("Valet Deliver")) {
+                session.spawnPersonalVehicle(kind, session.selectedPaintIdx(), player, world, audio, false);
+              }
+              ImGui::SameLine();
+              if (ImGui::Button("Drive Now")) {
+                session.spawnPersonalVehicle(kind, session.selectedPaintIdx(), player, world, audio, true);
+                ui.showPhone = false;
+              }
+            }
+            ImGui::Separator();
+            ImGui::PopID();
+          }
+          ImGui::EndChild();
           ImGui::EndTabItem();
         }
 

@@ -400,6 +400,7 @@ fn vsInstanced(in : InstancedVSIn) -> VSOut {
   }
 
   let mx = in.pbrParams.x;
+  var emOut = in.instColEm.w;
   if (mx < -4.5) {
     out.color = in.vtxCol;
     out.surfaceKind = 15.0;
@@ -412,6 +413,7 @@ fn vsInstanced(in : InstancedVSIn) -> VSOut {
     out.color = in.vtxCol;
     out.surfaceKind = 13.0;
     out.pbrParams = vec2<f32>(0.22, in.pbrParams.y);
+    emOut = 0.0;
   } else if (mx < -1.5) {
     out.color = in.vtxCol;
     out.surfaceKind = 12.0;
@@ -424,10 +426,12 @@ fn vsInstanced(in : InstancedVSIn) -> VSOut {
     out.color = in.vtxCol;
     out.surfaceKind = 4.0;
     out.pbrParams = vec2<f32>(mx - 4.0, in.pbrParams.y);
+    emOut = 0.0;
   } else if (mx >= 1.5) {
     out.color = in.vtxCol * in.instColEm.rgb;
     out.surfaceKind = 10.0;
     out.pbrParams = vec2<f32>(mx - 2.0, in.pbrParams.y);
+    emOut = 0.0;
   } else {
     out.color = in.vtxCol * in.instColEm.rgb;
     out.surfaceKind = 4.0;
@@ -435,7 +439,7 @@ fn vsInstanced(in : InstancedVSIn) -> VSOut {
   }
 
   out.uv = in.uv;
-  out.emissiveBoost = in.instColEm.w;
+  out.emissiveBoost = emOut;
   return out;
 }
 
@@ -700,13 +704,15 @@ fn fsMain(in : VSOut) -> @location(0) vec4<f32> {
       }
     }
   } else if (in.surfaceKind > 14.5) {
-    let pulseRed = 0.35 + 1.65 * max(0.0, sin(tSec * 14.0));
+    let sirenOn = (u32(round(max(0.0, in.emissiveBoost))) & 2u) != 0u;
+    let pulseRed = select(0.06, 0.35 + 1.85 * max(0.0, sin(tSec * 16.0)), sirenOn);
     albedo = vtxLin * texLin;
     metallic = 0.12;
     roughness = 0.10;
     emissive = vec3<f32>(2.85, 0.12, 0.08) * pulseRed;
   } else if (in.surfaceKind > 13.5) {
-    let pulseBlue = 0.35 + 1.65 * max(0.0, -sin(tSec * 14.0));
+    let sirenOn = (u32(round(max(0.0, in.emissiveBoost))) & 2u) != 0u;
+    let pulseBlue = select(0.06, 0.35 + 1.85 * max(0.0, -sin(tSec * 16.0)), sirenOn);
     albedo = vtxLin * texLin;
     metallic = 0.12;
     roughness = 0.10;
@@ -716,15 +722,17 @@ fn fsMain(in : VSOut) -> @location(0) vec4<f32> {
     metallic = 0.28;
     roughness = 0.05;
   } else if (in.surfaceKind > 11.5) {
+    let isBraking = (u32(round(max(0.0, in.emissiveBoost))) & 1u) != 0u;
     albedo = vtxLin * texLin;
     metallic = 0.12;
     roughness = 0.12;
-    emissive = vec3<f32>(2.35, 0.07, 0.06) * (0.45 + nightFactor * 1.15);
+    emissive = vec3<f32>(2.45, 0.07, 0.06) * (0.35 + nightFactor * 1.05 + select(0.0, 2.35, isBraking));
   } else if (in.surfaceKind > 10.5) {
+    let lightsOn = (u32(round(max(0.0, in.emissiveBoost))) & 4u) != 0u;
     albedo = vtxLin * texLin;
     metallic = 0.12;
     roughness = 0.10;
-    emissive = vec3<f32>(2.25, 2.20, 2.05) * (0.35 + nightFactor * 1.35);
+    emissive = vec3<f32>(2.25, 2.20, 2.05) * (0.28 + max(nightFactor * 1.35, select(0.0, 0.95, lightsOn)));
   } else if (in.surfaceKind > 9.5) {
     albedo = vtxLin * texLin;
     metallic = clamp(in.pbrParams.x * mrTexSample.b, 0.0, 1.0);

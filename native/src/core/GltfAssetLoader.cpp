@@ -396,6 +396,7 @@ bool GltfAssetLoader::loadGlb(const std::string& path, GltfModel& outModel, bool
       const cgltf_primitive& prim = node.mesh->primitives[pi];
       if (prim.type != cgltf_primitive_type_triangles) continue;
       GltfPrimitive outPrim;
+      outPrim.nodeIndex = static_cast<int32_t>(ni);
       extractPrimitive(data, prim, isSkinned, worldMat, normalMat, outPrim);
       if (!outPrim.vertices.empty()) {
         outModel.primitives.push_back(std::move(outPrim));

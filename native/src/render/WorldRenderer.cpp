@@ -1398,6 +1398,359 @@ bool WorldRenderer::loadGlbUnitBoxBatch(
   return true;
 }
 
+bool WorldRenderer::loadVehicleAsset(
+  WgpuContext& ctx,
+  const std::string& glbPath,
+  const VehicleSpec& spec,
+  VehicleGpuAsset& outAsset
+) {
+  if (!std::filesystem::exists(glbPath)) return false;
+  GltfModel model;
+  if (!GltfAssetLoader::loadGlb(glbPath, model, true, nullptr) || model.primitives.empty()) return false;
+
+  const float cosY = std::cos(spec.yawOffsetRad);
+  const float sinY = std::sin(spec.yawOffsetRad);
+
+  glm::vec3 rotMin(1e30f), rotMax(-1e30f);
+  for (const auto& prim : model.primitives) {
+    for (const auto& v : prim.vertices) {
+      const float rx = v.position.x * cosY + v.position.z * sinY;
+      const float rz = -v.position.x * sinY + v.position.z * cosY;
+      rotMin = glm::min(rotMin, glm::vec3(rx, v.position.y, rz));
+      rotMax = glm::max(rotMax, glm::vec3(rx, v.position.y, rz));
+    }
+  }
+  const float cx = 0.5f * (rotMin.x + rotMax.x);
+  const float cz = 0.5f * (rotMin.z + rotMax.z);
+  const float minY = rotMin.y;
+  const float rawLenZ = std::max(0.1f, rotMax.z - rotMin.z);
+  const float scale = (spec.length > 0.1f) ? (spec.length / rawLenZ) : spec.visualScale;
+
+  // Upload textures once onto outAsset.chassis so they are shared cleanly across chassis, wheels & rotors
+  std::unordered_map<int32_t, WGPUTextureView> texViewCache;
+  auto getTexView = [&](int32_t idx, WGPUTextureView fallback) -> WGPUTextureView {
+    if (idx < 0 || static_cast<size_t>(idx) >= model.textures.size()) return fallback;
+    auto it = texViewCache.find(idx);
+    if (it != texViewCache.end()) return it->second;
+    const auto& td = model.textures[idx];
+    if (td.width == 0 || td.height == 0 || td.rgba8.empty()) return fallback;
+    GpuTextureBinding gtb = createRgbaTexture(ctx, td.width, td.height, td.rgba8.data(), false);
+    outAsset.chassis.ownedTextures.push_back(gtb);
+    texViewCache[idx] = gtb.view;
+    return gtb.view;
+  };
+
+  std::unordered_map<uint64_t, WGPUBindGroup> matBgCache;
+  auto getPbrBg = [&](int32_t alb, int32_t nrm, int32_t mr, int32_t em) -> WGPUBindGroup {
+    if (alb < 0 && nrm < 0 && mr < 0 && em < 0) return defaultWhiteTex_.bindGroup;
+    const uint64_t key =
+      (static_cast<uint64_t>(static_cast<uint16_t>(alb + 1)) << 48) |
+      (static_cast<uint64_t>(static_cast<uint16_t>(nrm + 1)) << 32) |
+      (static_cast<uint64_t>(static_cast<uint16_t>(mr + 1))  << 16) |
+      static_cast<uint64_t>(static_cast<uint16_t>(em + 1));
+    auto it = matBgCache.find(key);
+    if (it != matBgCache.end()) return it->second;
+    WGPUBindGroup bg = createPbrMatBindGroup(
+      ctx,
+      getTexView(alb, defaultWhiteTex_.view),
+      getTexView(nrm, defaultFlatNormalTex_.view),
+      getTexView(mr, defaultWhiteTex_.view),
+      getTexView(em, defaultWhiteTex_.view)
+    );
+    outAsset.chassis.ownedBindGroups.push_back(bg);
+    matBgCache[key] = bg;
+    return bg;
+  };
+
+  auto startsWith = [](const std::string& s, const char* prefix) -> bool {
+    const size_t n = std::strlen(prefix);
+    return s.size() >= n && s.compare(0, n, prefix) == 0;
+  };
+  auto containsCI = [](const std::string& s, const char* needle) -> bool {
+    std::string lo = s;
+    for (char& c : lo) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return lo.find(needle) != std::string::npos;
+  };
+  auto hasNodeAncestor = [&](int32_t nodeIdx, const char* ancName) -> bool {
+    int32_t cur = nodeIdx;
+    int guard = 0;
+    while (cur >= 0 && static_cast<size_t>(cur) < model.nodes.size() && guard++ < 32) {
+      if (model.nodes[static_cast<size_t>(cur)].name == ancName) return true;
+      cur = model.nodes[static_cast<size_t>(cur)].parent;
+    }
+    return false;
+  };
+
+  struct TriItem {
+    ModelVertex v[3];
+    WGPUBindGroup texBg = nullptr;
+    glm::vec3 center{0.0f};
+  };
+
+  std::vector<TriItem> chassisTris;
+  std::vector<TriItem> mainRotorTris;
+  std::vector<TriItem> tailRotorTris;
+  std::vector<TriItem> rawWheelTris;
+
+  const float maxWheelCenterY = (rotMax.y - minY) * scale * 0.56f;
+  const float minWheelAbsX = (rotMax.x - rotMin.x) * scale * 0.17f;
+
+  for (const auto& prim : model.primitives) {
+    glm::vec3 matCol(1.0f);
+    float metallic = 0.05f;
+    float roughness = 0.62f;
+    float encodedMetallic = 4.0f + metallic;
+    WGPUBindGroup texBg = defaultWhiteTex_.bindGroup;
+    bool hasTexture = false;
+    bool isSpinningWheelMat = false;
+
+    if (prim.materialIndex >= 0 && static_cast<size_t>(prim.materialIndex) < model.materials.size()) {
+      const auto& mat = model.materials[prim.materialIndex];
+      matCol = glm::vec3(mat.baseColor);
+      metallic = std::clamp(mat.metallic, 0.0f, 1.0f);
+      roughness = std::clamp(mat.roughness, 0.06f, 0.98f);
+      hasTexture = (mat.baseColorTexIndex >= 0 && static_cast<size_t>(mat.baseColorTexIndex) < model.textures.size());
+      texBg = getPbrBg(mat.baseColorTexIndex, mat.normalTexIndex, mat.metallicRoughnessTexIndex, mat.emissiveTexIndex);
+      if (hasTexture) matCol = glm::vec3(1.0f);
+
+      const std::string& mn = mat.name;
+      if (startsWith(mn, "paint__")) {
+        metallic = 0.26f;
+        roughness = 0.14f;
+        encodedMetallic = 2.0f + metallic;
+        if (!hasTexture) matCol = glm::vec3(1.0f);
+      } else if (startsWith(mn, "beacon__") || startsWith(mn, "nav__")) {
+        if (containsCI(mn, "red")) {
+          encodedMetallic = -5.0f; roughness = 0.10f; if (!hasTexture) matCol = glm::vec3(1.0f, 0.12f, 0.10f);
+        } else {
+          encodedMetallic = -4.0f; roughness = 0.10f; if (!hasTexture) matCol = glm::vec3(0.18f, 0.48f, 1.0f);
+        }
+      } else if (startsWith(mn, "headlight__")) {
+        if (containsCI(mn, "cover") || containsCI(mn, "glass")) {
+          encodedMetallic = -3.0f; roughness = 0.05f; if (!hasTexture) matCol = glm::vec3(0.84f, 0.90f, 0.96f);
+        } else if (containsCI(mn, "beacon_blue")) {
+          encodedMetallic = -4.0f; roughness = 0.10f; if (!hasTexture) matCol = glm::vec3(0.18f, 0.48f, 1.0f);
+        } else {
+          encodedMetallic = -1.0f; roughness = 0.10f; if (!hasTexture) matCol = glm::vec3(0.96f, 0.98f, 1.0f);
+        }
+      } else if (startsWith(mn, "taillight__")) {
+        if (containsCI(mn, "cover") || containsCI(mn, "clear") || containsCI(mn, "case")) {
+          encodedMetallic = -3.0f; roughness = 0.06f; if (!hasTexture) matCol = glm::vec3(0.55f, 0.04f, 0.06f);
+        } else if (containsCI(mn, "beacon_red")) {
+          encodedMetallic = -5.0f; roughness = 0.10f; if (!hasTexture) matCol = glm::vec3(1.0f, 0.10f, 0.10f);
+        } else {
+          encodedMetallic = -2.0f; roughness = 0.12f; if (!hasTexture) matCol = glm::vec3(0.95f, 0.08f, 0.08f);
+        }
+      } else if (startsWith(mn, "glass__") || containsCI(mn, "windshield")) {
+        encodedMetallic = -3.0f; roughness = 0.05f; matCol = glm::vec3(0.10f, 0.14f, 0.20f);
+      } else {
+        if (startsWith(mn, "chrome__")) {
+          metallic = 1.0f; roughness = 0.08f;
+        } else if (startsWith(mn, "rim__") || mn == "other__Wheel-nuts") {
+          metallic = 0.88f; roughness = 0.18f;
+          isSpinningWheelMat = true;
+        } else if (startsWith(mn, "brake__") || containsCI(mn, "disk brake")) {
+          const bool isDisc = containsCI(mn, "disc") || containsCI(mn, "disk") || containsCI(mn, "pad2") || containsCI(mn, "brake-discs");
+          if (isDisc) {
+            metallic = 0.90f; roughness = 0.22f;
+            isSpinningWheelMat = true;
+          } else {
+            metallic = 0.52f; roughness = 0.30f;
+            if (!hasTexture) matCol = glm::vec3(0.76f, 0.09f, 0.09f);
+          }
+        } else if (startsWith(mn, "plate__")) {
+          metallic = 0.34f; roughness = 0.28f;
+          if (!hasTexture && matCol.r > 0.88f && matCol.g > 0.88f && matCol.b > 0.88f) matCol = glm::vec3(0.84f, 0.87f, 0.91f);
+        } else if (startsWith(mn, "tire__")) {
+          metallic = 0.02f; roughness = 0.86f;
+          if (!hasTexture && (matCol.r > 0.25f || matCol.g > 0.25f || matCol.b > 0.25f)) matCol = glm::vec3(0.085f, 0.095f, 0.11f);
+          isSpinningWheelMat = true;
+        } else if (startsWith(mn, "trim__") || startsWith(mn, "carbon__")) {
+          metallic = 0.16f; roughness = 0.42f;
+          if (!hasTexture && !containsCI(mn, "_livery")) {
+            const float lum = matCol.r * 0.299f + matCol.g * 0.587f + matCol.b * 0.114f;
+            if (lum > 0.72f) matCol = glm::vec3(0.095f, 0.105f, 0.125f);
+          }
+        }
+        encodedMetallic = 4.0f + metallic;
+      }
+    }
+
+    const bool isHeliMainRotor = spec.isAircraft && hasNodeAncestor(prim.nodeIndex, "Cube004");
+    const bool isHeliTailRotor = spec.isAircraft && !isHeliMainRotor && hasNodeAncestor(prim.nodeIndex, "Cube002");
+
+    auto toModelVert = [&](const GltfVertex& gv) -> ModelVertex {
+      const glm::vec3 col = glm::vec3(gv.color) * matCol;
+      const float rxRaw = gv.position.x * cosY + gv.position.z * sinY;
+      const float rzRaw = -gv.position.x * sinY + gv.position.z * cosY;
+      const float lx = (rxRaw - cx) * scale;
+      const float ly = (gv.position.y - minY) * scale;
+      const float lz = (rzRaw - cz) * scale;
+      const float nx = gv.normal.x * cosY + gv.normal.z * sinY;
+      const float nz = -gv.normal.x * sinY + gv.normal.z * cosY;
+      return ModelVertex{
+        lx, ly, lz,
+        nx, gv.normal.y, nz,
+        gv.uv.x, gv.uv.y,
+        col.r, col.g, col.b,
+        encodedMetallic, roughness
+      };
+    };
+
+    for (size_t ii = 0; ii + 2 < prim.indices.size(); ii += 3) {
+      const uint32_t i0 = prim.indices[ii];
+      const uint32_t i1 = prim.indices[ii + 1];
+      const uint32_t i2 = prim.indices[ii + 2];
+      if (i0 >= prim.vertices.size() || i1 >= prim.vertices.size() || i2 >= prim.vertices.size()) continue;
+      TriItem tri;
+      tri.v[0] = toModelVert(prim.vertices[i0]);
+      tri.v[1] = toModelVert(prim.vertices[i1]);
+      tri.v[2] = toModelVert(prim.vertices[i2]);
+      tri.texBg = texBg;
+      tri.center = glm::vec3(
+        (tri.v[0].px + tri.v[1].px + tri.v[2].px) / 3.0f,
+        (tri.v[0].py + tri.v[1].py + tri.v[2].py) / 3.0f,
+        (tri.v[0].pz + tri.v[1].pz + tri.v[2].pz) / 3.0f
+      );
+
+      if (isHeliMainRotor) {
+        mainRotorTris.push_back(tri);
+      } else if (isHeliTailRotor) {
+        tailRotorTris.push_back(tri);
+      } else if (!spec.isBoat && !spec.isAircraft && isSpinningWheelMat &&
+                 tri.center.y < maxWheelCenterY && std::abs(tri.center.x) > minWheelAbsX) {
+        rawWheelTris.push_back(tri);
+      } else {
+        chassisTris.push_back(tri);
+      }
+    }
+  }
+
+  constexpr uint32_t kMaxVehInstances = 64;
+  auto uploadTriBatch = [&](std::vector<TriItem>& tris, const glm::vec3& localPivotOffset, InstancedGlbBatch& outB) -> bool {
+    if (tris.empty()) return false;
+    std::stable_sort(tris.begin(), tris.end(), [](const TriItem& a, const TriItem& b) {
+      return a.texBg < b.texBg;
+    });
+    std::vector<ModelVertex> verts;
+    std::vector<uint32_t> indices;
+    verts.reserve(tris.size() * 3);
+    indices.reserve(tris.size() * 3);
+    WGPUBindGroup curBg = nullptr;
+    for (const auto& t : tris) {
+      const uint32_t iStart = static_cast<uint32_t>(indices.size());
+      for (int k = 0; k < 3; ++k) {
+        ModelVertex mv = t.v[k];
+        mv.px -= localPivotOffset.x;
+        mv.py -= localPivotOffset.y;
+        mv.pz -= localPivotOffset.z;
+        indices.push_back(static_cast<uint32_t>(verts.size()));
+        verts.push_back(mv);
+      }
+      if (!outB.submeshes.empty() && curBg == t.texBg) {
+        outB.submeshes.back().indexCount += 3;
+      } else {
+        outB.submeshes.push_back(GlbSubmesh{iStart, 3, t.texBg});
+        curBg = t.texBg;
+      }
+    }
+    outB.indexCount = static_cast<uint32_t>(indices.size());
+    outB.maxInstances = kMaxVehInstances;
+    outB.vbo = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, verts.data(), verts.size() * sizeof(ModelVertex));
+    outB.ibo = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Index, indices.data(), indices.size() * sizeof(uint32_t));
+    outB.instVbo = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, nullptr, kMaxVehInstances * sizeof(InstanceAttrib));
+    return true;
+  };
+
+  if (!uploadTriBatch(chassisTris, glm::vec3(0.0f), outAsset.chassis)) return false;
+  outAsset.chassisStaging.reserve(kMaxVehInstances);
+
+  // Helicopter articulated Main Rotor (Cube004) & Tail Rotor (Cube002)
+  auto computeBoundsCenter = [](const std::vector<TriItem>& tris, glm::vec3& bMin, glm::vec3& bMax) {
+    bMin = glm::vec3(1e30f);
+    bMax = glm::vec3(-1e30f);
+    for (const auto& t : tris) {
+      for (int k = 0; k < 3; ++k) {
+        const glm::vec3 p(t.v[k].px, t.v[k].py, t.v[k].pz);
+        bMin = glm::min(bMin, p);
+        bMax = glm::max(bMax, p);
+      }
+    }
+  };
+  if (!mainRotorTris.empty()) {
+    glm::vec3 bMin, bMax;
+    computeBoundsCenter(mainRotorTris, bMin, bMax);
+    outAsset.mainRotorPivotVeh = 0.5f * (bMin + bMax);
+    outAsset.hasMainRotor = uploadTriBatch(mainRotorTris, outAsset.mainRotorPivotVeh, outAsset.mainRotor);
+    outAsset.mainRotorStaging.reserve(16);
+  }
+  if (!tailRotorTris.empty()) {
+    glm::vec3 bMin, bMax;
+    computeBoundsCenter(tailRotorTris, bMin, bMax);
+    outAsset.tailRotorPivotVeh = 0.5f * (bMin + bMax);
+    outAsset.hasTailRotor = uploadTriBatch(tailRotorTris, outAsset.tailRotorPivotVeh, outAsset.tailRotor);
+    outAsset.tailRotorStaging.reserve(16);
+  }
+
+  // Multi-axle spatial clustering for all spinning road wheels (4 wheels on cars, 6 on Semi & Kraz!)
+  if (!rawWheelTris.empty()) {
+    struct AxleCluster {
+      float sumZ = 0.0f;
+      int count = 0;
+      float meanZ() const { return sumZ / static_cast<float>(std::max(1, count)); }
+    };
+    std::vector<AxleCluster> axles;
+    for (const auto& t : rawWheelTris) {
+      bool placed = false;
+      for (auto& ax : axles) {
+        if (std::abs(t.center.z - ax.meanZ()) < 0.52f) {
+          ax.sumZ += t.center.z;
+          ax.count++;
+          placed = true;
+          break;
+        }
+      }
+      if (!placed) axles.push_back({t.center.z, 1});
+    }
+    std::sort(axles.begin(), axles.end(), [](const AxleCluster& a, const AxleCluster& b) {
+      return a.meanZ() > b.meanZ(); // descending Z: axle 0 is Front (+Z)!
+    });
+
+    for (size_t ai = 0; ai < axles.size(); ++ai) {
+      for (int side = 0; side < 2; ++side) { // 0 = Left (+X), 1 = Right (-X)
+        std::vector<TriItem> clusterTris;
+        for (const auto& t : rawWheelTris) {
+          const int triSide = (t.center.x >= 0.0f) ? 0 : 1;
+          if (triSide != side) continue;
+          // Assign to nearest axle Z
+          size_t bestAx = 0;
+          float bestDz = 1e30f;
+          for (size_t k = 0; k < axles.size(); ++k) {
+            const float dz = std::abs(t.center.z - axles[k].meanZ());
+            if (dz < bestDz) { bestDz = dz; bestAx = k; }
+          }
+          if (bestAx == ai) clusterTris.push_back(t);
+        }
+        if (clusterTris.size() < 4) continue;
+
+        glm::vec3 wMin, wMax;
+        computeBoundsCenter(clusterTris, wMin, wMax);
+        ArticulatedWheelGpu wGpu;
+        wGpu.pivotVeh = 0.5f * (wMin + wMax);
+        wGpu.radius = std::max(0.20f, 0.5f * (wMax.y - wMin.y));
+        wGpu.isFront = (ai == 0 && axles.size() >= 2);
+        wGpu.cornerIdx = (wGpu.isFront ? 0 : 2) + side;
+        if (uploadTriBatch(clusterTris, wGpu.pivotVeh, wGpu.batch)) {
+          wGpu.staging.reserve(kMaxVehInstances);
+          outAsset.wheels.push_back(std::move(wGpu));
+        }
+      }
+    }
+  }
+
+  return true;
+}
+
 void WorldRenderer::buildPropAndVehicleBatches(WgpuContext& ctx, const WorldData& world, const std::string& assetsRoot) {
   // Unit 1x1x1 cube (uv = (-1000, -1000) flags procedural window grid ONLY on legacy untextured unitBox towers)
   const ModelVertex boxVerts[24] = {
@@ -1621,38 +1974,14 @@ void WorldRenderer::buildPropAndVehicleBatches(WgpuContext& ctx, const WorldData
     fallbackPropInstVbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, fallbackInst.data(), fallbackInst.size() * sizeof(InstanceAttrib));
   }
 
-  // 4. All 16 Real GLB Vehicles
-  struct VehicleGlbSpec { const char* file; float length; float yawOffset; };
-  const VehicleGlbSpec vehicleSpecs[kVehicleModelCount] = {
-    {"police_cruiser.glb", 4.45f, 0.0f},
-    {"taxi.glb",           4.45f, 0.0f},
-    {"sedan.glb",          4.55f, 0.0f},
-    {"mustang.glb",        4.75f, 3.14159265f},
-    {"ferrari.glb",        4.45f, 0.0f},
-    {"rangerover.glb",     4.95f, 0.0f},
-    {"speedboat.glb",      6.20f, 0.0f},
-    {"cruiser_boat.glb",   8.80f, 0.0f},
-    {"heli.glb",           9.40f, 0.0f},
-    {"ambulance.glb",      5.40f, 0.0f},
-    {"firetruck.glb",      8.20f, 0.0f},
-    {"delivery.glb",       5.80f, 0.0f},
-    {"semi.glb",           9.60f, 3.14159265f},
-    {"audi.glb",           4.95f, 0.0f},
-    {"challenger.glb",     4.95f, 0.0f},
-    {"r8.glb",             4.45f, 0.0f},
-  };
-  std::vector<InstanceAttrib> dummyVeh(64);
+  // 4. All 20 Real Articulated GLB Vehicles (spin + steer wheels, rotors, auto-centered X/Z, dynamic lights)
   for (size_t vi = 0; vi < kVehicleModelCount; ++vi) {
-    loadGlbBatch(
+    const VehicleSpec& sp = GameSession::vehicleSpec(static_cast<VehicleModelKind>(vi));
+    loadVehicleAsset(
       ctx,
-      (std::filesystem::path(assetsRoot) / "models" / vehicleSpecs[vi].file).string(),
-      dummyVeh,
-      vehicleBatches_[vi],
-      vehicleSpecs[vi].length,
-      true,
-      true,
-      vehicleSpecs[vi].yawOffset,
-      true
+      (std::filesystem::path(assetsRoot) / sp.glbFile).string(),
+      sp,
+      vehicleAssets_[vi]
     );
   }
 }
@@ -1948,19 +2277,6 @@ void WorldRenderer::render(
                         glm::angleAxis(m.pitchRad, glm::vec3(1.0f, 0.0f, 0.0f));
     markerStaging_.push_back(makeInst(m.pos.x, m.pos.y, m.pos.z, m.scale.x, m.scale.y, m.scale.z, q, m.color.r, m.color.g, m.color.b, 2.2f));
   }
-  for (const auto& v : vehicles) {
-    if (v.kind != VehicleModelKind::Helicopter) continue;
-    if (markerStaging_.size() + 2 > markerCapacity_) break;
-    const glm::quat vq = glm::angleAxis(v.yawRad, glm::vec3(0.0f, 1.0f, 0.0f)) *
-                         glm::angleAxis(v.pitchRad, glm::vec3(1.0f, 0.0f, 0.0f)) *
-                         glm::angleAxis(v.rollRad, glm::vec3(0.0f, 0.0f, 1.0f));
-    const glm::vec3 rotorHub = v.pos + vq * glm::vec3(0.0f, 3.05f, 0.25f);
-    const float rotorAngle = v.rotorAngleRad != 0.0f ? v.rotorAngleRad : (timeSec * (v.occupiedByPlayer ? 22.0f : 14.0f));
-    const glm::quat rq1 = vq * glm::angleAxis(rotorAngle, glm::vec3(0.0f, 1.0f, 0.0f));
-    const glm::quat rq2 = vq * glm::angleAxis(rotorAngle + 1.5707963f, glm::vec3(0.0f, 1.0f, 0.0f));
-    markerStaging_.push_back(makeInst(rotorHub.x, rotorHub.y, rotorHub.z, 9.6f, 0.06f, 0.22f, rq1, 0.16f, 0.17f, 0.20f, 0.0f));
-    markerStaging_.push_back(makeInst(rotorHub.x, rotorHub.y, rotorHub.z, 9.6f, 0.06f, 0.22f, rq2, 0.16f, 0.17f, 0.20f, 0.0f));
-  }
   if (!markerStaging_.empty()) {
     wgpuQueueWriteBuffer(ctx.queue(), markerInstVbo_, 0, markerStaging_.data(), markerStaging_.size() * sizeof(InstanceAttrib));
   }
@@ -1982,23 +2298,88 @@ void WorldRenderer::render(
   }
   telemetry_.dynamicPhysicsProps = static_cast<uint32_t>(dynPropStaging_.size());
 
-  // 5. Upload dynamic vehicles across all 16 GLB models
+  // 5. Upload articulated dynamic vehicles across all 20 GLB models (chassis + steered/spinning wheels + rotors!)
   uint32_t totalVehiclesDrawn = 0;
-  for (auto& vs : vehicleStaging_) vs.clear();
+  for (auto& va : vehicleAssets_) {
+    va.chassisStaging.clear();
+    va.mainRotorStaging.clear();
+    va.tailRotorStaging.clear();
+    for (auto& w : va.wheels) w.staging.clear();
+  }
   for (const auto& v : vehicles) {
     const size_t k = static_cast<size_t>(v.kind);
-    if (k < kVehicleModelCount && vehicleStaging_[k].size() < vehicleBatches_[k].maxInstances) {
-      const glm::quat q = glm::angleAxis(v.yawRad, glm::vec3(0.0f, 1.0f, 0.0f)) *
-                          glm::angleAxis(v.pitchRad, glm::vec3(1.0f, 0.0f, 0.0f)) *
-                          glm::angleAxis(v.rollRad, glm::vec3(0.0f, 0.0f, 1.0f));
-      vehicleStaging_[k].push_back(makeInst(v.pos.x, v.pos.y, v.pos.z, 1.0f, 1.0f, 1.0f, q, v.colorTint.r, v.colorTint.g, v.colorTint.b));
+    if (k >= kVehicleModelCount) continue;
+    auto& va = vehicleAssets_[k];
+    if (!va.chassis.vbo || va.chassisStaging.size() >= va.chassis.maxInstances) continue;
+    if (glm::distance(v.pos, camPos) > 560.0f) continue;
+
+    const glm::quat qChassis = glm::angleAxis(v.yawRad, glm::vec3(0.0f, 1.0f, 0.0f)) *
+                               glm::angleAxis(v.pitchRad, glm::vec3(1.0f, 0.0f, 0.0f)) *
+                               glm::angleAxis(v.rollRad, glm::vec3(0.0f, 0.0f, 1.0f));
+    const glm::vec3 bodyOrigin = v.pos + glm::vec3(0.0f, v.suspHeave, 0.0f);
+    const float dmgShade = v.destroyed ? 0.16f : (0.68f + 0.32f * std::clamp(v.hp / 100.0f, 0.0f, 1.0f));
+    const glm::vec3 bodyTint = v.colorTint * dmgShade;
+    const uint32_t lightBits = (!v.destroyed)
+      ? ((v.braking ? 1u : 0u) | (v.sirenActive ? 2u : 0u) | (v.headlightsOn ? 4u : 0u))
+      : 0u;
+    const float lightMaskFloat = static_cast<float>(lightBits);
+
+    va.chassisStaging.push_back(makeInst(
+      bodyOrigin.x, bodyOrigin.y, bodyOrigin.z,
+      1.0f, 1.0f, 1.0f,
+      qChassis,
+      bodyTint.r, bodyTint.g, bodyTint.b,
+      lightMaskFloat
+    ));
+
+    // Articulated multi-axle wheels (front steer + rolling tire spin + per-corner suspension travel)
+    for (auto& w : va.wheels) {
+      if (w.staging.size() >= w.batch.maxInstances) continue;
+      const float suspOff = (w.cornerIdx >= 0 && w.cornerIdx < 4) ? v.wheelSuspOffsets[static_cast<size_t>(w.cornerIdx)] : 0.0f;
+      const glm::vec3 wWorld = bodyOrigin + qChassis * (w.pivotVeh + glm::vec3(0.0f, suspOff, 0.0f));
+      const float steer = w.isFront ? v.steerAngle : 0.0f;
+      const glm::quat qWheel = qChassis *
+                               glm::angleAxis(steer, glm::vec3(0.0f, 1.0f, 0.0f)) *
+                               glm::angleAxis(v.wheelSpinRad, glm::vec3(1.0f, 0.0f, 0.0f));
+      w.staging.push_back(makeInst(
+        wWorld.x, wWorld.y, wWorld.z,
+        1.0f, 1.0f, 1.0f,
+        qWheel,
+        dmgShade, dmgShade, dmgShade,
+        0.0f
+      ));
+    }
+
+    // Helicopter Main Rotor (Cube004 around +Y) & Tail Rotor (Cube002 around +X)
+    const float rAng = (v.rotorAngleRad != 0.0f) ? v.rotorAngleRad : (timeSec * (v.occupiedByPlayer ? 24.0f : 3.5f));
+    if (va.hasMainRotor && va.mainRotorStaging.size() < va.mainRotor.maxInstances) {
+      const glm::vec3 hub = bodyOrigin + qChassis * va.mainRotorPivotVeh;
+      const glm::quat qMain = qChassis * glm::angleAxis(rAng, glm::vec3(0.0f, 1.0f, 0.0f));
+      va.mainRotorStaging.push_back(makeInst(hub.x, hub.y, hub.z, 1.0f, 1.0f, 1.0f, qMain, dmgShade, dmgShade, dmgShade, 0.0f));
+    }
+    if (va.hasTailRotor && va.tailRotorStaging.size() < va.tailRotor.maxInstances) {
+      const glm::vec3 hub = bodyOrigin + qChassis * va.tailRotorPivotVeh;
+      const glm::quat qTail = qChassis * glm::angleAxis(rAng * 4.5f, glm::vec3(1.0f, 0.0f, 0.0f));
+      va.tailRotorStaging.push_back(makeInst(hub.x, hub.y, hub.z, 1.0f, 1.0f, 1.0f, qTail, dmgShade, dmgShade, dmgShade, 0.0f));
     }
   }
-  for (size_t k = 0; k < kVehicleModelCount; ++k) {
-    const uint32_t cnt = static_cast<uint32_t>(vehicleStaging_[k].size());
-    if (cnt > 0 && vehicleBatches_[k].instVbo) {
-      wgpuQueueWriteBuffer(ctx.queue(), vehicleBatches_[k].instVbo, 0, vehicleStaging_[k].data(), cnt * sizeof(InstanceAttrib));
-      totalVehiclesDrawn += cnt;
+  for (auto& va : vehicleAssets_) {
+    const uint32_t cnt = static_cast<uint32_t>(va.chassisStaging.size());
+    if (cnt == 0) continue;
+    totalVehiclesDrawn += cnt;
+    if (va.chassis.instVbo) {
+      wgpuQueueWriteBuffer(ctx.queue(), va.chassis.instVbo, 0, va.chassisStaging.data(), cnt * sizeof(InstanceAttrib));
+    }
+    for (auto& w : va.wheels) {
+      if (!w.staging.empty() && w.batch.instVbo) {
+        wgpuQueueWriteBuffer(ctx.queue(), w.batch.instVbo, 0, w.staging.data(), w.staging.size() * sizeof(InstanceAttrib));
+      }
+    }
+    if (va.hasMainRotor && !va.mainRotorStaging.empty() && va.mainRotor.instVbo) {
+      wgpuQueueWriteBuffer(ctx.queue(), va.mainRotor.instVbo, 0, va.mainRotorStaging.data(), va.mainRotorStaging.size() * sizeof(InstanceAttrib));
+    }
+    if (va.hasTailRotor && !va.tailRotorStaging.empty() && va.tailRotor.instVbo) {
+      wgpuQueueWriteBuffer(ctx.queue(), va.tailRotor.instVbo, 0, va.tailRotorStaging.data(), va.tailRotorStaging.size() * sizeof(InstanceAttrib));
     }
   }
 
@@ -2170,13 +2551,23 @@ void WorldRenderer::render(
       wgpuRenderPassEncoderDrawIndexed(spass, batch.indexCount, cnt, 0, 0, 0);
     }
 
-    for (size_t k = 0; k < kVehicleModelCount; ++k) {
-      const uint32_t cnt = static_cast<uint32_t>(vehicleStaging_[k].size());
-      if (cnt > 0 && vehicleBatches_[k].vbo) {
-        wgpuRenderPassEncoderSetVertexBuffer(spass, 0, vehicleBatches_[k].vbo, 0, WGPU_WHOLE_SIZE);
-        wgpuRenderPassEncoderSetVertexBuffer(spass, 1, vehicleBatches_[k].instVbo, 0, WGPU_WHOLE_SIZE);
-        wgpuRenderPassEncoderSetIndexBuffer(spass, vehicleBatches_[k].ibo, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
-        wgpuRenderPassEncoderDrawIndexed(spass, vehicleBatches_[k].indexCount, cnt, 0, 0, 0);
+    auto drawVehShadowPart = [&](const InstancedGlbBatch& b, uint32_t cnt) {
+      if (cnt == 0 || !b.vbo || !b.instVbo) return;
+      wgpuRenderPassEncoderSetVertexBuffer(spass, 0, b.vbo, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderSetVertexBuffer(spass, 1, b.instVbo, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderSetIndexBuffer(spass, b.ibo, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderDrawIndexed(spass, b.indexCount, cnt, 0, 0, 0);
+    };
+    for (const auto& va : vehicleAssets_) {
+      const uint32_t cnt = static_cast<uint32_t>(va.chassisStaging.size());
+      if (cnt == 0) continue;
+      drawVehShadowPart(va.chassis, cnt);
+      if (isNear) {
+        for (const auto& w : va.wheels) {
+          drawVehShadowPart(w.batch, static_cast<uint32_t>(w.staging.size()));
+        }
+        if (va.hasMainRotor) drawVehShadowPart(va.mainRotor, static_cast<uint32_t>(va.mainRotorStaging.size()));
+        if (va.hasTailRotor) drawVehShadowPart(va.tailRotor, static_cast<uint32_t>(va.tailRotorStaging.size()));
       }
     }
 
@@ -2336,8 +2727,15 @@ void WorldRenderer::render(
       wgpuRenderPassEncoderSetIndexBuffer(pass, unitBoxIbo_, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
       wgpuRenderPassEncoderDrawIndexed(pass, unitBoxIndexCount_, static_cast<uint32_t>(dynPropStaging_.size()), 0, 0, 0);
     }
-    for (size_t k = 0; k < kVehicleModelCount; ++k) {
-      drawGlbBatch(vehicleBatches_[k], static_cast<uint32_t>(vehicleStaging_[k].size()));
+    for (const auto& va : vehicleAssets_) {
+      const uint32_t cnt = static_cast<uint32_t>(va.chassisStaging.size());
+      if (cnt == 0) continue;
+      drawGlbBatch(va.chassis, cnt);
+      for (const auto& w : va.wheels) {
+        drawGlbBatch(w.batch, static_cast<uint32_t>(w.staging.size()));
+      }
+      if (va.hasMainRotor) drawGlbBatch(va.mainRotor, static_cast<uint32_t>(va.mainRotorStaging.size()));
+      if (va.hasTailRotor) drawGlbBatch(va.tailRotor, static_cast<uint32_t>(va.tailRotorStaging.size()));
     }
 
     // 6. Skinned Textured Characters
@@ -2503,7 +2901,15 @@ void WorldRenderer::shutdown() {
   for (auto& b : glbPropBatches_) relBatch(b);
   glbPropBatches_.clear();
   for (auto& hb : houseBatches_) relBatch(hb);
-  for (auto& vb : vehicleBatches_) relBatch(vb);
+  for (auto& va : vehicleAssets_) {
+    for (auto& w : va.wheels) relBatch(w.batch);
+    va.wheels.clear();
+    if (va.hasMainRotor) relBatch(va.mainRotor);
+    if (va.hasTailRotor) relBatch(va.tailRotor);
+    va.hasMainRotor = false;
+    va.hasTailRotor = false;
+    relBatch(va.chassis);
+  }
   relSkin(playerBodyGpu_);
   relSkin(playerShortsGpu_);
   relSkin(playerHairGpu_);

@@ -14,6 +14,7 @@ struct HudUiState {
   bool showTelemetry = true;
   bool showPhone = false;
   bool mouseCaptured = false;
+  int forcePhoneTab = -1;
   std::string savePath = "westgate_save.json";
 };
 
