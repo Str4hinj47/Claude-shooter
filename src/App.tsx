@@ -3,6 +3,7 @@ import { Game, type HudState } from "./game/Game";
 import {
   getNextStoryChapter,
   MISSIONS,
+  OPEN_WORLD_MISSION,
   STORYLINE_CHAPTERS,
   type MissionDef,
   type StoryChapterDef,
@@ -206,7 +207,10 @@ export default function App() {
     const g = new Game(host.current, setHud, { initialHangar: !launchState.autoOpenWorld });
     game.current = g;
     if (launchState.autoOpenWorld) {
-      startMission(MISSIONS[0]);
+      // "1-Click Safe Spawn" must drop straight into the streaming open world.
+      // Launching MISSIONS[0] here builds the Safehouse Range instanced tutorial
+      // level instead, which is why boot profiling never touched the city.
+      startMission({ ...OPEN_WORLD_MISSION, id: -1 });
     }
     return () => {
       g.dispose();

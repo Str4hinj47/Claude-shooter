@@ -58,7 +58,7 @@ export function buildWestgateWater(
   terrainAt: TerrainHeightFn,
   sunDir: THREE.Vector3,
   worldSize = 2400,
-  segments = 220,
+  segments = 140,
 ): WestgateWaterHandle {
   const segs = Math.max(48, Math.min(240, segments));
   const geo = new THREE.PlaneGeometry(worldSize, worldSize, segs, segs);

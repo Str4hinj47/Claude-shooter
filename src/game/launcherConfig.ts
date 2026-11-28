@@ -36,9 +36,13 @@ export const GRAPHICS_PROFILES: Record<GraphicsPresetId, GraphicsProfileSpec> = 
     farShadowEnabled: false,
     farShadowSize: 512,
     cubeSize: 64,
-    nearRadius: 180,
-    lodRadius: 460,
-    prewarmRadius: 220,
+    // SAFE runs on integrated/software rasterisers. A 460m LOD shell measured
+    // ~2.07M triangles and 1219 draw calls for the first frame, which never
+    // completes under SwiftShader; 240m keeps the near ring intact while
+    // dropping the far shell the hardware cannot afford.
+    nearRadius: 120,
+    lodRadius: 200,
+    prewarmRadius: 110,
     maxHouseGlbs: false,
     maxTrafficModels: 4,
     maxAnisotropy: 2,

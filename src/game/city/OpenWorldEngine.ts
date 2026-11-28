@@ -59,15 +59,21 @@ export class OpenWorldEngine implements VehicleKitWorldBridge {
   constructor(opts: OpenWorldEngineOptions = {}) {
     this.root.name = "WestgateBayOpenWorld";
     this.heightSystem = new WorldHeightSystem(opts.terrainAt ?? (() => 0), this.spatialAABBs);
-    this.props = new PropBatcher(opts.propBucketSize ?? 480);
+    // Smaller buckets -> tighter culling granularity for instanced props.
+    this.props = new PropBatcher(opts.propBucketSize ?? 220);
 
     const builder: ChunkBuildFn = opts.chunkBuilder ?? (() => {});
+    // Streaming radii follow the active launcher profile instead of being
+    // pinned at 280/780. On a software rasteriser the hardcoded values kept
+    // ~25 chunks of city geometry resident, which is unusable; SAFE asks for
+    // 180/460 and that is what it should get.
+    const gfxProfile = getLauncherProfile();
     this.chunks = new ChunkStreamer(builder, {
       worldMin: -1200,
       worldMax: 1200,
       chunkSize: 160,
-      nearRadius: 280,
-      lodRadius: 780,
+      nearRadius: gfxProfile.nearRadius,
+      lodRadius: gfxProfile.lodRadius,
       hysteresis: 24,
       maxBuildsPerFrame: 2,
       ...opts.chunkOptions,
@@ -126,7 +132,10 @@ export class OpenWorldEngine implements VehicleKitWorldBridge {
     if (dx * dx + dz * dz >= 16) {
       this.lastShadowCullX = focus.x;
       this.lastShadowCullZ = focus.z;
-      this.props.updateShadowCulling(focus.x, focus.z, 185);
+      // Shadow frustum stays local (185m); visibility follows the active
+      // profile's LOD radius so out-of-range instanced prop buckets leave the
+      // draw list entirely instead of just dropping shadows.
+      this.props.updateShadowCulling(focus.x, focus.z, 185, getLauncherProfile().lodRadius);
     }
   }
 

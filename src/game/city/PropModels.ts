@@ -117,6 +117,39 @@ export function loadCityGlb(filename: string): Promise<THREE.Group | null> {
 }
 
 /**
+ * `Box3.setFromObject` calls `SkinnedMesh.computeBoundingBox()` when a skinned
+ * object has no cached `boundingBox`. That path needs a resolved skeleton with
+ * real bone matrices, and skinned props are routinely traversed here before
+ * their skeleton is bound, which throws
+ * "Cannot read properties of undefined (reading 'matrixWorld')" out of
+ * `applyBoneTransform` and aborts the whole world build.
+ *
+ * Giving each skinned mesh the rest-pose bounds of its bind geometry lets
+ * `expandByObject` skip the skeleton entirely. Bounds are conservative (they
+ * cover the undeformed mesh) which is exactly what fitting/scaling wants.
+ */
+export function seedSkinnedBounds(root: THREE.Object3D): void {
+  root.traverse((o) => {
+    const m = o as THREE.SkinnedMesh;
+    if (!m.isSkinnedMesh) return;
+    if (!m.boundingBox) {
+      const geo = m.geometry as THREE.BufferGeometry | undefined;
+      if (geo) {
+        if (!geo.boundingBox) geo.computeBoundingBox();
+        if (geo.boundingBox) m.boundingBox = geo.boundingBox.clone();
+      }
+    }
+    if (!m.boundingSphere) {
+      const geo = m.geometry as THREE.BufferGeometry | undefined;
+      if (geo) {
+        if (!geo.boundingSphere) geo.computeBoundingSphere();
+        if (geo.boundingSphere) m.boundingSphere = geo.boundingSphere.clone();
+      }
+    }
+  });
+}
+
+/**
  * Scales `root` uniformly to match a target length (Z), width (X), or height (Y),
  * centers X/Z around 0, and places `minY` at `baseY` (e.g. `0` on ground or `-0.28` waterline).
  */
@@ -130,6 +163,7 @@ export function fitGlbToDimension(
   const wrapper = new THREE.Group();
   if (yawOffset !== 0) root.rotation.y = yawOffset;
   root.updateMatrixWorld(true);
+  seedSkinnedBounds(root);
   const box = new THREE.Box3().setFromObject(root);
   const size = new THREE.Vector3();
   const center = new THREE.Vector3();
@@ -167,6 +201,7 @@ export function fitGlbToFootprint(
   const wrapper = new THREE.Group();
   if (yawOffset !== 0) root.rotation.y = yawOffset;
   root.updateMatrixWorld(true);
+  seedSkinnedBounds(root);
   const box = new THREE.Box3().setFromObject(root);
   const size = new THREE.Vector3();
   const center = new THREE.Vector3();

@@ -11,7 +11,7 @@ import {
   ToneMappingMode,
 } from "postprocessing";
 import { N8AOPostPass } from "n8ao";
-import { SoldierRig, MAG_SIZE, type RigStatus } from "../character/SoldierRig";
+import { SoldierRig, MAG_SIZE, loadCachedSoldierGltf, type RigStatus } from "../character/SoldierRig";
 import type { MeleeMoveDef } from "../character/HandToHandCombat";
 import { WEAPONS, type WeaponId } from "../character/rifle";
 import { type World, type SurfaceKind } from "./world";
@@ -992,6 +992,20 @@ export class Game {
     }
   }
 
+  /**
+   * Warms the player model's GLB. Called before the world build so the ~10s of
+   * fetch + 2048x2048 texture decode overlaps the city construction instead of
+   * running after it, then awaited by `ensurePlayerRig` (which hits the module
+   * level GLB cache and only pays clone + setup).
+   */
+  private rigWarmup(wantUrl: string): Promise<unknown> {
+    const warm = loadCachedSoldierGltf(wantUrl).catch(() => {
+      // A custom character URL may 404; the rig falls back to the soldier model.
+      return null;
+    });
+    return warm;
+  }
+
   private async ensurePlayerRig(wantUrl: string) {
     if (this.rig && this.rigUrl !== wantUrl) {
       this.rig.dispose();
@@ -1530,8 +1544,29 @@ export class Game {
       this.scene.add(this.missionRoot);
     }
 
+    // Build-phase instrumentation: publishes per-step wall-clock costs to
+    // `window.__westgateBootPhases` so boot-perf can attribute loading->ready
+    // instead of guessing from a CPU sampler.
+    const bootPhases: Record<string, number> = {};
+    (globalThis as unknown as { __westgateBootPhases?: Record<string, number> }).__westgateBootPhases = bootPhases;
+    let bootMarkT = performance.now();
+    const bootMark = (label: string) => {
+      const t = performance.now();
+      bootPhases[label] = Math.round(t - bootMarkT);
+      bootMarkT = t;
+    };
+
+    // Kick the player-model decode off *before* the world build. Both are
+    // independent: the city build is a long synchronous CPU burst and the GLB
+    // path is fetch + texture decode. Overlapping them is the single largest
+    // structural win on the boot path, because the rig load alone is ~10s of
+    // 2048x2048 texture decode that previously ran strictly after the city.
+    const wantUrl = cb.characterUrl ?? characterUrl(loadCharacterId());
+    const rigWarm = this.rigWarmup(wantUrl);
+
     // build the world
     this.level = await buildLevelAsync(mission.id, this.missionRoot, this.scene, this.renderer);
+    bootMark("buildWorld");
     if (this.disposed || seq !== this.missionSeq) {
       disposeBvhForObjects(this.level.colliders);
       this.level.disposeExtra?.();
@@ -1544,9 +1579,10 @@ export class Game {
     this.world = this.level;
     this.wireOpenWorldCallbacks();
 
-    // player rig (loaded once, reloaded when the selected character changes)
-    const wantUrl = cb.characterUrl ?? characterUrl(loadCharacterId());
+    // player rig (started above, in parallel with the world build)
+    await rigWarm;
     await this.ensurePlayerRig(wantUrl);
+    bootMark("playerRig");
     if (this.disposed) return;
     const sp = mission.spawn;
     this.rig.worldBound = mission.id === -1 ? 1185 : 260;
@@ -1659,6 +1695,7 @@ export class Game {
     for (let i = 0; i < spawnedEnemies.length; i += batchSize) {
       const slice = spawnedEnemies.slice(i, i + batchSize);
       await Promise.all(slice.map((e) => e.build(this.missionRoot, mission.tint, 0.95 + Math.random() * 0.12)));
+    bootMark("enemies");
       if (this.disposed || seq !== this.missionSeq) return;
       for (const e of slice) {
         this.enemyHits.push(e.hitbox);
@@ -1687,6 +1724,7 @@ export class Game {
     if (mission.ally) {
       this.ally = new Ally(host, mission.ally[0], mission.ally[1]);
       await this.ally.build(this.missionRoot, [0x3f6b3a, 0x88ff88], 1.0);
+    bootMark("ally");
       built++;
       this.progress = Math.round((built / totalEnemies) * 100);
       this.emitHud();
@@ -1696,6 +1734,7 @@ export class Game {
     if (mission.rescue) {
       this.npc = new RescueNPC(mission.rescue[0], mission.rescue[1]);
       await this.npc.build(this.missionRoot, [0xc9b48a, 0xffe0a0]);
+    bootMark("npc");
       built++;
       this.progress = 100;
       this.emitHud();
@@ -1789,16 +1828,30 @@ export class Game {
       });
     }
 
+    // Shader pre-compilation must never gate the boot transition.
+    //
+    // `compileAsync` only resolves once every program is linked, and on drivers
+    // without KHR_parallel_shader_compile it can still do the work
+    // synchronously on the first call. Race it against a hard 1200ms ceiling so
+    // a slow/software rasteriser cannot stall the jump to phase "ready"; any
+    // programs still pending simply compile on their first draw. Keeping the
+    // initial visible set small (chunk prewarm bubble, prop distance culling,
+    // fight-pit culling) is what keeps that first-draw cost low.
+    const COMPILE_BUDGET_MS = 1200;
     try {
       const r = this.renderer as THREE.WebGLRenderer & {
         compileAsync?: (scene: THREE.Object3D, camera: THREE.Camera) => Promise<void>;
       };
       if (typeof r.compileAsync === "function") {
-        await r.compileAsync(this.scene, this.camera);
+        await Promise.race([
+          r.compileAsync(this.scene, this.camera),
+          new Promise<void>((resolve) => setTimeout(resolve, COMPILE_BUDGET_MS)),
+        ]);
       } else {
         this.renderer.compile(this.scene, this.camera);
       }
     } catch {}
+    bootMark("compile");
     this.phase = "ready";
     if (pendingContractId !== null) {
       const def = MISSIONS.find((m) => m.id === pendingContractId);

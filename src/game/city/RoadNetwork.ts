@@ -1047,8 +1047,10 @@ export class RoadNetwork {
       isOneWay: boolean,
       withLines: boolean,
     ) => {
-      const w = 1024;
-      const h = 1024;
+      // 512px is plenty for a 16m road ribbon at this camera distance and
+      // quarters the per-pixel noise work on the boot path.
+      const w = 512;
+      const h = 512;
       const c = document.createElement("canvas");
       c.width = w;
       c.height = h;
@@ -1193,7 +1195,7 @@ export class RoadNetwork {
     };
 
     const makeRoundaboutTex = () => {
-      const s = 1024;
+      const s = 512;
       const c = document.createElement("canvas");
       c.width = c.height = s;
       const g = c.getContext("2d")!;

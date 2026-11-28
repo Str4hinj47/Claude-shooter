@@ -289,6 +289,87 @@ export function upgradeCharacterMaterial(orig: THREE.Material): THREE.MeshPhysic
 const tunedHandSkinGeos = new WeakSet<THREE.BufferGeometry>();
 
 /**
+ * Module-scoped cache of decoded+downsampled texture pixels, keyed by the source
+ * image rather than by texture/material instance.
+ *
+ * `matchRocketboxHandSkinTone` runs for the player rig *and* for every pedestrian
+ * that boots with the world. Rocketbox characters each declare their own
+ * `Texture` objects, but those textures all point at the same handful of
+ * downloaded image bitmaps — so caching per-image (instead of per-function-call)
+ * means each 256x256 draw + getImageData happens exactly once per session
+ * instead of once per rig. This was ~13s of the boot window.
+ */
+type SkinSample = { w: number; h: number; flipY: boolean; data: Uint8ClampedArray };
+const skinSampleCache = new Map<unknown, SkinSample | null>();
+
+/**
+ * Deferred queue for the hand-skin tone pass.
+ *
+ * `matchRocketboxHandSkinTone` needs real pixels, so it calls `getImageData`,
+ * which forces a *synchronous* decode of the full-resolution character JPEG.
+ * Rocketbox characters ship 1K-2K body textures, so doing this inline costs
+ * ~1s per rig — and it ran for the player plus every pedestrian during world
+ * boot, adding ~13s to Safe Spawn.
+ *
+ * The result is a subtle hand tint, so it can land a few frames late. We run it
+ * from idle callbacks with a strict time budget instead, keeping the boot path
+ * free of image decode work.
+ */
+interface SkinToneTask {
+  model: THREE.Group;
+}
+const skinToneQueue: SkinToneTask[] = [];
+let skinToneScheduled = false;
+
+function drainSkinToneQueue(deadline?: { timeRemaining?: () => number }): void {
+  const budget = deadline?.timeRemaining ? () => deadline.timeRemaining!() : () => 8;
+  while (skinToneQueue.length > 0) {
+    if (budget() <= 1) break;
+    const task = skinToneQueue.shift()!;
+    // The rig may have been disposed (mission swap) while queued.
+    if (!task.model.parent) continue;
+    try {
+      matchRocketboxHandSkinTone(task.model);
+    } catch {
+      // A failed cosmetic pass must never break the frame loop.
+    }
+  }
+  if (skinToneQueue.length > 0) {
+    scheduleSkinToneDrain();
+  } else {
+    skinToneScheduled = false;
+  }
+}
+
+function scheduleSkinToneDrain(): void {
+  if (skinToneScheduled) return;
+  skinToneScheduled = true;
+  const run = (deadline?: { timeRemaining?: () => number }) => {
+    skinToneScheduled = false;
+    drainSkinToneQueue(deadline);
+  };
+  const ric = (globalThis as { requestIdleCallback?: (cb: typeof run) => number }).requestIdleCallback;
+  if (typeof ric === "function") ric(run);
+  else setTimeout(() => run(), 32);
+}
+
+/** Queues the cosmetic hand-skin match to run during idle time instead of boot. */
+export function scheduleRocketboxHandSkinTone(model: THREE.Group): void {
+  if (typeof document === "undefined") return;
+  // Dedupe by geometry: rigs cloned from one GLB share geometry, and
+  // matchRocketboxHandSkinTone is idempotent per geometry anyway.
+  let needs = false;
+  model.traverse((o) => {
+    if (needs) return;
+    const sm = o as THREE.SkinnedMesh;
+    if (sm.isSkinnedMesh && sm.geometry && !tunedHandSkinGeos.has(sm.geometry)) needs = true;
+  });
+  if (!needs) return;
+  skinToneQueue.push({ model });
+  scheduleSkinToneDrain();
+}
+
+/**
  * Rocketbox character `_body` textures bake bare hand skin ~15–50% brighter
  * than the `_head` face texture (and render under matte fabric shading).
  * Sample the character's own head skin vs bare hand-bone skin pixels once per
@@ -298,7 +379,7 @@ const tunedHandSkinGeos = new WeakSet<THREE.BufferGeometry>();
 export function matchRocketboxHandSkinTone(model: THREE.Group) {
   if (typeof document === "undefined") return;
 
-  const sampleTexPixels = (tex: THREE.Texture | null | undefined) => {
+  const sampleTexPixels = (tex: THREE.Texture | null | undefined): SkinSample | null => {
     const img = tex?.image as (CanvasImageSource & { width?: number; height?: number; naturalWidth?: number; naturalHeight?: number }) | undefined;
     if (!tex || !img) return null;
     const w = img.naturalWidth || img.width || 0;
@@ -309,7 +390,7 @@ export function matchRocketboxHandSkinTone(model: THREE.Group) {
     const canvas = document.createElement("canvas");
     canvas.width = cw;
     canvas.height = ch;
-    const ctx = canvas.getContext("2d");
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
     if (!ctx) return null;
     try {
       ctx.drawImage(img, 0, 0, cw, ch);
@@ -317,15 +398,27 @@ export function matchRocketboxHandSkinTone(model: THREE.Group) {
       return { w: cw, h: ch, flipY: tex.flipY, data };
     } catch {
       return null;
+    } finally {
+      // Release the scratch canvas backing store immediately; the decoded
+      // Float/Uint8 pixels we keep are tiny compared to a retained canvas.
+      canvas.width = 0;
+      canvas.height = 0;
     }
   };
 
   type SampledTex = NonNullable<ReturnType<typeof sampleTexPixels>>;
-  const texCache = new Map<THREE.Texture, SampledTex | null>();
-  const getPixels = (tex: THREE.Texture | null | undefined) => {
+  /**
+   * Per-image cache lookup. Rocketbox rigs share image bitmaps across distinct
+   * Texture instances, so keying on `tex.image` collapses dozens of redundant
+   * 256x256 draws into one.
+   */
+  const getPixels = (tex: THREE.Texture | null | undefined): SkinSample | null => {
     if (!tex) return null;
-    if (!texCache.has(tex)) texCache.set(tex, sampleTexPixels(tex));
-    return texCache.get(tex) ?? null;
+    const key: unknown = tex.image ?? tex;
+    if (skinSampleCache.has(key)) return skinSampleCache.get(key) ?? null;
+    const sampled = sampleTexPixels(tex);
+    skinSampleCache.set(key, sampled);
+    return sampled;
   };
 
   const sampleUv = (pix: SampledTex, u: number, v: number) => {
@@ -738,19 +831,29 @@ function smoothSuitShoulderWeights(model: THREE.Group) {
 export function loadCachedSoldierGltf(url: string, onProgress?: (p: number) => void): Promise<GLTF> {
   let promise = cachedGltfMap.get(url);
   if (!promise) {
+    const prof = ((globalThis as unknown as { __glbProf?: Record<string, number> }).__glbProf ??= {});
+    let tP = performance.now();
+    const mark = (k: string) => {
+      const t = performance.now();
+      prof[k] = Math.round(t - tP);
+      tP = t;
+    };
     promise = MeshoptDecoder.ready
-      .then(() =>
-        getSoldierLoader().loadAsync(url, (e) => {
+      .then(() => {
+        mark("meshoptReady");
+        return getSoldierLoader().loadAsync(url, (e) => {
           if (e.total) onProgress?.(e.loaded / e.total);
-        }),
-      )
+        });
+      })
       .then((gltf) => {
+        mark("parse");
         gltf.scene.traverse((o) => {
           const m = o as THREE.Mesh;
           if (m.isMesh && m.geometry) {
             upgradeQuantizedCharacterNormals(m.geometry, 56);
           }
         });
+        mark("normals");
         return gltf;
       });
     cachedGltfMap.set(url, promise);
@@ -1272,6 +1375,13 @@ export class SoldierRig {
       return rig;
     }
     let isRocketbox = !!url && url !== soldierUrl;
+    const prof = ((globalThis as unknown as { __rigLoadProf?: Record<string, number> }).__rigLoadProf ??= {});
+    let tProf = performance.now();
+    const profMark = (k: string) => {
+      const t = performance.now();
+      prof[k] = Math.round(t - tProf);
+      tProf = t;
+    };
     let gltf: GLTF;
     try {
       gltf = await loadCachedSoldierGltf(url, onProgress);
@@ -1280,10 +1390,13 @@ export class SoldierRig {
       isRocketbox = false;
       gltf = await loadCachedSoldierGltf(url, onProgress);
     }
+    profMark("gltfFetch");
     const rig = new SoldierRig(scene, isRocketbox);
     rig.modelTag = url;
     const clonedScene = SkeletonUtils.clone(gltf.scene) as THREE.Group;
+    profMark("skeletonClone");
     rig.setup({ scene: clonedScene, animations: gltf.animations }, url);
+    profMark("setup");
     return rig;
   }
 
@@ -1317,7 +1430,7 @@ export class SoldierRig {
       }
     });
 
-    if (this.isRocketbox) matchRocketboxHandSkinTone(model);
+    if (this.isRocketbox) scheduleRocketboxHandSkinTone(model);
     if (!this.isCC0Fighter) smoothSuitShoulderWeights(model);
 
     // normalise height to ~1.82m
@@ -3101,7 +3214,16 @@ export class SoldierRig {
         if (!s.userData.origNormalMap && s.normalMap) s.userData.origNormalMap = s.normalMap;
 
         let pair = SoldierRig.businessSuitCache.get(preset.id);
-        if (!pair || (!pair.fromPack && hasPack)) {
+        // Rebuild only when nothing is cached, or when a CC0 clothes pack has
+        // *newly* become available and can replace a packless build.
+        //
+        // The previous condition (`!pair || (!pair.fromPack && hasPack)`) kept
+        // firing for the whole time the pack JPEGs were still in flight:
+        // every extra mesh hit it again, and `preloadClothesPacks` then
+        // re-invoked applyBusinessSuitPreset from its waiter — re-running the
+        // entire per-pixel synthesis for a pair we had just produced.
+        const wantsPackUpgrade = hasPack && pair !== undefined && !pair.fromPack;
+        if (!pair || wantsPackUpgrade) {
           const img = origTex.image as CanvasImageSource & {
             width?: number;
             height?: number;
@@ -3112,8 +3234,13 @@ export class SoldierRig {
           const ih = img.naturalHeight || img.height || 0;
           if (!iw || !ih) return;
 
-          const w = Math.min(512, iw);
-          const h = Math.min(512, ih);
+          // The suit preset is a *recolour*, so it barely benefits from the
+          // source resolution, but the synthesis below is per-pixel pure JS.
+          // 256 keeps all hand/tie/shoe/shirt UV islands well defined while
+          // making the loop 4x cheaper than 512 on every regeneration.
+          const SUIT_LOD = 256;
+          const w = Math.min(SUIT_LOD, iw);
+          const h = Math.min(SUIT_LOD, ih);
           const diffCanvas = document.createElement("canvas");
           diffCanvas.width = w;
           diffCanvas.height = h;

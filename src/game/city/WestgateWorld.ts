@@ -28,7 +28,7 @@ import { RandomEventsManager } from "./RandomEvents";
 import { CollectiblesSystem } from "./CollectiblesSystem";
 import { BodyCarrySystem } from "./BodyCarrySystem";
 import { ContractSurveillanceSystem } from "./ContractSurveillance";
-import { UndergroundFightPit } from "./UndergroundFightPit";
+import { UndergroundFightPit, FIGHT_PIT_CENTER } from "./UndergroundFightPit";
 import { AirVehicleSystem } from "../vehicles/air/AirVehicleSystem";
 import { BoatSystem } from "../vehicles/water/BoatSystem";
 import { buildWestgateApartments, type ApartmentSystem } from "./Apartments";
@@ -99,11 +99,40 @@ export interface WestgateLevelResult extends LevelResult {
   ) => void;
 }
 
+/**
+ * Boot instrumentation: records wall-clock cost of each numbered build phase and
+ * exposes it on `window.__westgateBuildPhases` for the boot-perf harness.
+ */
+interface PhaseClock {
+  mark(label: string): void;
+  finish(): Record<string, number>;
+}
+
+function createPhaseClock(): PhaseClock {
+  let last = typeof performance !== "undefined" ? performance.now() : Date.now();
+  const out: Record<string, number> = {};
+  const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
+  return {
+    mark(label: string) {
+      const t = now();
+      out[label] = Math.round(t - last);
+      last = t;
+    },
+    finish() {
+      const g = globalThis as unknown as { __westgateBuildPhases?: Record<string, number> };
+      g.__westgateBuildPhases = out;
+      return out;
+    },
+  };
+}
+
 export function buildWestgateWorld(
   content: THREE.Object3D,
   main: THREE.Scene,
   renderer: THREE.WebGLRenderer,
 ): WestgateLevelResult {
+  const phaseClock = createPhaseClock();
+
   // 1. Live pixel-sharp atmospheric sky dome + CubeCamera PMREM IBL
   const sunDir = new THREE.Vector3().setFromSphericalCoords(
     1,
@@ -159,6 +188,7 @@ export function buildWestgateWorld(
   main.fog = new THREE.FogExp2(0xadd0e8, 0.00038);
   renderer.toneMappingExposure = 0.96;
 
+  phaseClock.mark("phase1");
   // 2. Dual-Cascade Directional Sun Rig (scaled by Launcher Graphics Profile)
   const sun = new THREE.DirectionalLight(0xfff1dc, 1.74);
   sun.castShadow = gfxProfile.shadowsEnabled;
@@ -193,6 +223,7 @@ export function buildWestgateWorld(
   const hemi = new THREE.HemisphereLight(0x9bc8ef, 0x564e3e, 0.68);
   content.add(hemi);
 
+  phaseClock.mark("phase2");
   // 3. OpenWorldEngine + District Chunk Dispatcher + 4-Tier Curved Road Skeleton
   const dispatcher = new CityChunkDispatcher();
   let terrainAt: (x: number, z: number) => number = () => 4.5;
@@ -208,6 +239,7 @@ export function buildWestgateWorld(
   populateWestgateRoads(engine.roads);
   engine.roads.compile();
 
+  phaseClock.mark("phase3");
   // 4. Terrain heightfield graded seamlessly around roads & roundabouts
   terrainAt = buildWestgateTerrainFn(engine.roads);
   engine.setTerrainFn(terrainAt);
@@ -227,6 +259,7 @@ export function buildWestgateWorld(
   terrainMesh.updateMatrix();
   terrainMesh.matrixAutoUpdate = false;
 
+  phaseClock.mark("phase4");
   // 5. Animated Ocean / River / Harbor / Canal Water
   const water = buildWestgateWater(terrainAt, sunDir, 2400, 220);
   water.mesh.updateMatrix();
@@ -237,6 +270,7 @@ export function buildWestgateWorld(
   const grass = buildWestgateGrass(terrainAt, engine.roads);
   content.add(grass.group);
 
+  phaseClock.mark("phase5");
   // 6. Roundabout islands & 5 architectural bridge superstructures
   const landmarkColliders: THREE.Object3D[] = [];
   buildWestgateRoadLandmarks(
@@ -252,6 +286,7 @@ export function buildWestgateWorld(
     c.matrixAutoUpdate = false;
   }
 
+  phaseClock.mark("phase6");
   // 7. Populate citywide instanced trees, streetlights, signals, hydrants & parked cars (Phase 8)
   const streetlightPoints = populateWestgateProps(engine.props, engine.roads, terrainAt, WESTGATE_TELEPORTS);
 
@@ -270,6 +305,7 @@ export function buildWestgateWorld(
   let lastLampFocusX = Infinity;
   let lastLampFocusZ = Infinity;
 
+  phaseClock.mark("phase7");
   // 8. Finalize roads, bridge WalkableSurfaces, props, and prewarm spawn chunks
   engine.finalizeStaticWorld(WESTGATE_SPAWN[0], WESTGATE_SPAWN[1]);
   registerSafehouseGarageSpatial(engine.spatialAABBs);
@@ -312,6 +348,7 @@ export function buildWestgateWorld(
   upgradeWestgatePropsWithGlbs(engine.props);
   content.add(engine.root);
 
+  phaseClock.mark("phase8");
   // 9. Spawn driveable Overtake car fleet & ambient NPC road traffic + Speed Traps + Signals + Pedestrians + Living World
   const signals = new TrafficSignalManager(engine.roads, terrainAt, WESTGATE_TELEPORTS, engine.spatialAABBs);
   content.add(signals.group);
@@ -404,6 +441,7 @@ export function buildWestgateWorld(
   content.add(apartments.group);
   const minimapData = buildMinimapData(engine.roads);
 
+  phaseClock.mark("phase9");
   // 10. Rain & snow precipitation + tire road spray + Time-of-Day lighting
   const weather = createWeatherState("auto");
   const precipitation = new Precipitation(main);
@@ -729,6 +767,13 @@ export function buildWestgateWorld(
       for (let k = 0; k < 6; k++) streetLampPool[k].intensity = 0;
     }
     engine.update(focus);
+    // The Iron Pit is a large standalone set: skip its whole transform/render
+    // work once the player is well outside the venue.
+    if (fightPit.group) {
+      const fdx = focus.x - FIGHT_PIT_CENTER.x;
+      const fdz = focus.z - FIGHT_PIT_CENTER.z;
+      fightPit.group.visible = fdx * fdx + fdz * fdz < 240 * 240;
+    }
     signals.update(dt);
     livingWorld.update(dt, focus);
     wildlife.update(dt, focus);
@@ -744,6 +789,9 @@ export function buildWestgateWorld(
       if (vis) comp.update(dt);
     }
   };
+
+  phaseClock.mark("phase10");
+  phaseClock.finish();
 
   return {
     colliders: [terrainMesh, ...landmarkColliders],

@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { seedSkinnedBounds } from "./PropModels";
 
 const CELL_OFFSET = 32768;
 const CELL_STRIDE = 65536;
@@ -174,9 +175,11 @@ export class SpatialColliderGrid {
     let box = bounds;
     if (!box) {
       obj.updateWorldMatrix(true, false);
+      seedSkinnedBounds(obj);
       this.tmpBox.setFromObject(obj);
       box = this.tmpBox;
     }
+    if (!Number.isFinite(box.min.x) || !Number.isFinite(box.max.x)) return -1;
 
     const minCx = Math.floor(box.min.x * this.invCell);
     const maxCx = Math.floor(box.max.x * this.invCell);

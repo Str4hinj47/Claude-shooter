@@ -111,7 +111,7 @@ function makeFacadeTextures(style: FacadeStyle): CachedFacade {
     }
   }
 
-  for (let i = 0; i < 1400; i++) {
+  for (let i = 0; i < 320; i++) {
     const x = (i * 197) % size;
     const y = (i * 313) % size;
     const sz = Math.max(1, Math.round(2 * scale));

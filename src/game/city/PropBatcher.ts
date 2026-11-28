@@ -219,17 +219,49 @@ export class PropBatcher {
     return group;
   }
 
-  /** Enables shadow casting only on prop buckets intersecting the local sun shadow frustum. */
-  updateShadowCulling(focusX: number, focusZ: number, halfExtent = 74): void {
+  /**
+   * Distance + shadow culling for instanced prop buckets.
+   *
+   * Culling only shadows was not enough: every bucket inside the LOD radius
+   * stayed in the draw list, so a fully populated world could submit millions
+   * of instanced triangles and hundreds of draw calls for props the player
+   * cannot see. Buckets whose box is entirely beyond `visRadius` are hidden
+   * outright; surviving buckets keep shadows only inside the local sun frustum.
+   *
+   * `visRadius` should be the active launcher profile's `lodRadius`.
+   */
+  updateShadowCulling(
+    focusX: number,
+    focusZ: number,
+    halfExtent = 74,
+    visRadius = Infinity,
+  ): void {
     const minX = focusX - halfExtent;
     const maxX = focusX + halfExtent;
     const minZ = focusZ - halfExtent;
     const maxZ = focusZ + halfExtent;
+    const visR2 = visRadius === Infinity ? Infinity : visRadius * visRadius;
+
     for (let i = 0; i < this.builtMeshes.length; i++) {
       const im = this.builtMeshes[i];
-      if (!im.userData.baseCastShadow) continue;
       const bb = im.boundingBox;
       if (!bb) continue;
+
+      if (visR2 !== Infinity) {
+        // Nearest point of the bucket AABB to the focus, in XZ.
+        const nx = focusX < bb.min.x ? bb.min.x : focusX > bb.max.x ? bb.max.x : focusX;
+        const nz = focusZ < bb.min.z ? bb.min.z : focusZ > bb.max.z ? bb.max.z : focusZ;
+        const dx = focusX - nx;
+        const dz = focusZ - nz;
+        const visible = dx * dx + dz * dz <= visR2;
+        im.visible = visible;
+        if (!visible) {
+          im.castShadow = false;
+          continue;
+        }
+      }
+
+      if (!im.userData.baseCastShadow) continue;
       im.castShadow = bb.max.x >= minX && bb.min.x <= maxX && bb.max.z >= minZ && bb.min.z <= maxZ;
     }
   }
@@ -275,6 +307,10 @@ export class PropBatcher {
         im.castShadow = part.castShadow ?? ref.castShadow;
         im.userData.baseCastShadow = ref.userData.baseCastShadow ?? true;
         im.receiveShadow = part.receiveShadow ?? ref.receiveShadow;
+        // Carry over the distance-cull state of the mesh being replaced;
+        // otherwise every GLB upgrade pops the bucket back into the draw list
+        // until the next culling pass runs.
+        im.visible = ref.visible;
         im.name = `${bKey}_p${pIdx}`;
         im.instanceMatrix.array.set(ref.instanceMatrix.array);
         im.instanceMatrix.needsUpdate = true;

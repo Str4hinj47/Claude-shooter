@@ -273,13 +273,13 @@ export function buildWestgateTerrainFn(roads: RoadNetwork): TerrainHeightFn {
 }
 
 /**
- * Builds the 2.4km × 2.4km vertex-colored terrain mesh (`320×320` grid, 1 draw call)
+ * Builds the 2.4km × 2.4km vertex-colored terrain mesh (`224×224` grid, 1 draw call)
  * shaded by elevation, slope, coastline sand, river concrete walls, and urban turf.
  */
 export function buildWestgateTerrainMesh(
   terrainAt: TerrainHeightFn,
   worldSize = 2400,
-  segments = 320,
+  segments = 224,
 ): THREE.Mesh {
   const geo = new THREE.PlaneGeometry(worldSize, worldSize, segments, segments);
   geo.rotateX(-Math.PI / 2);

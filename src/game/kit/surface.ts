@@ -386,7 +386,37 @@ function subscribeArchPbr(family: SurfaceFamily, onReady: (b: ArchPbrBundle) => 
   );
 }
 
+/**
+ * Public entry point. Architectural families that will later be replaced by a
+ * streamed 1K ambientCG set are generated at a shared 128px resolution first;
+ * building a full 512px albedo/normal/roughness trio that is thrown away once
+ * the external maps arrive is pure boot cost.
+ */
 export function surfaceMaps(family: SurfaceFamily, seed = 1, size = 256, repeat = 1): SurfaceMaps {
+  if (size > 128 && ARCH_PBR_FAMILIES.has(family)) {
+    return archPbrFallback(family, seed);
+  }
+  return buildSurfaceMaps(family, seed, size, repeat);
+}
+
+const ARCH_PBR_FALLBACK_SIZE = 128;
+const archPbrFallbackCache = new Map<SurfaceFamily, SurfaceMaps>();
+
+/**
+ * Cheap 128px stand-in used while an architectural family waits for its 1K
+ * ambientCG PBR upgrade to decode. Generating a full procedural set (albedo +
+ * normal + roughness) for a material that is about to be replaced wastes real
+ * boot time, so `surfaceMaps` clamps arch families to this shared set.
+ */
+function archPbrFallback(family: SurfaceFamily, seed: number): SurfaceMaps {
+  const hit = archPbrFallbackCache.get(family);
+  if (hit) return hit;
+  const maps = buildSurfaceMaps(family, seed, ARCH_PBR_FALLBACK_SIZE, 1);
+  archPbrFallbackCache.set(family, maps);
+  return maps;
+}
+
+function buildSurfaceMaps(family: SurfaceFamily, seed = 1, size = 256, repeat = 1): SurfaceMaps {
   const key = `${family}|${seed}|${size}|${repeat.toFixed(2)}`;
   const hit = mapCache.get(key);
   if (hit) return hit;

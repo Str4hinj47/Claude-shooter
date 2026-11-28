@@ -4,6 +4,7 @@ import { materialFor } from "../kit/surface";
 import { RoadNetwork, type RoadNodeSpec, type RoadSegmentSpec } from "./RoadNetwork";
 import type { TerrainHeightFn } from "./HeightSystem";
 import { SpatialAABBGrid } from "./SpatialIndex";
+import { seedSkinnedBounds } from "./PropModels";
 
 export const WESTGATE_NODES: RoadNodeSpec[] = [
   // 5 District Roundabouts
@@ -643,6 +644,7 @@ export function buildWestgateRoadLandmarks(
     collidersOut?.push(m);
     if (spatialAABBs) {
       m.updateWorldMatrix(true, false);
+      seedSkinnedBounds(m);
       spatialAABBs.insert(new THREE.Box3().setFromObject(m));
     }
   };

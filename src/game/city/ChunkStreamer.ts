@@ -36,6 +36,8 @@ export interface ChunkStreamerOptions {
   lodRadius?: number;
   hysteresis?: number;
   maxBuildsPerFrame?: number;
+  immediateRadius?: number;
+  buildBudgetMs?: number;
   spatialAABBs?: SpatialAABBGrid;
   spatialColliders?: SpatialColliderGrid;
 }
@@ -101,6 +103,10 @@ export class ChunkStreamer {
   readonly lodRadius: number;
   readonly hysteresis: number;
   readonly maxBuildsPerFrame: number;
+  /** Synchronous spawn bubble radius used by staged prewarm (metres). */
+  readonly immediateRadius: number;
+  /** Max wall-clock milliseconds of chunk building per frame. */
+  readonly buildBudgetMs: number;
 
   private readonly chunks: CityChunk[] = [];
   private readonly chunkMap = new Map<string, CityChunk>();
@@ -121,6 +127,8 @@ export class ChunkStreamer {
     this.lodRadius = opts.lodRadius ?? 780;
     this.hysteresis = opts.hysteresis ?? 24;
     this.maxBuildsPerFrame = opts.maxBuildsPerFrame ?? 2;
+    this.immediateRadius = opts.immediateRadius ?? 65;
+    this.buildBudgetMs = opts.buildBudgetMs ?? 3.5;
     this.spatialAABBs = opts.spatialAABBs;
     this.spatialColliders = opts.spatialColliders;
     this.root.name = "CityChunkStreamerRoot";
@@ -183,13 +191,19 @@ export class ChunkStreamer {
 
   /**
    * Pre-builds chunks within `radius` around `(x, z)`.
-   * In browser runtime, only the immediate 140m spawn ring builds synchronously while outer chunks
-   * stream smoothly through WestgateEngineCore's frame-budgeted job scheduler.
+   *
+   * In the browser only a tight spawn bubble is built synchronously; everything
+   * out to `lodRadius` streams through WestgateEngineCore's frame-budgeted job
+   * scheduler. The bubble used to be 140m, which meant several large chunks
+   * were fully built before the first frame was ever presented — that single
+   * ring cost ~12.7s of the boot window. 65m keeps the ground the player
+   * actually stands on (plus its neighbours) resident at t=0 and lets the rest
+   * stream in.
    */
   prewarm(x: number, z: number, radius = this.lodRadius, staged = false): void {
     const r2 = radius * radius;
     const near2 = this.nearRadius * this.nearRadius;
-    const immR2 = staged ? 140 * 140 : r2;
+    const immR2 = staged ? this.immediateRadius * this.immediateRadius : r2;
     const deferred: { chunk: CityChunk; d2: number }[] = [];
 
     for (let i = 0; i < this.chunks.length; i++) {
@@ -286,6 +300,11 @@ export class ChunkStreamer {
       pendingBuilds.sort((a, b) => a.d2 - b.d2);
       const budget = Math.min(this.maxBuildsPerFrame, pendingBuilds.length);
       const shadowR = westgateEngine.getShadowCasterRadius();
+      // Wall-clock budget: a single chunk build can vary hugely in cost, so the
+      // per-frame work is capped by measured time (always allowing one chunk so
+      // streaming can never stall).
+      const t0 = typeof performance !== "undefined" ? performance.now() : Date.now();
+      let built = 0;
       for (let i = 0; i < budget; i++) {
         const { chunk, d2 } = pendingBuilds[i];
         this.buildFn(chunk);
@@ -293,8 +312,11 @@ export class ChunkStreamer {
         chunk.built = true;
         this.setChunkState(chunk, d2 <= nearEnter2 ? "near" : "lod");
         if (chunk.state === "near") setChunkShadows(chunk, d2 <= shadowR * shadowR);
+        built++;
+        const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+        if (built >= 1 && now - t0 >= this.buildBudgetMs) break;
       }
-      this.hasPendingBuilds = pendingBuilds.length > budget;
+      this.hasPendingBuilds = pendingBuilds.length > built;
       pendingBuilds.length = 0;
     } else {
       this.hasPendingBuilds = false;

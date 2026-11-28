@@ -2,7 +2,7 @@ import * as THREE from "three";
 import * as SkeletonUtils from "three/examples/jsm/utils/SkeletonUtils.js";
 import type { GLTF } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { CHARACTERS, characterUrl } from "../characters";
-import { loadCachedSoldierGltf, matchRocketboxHandSkinTone, upgradeCharacterMaterial } from "../../character/SoldierRig";
+import { loadCachedSoldierGltf, scheduleRocketboxHandSkinTone, upgradeCharacterMaterial } from "../../character/SoldierRig";
 import { samplePedestrianHeadNoise } from "../../character/AnimationMotion";
 import { clamp, damp, dampAngle } from "../../character/math";
 import type { RoadNetwork } from "./RoadNetwork";
@@ -414,7 +414,7 @@ export class PedestrianSystem {
           m.material = Array.isArray(m.material) ? next : next[0];
         });
 
-        matchRocketboxHandSkinTone(cloned);
+        scheduleRocketboxHandSkinTone(cloned);
         cloned.updateMatrixWorld(true);
         const box = new THREE.Box3().setFromObject(cloned);
         const h = box.max.y - box.min.y;
