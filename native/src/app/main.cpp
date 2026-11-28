@@ -57,6 +57,7 @@ int main(int argc, char** argv) {
   bool headlessAimDown = false;
   int headlessSuitIdx = -1;
   int headlessContractIdx = -1;
+  int headlessStartChapter = -1;
   int headlessSpawnVehKind = -1;
   int headlessPaintIdx = -1;
   bool headlessBoardVeh = false;
@@ -120,6 +121,8 @@ int main(int argc, char** argv) {
       headlessSuitIdx = std::atoi(argv[++i]);
     } else if (arg == "--accept-contract" && i + 1 < argc) {
       headlessContractIdx = std::atoi(argv[++i]);
+    } else if (arg == "--start-chapter" && i + 1 < argc) {
+      headlessStartChapter = std::atoi(argv[++i]);
     } else if (arg == "--teleport" && i + 1 < argc) {
       float tx = 0.0f, ty = 0.0f, tz = 0.0f, tyaw = 0.0f;
       if (std::sscanf(argv[++i], "%f,%f,%f,%f", &tx, &ty, &tz, &tyaw) >= 3) {
@@ -284,6 +287,9 @@ int main(int argc, char** argv) {
   }
   if (headlessContractIdx >= 0) {
     session.acceptContract(headlessContractIdx, world);
+  }
+  if (headlessStartChapter >= 0) {
+    session.startStoryChapter(headlessStartChapter, player, world, nullptr, true);
   }
   if (hasTeleportOverride) {
     session.teleportTo(teleportOverridePos, teleportOverrideYawDeg, player);
@@ -555,6 +561,7 @@ int main(int argc, char** argv) {
         gameInput.moveInput.lookDeltaY = lookDy;
         gameInput.fireDown = ui.mouseCaptured && ((mouseButtons & SDL_BUTTON_LMASK) != 0);
         gameInput.aimDown = ((mouseButtons & SDL_BUTTON_RMASK) != 0) || (!session.inVehicle() && keys[SDL_SCANCODE_V]);
+        gameInput.useHeld = keys[SDL_SCANCODE_E] || keys[SDL_SCANCODE_F] || keys[SDL_SCANCODE_B];
       }
     }
 
@@ -789,6 +796,10 @@ int main(int argc, char** argv) {
     npcSniperTemplate.underbarrel = westgate::WeaponUnderbarrelKind::LaserSight;
     npcSniperTemplate.finish = westgate::WeaponFinishKind::Coyote;
 
+    westgate::WeaponSlotState npcBossTemplate = npcSniperTemplate;
+    npcBossTemplate.optic = westgate::WeaponOpticKind::Acog;
+    npcBossTemplate.finish = westgate::WeaponFinishKind::Gold;
+
     for (const auto& [dist, idx] : sortedNpcs) {
       if (renderChars.size() >= westgate::kMaxSkinSlots) break;
       const auto& npc = session.npcs()[idx];
@@ -834,11 +845,13 @@ int main(int argc, char** argv) {
       npcOv.idleWeight = (clipUse == "Idle") ? 1.0f : 0.1f;
       npcOv.koProgress = (!npc.alive && !isCarried) ? std::clamp(npc.deadTimer / 0.50f, 0.0f, 1.0f) : 0.0f;
 
-      const bool npcArmed = (npc.isPolice || npc.isContractGuard) && npc.alive;
+      const bool npcArmed = (npc.isPolice || npc.isContractGuard ||
+                             npc.role == westgate::EnemyRole::Ally ||
+                             npc.role == westgate::EnemyRole::Boss) && npc.alive;
       if (npcArmed && dist < 56.0f) {
         npcOv.weaponHoldWeight = 1.0f;
         npcOv.twoHandedWeapon = true;
-        npcOv.aimWeight = (npc.alerted || session.wantedStars() > 0 || npc.sniperTracking) ? 0.85f : 0.25f;
+        npcOv.aimWeight = (npc.alerted || session.wantedStars() > 0 || npc.sniperTracking || npc.role == westgate::EnemyRole::Ally) ? 0.85f : 0.30f;
       }
       anim->evaluateState(npcSt, clips, npcPalettes[palIdx], &npcOv);
       const glm::vec4 tint = glm::mix(glm::vec4(npc.colorTint, 1.0f), glm::vec4(1.6f, 0.4f, 0.4f, 1.0f), npc.hitFlash);
@@ -859,11 +872,13 @@ int main(int argc, char** argv) {
           const glm::mat4 npcWorld = glm::translate(glm::mat4(1.0f), npc.pos) *
                                      glm::rotate(glm::mat4(1.0f), npc.yawRad + 3.14159265f, glm::vec3(0.0f, 1.0f, 0.0f));
           const glm::vec3 handW = glm::vec3(npcWorld * glm::vec4(localHand, 1.0f));
+          const auto& wpl = (npc.role == westgate::EnemyRole::Boss) ? npcBossTemplate
+                          : ((npc.role == westgate::EnemyRole::Sniper) ? npcSniperTemplate : npcRifleTemplate);
           westgate::GameSession::appendHeldWeaponMarkers(
             handW,
             npc.yawRad,
             0.0f,
-            (npc.role == westgate::EnemyRole::Sniper) ? npcSniperTemplate : npcRifleTemplate,
+            wpl,
             0.0f,
             heldWeaponMarkers
           );

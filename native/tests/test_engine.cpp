@@ -987,6 +987,196 @@ int main() {
                   soldierM.skin.jointNodeIndices.size(), sHand.x, sHand.y, sHand.z, introPcm.size() / 2, wepBoxes.size());
     }
 
+    // 5f. Milestone 4: 10-Chapter VOSS // BLACK CONTRACT Campaign, Surveillance Tailing, Bosses, Ally Brick & Save v2
+    {
+      WG_CHECK(session.storyChapters().size() == 10);
+      WG_CHECK(session.isChapterUnlocked(0) && session.isChapterUnlocked(1) && !session.isChapterUnlocked(9));
+
+      // Tech Upgrade & BodyStat progression check
+      session.grantCurrencies(500, 40, 40);
+      const float maxHpBefore = session.playerMaxHp();
+      WG_CHECK(session.buyTechUpgrade(4, nullptr)); // Ceramic Ballistic Plates Tier 1 -> 120 Max HP
+      WG_CHECK(session.playerMaxHp() > maxHpBefore);
+      const float spdBefore = session.bodyStatValue(westgate::BodyStatKind::Speed);
+      session.addBodyStatXp(westgate::BodyStatKind::Speed, 120.0f);
+      WG_CHECK(session.bodyStatValue(westgate::BodyStatKind::Speed) > spdBefore);
+
+      // Deploy Chapter 08 (M5: Apex Corporate Tower) -> verify Co-Op Ally Sgt. Brick Horvat + Boss Viktor Sorin
+      WG_CHECK(session.startStoryChapter(8, player, world, nullptr, true));
+      WG_CHECK(session.activeMission().active && session.activeMission().missionId == 5);
+      WG_CHECK(session.activeAllyNpc() != nullptr && session.activeAllyNpc()->displayName == "Sgt. Brick Horvat");
+      WG_CHECK(session.activeBossNpc() != nullptr && session.activeBossNpc()->displayName == "Viktor Sorin");
+      const int killsBeforeAlly = session.activeMission().missionKills;
+      for (int f = 0; f < 140; ++f) {
+        westgate::GameInputFrame idle{};
+        session.update(1.0f / 60.0f, idle, player, physics, world, nullptr);
+      }
+      WG_CHECK(session.activeAllyNpc() != nullptr && session.activeAllyNpc()->alive);
+      (void)killsBeforeAlly;
+
+      // Deploy Chapter 02 (H1: Surveillance Hit - Marcus Bell) -> verify tailing, silent kill & Pacific Ocean disposal
+      WG_CHECK(session.startStoryChapter(2, player, world, nullptr, true));
+      WG_CHECK(session.activeSurveillance().active && session.activeSurveillance().targetName == "Marcus Bell");
+      const int bellId = session.activeSurveillance().targetNpcId;
+      for (int f = 0; f < 30; ++f) {
+        westgate::GameInputFrame idle{};
+        session.update(1.0f / 60.0f, idle, player, physics, world, nullptr);
+      }
+      glm::vec3 bellPos{0.0f};
+      for (const auto& n : session.npcs()) {
+        if (n.id == bellId) { bellPos = n.pos; break; }
+      }
+      // Sneak behind Marcus Bell, silent takedown, carry & dump in ocean -> completes Ch 02!
+      session.teleportTo(bellPos - glm::vec3(0.0f, 0.0f, -1.2f), 180.0f, player);
+      westgate::GameInputFrame td{};
+      td.takedownPressed = true;
+      session.update(1.0f / 60.0f, td, player, physics, world, nullptr);
+      WG_CHECK(session.activeSurveillance().phase == westgate::SurveillancePhase::DisposeBody);
+      WG_CHECK(session.tryCarryOrDisposeBody(player, world, nullptr));
+      session.teleportTo({-748.0f, 0.2f, 34.0f}, -90.0f, player);
+      WG_CHECK(session.tryCarryOrDisposeBody(player, world, nullptr));
+      westgate::GameInputFrame finSv{};
+      session.update(1.0f / 60.0f, finSv, player, physics, world, nullptr);
+      WG_CHECK(session.storyChapters()[2].completed && session.lastDebrief().visible);
+      session.dismissDebrief();
+
+      // Deploy Chapter 09 (M6: Ironridge Fortress) -> verify Gen. Drago Kovac Phase 2 Mortar Barrage + Full Completion + Epilogue
+      session.setDifficulty(westgate::DifficultyMode::Veteran);
+      session.unlockAllWeapons();
+      WG_CHECK(session.startStoryChapter(9, player, world, nullptr, true));
+      WG_CHECK(session.activeMission().active && session.activeBossNpc() != nullptr);
+      WG_CHECK(session.activeBossNpc()->displayName == "General Drago Kovac");
+      const int kovacId = session.activeMission().bossNpcId;
+
+      // Scrub all 4 interactables (The Sovereign Diamond + 3 Classified Servers)
+      for (size_t ii = 0; ii < session.activeMission().interactables.size(); ++ii) {
+        const glm::vec3 ip = session.activeMission().interactables[ii].pos;
+        session.teleportTo(ip + glm::vec3(0.0f, 0.5f, 1.2f), 180.0f, player);
+        for (int f = 0; f < 120 && !session.activeMission().interactables[ii].completed; ++f) {
+          westgate::GameInputFrame hold{};
+          hold.useHeld = true;
+          session.update(1.0f / 60.0f, hold, player, physics, world, nullptr);
+        }
+        WG_CHECK(session.activeMission().interactables[ii].completed);
+      }
+
+      // Destroy all 4 Backup Relay Nodes with suppressed rifle
+      {
+        westgate::GameInputFrame selRifle{};
+        selRifle.selectWeaponSlot = 5; // MK14 DMR
+        session.update(1.0f / 60.0f, selRifle, player, physics, world, nullptr);
+      }
+      for (size_t di = 0; di < session.activeMission().destroyables.size(); ++di) {
+        session.grantCurrencies(200, 0, 0);
+        session.buyArmorAndMedkit(nullptr);
+        const glm::vec3 dp = session.activeMission().destroyables[di].pos;
+        const float tx = dp.x + 0.42f;
+        const float tz = dp.z - 4.2f;
+        const float ty = std::max(world.heightfield.sampleHeight(tx, tz), dp.y) + 0.45f;
+        session.teleportTo({tx, ty, tz}, 0.0f, player);
+        for (int s = 0; s < 5 && !session.activeMission().destroyables[di].destroyed; ++s) {
+          for (int wf = 0; wf < 22; ++wf) {
+            westgate::GameInputFrame w{};
+            w.aimDown = true;
+            session.update(1.0f / 60.0f, w, player, physics, world, nullptr);
+            physics.step(1.0f / 60.0f);
+          }
+          const glm::vec3 rc = session.activeMission().destroyables[di].pos + glm::vec3(0.0f, 1.0f, 0.0f);
+          const glm::vec3 cam = session.cameraPosition(player);
+          const glm::vec3 dR = glm::normalize(rc - cam);
+          westgate::GameInputFrame aimR{};
+          aimR.aimDown = true;
+          aimR.moveInput.lookDeltaX = -(std::atan2(dR.x, dR.z) - player.yaw()) / 0.0024f;
+          aimR.moveInput.lookDeltaY = -(std::asin(std::clamp(dR.y, -0.8f, 0.5f)) - player.pitch()) / 0.0021f;
+          session.update(1.0f / 60.0f, aimR, player, physics, world, nullptr);
+          westgate::GameInputFrame pull{};
+          pull.aimDown = true;
+          pull.firePressed = true;
+          session.update(1.0f / 60.0f, pull, player, physics, world, nullptr);
+        }
+        if (!session.activeMission().destroyables[di].destroyed) {
+          std::fprintf(stderr, "Relay %zu hp=%.1f playerPos=(%.1f,%.1f,%.1f) dp=(%.1f,%.1f,%.1f) mag=%d\n",
+                       di, session.activeMission().destroyables[di].hp,
+                       player.position().x, player.position().y, player.position().z,
+                       dp.x, dp.y, dp.z, session.activeWeapon().magAmmo);
+        }
+        WG_CHECK(session.activeMission().destroyables[di].destroyed);
+      }
+
+      // Engage General Drago Kovac -> trigger Phase 2 Mortar Barrage at <= 50% HP -> eliminate Kovac!
+      bool sawMortarPhase = false;
+      for (int shot = 0; shot < 14; ++shot) {
+        session.grantCurrencies(200, 0, 0);
+        session.buyArmorAndMedkit(nullptr);
+        const westgate::NpcEntity* kov = nullptr;
+        for (const auto& n : session.npcs()) {
+          if (n.id == kovacId) { kov = &n; break; }
+        }
+        if (!kov || !kov->alive) break;
+        const float kx = kov->pos.x + 0.42f;
+        const float kz = kov->pos.z - 4.4f;
+        const float ky = std::max(world.heightfield.sampleHeight(kx, kz), kov->pos.y) + 0.45f;
+        session.teleportTo({kx, ky, kz}, 0.0f, player);
+        for (int wf = 0; wf < 22; ++wf) {
+          westgate::GameInputFrame w{};
+          w.aimDown = true;
+          session.update(1.0f / 60.0f, w, player, physics, world, nullptr);
+          physics.step(1.0f / 60.0f);
+          if (session.activeMission().bossPhaseTriggered) sawMortarPhase = true;
+        }
+        kov = nullptr;
+        for (const auto& n : session.npcs()) {
+          if (n.id == kovacId) { kov = &n; break; }
+        }
+        if (!kov || !kov->alive) break;
+        const glm::vec3 headPt = kov->pos + glm::vec3(0.0f, 1.56f, 0.0f);
+        const glm::vec3 cam = session.cameraPosition(player);
+        const glm::vec3 dK = glm::normalize(headPt - cam);
+        westgate::GameInputFrame aimK{};
+        aimK.aimDown = true;
+        aimK.moveInput.lookDeltaX = -(std::atan2(dK.x, dK.z) - player.yaw()) / 0.0024f;
+        aimK.moveInput.lookDeltaY = -(std::asin(std::clamp(dK.y, -0.8f, 0.5f)) - player.pitch()) / 0.0021f;
+        session.update(1.0f / 60.0f, aimK, player, physics, world, nullptr);
+        westgate::GameInputFrame pull{};
+        pull.aimDown = true;
+        pull.firePressed = true;
+        session.update(1.0f / 60.0f, pull, player, physics, world, nullptr);
+        if (session.activeMission().bossPhaseTriggered) sawMortarPhase = true;
+      }
+      WG_CHECK(sawMortarPhase);
+      WG_CHECK(session.activeBossNpc() == nullptr); // Kovac eliminated!
+
+      // Step onto North Citadel Helipad extraction -> verify Ch 09 completion + Epilogue choice!
+      session.teleportTo(session.activeMission().extractionPos + glm::vec3(0.0f, 0.6f, 0.0f), 0.0f, player);
+      {
+        westgate::GameInputFrame ex{};
+        session.update(1.0f / 60.0f, ex, player, physics, world, nullptr);
+      }
+      WG_CHECK(session.storyChapters()[9].completed && session.lastDebrief().awaitsEpilogueChoice);
+      session.selectEpilogueChoice(westgate::EpilogueChoice::BurnLedger, nullptr);
+      WG_CHECK(session.epilogueChoice() == westgate::EpilogueChoice::BurnLedger);
+
+      // Save v2 round-trip (suit, modular attachments, storyChapters, upgrades, bodyStats, currencies)
+      session.setPlayerSuit(westgate::PlayerSuitPreset::VanguardCrimson);
+      session.configureWeaponSlot(2, westgate::WeaponOpticKind::Acog, westgate::WeaponMuzzleKind::Suppressor,
+                                  westgate::WeaponUnderbarrelKind::LaserSight, westgate::WeaponMagKind::Drum,
+                                  westgate::WeaponFinishKind::Gold);
+      const std::string v2Save = "/tmp/westgate_v2_roundtrip.json";
+      WG_CHECK(session.saveToFile(v2Save));
+
+      westgate::GameSession loaded;
+      loaded.init(world, &player, &physics);
+      WG_CHECK(loaded.loadFromFile(v2Save));
+      WG_CHECK(loaded.playerSuit() == westgate::PlayerSuitPreset::VanguardCrimson);
+      WG_CHECK(loaded.weapons()[2].optic == westgate::WeaponOpticKind::Acog);
+      WG_CHECK(loaded.weapons()[2].mag == westgate::WeaponMagKind::Drum);
+      WG_CHECK(loaded.weapons()[2].finish == westgate::WeaponFinishKind::Gold);
+      WG_CHECK(loaded.storyChapters()[9].completed && loaded.epilogueChoice() == westgate::EpilogueChoice::BurnLedger);
+      WG_CHECK(loaded.upgradeLevel("ballistic_plates") == 1);
+
+      std::printf("[PASS] Milestone 4 verified: 10-Chapter Campaign (Ch00-Ch09), Surveillance H1, Ally Brick, Gen. Kovac Mortar Phase, Epilogue & Save v2 OK\n");
+    }
+
     std::printf("[PASS] GameSession full loop: %zu vehicles, %zu NPCs, driving/gunplay/contracts/sky/save OK\n",
                 session.vehicles().size(), session.npcs().size());
   }

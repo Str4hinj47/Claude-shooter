@@ -732,7 +732,8 @@ void GameSession::init(const WorldData& world, PlayerController* player, Physics
   hasWaypoint_ = true;
   waypointPos_ = world.fightPitPos;
   waypointLabel_ = "Iron Pit Arena (Tier 1)";
-  pushToast("Welcome to Westgate Bay! Press [P] for Phone, [G] to Drive, [1-6] Weapons.", 5.0f);
+  initCampaignAndProgression(world);
+  pushToast("Welcome to Westgate Bay! Press [P] for SkyPhone & Campaign, [G] to Drive, [1-6] Weapons.", 5.0f);
 
   if (player) {
     player->teleport(world.spawnPos, world.spawnYawDeg);
@@ -1237,7 +1238,8 @@ void GameSession::reportCrime(CrimeKind kind, const glm::vec3& pos, const WorldD
 
 void GameSession::damagePlayer(float amount, const WorldData& world, PlayerController& player, AudioEngine* audio) {
   if (amount <= 0.0f || playerDodgeTimer_ > 0.14f) return;
-  float rem = amount;
+  addBodyStatXp(BodyStatKind::Toughness, std::min(8.0f, amount * 0.22f));
+  float rem = amount * upgradeDamageTakenMult();
   if (playerArmor_ > 0.0f) {
     const float absorbed = std::min(playerArmor_, rem * 0.7f);
     playerArmor_ -= absorbed;
@@ -1252,7 +1254,7 @@ void GameSession::damagePlayer(float amount, const WorldData& world, PlayerContr
 
   if (playerHp_ <= 0.0f) {
     // Respawn at St. Jude's Medical Center (-146, -206), clear wanted
-    playerHp_ = 100.0f;
+    playerHp_ = playerMaxHp_;
     playerArmor_ = 25.0f;
     wantedStars_ = 0;
     wantedHeat_ = 0.0f;
@@ -1515,7 +1517,7 @@ void GameSession::fireActiveWeapon(PlayerController& player, PhysicsWorld& physi
   w.magAmmo--;
   shotsFired_++;
   lastHitHeadshot_ = false;
-  fireCooldown_ = 60.0f / std::max(30.0f, w.rpm);
+  fireCooldown_ = 60.0f / std::max(30.0f, w.rpm * upgradeFireRateMult());
   muzzleFlashTimer_ = 0.055f;
 
   float kickAdd = (w.id == "shotgun" || w.id == "dmr" || w.id == "sniper") ? 0.92f : (w.id == "carbine" || w.id == "smg") ? 0.42f : 0.52f;
@@ -1530,9 +1532,10 @@ void GameSession::fireActiveWeapon(PlayerController& player, PhysicsWorld& physi
   const glm::vec3 muzzle = player.position() + glm::vec3(0.0f, 1.42f, 0.0f) + aimDir * 0.65f;
   muzzleFlashPos_ = muzzle;
   float spread = aiming_ ? w.adsSpread : w.spread;
+  spread *= (1.0f - 0.24f * (bodyStatValue(BodyStatKind::Marksmanship) / 100.0f));
   if (w.underbarrel == WeaponUnderbarrelKind::VerticalGrip) spread *= 0.80f;
   if (w.underbarrel == WeaponUnderbarrelKind::LaserSight && !aiming_) spread *= 0.68f;
-  const float dmgAttachMul = (w.muzzle == WeaponMuzzleKind::Compensator) ? 1.14f : 1.0f;
+  const float dmgAttachMul = ((w.muzzle == WeaponMuzzleKind::Compensator) ? 1.14f : 1.0f) * upgradeDamageMult();
 
   bool hitAnything = false;
   bool scoredHeadshot = false;
@@ -1605,6 +1608,10 @@ void GameSession::fireActiveWeapon(PlayerController& player, PhysicsWorld& physi
 
     const glm::vec3 endPt = camPos + rayDir * bestT;
     tracers_.push_back({muzzle, endPt, w.suppressed ? glm::vec3(0.65f, 0.92f, 1.0f) : glm::vec3(1.0f, 0.85f, 0.30f), 0.085f});
+    if (damageMissionDestroyablesOnRay(camPos, rayDir, std::max(bestT + 1.6f, 12.0f), w.damage * dmgAttachMul, audio)) {
+      hitAnything = true;
+      continue;
+    }
     if (worldHit.hit && hitNpcIdx < 0 && hitVehIdx < 0 && !hitIronOpp) {
       spawnSparks(worldHit.position, worldHit.normal, {1.0f, 0.78f, 0.32f}, 5);
       physics.applyImpulseNear(worldHit.position, rayDir * (w.damage * 0.65f), 1.6f);
@@ -1639,7 +1646,14 @@ void GameSession::fireActiveWeapon(PlayerController& player, PhysicsWorld& physi
         npc.animClip = "knockdown";
         npc.animTime = 0.0f;
         npc.sniperTracking = false;
-        if (hitZone == 2) totalHeadshots_++;
+        if (hitZone == 2) {
+          totalHeadshots_++;
+          if (activeMission_.active) activeMission_.missionHeadshots++;
+        }
+        if (activeMission_.active && npc.contractIdx == -2) {
+          activeMission_.missionKills++;
+          playerSalvage_ += 2;
+        }
         if (commsCooldown_ <= 0.0f) {
           for (const auto& ally : npcs_) {
             if (ally.alive && (ally.isPolice || ally.isContractGuard) && glm::distance(ally.pos, npc.pos) < 26.0f) {
@@ -1685,15 +1699,17 @@ void GameSession::fireActiveWeapon(PlayerController& player, PhysicsWorld& physi
     shotsHit_++;
     lastHitHeadshot_ = scoredHeadshot;
     hitmarkerTimer_ = scoredHeadshot ? 0.28f : 0.18f;
+    addBodyStatXp(BodyStatKind::Marksmanship, scoredHeadshot ? 8.5f : 2.5f);
     if (audio) audio->playImpact(scoredHeadshot ? 0.95f : 0.5f);
   }
   if (!w.suppressed) {
     reportCrime(CrimeKind::Gunfire, player.position(), world, audio);
   } else {
-    // Suppressed rounds only alert guards within w.noiseRadius
+    // Suppressed rounds only alert guards within w.noiseRadius * upgradeNoiseMult()
     const glm::vec3 pPos = player.position();
+    const float effNoise = w.noiseRadius * upgradeNoiseMult();
     for (auto& npc : npcs_) {
-      if (npc.alive && (npc.isPolice || npc.isContractGuard) && glm::distance(npc.pos, pPos) < w.noiseRadius) {
+      if (npc.alive && (npc.isPolice || npc.isContractGuard) && glm::distance(npc.pos, pPos) < effNoise) {
         npc.suspicion = std::min(1.0f, npc.suspicion + 0.55f);
       }
     }
@@ -1706,7 +1722,7 @@ int GameSession::findTakedownNpcIndex(const glm::vec3& playerPos) const {
   float bestD = 2.4f;
   for (size_t i = 0; i < npcs_.size(); ++i) {
     const auto& n = npcs_[i];
-    if (!n.alive || n.fleeing) continue;
+    if (!n.alive || n.fleeing || n.role == EnemyRole::Ally || n.role == EnemyRole::Boss) continue;
     if (std::abs(n.pos.y - playerPos.y) > 1.35f) continue;
     const float d = glm::distance(glm::vec2(playerPos.x, playerPos.z), glm::vec2(n.pos.x, n.pos.z));
     if (d >= bestD) continue;
@@ -1739,6 +1755,12 @@ bool GameSession::trySilentTakedown(PlayerController& player, const WorldData& w
   hitmarkerTimer_ = 0.22f;
   stealthKills_++;
   playerCash_ += 65;
+  addBodyStatXp(BodyStatKind::Stealth, 12.0f);
+  addBodyStatXp(BodyStatKind::Strength, 6.0f);
+  if (activeMission_.active && target.contractIdx == -2) {
+    activeMission_.missionKills++;
+    playerSalvage_ += 3;
+  }
 
   bool witnessed = false;
   for (size_t i = 0; i < npcs_.size(); ++i) {
@@ -2637,6 +2659,7 @@ void GameSession::updateNpcsAndPolice(float dt, PlayerController& player, Physic
       if (n.id != carriedNpcId_) n.deadTimer += dt;
       continue;
     }
+    if (n.role == EnemyRole::Ally) continue;
 
     // Tactical Vision Cone + Jolt LOS Occlusion + Corpse Discovery for Guards, Snipers, Heavies & Police
     if ((n.isContractGuard || n.isPolice) && !n.alerted) {
@@ -2659,7 +2682,7 @@ void GameSession::updateNpcsAndPolice(float dt, PlayerController& player, Physic
             const float fovBoost = (cosAng > 0.78f) ? 1.45f : 0.72f;
             const float proxRate = std::clamp(1.35f - distXZ / maxSight, 0.22f, 1.35f);
             const float armedBoost = (!weapons_[static_cast<size_t>(activeWeapon_)].isMelee || isCarryingBody()) ? 1.35f : 0.45f;
-            n.suspicion = std::min(1.0f, n.suspicion + dt * 0.85f * fovBoost * proxRate * armedBoost);
+            n.suspicion = std::min(1.0f, n.suspicion + dt * 0.85f * fovBoost * proxRate * armedBoost * upgradeSuspicionMult());
             if (n.suspicion >= 1.0f) {
               n.alerted = true;
               contractSeenByWitness_ = true;
@@ -2740,8 +2763,9 @@ void GameSession::updateNpcsAndPolice(float dt, PlayerController& player, Physic
           n.attackCooldown = isSniper ? 2.45f : (isHeavy ? 0.62f : std::max(0.75f, 1.80f - 0.18f * static_cast<float>(wantedStars_)));
           if (audio) audio->playSpatialGunshot(eye, false, isSniper ? 1.45f : 1.1f);
           tracers_.push_back({eye, pTarget, isSniper ? glm::vec3(1.0f, 0.16f, 0.16f) : glm::vec3(1.0f, 0.45f, 0.2f), 0.10f});
-          const float shotDmg = isSniper ? 22.0f : (isHeavy ? 8.5f : (6.0f + static_cast<float>(wantedStars_)));
-          damagePlayer(shotDmg, world, player, audio);
+          const bool isBoss = (n.role == EnemyRole::Boss);
+          const float baseDmg = isSniper ? 22.0f : (isBoss ? 14.5f : (isHeavy ? 8.5f : (6.0f + static_cast<float>(wantedStars_))));
+          damagePlayer(baseDmg * difficultyDamageMult(), world, player, audio);
         }
       }
     } else if (n.role == EnemyRole::Sniper && n.suspicion > 0.15f) {
@@ -2795,7 +2819,7 @@ void GameSession::updateNpcsAndPolice(float dt, PlayerController& player, Physic
 
   // Cleanup long-dead or disposed non-contract NPCs
   npcs_.erase(std::remove_if(npcs_.begin(), npcs_.end(), [this](const NpcEntity& n) {
-    if (n.id == carriedNpcId_) return false;
+    if (n.id == carriedNpcId_ || n.contractIdx == -2) return false;
     if (n.bodyHidden && !n.isContractTarget) return true;
     return !n.alive && !n.isContractTarget && n.deadTimer > 42.0f;
   }), npcs_.end());
@@ -3415,6 +3439,7 @@ void GameSession::update(float dt, const GameInputFrame& input, PlayerController
   }
   updateSpectatorBout(dt, world, audio);
   updateActivitiesAndShops(dt, input, player, world, audio);
+  updateCampaignAndSurveillance(dt, input, player, physics, world, audio);
   takedownReady_ = !isCarryingBody() && (takedownCooldown_ <= 0.0f) && (findTakedownNpcIndex(player.position()) >= 0);
   if (isCarryingBody()) {
     contextPrompt_ = "[J/E] Drop Body  (Carry to Dumpster, Car Trunk, or Ocean Water to Dispose!)";
@@ -3587,6 +3612,7 @@ std::vector<WorldMarkerBox> GameSession::gatherWorldMarkers(float elapsedSec) co
     }
   }
 
+  appendCampaignMarkers(elapsedSec, out);
   return out;
 }
 
@@ -3672,25 +3698,61 @@ std::vector<DynamicPointLight> GameSession::gatherDynamicLights(const WorldData&
     lights.push_back({{ir.x, gy + 3.0f, ir.y}, 11.0f, {1.0f, 0.86f, 0.64f}, 1.35f});
   }
 
+  appendCampaignLights(elapsedSec, lights);
   return lights;
 }
 
 bool GameSession::saveToFile(const std::string& path) const {
   try {
     nlohmann::json j;
-    j["version"] = 1;
+    j["version"] = 2;
     j["cash"] = playerCash_;
+    j["intel"] = playerIntel_;
+    j["salvage"] = playerSalvage_;
     j["hp"] = playerHp_;
     j["armor"] = playerArmor_;
     j["ironPitTier"] = ironPit_.tier;
     j["ironPitWins"] = ironPit_.wins;
     j["timeOfDayHours"] = timeOfDayHours_;
+    j["playerSuit"] = static_cast<int>(playerSuit_);
+    j["storyStep"] = storyStep_;
+    j["difficulty"] = static_cast<int>(difficulty_);
+    j["epilogueChoice"] = static_cast<int>(epilogueChoice_);
 
     nlohmann::json wArr = nlohmann::json::array();
     for (const auto& w : weapons_) {
-      wArr.push_back({{"id", w.id}, {"unlocked", w.unlocked}, {"mag", w.magAmmo}, {"reserve", w.reserveAmmo}});
+      wArr.push_back({
+        {"id", w.id},
+        {"unlocked", w.unlocked},
+        {"mag", w.magAmmo},
+        {"reserve", w.reserveAmmo},
+        {"optic", static_cast<int>(w.optic)},
+        {"muzzle", static_cast<int>(w.muzzle)},
+        {"underbarrel", static_cast<int>(w.underbarrel)},
+        {"magKind", static_cast<int>(w.mag)},
+        {"finish", static_cast<int>(w.finish)},
+      });
     }
     j["weapons"] = wArr;
+
+    nlohmann::json uArr = nlohmann::json::array();
+    for (int lvl : upgradeLevels_) uArr.push_back(lvl);
+    j["upgrades"] = uArr;
+
+    nlohmann::json bArr = nlohmann::json::array();
+    for (float v : bodyStats_) bArr.push_back(v);
+    j["bodyStats"] = bArr;
+
+    nlohmann::json chArr = nlohmann::json::array();
+    for (const auto& ch : storyChapters_) {
+      chArr.push_back({
+        {"chapter", ch.chapter},
+        {"completed", ch.completed},
+        {"bestRank", std::string(1, ch.bestRank)},
+        {"ghostCleared", ch.ghostCleared},
+      });
+    }
+    j["storyChapters"] = chArr;
 
     nlohmann::json cArr = nlohmann::json::array();
     for (const auto& c : contracts_) {
@@ -3721,21 +3783,61 @@ bool GameSession::loadFromFile(const std::string& path) {
     in >> j;
 
     playerCash_ = j.value("cash", playerCash_);
-    playerHp_ = std::clamp(j.value("hp", playerHp_), 10.0f, playerMaxHp_);
-    playerArmor_ = std::clamp(j.value("armor", playerArmor_), 0.0f, 100.0f);
-    ironPit_.tier = std::clamp(j.value("ironPitTier", ironPit_.tier), 1, 3);
+    playerIntel_ = j.value("intel", playerIntel_);
+    playerSalvage_ = j.value("salvage", playerSalvage_);
+    ironPit_.tier = std::clamp(j.value("ironPitTier", ironPit_.tier), 1, 5);
     ironPit_.wins = j.value("ironPitWins", ironPit_.wins);
     timeOfDayHours_ = j.value("timeOfDayHours", timeOfDayHours_);
+    playerSuit_ = static_cast<PlayerSuitPreset>(std::clamp(j.value("playerSuit", static_cast<int>(playerSuit_)), 0, kPlayerSuitCount - 1));
+    storyStep_ = std::clamp(j.value("storyStep", storyStep_), 0, 9);
+    difficulty_ = static_cast<DifficultyMode>(std::clamp(j.value("difficulty", static_cast<int>(difficulty_)), 0, 2));
+    epilogueChoice_ = static_cast<EpilogueChoice>(std::clamp(j.value("epilogueChoice", static_cast<int>(epilogueChoice_)), 0, 2));
+
+    if (j.contains("upgrades") && j["upgrades"].is_array()) {
+      for (size_t i = 0; i < upgradeLevels_.size() && i < j["upgrades"].size(); ++i) {
+        upgradeLevels_[i] = std::clamp(j["upgrades"][i].get<int>(), 0, 4);
+      }
+    }
+    if (j.contains("bodyStats") && j["bodyStats"].is_array()) {
+      for (size_t i = 0; i < bodyStats_.size() && i < j["bodyStats"].size(); ++i) {
+        bodyStats_[i] = std::clamp(j["bodyStats"][i].get<float>(), 1.0f, 100.0f);
+      }
+    }
 
     if (j.contains("weapons") && j["weapons"].is_array()) {
-      for (const auto& jw : j["weapons"]) {
-        const std::string id = jw.value("id", "");
-        for (auto& w : weapons_) {
-          if (w.id == id) {
+      for (size_t wi = 0; wi < weapons_.size(); ++wi) {
+        auto& w = weapons_[wi];
+        for (const auto& jw : j["weapons"]) {
+          if (jw.value("id", "") == w.id) {
             w.unlocked = jw.value("unlocked", w.unlocked);
+            if (!w.isMelee && jw.contains("optic")) {
+              configureWeaponSlot(
+                static_cast<int>(wi),
+                static_cast<WeaponOpticKind>(std::clamp(jw.value("optic", static_cast<int>(w.optic)), 0, 4)),
+                static_cast<WeaponMuzzleKind>(std::clamp(jw.value("muzzle", static_cast<int>(w.muzzle)), 0, 2)),
+                static_cast<WeaponUnderbarrelKind>(std::clamp(jw.value("underbarrel", static_cast<int>(w.underbarrel)), 0, 2)),
+                static_cast<WeaponMagKind>(std::clamp(jw.value("magKind", static_cast<int>(w.mag)), 0, 2)),
+                static_cast<WeaponFinishKind>(std::clamp(jw.value("finish", static_cast<int>(w.finish)), 0, kWeaponFinishCount - 1)));
+            }
             w.magAmmo = std::clamp(jw.value("mag", w.magAmmo), 0, w.magSize);
             w.reserveAmmo = std::clamp(jw.value("reserve", w.reserveAmmo), 0, w.reserveMax);
           }
+        }
+      }
+    }
+    recomputePlayerDerivedStats();
+    playerHp_ = std::clamp(j.value("hp", playerHp_), 10.0f, playerMaxHp_);
+    playerArmor_ = std::clamp(j.value("armor", playerArmor_), 0.0f, 100.0f);
+
+    if (j.contains("storyChapters") && j["storyChapters"].is_array()) {
+      for (const auto& jc : j["storyChapters"]) {
+        const int idx = jc.value("chapter", -1);
+        if (idx >= 0 && idx < static_cast<int>(storyChapters_.size())) {
+          auto& ch = storyChapters_[static_cast<size_t>(idx)];
+          ch.completed = jc.value("completed", ch.completed);
+          const std::string rk = jc.value("bestRank", "-");
+          ch.bestRank = rk.empty() ? '-' : rk[0];
+          ch.ghostCleared = jc.value("ghostCleared", ch.ghostCleared);
         }
       }
     }

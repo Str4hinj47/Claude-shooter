@@ -92,6 +92,7 @@ add_library(westgate_core STATIC
   src/core/PhysicsWorld.cpp
   src/core/PlayerController.cpp
   src/core/GameSession.cpp
+  src/core/GameSessionCampaign.cpp
 )
 
 target_include_directories(westgate_core PUBLIC

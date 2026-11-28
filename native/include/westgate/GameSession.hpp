@@ -387,6 +387,196 @@ struct ContractDef {
   bool completed = false;
 };
 
+enum class DifficultyMode : uint8_t {
+  Operative = 0,
+  Veteran = 1,
+  Shadow = 2,
+};
+
+enum class BodyStatKind : uint8_t {
+  Speed = 0,
+  Stamina = 1,
+  Strength = 2,
+  Toughness = 3,
+  Agility = 4,
+  Stealth = 5,
+  Marksmanship = 6,
+  Lung = 7,
+};
+static constexpr size_t kBodyStatCount = 8;
+
+enum class EpilogueChoice : uint8_t {
+  None = 0,
+  BurnLedger = 1,
+  ClaimConsortium = 2,
+};
+
+struct TechUpgradeDef {
+  std::string id;
+  std::string category;
+  std::string name;
+  std::string subtitle;
+  int maxLevel = 4;
+  std::array<int, 4> creditCosts{};
+  std::array<int, 4> intelCosts{};
+  std::array<int, 4> salvageCosts{};
+  std::array<std::string, 4> effectLabels{};
+};
+
+struct StoryChapterInfo {
+  int chapter = 0; // 0..9
+  std::string code;
+  std::string act;
+  bool isSurveillance = false;
+  int missionId = -1;       // 0..6 for mission chapters
+  int surveillanceIdx = -1; // 0..2 for H1..H3
+  std::string letter;       // V, S, H, T, M, J, B, C
+  std::string codename;
+  std::string title;
+  std::string client;
+  std::string district;
+  std::string summary;
+  std::string tacticalFocus;
+  glm::vec3 beaconPos{0.0f};
+  glm::vec3 accentColor{0.22f, 0.85f, 0.95f};
+  std::string introSpeaker;
+  std::string introLine;
+  std::string introMp3;
+  std::string debriefSpeaker;
+  std::string debriefLine;
+  std::string debriefMp3;
+  bool completed = false;
+  char bestRank = '-';
+  bool ghostCleared = false;
+};
+
+enum class MissionInteractKind : uint8_t {
+  Terminal = 0,
+  Files = 1,
+  Diamond = 2,
+  Relic = 3,
+  SteelTarget = 4,
+};
+
+struct MissionInteractable {
+  std::string id;
+  std::string objectiveId;
+  std::string label;
+  MissionInteractKind kind = MissionInteractKind::Terminal;
+  glm::vec3 pos{0.0f};
+  float duration = 1.4f;
+  float progress = 0.0f;
+  bool completed = false;
+};
+
+struct MissionDestroyable {
+  std::string id;
+  std::string label;
+  glm::vec3 pos{0.0f};
+  float hp = 65.0f;
+  float maxHp = 65.0f;
+  bool destroyed = false;
+};
+
+struct MissionObjectiveRuntime {
+  std::string id;
+  std::string label;
+  int current = 0;
+  int required = 1;
+  bool isExtraction = false;
+  bool completed() const { return current >= required; }
+};
+
+struct MortarHazardZone {
+  glm::vec3 pos{0.0f};
+  float radius = 5.2f;
+  float fuseTimer = 2.2f;
+  float maxFuse = 2.2f;
+};
+
+struct MissionDebriefReport {
+  bool visible = false;
+  int chapter = 0;
+  std::string codename;
+  std::string title;
+  char rank = 'A';
+  bool ghost = true;
+  int kills = 0;
+  int headshots = 0;
+  float elapsedSec = 0.0f;
+  int creditsEarned = 0;
+  int intelEarned = 0;
+  int salvageEarned = 0;
+  std::string narrativeNote;
+  bool awaitsEpilogueChoice = false;
+};
+
+struct ActiveCampaignMission {
+  bool active = false;
+  int chapter = -1;
+  int missionId = -1;
+  std::string codename;
+  std::string title;
+  std::string client;
+  glm::vec3 siteOrigin{0.0f};
+  float siteYaw = 0.0f;
+  glm::vec3 extractionPos{0.0f};
+  float extractionRadius = 4.5f;
+  std::vector<MissionObjectiveRuntime> objectives;
+  std::vector<MissionInteractable> interactables;
+  std::vector<MissionDestroyable> destroyables;
+  std::vector<MortarHazardZone> mortarZones;
+  int bossNpcId = -1;
+  std::string bossName;
+  bool bossEngageSpoken = false;
+  bool bossPhaseTriggered = false;
+  float mortarSpawnCooldown = 3.2f;
+  int allyNpcId = -1;
+  std::string allyName;
+  bool firstContactSpoken = false;
+  bool halfwaySpoken = false;
+  bool extractionReadySpoken = false;
+  bool playerAlertedAnyGuard = false;
+  int missionKills = 0;
+  int missionHeadshots = 0;
+  float elapsedSec = 0.0f;
+  int activeInteractIdx = -1;
+};
+
+enum class SurveillancePhase : uint8_t {
+  Inactive = 0,
+  TailingVehicle = 1,
+  ObservingStop = 2,
+  IsolatedWindow = 3,
+  DisposeBody = 4,
+};
+
+struct ActiveSurveillanceState {
+  bool active = false;
+  int chapter = -1;
+  int survIdx = -1;
+  std::string code;
+  std::string codename;
+  std::string targetName;
+  std::string roleTitle;
+  std::string vehicleLabel;
+  SurveillancePhase phase = SurveillancePhase::Inactive;
+  int targetNpcId = -1;
+  int targetVehicleId = -1;
+  int waypointStep = 0;
+  std::vector<glm::vec3> routeWaypoints;
+  std::vector<bool> waypointIsolated;
+  std::vector<std::string> waypointNames;
+  std::vector<std::string> waypointAudioMp3;
+  std::vector<std::string> waypointSubtitles;
+  float stopDwellTimer = 0.0f;
+  float distanceToTarget = 0.0f;
+  float spookMeter = 0.0f;
+  float signalLossTimer = 0.0f;
+  bool unseen = true;
+  float elapsedSec = 0.0f;
+};
+
 struct StreetRaceDef {
   std::string id;
   std::string name;
@@ -452,6 +642,7 @@ struct GameInputFrame {
   bool grapplePressed = false;    // Z (collar-tie clinch / body slam)
   bool takedownShootPressed = false; // U (double-leg takedown / guillotine choke)
   bool carryBodyPressed = false;  // J (pick up / drop / dispose dead body)
+  bool useHeld = false;           // F or E held: scrub mission terminals / steal briefcases & diamonds
   int selectWeaponSlot = -1;      // 0..5 or -1
 };
 
@@ -512,6 +703,50 @@ public:
   }
 
   // Persistence
+  // VOSS // BLACK CONTRACT 10-Chapter Campaign, Surveillance Hits, Bosses & Progression
+  const std::vector<StoryChapterInfo>& storyChapters() const { return storyChapters_; }
+  int storyStep() const { return storyStep_; }
+  bool isChapterUnlocked(int chapter) const;
+  bool startStoryChapter(int chapter, PlayerController& player, const WorldData& world, AudioEngine* audio, bool teleportToStart = true);
+  void abortActiveMissionOrSurveillance();
+  const ActiveCampaignMission& activeMission() const { return activeMission_; }
+  const ActiveSurveillanceState& activeSurveillance() const { return activeSurveillance_; }
+  const MissionDebriefReport& lastDebrief() const { return lastDebrief_; }
+  void dismissDebrief() { lastDebrief_.visible = false; }
+  void selectEpilogueChoice(EpilogueChoice choice, AudioEngine* audio);
+  EpilogueChoice epilogueChoice() const { return epilogueChoice_; }
+  const NpcEntity* activeBossNpc() const;
+  const NpcEntity* activeAllyNpc() const;
+
+  // Currencies (Credits / Intel / Salvage), Difficulty, Tech Upgrades & BodyStats
+  int playerIntel() const { return playerIntel_; }
+  int playerSalvage() const { return playerSalvage_; }
+  void grantCurrencies(int credits, int intel, int salvage) {
+    playerCash_ += credits;
+    playerIntel_ += intel;
+    playerSalvage_ += salvage;
+  }
+  DifficultyMode difficulty() const { return difficulty_; }
+  void setDifficulty(DifficultyMode mode);
+  static const char* difficultyLabel(DifficultyMode mode);
+  float difficultyHpMult() const;
+  float difficultyDamageMult() const;
+  float difficultyRewardMult() const;
+
+  const std::vector<TechUpgradeDef>& techUpgrades() const { return techUpgrades_; }
+  int upgradeLevel(const std::string& id) const;
+  bool buyTechUpgrade(size_t upgradeIdx, AudioEngine* audio);
+  float upgradeDamageMult() const;
+  float upgradeNoiseMult() const;
+  float upgradeFireRateMult() const;
+  float upgradeDamageTakenMult() const;
+  float upgradeSuspicionMult() const;
+
+  float bodyStatValue(BodyStatKind stat) const { return bodyStats_[static_cast<size_t>(stat)]; }
+  static const char* bodyStatName(BodyStatKind stat);
+  static const char* bodyStatShort(BodyStatKind stat);
+  void addBodyStatXp(BodyStatKind stat, float xpAmount);
+
   bool saveToFile(const std::string& path) const;
   bool loadFromFile(const std::string& path);
 
@@ -784,6 +1019,29 @@ private:
   std::string commsSubtitle_;
   float commsTimer_ = 0.0f;
   float commsCooldown_ = 0.0f;
+
+  // Milestone 4: Campaign, Surveillance, Currencies, Tech Upgrades & BodyStats
+  void initCampaignAndProgression(const WorldData& world);
+  void updateCampaignAndSurveillance(float dt, const GameInputFrame& input, PlayerController& player, PhysicsWorld& physics, const WorldData& world, AudioEngine* audio);
+  void updateAllyAndBossCombat(float dt, PlayerController& player, PhysicsWorld& physics, const WorldData& world, AudioEngine* audio);
+  bool damageMissionDestroyablesOnRay(const glm::vec3& rayOrig, const glm::vec3& rayDir, float maxDist, float dmg, AudioEngine* audio);
+  void appendCampaignMarkers(float elapsedSec, std::vector<WorldMarkerBox>& out) const;
+  void appendCampaignLights(float elapsedSec, std::vector<DynamicPointLight>& out) const;
+  void recomputePlayerDerivedStats();
+
+  std::vector<StoryChapterInfo> storyChapters_;
+  int storyStep_ = 1; // Ch 00 & Ch 01 unlocked at start; advances to 9
+  ActiveCampaignMission activeMission_;
+  ActiveSurveillanceState activeSurveillance_;
+  MissionDebriefReport lastDebrief_;
+  EpilogueChoice epilogueChoice_ = EpilogueChoice::None;
+  DifficultyMode difficulty_ = DifficultyMode::Operative;
+  int playerIntel_ = 25;
+  int playerSalvage_ = 30;
+  std::vector<TechUpgradeDef> techUpgrades_;
+  std::array<int, 8> upgradeLevels_{};
+  std::array<float, kBodyStatCount> bodyStats_{12.0f, 15.0f, 12.0f, 10.0f, 12.0f, 15.0f, 14.0f, 10.0f};
+  std::array<float, kBodyStatCount> bodyStatsXp_{};
   uint32_t rng_ = 0x9E3779B9u;
 };
 

@@ -177,9 +177,10 @@ void drawWestgateHud(
     ImGui::SetNextWindowSize({308.0f, boxH}, ImGuiCond_Always);
     ImGui::SetNextWindowBgAlpha(0.80f);
     ImGui::Begin("##StatusBox", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar);
-    ImGui::TextColored({0.35f, 0.94f, 0.52f, 1.0f}, "$%d   |   %s (%02d:%02d)",
+    ImGui::TextColored({0.35f, 0.94f, 0.52f, 1.0f}, "$%d | %d INT | %d SLV  (%02d:%02d)",
                        session.playerCash(),
-                       session.timeOfDayLabel().c_str(),
+                       session.playerIntel(),
+                       session.playerSalvage(),
                        static_cast<int>(session.timeOfDayHours()) % 24,
                        static_cast<int>((session.timeOfDayHours() - std::floor(session.timeOfDayHours())) * 60.0f));
     ImGui::ProgressBar(session.playerHp() / session.playerMaxHp(), {-1, 13}, "PLAYER HP");
@@ -241,15 +242,106 @@ void drawWestgateHud(
     bgDraw->AddText({bx + 16.0f, by + 8.0f}, IM_COL32(255, 232, 120, 255), session.contextPrompt().c_str());
   }
 
-  // Tactical Radio Comms & Voiceover Subtitle Banner
+  // Tactical Radio Comms & Voiceover Subtitle Banner (kept left of StatusBox so it never overlaps)
   if (session.commsTimer() > 0.0f && !session.commsSubtitle().empty()) {
-    const std::string line = "[" + session.commsSpeaker() + "]  " + session.commsSubtitle();
-    const ImVec2 ts = ImGui::CalcTextSize(line.c_str());
-    const float bx = (disp.x - ts.x) * 0.5f - 18.0f;
-    const float by = disp.y - 108.0f;
-    bgDraw->AddRectFilled({bx, by}, {bx + ts.x + 36.0f, by + 30.0f}, IM_COL32(8, 16, 26, 232), 6.0f);
-    bgDraw->AddRect({bx, by}, {bx + ts.x + 36.0f, by + 30.0f}, IM_COL32(72, 205, 195, 210), 6.0f);
-    bgDraw->AddText({bx + 18.0f, by + 8.0f}, IM_COL32(195, 245, 255, 255), line.c_str());
+    const float maxSubW = std::max(280.0f, disp.x - 360.0f);
+    ImGui::SetNextWindowPos({18.0f, disp.y - 122.0f}, ImGuiCond_Always);
+    ImGui::SetNextWindowSize({maxSubW, 50.0f}, ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.88f);
+    ImGui::Begin("##CommsSubtitleBox", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar);
+    ImGui::TextColored({0.42f, 0.92f, 0.96f, 1.0f}, "[%s]", session.commsSpeaker().c_str());
+    ImGui::SameLine();
+    ImGui::TextWrapped("%s", session.commsSubtitle().c_str());
+    ImGui::End();
+  }
+
+  // -------------------------------------------------------------------------
+  // 4b. VOSS // BLACK CONTRACT: Boss Bar, Mission Checklist, Surveillance & Debrief
+  // -------------------------------------------------------------------------
+  if (const NpcEntity* boss = session.activeBossNpc()) {
+    const float bossY = ui.showTelemetry ? 162.0f : 58.0f;
+    ImGui::SetNextWindowPos({disp.x * 0.5f - 215.0f, bossY}, ImGuiCond_Always);
+    ImGui::SetNextWindowSize({430.0f, 66.0f}, ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.88f);
+    ImGui::Begin("##CampaignBossBar", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar);
+    ImGui::TextColored({1.0f, 0.34f, 0.34f, 1.0f}, "HIGH-VALUE TARGET: %s  %s",
+                       boss->displayName.c_str(),
+                       session.activeMission().bossPhaseTriggered ? "[PHASE 2 HAZARD ACTIVE!]" : "");
+    char hpTxt[64];
+    std::snprintf(hpTxt, sizeof(hpTxt), "%.0f / %.0f HP", std::max(0.0f, boss->hp), boss->maxHp);
+    ImGui::ProgressBar(std::clamp(boss->hp / std::max(1.0f, boss->maxHp), 0.0f, 1.0f), {-1, 16}, hpTxt);
+    ImGui::End();
+  }
+
+  if (session.activeMission().active) {
+    const auto& am = session.activeMission();
+    const float panelH = 88.0f + static_cast<float>(am.objectives.size()) * 19.0f + (session.activeAllyNpc() ? 32.0f : 0.0f);
+    ImGui::SetNextWindowPos({disp.x - 324.0f, 206.0f}, ImGuiCond_Always);
+    ImGui::SetNextWindowSize({308.0f, panelH}, ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.82f);
+    ImGui::Begin("##MissionChecklist", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar);
+    ImGui::TextColored({0.38f, 0.88f, 1.0f, 1.0f}, "CH %02d // %s", am.chapter, am.codename.c_str());
+    ImGui::TextColored(am.playerAlertedAnyGuard ? ImVec4(1.0f, 0.48f, 0.30f, 1.0f) : ImVec4(0.32f, 0.96f, 0.62f, 1.0f),
+                       "%s  |  %.0fs", am.playerAlertedAnyGuard ? "[ALERTED]" : "[GHOST BONUS INTACT]", am.elapsedSec);
+    ImGui::Separator();
+    for (const auto& obj : am.objectives) {
+      const bool done = obj.completed();
+      ImGui::TextColored(done ? ImVec4(0.42f, 0.96f, 0.58f, 1.0f) : ImVec4(0.92f, 0.94f, 0.98f, 1.0f),
+                         "%s %s (%d/%d)", done ? "[x]" : "[ ]", obj.label.c_str(), obj.current, obj.required);
+    }
+    if (const NpcEntity* ally = session.activeAllyNpc()) {
+      ImGui::Separator();
+      char allyBuf[64];
+      std::snprintf(allyBuf, sizeof(allyBuf), "ALLY: %s (%.0f%%)", ally->displayName.c_str(), (ally->hp / std::max(1.0f, ally->maxHp)) * 100.0f);
+      ImGui::ProgressBar(std::clamp(ally->hp / std::max(1.0f, ally->maxHp), 0.0f, 1.0f), {-1, 13}, allyBuf);
+    }
+    ImGui::End();
+  } else if (session.activeSurveillance().active) {
+    const auto& sv = session.activeSurveillance();
+    ImGui::SetNextWindowPos({disp.x - 324.0f, 206.0f}, ImGuiCond_Always);
+    ImGui::SetNextWindowSize({308.0f, 128.0f}, ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.84f);
+    ImGui::Begin("##SurveillanceHud", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar);
+    ImGui::TextColored({0.98f, 0.72f, 0.16f, 1.0f}, "SURVEILLANCE [%s] // %s", sv.code.c_str(), sv.targetName.c_str());
+    if (sv.phase == SurveillancePhase::IsolatedWindow) {
+      ImGui::TextColored({0.25f, 0.98f, 0.58f, 1.0f}, "ISOLATED WINDOW OPEN! Strike Silently [V]!");
+    } else if (sv.phase == SurveillancePhase::DisposeBody) {
+      ImGui::TextColored({0.38f, 0.88f, 1.0f, 1.0f}, "CARRY [J] & DUMP CORPSE IN OCEAN WATER!");
+    } else {
+      ImGui::Text("Dist: %.0fm (Keep 18m-110m)  %s", sv.distanceToTarget, sv.unseen ? "[UNSEEN]" : "[SPOTTED]");
+      ImGui::ProgressBar(sv.spookMeter, {-1, 12}, "SPOOK METER");
+    }
+    ImGui::TextDisabled("Vehicle: %s", sv.vehicleLabel.c_str());
+    ImGui::End();
+  }
+
+  if (session.lastDebrief().visible) {
+    const auto& db = session.lastDebrief();
+    ImGui::SetNextWindowPos({disp.x * 0.5f - 230.0f, disp.y * 0.5f - 145.0f}, ImGuiCond_Always);
+    ImGui::SetNextWindowSize({460.0f, db.awaitsEpilogueChoice ? 290.0f : 225.0f}, ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.94f);
+    ImGui::Begin("##CampaignDebriefModal", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
+    ImGui::TextColored({0.35f, 0.94f, 0.65f, 1.0f}, "CONTRACT DEBRIEF // CH %02d: %s", db.chapter, db.codename.c_str());
+    ImGui::TextColored({1.0f, 0.84f, 0.25f, 1.0f}, "OPERATIONAL RANK: [%c]   |   %s   |   Time: %.1fs",
+                       db.rank, db.ghost ? "GHOST BONUS (+25%)" : "COMBAT CLEAR", db.elapsedSec);
+    ImGui::Separator();
+    ImGui::Text("Rewards: +$%d Credits   |   +%d Intel   |   +%d Salvage",
+                db.creditsEarned, db.intelEarned, db.salvageEarned);
+    ImGui::Text("Eliminations: %d   |   Precision Headshots: %d", db.kills, db.headshots);
+    ImGui::TextWrapped("%s", db.narrativeNote.c_str());
+    ImGui::Separator();
+    if (db.awaitsEpilogueChoice) {
+      ImGui::TextColored({0.82f, 0.58f, 1.0f, 1.0f}, "FINAL DIRECTIVE - THE SOVEREIGN LEDGER:");
+      if (ImGui::Button("BURN THE LEDGER & VANISH (+120 Intel, +$8k)")) {
+        session.selectEpilogueChoice(EpilogueChoice::BurnLedger, audio);
+      }
+      if (ImGui::Button("CLAIM CONSORTIUM ESCROW (+$25,000, +100 Salvage)")) {
+        session.selectEpilogueChoice(EpilogueChoice::ClaimConsortium, audio);
+      }
+    } else if (ImGui::Button("Close Debrief & Continue")) {
+      session.dismissDebrief();
+    }
+    ImGui::End();
   }
 
   // Active Iron Pit Boss Bar or Live AI-vs-AI Spectator Cage Bout (when nearby)
@@ -327,11 +419,97 @@ void drawWestgateHud(
   // 6. Tactical Phone Overlay [P] (Contracts, Races, Gun Runner, GPS/Save)
   // -------------------------------------------------------------------------
   if (ui.showPhone) {
-    ImGui::SetNextWindowPos({disp.x * 0.5f - 260.0f, disp.y * 0.5f - 215.0f}, ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize({520.0f, 435.0f}, ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos({disp.x * 0.5f - 285.0f, disp.y * 0.5f - 225.0f}, ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize({570.0f, 455.0f}, ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowBgAlpha(0.92f);
-    if (ImGui::Begin("Westgate Tactical Phone [P]", &ui.showPhone)) {
+    if (ImGui::Begin("Westgate Tactical SkyPhone [P]", &ui.showPhone)) {
       if (ImGui::BeginTabBar("PhoneTabs")) {
+        const ImGuiTabItemFlags campTabFlags = (ui.forcePhoneTab == 0) ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
+        if (ImGui::BeginTabItem("Campaign", nullptr, campTabFlags)) {
+          if (ui.forcePhoneTab == 0) ui.forcePhoneTab = -1;
+          ImGui::TextColored({0.42f, 0.92f, 1.0f, 1.0f}, "VOSS // BLACK CONTRACT  (Step %d/9)", session.storyStep());
+          ImGui::SameLine();
+          if (ImGui::SmallButton(GameSession::difficultyLabel(session.difficulty()))) {
+            session.setDifficulty(static_cast<DifficultyMode>((static_cast<int>(session.difficulty()) + 1) % 3));
+          }
+          if ((session.activeMission().active || session.activeSurveillance().active) && ImGui::SmallButton("Abort Active Deployment")) {
+            session.abortActiveMissionOrSurveillance();
+          }
+          ImGui::Separator();
+          ImGui::BeginChild("StoryChapterList", {0, 335}, true);
+          std::string prevAct;
+          for (const auto& ch : session.storyChapters()) {
+            if (ch.act != prevAct) {
+              prevAct = ch.act;
+              ImGui::TextColored({0.98f, 0.78f, 0.28f, 1.0f}, "-- %s --", ch.act.c_str());
+            }
+            const bool unlocked = session.isChapterUnlocked(ch.chapter);
+            ImGui::PushID(1000 + ch.chapter);
+            ImGui::TextColored(ch.completed ? ImVec4(0.42f, 0.96f, 0.62f, 1.0f)
+                                            : (unlocked ? ImVec4(0.94f, 0.96f, 1.0f, 1.0f) : ImVec4(0.52f, 0.55f, 0.62f, 1.0f)),
+                               "[%s] CH %s: %s - %s  %s",
+                               ch.letter.c_str(), ch.code.c_str(), ch.codename.c_str(), ch.title.c_str(),
+                               ch.completed ? (std::string("[RANK ") + ch.bestRank + (ch.ghostCleared ? " GHOST]" : "]")).c_str()
+                                            : (unlocked ? "[LIVE]" : "[LOCKED]"));
+            ImGui::TextDisabled("%s | %s", ch.district.c_str(), ch.tacticalFocus.c_str());
+            if (unlocked) {
+              if (ImGui::SmallButton("Deploy Now")) {
+                session.startStoryChapter(ch.chapter, player, world, audio, true);
+                ui.showPhone = false;
+              }
+              ImGui::SameLine();
+              if (ImGui::SmallButton("Track GPS")) {
+                session.setGpsWaypoint(ch.beaconPos, "CH " + ch.code + ": " + ch.codename);
+              }
+            }
+            ImGui::Separator();
+            ImGui::PopID();
+          }
+          ImGui::EndChild();
+          ImGui::EndTabItem();
+        }
+
+        const ImGuiTabItemFlags techTabFlags = (ui.forcePhoneTab == 5) ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
+        if (ImGui::BeginTabItem("Tech & Stats", nullptr, techTabFlags)) {
+          if (ui.forcePhoneTab == 5) ui.forcePhoneTab = -1;
+          ImGui::TextColored({0.38f, 0.96f, 0.58f, 1.0f}, "Credits: $%d   |   Intel: %d   |   Salvage: %d",
+                             session.playerCash(), session.playerIntel(), session.playerSalvage());
+          ImGui::Separator();
+          ImGui::BeginChild("TechAndBodyScroll", {0, 350}, true);
+          ImGui::TextColored({0.45f, 0.88f, 1.0f, 1.0f}, "BLACK-MARKET TECH UPGRADES:");
+          for (size_t uiIdx = 0; uiIdx < session.techUpgrades().size(); ++uiIdx) {
+            const auto& up = session.techUpgrades()[uiIdx];
+            const int lvl = session.upgradeLevel(up.id);
+            ImGui::PushID(static_cast<int>(1200 + uiIdx));
+            ImGui::Text("[%s] %s  (Tier %d/%d)", up.category.c_str(), up.name.c_str(), lvl, up.maxLevel);
+            if (lvl < up.maxLevel) {
+              char btn[96];
+              std::snprintf(btn, sizeof(btn), "Upgrade -> %s ($%d%s%s)",
+                            up.effectLabels[static_cast<size_t>(lvl)].c_str(),
+                            up.creditCosts[static_cast<size_t>(lvl)],
+                            up.intelCosts[static_cast<size_t>(lvl)] > 0 ? (" +" + std::to_string(up.intelCosts[static_cast<size_t>(lvl)]) + " INT").c_str() : "",
+                            up.salvageCosts[static_cast<size_t>(lvl)] > 0 ? (" +" + std::to_string(up.salvageCosts[static_cast<size_t>(lvl)]) + " SLV").c_str() : "");
+              if (ImGui::SmallButton(btn)) {
+                session.buyTechUpgrade(uiIdx, audio);
+              }
+            } else {
+              ImGui::TextColored({0.35f, 0.95f, 0.58f, 1.0f}, "MAX TIER (%s)", up.effectLabels[3].c_str());
+            }
+            ImGui::PopID();
+          }
+          ImGui::Separator();
+          ImGui::TextColored({0.98f, 0.78f, 0.28f, 1.0f}, "OPERATIVE CONDITIONING (BODY STATS):");
+          for (size_t bi = 0; bi < kBodyStatCount; ++bi) {
+            const auto kind = static_cast<BodyStatKind>(bi);
+            const float val = session.bodyStatValue(kind);
+            char lbl[64];
+            std::snprintf(lbl, sizeof(lbl), "%s (%s): %.0f / 100", GameSession::bodyStatName(kind), GameSession::bodyStatShort(kind), val);
+            ImGui::ProgressBar(val / 100.0f, {-1, 13}, lbl);
+          }
+          ImGui::EndChild();
+          ImGui::EndTabItem();
+        }
+
         if (ImGui::BeginTabItem("Contracts")) {
           for (size_t i = 0; i < session.contracts().size(); ++i) {
             const auto& c = session.contracts()[i];
