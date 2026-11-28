@@ -91,7 +91,8 @@ int main(int argc, char** argv) {
   int headlessFrames = 20;
   bool headlessWalkForward = false;
   bool headlessShowPhone = false;
-  int headlessPhoneTab = -1;
+  int headlessPhoneApp = 0;
+  bool headlessWardrobe = false;
   bool headlessTestReconfigure = false;
   int headlessSelectSlot = -1;
   bool headlessUnlockWeapons = false;
@@ -132,7 +133,6 @@ int main(int argc, char** argv) {
   bool cliHasRes = false;
   bool cliContinue = false;
   bool cliNewGame = false;
-  bool cliBootGunsmith = false;
   bool cliSkipMenu = false;
   bool cliDevMode = false;
   std::string cliScreenOverride;
@@ -155,8 +155,6 @@ int main(int argc, char** argv) {
       cliContinue = true;
     } else if (arg == "--new-game") {
       cliNewGame = true;
-    } else if (arg == "--boot-gunsmith") {
-      cliBootGunsmith = true;
     } else if (arg == "--skip-menu") {
       cliSkipMenu = true;
     } else if (arg == "--dev") {
@@ -171,9 +169,11 @@ int main(int argc, char** argv) {
       headlessWalkForward = true;
     } else if (arg == "--show-phone") {
       headlessShowPhone = true;
-    } else if (arg == "--phone-tab" && i + 1 < argc) {
+    } else if ((arg == "--phone-tab" || arg == "--phone-app") && i + 1 < argc) {
       headlessShowPhone = true;
-      headlessPhoneTab = std::atoi(argv[++i]);
+      headlessPhoneApp = std::clamp(std::atoi(argv[++i]), 0, 11);
+    } else if (arg == "--wardrobe") {
+      headlessWardrobe = true;
     } else if (arg == "--spawn-vehicle" && i + 1 < argc) {
       headlessSpawnVehKind = std::atoi(argv[++i]);
     } else if (arg == "--paint" && i + 1 < argc) {
@@ -425,7 +425,7 @@ int main(int argc, char** argv) {
     if (ui.saveFileExists && !cliNewGame) {
       session.loadFromFile(ui.savePath);
       ui.savedStoryStep = session.storyStep();
-      ui.savedCredits = session.playerCash();
+      ui.savedCashUsd = session.playerCash();
     } else {
       session.setTimeOfDayPreset(westgate::TimeOfDayPreset::Sunset);
     }
@@ -433,10 +433,11 @@ int main(int argc, char** argv) {
     if (ui.saveFileExists && (cliContinue || cliScreenOverride == "main-menu" || cliScreenOverride == "pause")) {
       session.loadFromFile(ui.savePath);
       ui.savedStoryStep = session.storyStep();
-      ui.savedCredits = session.playerCash();
+      ui.savedCashUsd = session.playerCash();
     }
     ui.showPhone = headlessShowPhone;
-    ui.forcePhoneTab = headlessPhoneTab;
+    ui.instantPhoneSlide = true;
+    ui.phoneOs.activeApp = static_cast<westgate::PhoneAppId>(headlessPhoneApp);
   }
 
   // Determine initial AAA client screen state
@@ -449,11 +450,6 @@ int main(int argc, char** argv) {
       session.startStoryChapter(session.storyChapters().front().chapter, player, world, headlessMode ? nullptr : &audio, true);
     }
     ui.screen = westgate::AppScreen::InGame;
-  } else if (cliBootGunsmith) {
-    ui.screen = westgate::AppScreen::InGame;
-    ui.gunsmithReturnToMenu = true;
-    session.setGunsmithOpen(true);
-    session.setGunsmithSlot(session.activeWeaponIdx() > 0 ? session.activeWeaponIdx() : 2);
   }
   if (!cliScreenOverride.empty()) {
     if (cliScreenOverride == "main-menu") {
@@ -511,7 +507,9 @@ int main(int argc, char** argv) {
     session.setFirstPersonMode(true);
     player.setPitch(0.0f);
   }
-  if (headlessGunsmithSlot >= 1 && headlessGunsmithSlot < static_cast<int>(session.weapons().size())) {
+  if (headlessMode && headlessGunsmithSlot >= 1 && headlessGunsmithSlot < static_cast<int>(session.weapons().size())) {
+    // Headless verification: teleport player to physical Civic Armory Bench & open workbench
+    session.teleportTo({74.0f, world.heightfield.sampleHeight(74.0f, -118.0f) + 1.0f, -118.0f}, 0.0f, player);
     session.setGunsmithOpen(true);
     session.setGunsmithSlot(headlessGunsmithSlot);
     session.setGunsmithAutoRotate(false);
@@ -521,6 +519,11 @@ int main(int argc, char** argv) {
     if (hasHeadlessGunsmithYaw) {
       session.orbitGunsmith(headlessGunsmithYaw - session.gunsmithYaw(), 0.0f, 0.0f);
     }
+  }
+  if (headlessMode && headlessWardrobe) {
+    // Headless verification: teleport player to physical Vanguard Tailors Boutique & open fitting room
+    session.teleportTo({52.0f, world.heightfield.sampleHeight(52.0f, -152.0f) + 1.0f, -152.0f}, 180.0f, player);
+    session.setWardrobeOpen(true);
   }
   if (headlessContractIdx >= 0) {
     session.acceptContract(headlessContractIdx, world);
@@ -589,7 +592,7 @@ int main(int argc, char** argv) {
       SDL_Quit();
       return 1;
     }
-    if (ui.screen == westgate::AppScreen::InGame && !session.gunsmithOpen() && !ui.showPhone && !ui.showSettings) {
+    if (ui.screen == westgate::AppScreen::InGame && !session.gunsmithOpen() && !session.wardrobeOpen() && !ui.showPhone && !ui.showSettings) {
       ui.mouseCaptured = true;
       SDL_SetWindowRelativeMouseMode(window, true);
     }
@@ -735,6 +738,10 @@ int main(int argc, char** argv) {
               session.setGunsmithAutoRotate(false);
               session.orbitGunsmith(-ev.motion.xrel * 0.0085f, ev.motion.yrel * 0.0065f, 0.0f);
             }
+          } else if (session.wardrobeOpen()) {
+            if (!io.WantCaptureMouse && (ev.motion.state & SDL_BUTTON_LMASK) != 0) {
+              session.orbitWardrobe(-ev.motion.xrel * 0.0085f, ev.motion.yrel * 0.0065f, 0.0f);
+            }
           } else if (ui.mouseCaptured && !ui.showPhone) {
             lookDx += ev.motion.xrel;
             lookDy += ev.motion.yrel;
@@ -742,7 +749,7 @@ int main(int argc, char** argv) {
         }
         if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
             ui.screen == westgate::AppScreen::InGame && !ui.showSettings &&
-            !session.gunsmithOpen() && !ui.showPhone) {
+            !session.gunsmithOpen() && !session.wardrobeOpen() && !ui.showPhone) {
           if (!ui.mouseCaptured && !io.WantCaptureMouse && ev.button.button == SDL_BUTTON_LEFT) {
             ui.mouseCaptured = true;
             SDL_SetWindowRelativeMouseMode(window, true);
@@ -754,6 +761,10 @@ int main(int argc, char** argv) {
           if (session.gunsmithOpen()) {
             if (!io.WantCaptureMouse) {
               session.orbitGunsmith(0.0f, 0.0f, -ev.wheel.y * 0.055f);
+            }
+          } else if (session.wardrobeOpen()) {
+            if (!io.WantCaptureMouse) {
+              session.orbitWardrobe(0.0f, 0.0f, -ev.wheel.y * 0.12f);
             }
           } else if (!ui.showPhone) {
             int slot = session.activeWeaponIdx() + (ev.wheel.y > 0 ? -1 : 1);
@@ -772,15 +783,14 @@ int main(int argc, char** argv) {
               session.setGunsmithOpen(false);
               session.saveToFile(ui.savePath);
               ui.saveFileExists = true;
-              if (ui.gunsmithReturnToMenu) {
-                ui.gunsmithReturnToMenu = false;
-                ui.screen = westgate::AppScreen::MainMenu;
-                ui.mouseCaptured = false;
-                SDL_SetWindowRelativeMouseMode(window, false);
-              } else {
-                ui.mouseCaptured = true;
-                SDL_SetWindowRelativeMouseMode(window, true);
-              }
+              ui.mouseCaptured = true;
+              SDL_SetWindowRelativeMouseMode(window, true);
+            } else if (session.wardrobeOpen()) {
+              session.setWardrobeOpen(false);
+              session.saveToFile(ui.savePath);
+              ui.saveFileExists = true;
+              ui.mouseCaptured = true;
+              SDL_SetWindowRelativeMouseMode(window, true);
             } else if (ui.showPhone) {
               ui.showPhone = false;
               ui.mouseCaptured = true;
@@ -803,47 +813,23 @@ int main(int argc, char** argv) {
               ui.showPhone = false;
               ui.mouseCaptured = true;
               SDL_SetWindowRelativeMouseMode(window, true);
-            } else if (!session.gunsmithOpen()) {
+            } else if (!session.gunsmithOpen() && !session.wardrobeOpen()) {
               ui.mouseCaptured = !ui.mouseCaptured;
               SDL_SetWindowRelativeMouseMode(window, ui.mouseCaptured);
-            }
-          } else if (sc == SDL_SCANCODE_F2 && !ui.showSettings) {
-            if (ui.screen == westgate::AppScreen::MainMenu) {
-              ui.gunsmithReturnToMenu = true;
-              ui.screen = westgate::AppScreen::InGame;
-              session.setGunsmithOpen(true);
-              session.setGunsmithSlot(session.activeWeaponIdx() > 0 ? session.activeWeaponIdx() : 2);
-              ui.mouseCaptured = false;
-              SDL_SetWindowRelativeMouseMode(window, false);
-            } else if (ui.screen == westgate::AppScreen::InGame) {
-              const bool nextOpen = !session.gunsmithOpen();
-              session.setGunsmithOpen(nextOpen);
-              if (nextOpen) {
-                ui.showPhone = false;
-                if (ui.mouseCaptured) {
-                  ui.mouseCaptured = false;
-                  SDL_SetWindowRelativeMouseMode(window, false);
-                }
-              } else if (ui.gunsmithReturnToMenu) {
-                ui.gunsmithReturnToMenu = false;
-                ui.screen = westgate::AppScreen::MainMenu;
-              } else {
-                ui.mouseCaptured = true;
-                SDL_SetWindowRelativeMouseMode(window, true);
-              }
             }
           } else if (ui.screen == westgate::AppScreen::InGame && !ui.showSettings) {
             if (sc == SDL_SCANCODE_F5) {
               session.toggleFirstPersonMode();
-            } else if (sc == SDL_SCANCODE_P) {
-              if (session.gunsmithOpen()) session.setGunsmithOpen(false);
-              ui.showPhone = !ui.showPhone;
-              if (ui.showPhone && ui.mouseCaptured) {
-                ui.mouseCaptured = false;
-                SDL_SetWindowRelativeMouseMode(window, false);
-              } else if (!ui.showPhone && !ui.mouseCaptured) {
-                ui.mouseCaptured = true;
-                SDL_SetWindowRelativeMouseMode(window, true);
+            } else if (sc == SDL_SCANCODE_P || sc == SDL_SCANCODE_UP) {
+              if (!session.gunsmithOpen() && !session.wardrobeOpen()) {
+                ui.showPhone = !ui.showPhone;
+                if (ui.showPhone && ui.mouseCaptured) {
+                  ui.mouseCaptured = false;
+                  SDL_SetWindowRelativeMouseMode(window, false);
+                } else if (!ui.showPhone && !ui.mouseCaptured) {
+                  ui.mouseCaptured = true;
+                  SDL_SetWindowRelativeMouseMode(window, true);
+                }
               }
             } else if (sc == SDL_SCANCODE_F9 && ui.devMode) {
               ui.showTelemetry = !ui.showTelemetry;
@@ -908,7 +894,7 @@ int main(int argc, char** argv) {
 
       const bool* keys = SDL_GetKeyboardState(nullptr);
       const SDL_MouseButtonFlags mouseButtons = SDL_GetMouseState(nullptr, nullptr);
-      if (ui.screen == westgate::AppScreen::InGame && !ui.showSettings && !ui.showPhone && !session.gunsmithOpen()) {
+      if (ui.screen == westgate::AppScreen::InGame && !ui.showSettings && !ui.showPhone && !session.gunsmithOpen() && !session.wardrobeOpen()) {
         if (keys[SDL_SCANCODE_W]) gameInput.moveInput.moveForward += 1.0f;
         if (keys[SDL_SCANCODE_S]) gameInput.moveInput.moveForward -= 1.0f;
         if (keys[SDL_SCANCODE_D]) gameInput.moveInput.moveRight += 1.0f;
@@ -933,6 +919,13 @@ int main(int argc, char** argv) {
     elapsedSec += simDt;
     if (!simFrozen) {
       session.update(dt, gameInput, player, physics, world, headlessMode ? nullptr : &audio);
+      if (!headlessMode && window && (session.gunsmithOpen() || session.wardrobeOpen())) {
+        ui.showPhone = false;
+        if (ui.mouseCaptured) {
+          ui.mouseCaptured = false;
+          SDL_SetWindowRelativeMouseMode(window, false);
+        }
+      }
 
       physicsAccum += dt;
       constexpr float kFixedStep = 1.0f / 60.0f;
@@ -1014,7 +1007,7 @@ int main(int argc, char** argv) {
 
       const glm::vec4 hitFlashCol(1.55f, 0.42f, 0.42f, 1.0f);
       const bool bareKnuckle = session.shouldUseBareKnuckleRig(world, pPos);
-      const bool hidePlayerBody = !hasCamOverride && (
+      const bool hidePlayerBody = !hasCamOverride && !session.wardrobeOpen() && (
         session.gunsmithOpen() ||
         session.firstPersonMode() ||
         (session.isAiming() && session.isRangedWeapon() &&
@@ -1407,11 +1400,11 @@ int main(int argc, char** argv) {
         focus = session.gunsmithOpen() ? session.gunsmithAnchorPos(player) : pPos;
       }
 
-      // Assemble First-Person 3D Viewmodel + Gloves locked to the exact eye camera (unless in MainMenu or Sniper 8x glass scope)
+      // Assemble First-Person 3D Viewmodel + Gloves locked to the exact eye camera (unless in MainMenu, Wardrobe, Gunsmith or Sniper 8x glass scope)
       const bool inSniperGlass = session.isAiming() && session.isRangedWeapon() &&
                                  session.activeWeapon().optic == westgate::WeaponOpticKind::SniperScope;
       if (!hasCamOverride && ui.screen != westgate::AppScreen::MainMenu &&
-          !session.gunsmithOpen() && !session.inVehicle() && session.firstPersonMode() && !inSniperGlass) {
+          !session.gunsmithOpen() && !session.wardrobeOpen() && !session.inVehicle() && session.firstPersonMode() && !inSniperGlass) {
         const bool meleeBlocking = gameInput.aimDown && session.activeWeapon().isMelee;
         westgate::WeaponSystem3D::appendFirstPersonViewmodel(
           camPos,

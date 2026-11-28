@@ -291,10 +291,9 @@ void drawSettingsModal(
       {"Silent Takedown (Behind NPC)", "V  (When Prompted)  /  U (Shoot)"},
       {"Carry / Conceal Body",         "J"},
       {"Enter / Exit Vehicle",         "G"},
-      {"Interact / Safehouse / Shop",  "B"},
+      {"Interact / Armory / Boutique", "B  (At Open-World Shops & Benches)"},
       {"Iron Pit Uppercut / Kick / Dodge", "Q  /  E  /  X  (Z = Grapple)"},
-      {"Open Tactical SkyPhone",       "P"},
-      {"Open 3D Gunsmith Studio",      "F2"},
+      {"Open iFruit 15iX Phone",       "P  or  Up Arrow"},
       {"Pause Game / Options",         "ESC"},
     };
     if (ImGui::BeginTable("##KeybindTable", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH)) {
@@ -382,7 +381,7 @@ void drawMainMenuScreen(
   const ImVec2 bts = fMono->CalcTextSizeA(fMono->LegacySize, 900.0f, 0.0f, buildTag);
   bg->AddText(fMono, fMono->LegacySize, {disp.x - bts.x - 28.0f, disp.y - 30.0f}, IM_COL32(158, 178, 202, 190), buildTag);
   bg->AddText(fMono, fMono->LegacySize, {leftX, disp.y - 30.0f}, IM_COL32(168, 192, 218, 205),
-              "SELECT OPERATION TO DEPLOY   •   [ESC] OPTIONS   •   [F2] 3D GUNSMITH");
+              "SELECT OPERATION TO DEPLOY   •   [ESC] OPTIONS   •   OPEN-WORLD SANDBOX");
 
   if (ui.showSettings) {
     drawSettingsModal(ui, settings, gpu);
@@ -393,7 +392,7 @@ void drawMainMenuScreen(
   const float menuY = topY + 118.0f;
   const float bladeW = 430.0f;
   ImGui::SetNextWindowPos({leftX, menuY}, ImGuiCond_Always);
-  ImGui::SetNextWindowSize({bladeW + 16.0f, 360.0f}, ImGuiCond_Always);
+  ImGui::SetNextWindowSize({bladeW + 16.0f, 340.0f}, ImGuiCond_Always);
   ImGui::Begin("##MainMenuBlades", nullptr,
                ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
                ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollbar);
@@ -421,14 +420,6 @@ void drawMainMenuScreen(
     session.teleportTo(world.spawnPos, world.spawnYawDeg, player);
     ui.screen = AppScreen::InGame;
     ui.requestEngageMouseCapture = true;
-  }
-
-  if (drawAaaMenuBlade("mm_gunsmith", "3D GUNSMITH STUDIO", "ARSENAL & CERAKOTE",
-                       ui.fonts.heading, ui.fonts.mono, bladeW)) {
-    ui.gunsmithReturnToMenu = true;
-    ui.screen = AppScreen::InGame;
-    session.setGunsmithOpen(true);
-    session.setGunsmithSlot(session.activeWeaponIdx() > 0 ? session.activeWeaponIdx() : 2);
   }
 
   if (drawAaaMenuBlade("mm_settings", "SETTINGS & CONTROLS", "DISPLAY / AUDIO",
@@ -483,8 +474,8 @@ void drawPauseScreen(
               "OPERATION PAUSED");
 
   char statLine[128];
-  std::snprintf(statLine, sizeof(statLine), "CREDITS $%d   •   INTEL %d   •   SALVAGE %d   •   CHAPTER STEP %d/9",
-                session.playerCash(), session.playerIntel(), session.playerSalvage(), session.storyStep());
+  std::snprintf(statLine, sizeof(statLine), "CASH $%d USD   •   CHAPTER STEP %d/9   •   STASHES %d/%d",
+                session.playerCash(), session.storyStep(), session.stashesFound(), session.totalStashes());
   bg->AddText(fMono, fMono->LegacySize, {leftX, topY + 76.0f}, IM_COL32(168, 204, 232, 225), statLine);
 
   if (ui.saveStatusTimer > 0.0f && !ui.saveStatusBanner.empty()) {
@@ -493,7 +484,7 @@ void drawPauseScreen(
 
   const float bladeW = 420.0f;
   ImGui::SetNextWindowPos({leftX, topY + 106.0f}, ImGuiCond_Always);
-  ImGui::SetNextWindowSize({bladeW + 16.0f, 420.0f}, ImGuiCond_Always);
+  ImGui::SetNextWindowSize({bladeW + 16.0f, 380.0f}, ImGuiCond_Always);
   ImGui::Begin("##PauseBlades", nullptr,
                ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
                ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollbar);
@@ -502,15 +493,9 @@ void drawPauseScreen(
     ui.screen = AppScreen::InGame;
     ui.requestEngageMouseCapture = true;
   }
-  if (drawAaaMenuBlade("p_phone", "TACTICAL SKYPHONE", "[P]", ui.fonts.heading, ui.fonts.mono, bladeW)) {
+  if (drawAaaMenuBlade("p_phone", "iFRUIT 15iX PHONE", "[P]", ui.fonts.heading, ui.fonts.mono, bladeW)) {
     ui.screen = AppScreen::InGame;
     ui.showPhone = true;
-  }
-  if (drawAaaMenuBlade("p_gunsmith", "3D GUNSMITH STUDIO", "[F2]", ui.fonts.heading, ui.fonts.mono, bladeW)) {
-    ui.gunsmithReturnToMenu = false;
-    ui.screen = AppScreen::InGame;
-    session.setGunsmithOpen(true);
-    session.setGunsmithSlot(session.activeWeaponIdx() > 0 ? session.activeWeaponIdx() : 2);
   }
   if (drawAaaMenuBlade("p_save", "SAVE PROGRESS", "WRITE DISK", ui.fonts.heading, ui.fonts.mono, bladeW)) {
     if (session.saveToFile(ui.savePath)) {
@@ -532,6 +517,7 @@ void drawPauseScreen(
     ui.saveFileExists = true;
     ui.showPhone = false;
     session.setGunsmithOpen(false);
+    session.setWardrobeOpen(false);
     ui.screen = AppScreen::MainMenu;
   }
   if (drawAaaMenuBlade("p_quit", "QUIT TO DESKTOP", "EXIT", ui.fonts.heading, ui.fonts.mono, bladeW)) {
@@ -582,7 +568,109 @@ void drawWestgateHud(
   }
 
   // =========================================================================
-  // 0. Dedicated Interactive 3D Gunsmith Design Studio Mode [F2]
+  // 0A. Physical Open-World Clothing Boutique & Walk-In Wardrobe [B at Boutique]
+  // =========================================================================
+  if (session.wardrobeOpen()) {
+    bgDraw->AddRectFilledMultiColor(
+      {0.0f, 0.0f}, {disp.x, 86.0f},
+      IM_COL32(8, 10, 18, 205), IM_COL32(8, 10, 18, 205),
+      IM_COL32(8, 10, 18, 0),   IM_COL32(8, 10, 18, 0)
+    );
+
+    ImGui::SetNextWindowPos({20.0f, 16.0f}, ImGuiCond_Always);
+    ImGui::SetNextWindowSize({disp.x - 458.0f, 82.0f}, ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.88f);
+    ImGui::Begin("##WardrobeHeader", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
+    ImGui::TextColored({0.95f, 0.48f, 0.86f, 1.0f}, "WESTGATE BOUTIQUE & TAILOR // 3D FITTING ROOM");
+    ImGui::SameLine(ImGui::GetWindowWidth() - 210.0f);
+    ImGui::TextColored({0.42f, 0.96f, 0.62f, 1.0f}, "CASH: $%d USD", session.playerCash());
+    ImGui::TextDisabled("Left-Drag: 360 Character Orbit  |  Mouse Wheel: Zoom  |  [ESC] Step Out to Open World");
+    const char* curSuitName = "Outfit";
+    GameSession::suitTintColor(session.playerSuit(), &curSuitName);
+    ImGui::Text("Currently Wearing: %s   •   Location: %s", curSuitName, districtLabelForPos(pPos, world));
+    ImGui::End();
+
+    ImGui::SetNextWindowPos({disp.x - 422.0f, 16.0f}, ImGuiCond_Always);
+    ImGui::SetNextWindowSize({404.0f, disp.y - 32.0f}, ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.92f);
+    ImGui::Begin("##WardrobeInspector", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
+    ImGui::TextColored({0.96f, 0.56f, 0.88f, 1.0f}, "BESPOKE APPAREL & TAILORED LININGS");
+    ImGui::Separator();
+
+    ImGui::BeginChild("##WardrobeScroll", {0.0f, disp.y - 118.0f}, false);
+    ImGui::TextColored({0.98f, 0.82f, 0.36f, 1.0f}, "1. CHARACTER OUTFITS ($USD)");
+    for (size_t si = 0; si < kPlayerSuitCount; ++si) {
+      const auto preset = static_cast<PlayerSuitPreset>(si);
+      const char* sName = "Outfit";
+      const glm::vec4 tint = GameSession::suitTintColor(preset, &sName);
+      const bool owned = session.ownsSuit(preset);
+      const bool equipped = (session.playerSuit() == preset);
+      const int price = GameSession::suitPriceUsd(preset);
+
+      ImGui::PushID(static_cast<int>(8400 + si));
+      ImGui::ColorButton("##SuitSwatch",
+                         ImVec4(std::min(1.0f, tint.r * 0.78f), std::min(1.0f, tint.g * 0.78f), std::min(1.0f, tint.b * 0.78f), 1.0f),
+                         ImGuiColorEditFlags_NoTooltip, {24.0f, 24.0f});
+      ImGui::SameLine();
+      ImGui::TextColored(equipped ? ImVec4(0.42f, 0.96f, 0.62f, 1.0f) : ImVec4(0.92f, 0.95f, 1.0f, 1.0f),
+                         "%s %s", sName, equipped ? "[ON]" : (owned ? "[OWNED]" : ""));
+      const float rightColX = std::max(218.0f, ImGui::GetWindowContentRegionMax().x - 86.0f);
+      ImGui::SameLine(rightColX);
+      if (equipped) {
+        ImGui::TextDisabled("Wearing");
+      } else if (owned) {
+        if (ImGui::Button("Wear", {82.0f, 22.0f})) {
+          session.buyOrEquipSuit(preset, audio);
+        }
+      } else {
+        char buyBtn[48];
+        std::snprintf(buyBtn, sizeof(buyBtn), "Buy $%d", price);
+        if (ImGui::Button(buyBtn, {82.0f, 22.0f})) {
+          session.buyOrEquipSuit(preset, audio);
+        }
+      }
+      ImGui::PopID();
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::TextColored({0.45f, 0.90f, 1.0f, 1.0f}, "2. TAILORED ARMOR & SUIT LININGS ($USD)");
+    for (size_t uiIdx = 4; uiIdx < session.techUpgrades().size(); ++uiIdx) {
+      const auto& up = session.techUpgrades()[uiIdx];
+      const int lvl = session.upgradeLevel(up.id);
+      ImGui::PushID(static_cast<int>(8500 + uiIdx));
+      ImGui::Text("[%s] %s  (Tier %d/%d)", up.category.c_str(), up.name.c_str(), lvl, up.maxLevel);
+      ImGui::TextDisabled("%s", up.subtitle.c_str());
+      if (lvl < up.maxLevel) {
+        char uBtn[96];
+        std::snprintf(uBtn, sizeof(uBtn), "Tailor -> %s ($%d)",
+                      up.effectLabels[static_cast<size_t>(lvl)].c_str(),
+                      up.dollarCosts[static_cast<size_t>(lvl)]);
+        if (ImGui::SmallButton(uBtn)) {
+          session.buyTechUpgrade(uiIdx, audio);
+        }
+      } else {
+        ImGui::TextColored({0.38f, 0.96f, 0.62f, 1.0f}, "MAX TAILORED TIER (%s)", up.effectLabels[3].c_str());
+      }
+      ImGui::Spacing();
+      ImGui::PopID();
+    }
+    ImGui::EndChild();
+
+    ImGui::Separator();
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16f, 0.54f, 0.38f, 1.0f));
+    if (ImGui::Button("Confirm Outfit & Step Out [ESC]", {-1.0f, 30.0f})) {
+      session.setWardrobeOpen(false);
+      session.saveToFile(ui.savePath);
+      ui.requestEngageMouseCapture = true;
+    }
+    ImGui::PopStyleColor();
+    ImGui::End();
+    return;
+  }
+
+  // =========================================================================
+  // 0B. Physical Open-World Armory Gunsmith Bench [B at Armory]
   // =========================================================================
   if (session.gunsmithOpen()) {
     const int slot = session.gunsmithSlot();
@@ -600,10 +688,10 @@ void drawWestgateHud(
     ImGui::SetNextWindowSize({disp.x - 458.0f, 118.0f}, ImGuiCond_Always);
     ImGui::SetNextWindowBgAlpha(0.86f);
     ImGui::Begin("##GunsmithHeader", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
-    ImGui::TextColored({0.38f, 0.92f, 1.0f, 1.0f}, "WESTGATE ARMORY // 3D GUNSMITH DESIGN STUDIO");
+    ImGui::TextColored({0.38f, 0.92f, 1.0f, 1.0f}, "WESTGATE TACTICAL ARMORY // 3D GUNSMITH WORKBENCH");
     ImGui::SameLine(ImGui::GetWindowWidth() - 235.0f);
-    ImGui::TextColored({0.42f, 0.96f, 0.62f, 1.0f}, "CREDITS: $%d", session.playerCash());
-    ImGui::TextDisabled("Left-Drag: 360 Orbit  |  Mouse Wheel: Precision Zoom  |  [F2 / ESC] Exit to Field");
+    ImGui::TextColored({0.42f, 0.96f, 0.62f, 1.0f}, "CASH: $%d USD", session.playerCash());
+    ImGui::TextDisabled("Left-Drag: 360 Orbit  |  Mouse Wheel: Precision Zoom  |  [ESC] Step Away from Bench");
 
     // Weapon platform selector tabs (Slots 1..5)
     for (int si = 1; si < static_cast<int>(session.weapons().size()); ++si) {
@@ -677,13 +765,14 @@ void drawWestgateHud(
     ImGui::TextDisabled("PBR: CNC Anodized + Laser-Stippled Polymer + Sapphire Lens");
     ImGui::End();
 
-    // Right-Side Modular Workbench Inspector
+    // Right-Side Modular Workbench Inspector (Scrollable so Attachments + Finishes + Internal Upgrades all fit cleanly)
     ImGui::SetNextWindowPos({disp.x - 422.0f, 16.0f}, ImGuiCond_Always);
     ImGui::SetNextWindowSize({404.0f, disp.y - 32.0f}, ImGuiCond_Always);
     ImGui::SetNextWindowBgAlpha(0.92f);
     ImGui::Begin("##GunsmithInspector", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
     ImGui::TextColored({0.45f, 0.92f, 1.0f, 1.0f}, "MODULAR ATTACHMENTS & CERAKOTE");
     ImGui::Separator();
+    ImGui::BeginChild("##GunsmithScrollRegion", {0.0f, disp.y - 114.0f}, false);
 
     // Purchase / Ammo row
     if (!w.unlocked) {
@@ -705,13 +794,17 @@ void drawWestgateHud(
     static const char* kMuzzleLabels[5] = {"Standard", "Suppressor", "Compensator", "Osprey Box", "Thermal Wrap"};
     static const char* kUnderLabels[4] = {"Clean Rail", "Vert Grip", "PEQ Laser", "Angled Grip"};
     static const char* kMagLabels[3] = {"Standard", "Extended", "Drum Mag"};
+    const float gsAvailW = ImGui::GetContentRegionAvail().x;
+    const float gsBtn3 = (gsAvailW - 16.0f) / 3.0f;
+    const float gsBtn2 = (gsAvailW - 8.0f) * 0.5f;
+    const float gsBtn4 = (gsAvailW - 24.0f) / 4.0f;
 
     ImGui::TextColored({0.86f, 0.90f, 0.98f, 1.0f}, "1. OPTIC SIGHT RAIL");
     for (int oi = 0; oi < 5; ++oi) {
       if (oi > 0 && oi != 3) ImGui::SameLine();
       const bool sel = (static_cast<int>(w.optic) == oi);
       if (sel) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.56f, 0.78f, 1.0f));
-      if (ImGui::Button(kOpticLabels[oi], {oi < 3 ? 124.0f : 190.0f, 23.0f})) {
+      if (ImGui::Button(kOpticLabels[oi], {oi < 3 ? gsBtn3 : gsBtn2, 23.0f})) {
         session.configureWeaponSlot(slot, static_cast<WeaponOpticKind>(oi), w.muzzle, w.underbarrel, w.mag, w.bodyFinish);
       }
       if (sel) ImGui::PopStyleColor();
@@ -741,7 +834,7 @@ void drawWestgateHud(
       if (mi > 0 && mi != 3) ImGui::SameLine();
       const bool sel = (static_cast<int>(w.muzzle) == mi);
       if (sel) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.56f, 0.78f, 1.0f));
-      if (ImGui::Button(kMuzzleLabels[mi], {mi < 3 ? 124.0f : 190.0f, 23.0f})) {
+      if (ImGui::Button(kMuzzleLabels[mi], {mi < 3 ? gsBtn3 : gsBtn2, 23.0f})) {
         session.configureWeaponSlot(slot, w.optic, static_cast<WeaponMuzzleKind>(mi), w.underbarrel, w.mag, w.bodyFinish);
       }
       if (sel) ImGui::PopStyleColor();
@@ -753,7 +846,7 @@ void drawWestgateHud(
       if (uiIdx % 2 == 1) ImGui::SameLine();
       const bool sel = (static_cast<int>(w.underbarrel) == uiIdx);
       if (sel) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.56f, 0.78f, 1.0f));
-      if (ImGui::Button(kUnderLabels[uiIdx], {190.0f, 23.0f})) {
+      if (ImGui::Button(kUnderLabels[uiIdx], {gsBtn2, 23.0f})) {
         session.configureWeaponSlot(slot, w.optic, w.muzzle, static_cast<WeaponUnderbarrelKind>(uiIdx), w.mag, w.bodyFinish);
       }
       if (sel) ImGui::PopStyleColor();
@@ -765,7 +858,7 @@ void drawWestgateHud(
       if (mgi > 0) ImGui::SameLine();
       const bool sel = (static_cast<int>(w.mag) == mgi);
       if (sel) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.56f, 0.78f, 1.0f));
-      if (ImGui::Button(kMagLabels[mgi], {124.0f, 23.0f})) {
+      if (ImGui::Button(kMagLabels[mgi], {gsBtn3, 23.0f})) {
         session.configureWeaponSlot(slot, w.optic, w.muzzle, w.underbarrel, static_cast<WeaponMagKind>(mgi), w.bodyFinish);
       }
       if (sel) ImGui::PopStyleColor();
@@ -781,7 +874,7 @@ void drawWestgateHud(
       if (zi > 0) ImGui::SameLine();
       const bool zSel = (sPaintZone == zi);
       if (zSel) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.68f, 0.48f, 0.14f, 1.0f));
-      if (ImGui::Button(zoneTabs[zi], {91.0f, 22.0f})) sPaintZone = zi;
+      if (ImGui::Button(zoneTabs[zi], {gsBtn4, 22.0f})) sPaintZone = zi;
       if (zSel) ImGui::PopStyleColor();
     }
 
@@ -802,7 +895,7 @@ void drawWestgateHud(
       GameSession::weaponFinishPbr(fk, w.surfaceSheen, fc, fRgh, fMet, &fName);
       ImGui::PushID(8200 + fi);
       ImGui::BeginGroup();
-      if (ImGui::ColorButton(fName ? fName : "Cerakote", ImVec4(fc.r, fc.g, fc.b, 1.0f), 0, {88.0f, 22.0f})) {
+      if (ImGui::ColorButton(fName ? fName : "Cerakote", ImVec4(fc.r, fc.g, fc.b, 1.0f), 0, {gsBtn4, 22.0f})) {
         WeaponFinishKind nb = w.bodyFinish;
         WeaponFinishKind na = w.accentFinish;
         WeaponFinishKind nh = w.hardwareFinish;
@@ -826,19 +919,38 @@ void drawWestgateHud(
     }
 
     ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::TextColored({0.42f, 0.94f, 0.68f, 1.0f}, "6. BALLISTIC INTERNAL MACHINING ($USD)");
+    for (size_t uiIdx = 0; uiIdx < 4 && uiIdx < session.techUpgrades().size(); ++uiIdx) {
+      const auto& up = session.techUpgrades()[uiIdx];
+      const int lvl = session.upgradeLevel(up.id);
+      ImGui::PushID(static_cast<int>(8300 + uiIdx));
+      ImGui::Text("%s  (Tier %d/%d)", up.name.c_str(), lvl, up.maxLevel);
+      if (lvl < up.maxLevel) {
+        char uBtn[96];
+        std::snprintf(uBtn, sizeof(uBtn), "Machine -> %s ($%d)",
+                      up.effectLabels[static_cast<size_t>(lvl)].c_str(),
+                      up.dollarCosts[static_cast<size_t>(lvl)]);
+        if (ImGui::SmallButton(uBtn)) {
+          session.buyTechUpgrade(uiIdx, audio);
+        }
+      } else {
+        ImGui::TextColored({0.38f, 0.96f, 0.62f, 1.0f}, "MAX TIER (%s)", up.effectLabels[3].c_str());
+      }
+      ImGui::PopID();
+    }
+    ImGui::EndChild();
+
+    ImGui::Separator();
     if (ImGui::Button("Factory Reset", {130.0f, 28.0f})) {
       session.resetWeaponSlotDefaults(slot);
     }
     ImGui::SameLine();
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.54f, 0.36f, 1.0f));
-    const char* retLbl = ui.gunsmithReturnToMenu ? "Save & Return to Title [ESC]" : "Save & Return to Field [F2]";
-    if (ImGui::Button(retLbl, {-1.0f, 28.0f})) {
+    if (ImGui::Button("Save & Step Away [ESC]", {-1.0f, 28.0f})) {
       session.setGunsmithOpen(false);
       session.saveToFile(ui.savePath);
-      if (ui.gunsmithReturnToMenu) {
-        ui.gunsmithReturnToMenu = false;
-        ui.screen = AppScreen::MainMenu;
-      }
+      ui.requestEngageMouseCapture = true;
     }
     ImGui::PopStyleColor();
     ImGui::End();
@@ -904,9 +1016,9 @@ void drawWestgateHud(
   }
 
   // -------------------------------------------------------------------------
-  // 2. Top-Right GTA-Style Minimap + Wanted Stars
+  // 2. Top-Right GTA-Style Minimap + Wanted Stars (Fades cleanly while right-hand iFruit Phone is raised)
   // -------------------------------------------------------------------------
-  {
+  if (!ui.showPhone && ui.phoneOs.slideProgress < 0.15f) {
     const float mapSize = 176.0f;
     const ImVec2 tl(disp.x - mapSize - 16.0f, 16.0f);
     const ImVec2 br(tl.x + mapSize, tl.y + mapSize);
@@ -931,10 +1043,18 @@ void drawWestgateHud(
       }
     }
 
-    // Shops, Garages & Luxury Auto Dealership
+    // Shops, Garages, Open-World Armories (amber), Clothing Boutiques (pink) & Luxury Auto Dealership
     for (const auto& s : session.shops()) {
       const ImVec2 sp = worldToMap(s.pos.x, s.pos.z);
-      bgDraw->AddCircleFilled(sp, 3.5f, s.isGarage ? IM_COL32(175, 95, 255, 235) : IM_COL32(45, 215, 115, 235));
+      if (s.kind == ShopKind::Armory) {
+        bgDraw->AddCircleFilled(sp, 3.8f, IM_COL32(252, 178, 42, 245));
+        bgDraw->AddCircle(sp, 5.6f, IM_COL32(255, 232, 160, 195), 10, 1.1f);
+      } else if (s.kind == ShopKind::Boutique) {
+        bgDraw->AddCircleFilled(sp, 3.8f, IM_COL32(242, 92, 204, 245));
+        bgDraw->AddCircle(sp, 5.6f, IM_COL32(255, 200, 245, 195), 10, 1.1f);
+      } else {
+        bgDraw->AddCircleFilled(sp, 3.5f, s.isGarage ? IM_COL32(175, 95, 255, 235) : IM_COL32(45, 215, 115, 235));
+      }
     }
     {
       const ImVec2 dp = worldToMap(56.0f, -118.0f);
@@ -1089,94 +1209,96 @@ void drawWestgateHud(
     }
 
     char vitSub[80];
-    std::snprintf(vitSub, sizeof(vitSub), "HP %.0f   ARM %.0f   •   INT %d  SLV %d",
+    std::snprintf(vitSub, sizeof(vitSub), "HP %.0f   ARM %.0f   •   CASH $%d",
                   std::max(0.0f, session.playerHp()), session.playerArmor(),
-                  session.playerIntel(), session.playerSalvage());
+                  session.playerCash());
     bgDraw->AddText(fMono, fMono->LegacySize * 0.90f, {vTl.x + 14.0f, vTl.y + 62.0f}, IM_COL32(198, 214, 232, 215), vitSub);
 
-    // 3B. Bottom-Right Arsenal Ballistics OR Vehicle Drivetrain Cluster
+    // 3B. Bottom-Right Arsenal Ballistics OR Vehicle Drivetrain Cluster (hidden while Phone popup covers bottom-right)
     const bool drivingHud = session.inVehicle() && session.currentVehicle() != nullptr;
-    const ImVec2 wTl(disp.x - 332.0f, disp.y - 106.0f);
-    const ImVec2 wBr(disp.x - 20.0f,  disp.y - 20.0f);
-    drawChamferPlate(bgDraw, wTl, wBr, 8.0f, IM_COL32(8, 13, 21, 216), IM_COL32(248, 196, 68, 140), 1.2f);
-    bgDraw->AddRectFilled({wBr.x - 4.0f, wTl.y + 6.0f}, {wBr.x, wBr.y - 6.0f}, IM_COL32(248, 196, 68, 245), 1.5f);
+    if (!ui.showPhone && ui.phoneOs.slideProgress < 0.15f) {
+      const ImVec2 wTl(disp.x - 332.0f, disp.y - 106.0f);
+      const ImVec2 wBr(disp.x - 20.0f,  disp.y - 20.0f);
+      drawChamferPlate(bgDraw, wTl, wBr, 8.0f, IM_COL32(8, 13, 21, 216), IM_COL32(248, 196, 68, 140), 1.2f);
+      bgDraw->AddRectFilled({wBr.x - 4.0f, wTl.y + 6.0f}, {wBr.x, wBr.y - 6.0f}, IM_COL32(248, 196, 68, 245), 1.5f);
 
-    if (drivingHud) {
-      const auto* cv = session.currentVehicle();
-      const auto& sp = GameSession::vehicleSpec(cv->kind);
-      const float kmh = glm::length(glm::vec3(cv->speed, cv->verticalVel, 0.0f)) * 3.6f;
+      if (drivingHud) {
+        const auto* cv = session.currentVehicle();
+        const auto& sp = GameSession::vehicleSpec(cv->kind);
+        const float kmh = glm::length(glm::vec3(cv->speed, cv->verticalVel, 0.0f)) * 3.6f;
 
-      char spdNum[32];
-      std::snprintf(spdNum, sizeof(spdNum), "%03.0f", cv->isBoat ? (kmh * 0.54f) : std::abs(kmh));
-      bgDraw->AddText(fTitle, fTitle->LegacySize * 0.86f, {wTl.x + 16.0f, wTl.y + 8.0f}, IM_COL32(250, 252, 255, 255), spdNum);
-      bgDraw->AddText(fMono, fMono->LegacySize * 0.92f, {wTl.x + 94.0f, wTl.y + 11.0f}, IM_COL32(248, 198, 72, 240),
-                      cv->isBoat ? "KTS" : "KM/H");
+        char spdNum[32];
+        std::snprintf(spdNum, sizeof(spdNum), "%03.0f", cv->isBoat ? (kmh * 0.54f) : std::abs(kmh));
+        bgDraw->AddText(fTitle, fTitle->LegacySize * 0.86f, {wTl.x + 16.0f, wTl.y + 8.0f}, IM_COL32(250, 252, 255, 255), spdNum);
+        bgDraw->AddText(fMono, fMono->LegacySize * 0.92f, {wTl.x + 94.0f, wTl.y + 11.0f}, IM_COL32(248, 198, 72, 240),
+                        cv->isBoat ? "KTS" : "KM/H");
 
-      char gearBadge[32];
-      if (cv->isAircraft) {
-        std::snprintf(gearBadge, sizeof(gearBadge), "ALT %.0fm", std::max(0.0f, cv->pos.y));
-      } else if (cv->isBoat) {
-        std::snprintf(gearBadge, sizeof(gearBadge), "MARINE");
+        char gearBadge[32];
+        if (cv->isAircraft) {
+          std::snprintf(gearBadge, sizeof(gearBadge), "ALT %.0fm", std::max(0.0f, cv->pos.y));
+        } else if (cv->isBoat) {
+          std::snprintf(gearBadge, sizeof(gearBadge), "MARINE");
+        } else {
+          const char gearCh = (cv->gear < 0) ? 'R' : static_cast<char>('0' + std::clamp(cv->gear, 1, 9));
+          std::snprintf(gearBadge, sizeof(gearBadge), "[G%c]%s", gearCh, cv->engineStage > 0 ? " STG+" : "");
+        }
+        bgDraw->AddText(fMono, fMono->LegacySize * 0.92f, {wTl.x + 94.0f, wTl.y + 27.0f}, IM_COL32(110, 224, 255, 240), gearBadge);
+
+        const ImVec2 nameSz = fMono->CalcTextSizeA(fMono->LegacySize * 0.94f, 200.0f, 0.0f, sp.displayName);
+        bgDraw->AddText(fMono, fMono->LegacySize * 0.94f,
+                        {std::max(wTl.x + 150.0f, wBr.x - nameSz.x - 14.0f), wTl.y + 12.0f},
+                        IM_COL32(218, 236, 255, 245), sp.displayName);
+
+        const float rpmNorm = cv->isAircraft
+          ? std::clamp(kmh / 180.0f, 0.1f, 1.0f)
+          : std::clamp((cv->rpm - sp.idleRpm) / std::max(500.0f, sp.redlineRpm - sp.idleRpm), 0.0f, 1.0f);
+        const ImVec2 t0(wTl.x + 16.0f, wTl.y + 52.0f);
+        const ImVec2 t1(wBr.x - 16.0f, wTl.y + 62.0f);
+        bgDraw->AddRectFilled(t0, t1, IM_COL32(20, 28, 40, 225), 2.0f);
+        const ImU32 tachCol = (rpmNorm > 0.84f) ? IM_COL32(252, 74, 68, 250) : IM_COL32(248, 196, 68, 245);
+        bgDraw->AddRectFilled(t0, {t0.x + (t1.x - t0.x) * rpmNorm, t1.y}, tachCol, 2.0f);
+
+        char chasSub[80];
+        std::snprintf(chasSub, sizeof(chasSub), "CHASSIS %.0f%%   •   [V] CAM   [G] EXIT", std::clamp(cv->hp, 0.0f, 100.0f));
+        bgDraw->AddText(fMono, fMono->LegacySize * 0.90f, {wTl.x + 16.0f, wTl.y + 66.0f}, IM_COL32(168, 188, 210, 215), chasSub);
       } else {
-        const char gearCh = (cv->gear < 0) ? 'R' : static_cast<char>('0' + std::clamp(cv->gear, 1, 9));
-        std::snprintf(gearBadge, sizeof(gearBadge), "[G%c]%s", gearCh, cv->engineStage > 0 ? " STG+" : "");
-      }
-      bgDraw->AddText(fMono, fMono->LegacySize * 0.92f, {wTl.x + 94.0f, wTl.y + 27.0f}, IM_COL32(110, 224, 255, 240), gearBadge);
+        const auto& w = session.activeWeapon();
+        bgDraw->AddText(fHead, fHead->LegacySize * 0.88f, {wTl.x + 16.0f, wTl.y + 8.0f}, IM_COL32(242, 248, 255, 250), w.name.c_str());
 
-      const ImVec2 nameSz = fMono->CalcTextSizeA(fMono->LegacySize * 0.94f, 200.0f, 0.0f, sp.displayName);
-      bgDraw->AddText(fMono, fMono->LegacySize * 0.94f,
-                      {std::max(wTl.x + 150.0f, wBr.x - nameSz.x - 14.0f), wTl.y + 12.0f},
-                      IM_COL32(218, 236, 255, 245), sp.displayName);
+        if (w.isMelee) {
+          bgDraw->AddText(fMono, fMono->LegacySize * 0.90f, {wTl.x + 16.0f, wTl.y + 37.0f}, IM_COL32(248, 198, 72, 240),
+                          "CQC  •  [LMB] JAB  [Q/E] HOOK");
+        } else {
+          char magTxt[24];
+          char resTxt[32];
+          std::snprintf(magTxt, sizeof(magTxt), "%02d", w.magAmmo);
+          std::snprintf(resTxt, sizeof(resTxt), "/ %d", w.reserveAmmo);
+          const ImU32 magCol = (w.magAmmo == 0) ? IM_COL32(252, 74, 74, 255) : IM_COL32(250, 252, 255, 255);
+          bgDraw->AddText(fTitle, fTitle->LegacySize * 0.82f, {wTl.x + 16.0f, wTl.y + 27.0f}, magCol, magTxt);
+          bgDraw->AddText(fHead, fHead->LegacySize * 0.90f, {wTl.x + 68.0f, wTl.y + 37.0f}, IM_COL32(158, 182, 208, 235), resTxt);
 
-      const float rpmNorm = cv->isAircraft
-        ? std::clamp(kmh / 180.0f, 0.1f, 1.0f)
-        : std::clamp((cv->rpm - sp.idleRpm) / std::max(500.0f, sp.redlineRpm - sp.idleRpm), 0.0f, 1.0f);
-      const ImVec2 t0(wTl.x + 16.0f, wTl.y + 52.0f);
-      const ImVec2 t1(wBr.x - 16.0f, wTl.y + 62.0f);
-      bgDraw->AddRectFilled(t0, t1, IM_COL32(20, 28, 40, 225), 2.0f);
-      const ImU32 tachCol = (rpmNorm > 0.84f) ? IM_COL32(252, 74, 68, 250) : IM_COL32(248, 196, 68, 245);
-      bgDraw->AddRectFilled(t0, {t0.x + (t1.x - t0.x) * rpmNorm, t1.y}, tachCol, 2.0f);
+          char modeTag[48];
+          std::snprintf(modeTag, sizeof(modeTag), "%s  •  %s",
+                        w.automatic ? "AUTO" : "SEMI",
+                        w.suppressed ? "SUBSONIC SD" : "LOUD");
+          const ImU32 tagCol = w.suppressed ? IM_COL32(82, 238, 172, 245) : IM_COL32(252, 168, 78, 245);
+          bgDraw->AddText(fMono, fMono->LegacySize * 0.92f, {wTl.x + 148.0f, wTl.y + 40.0f}, tagCol, modeTag);
+        }
 
-      char chasSub[80];
-      std::snprintf(chasSub, sizeof(chasSub), "CHASSIS %.0f%%   •   [V] CAM   [G] EXIT", std::clamp(cv->hp, 0.0f, 100.0f));
-      bgDraw->AddText(fMono, fMono->LegacySize * 0.90f, {wTl.x + 16.0f, wTl.y + 66.0f}, IM_COL32(168, 188, 210, 215), chasSub);
-    } else {
-      const auto& w = session.activeWeapon();
-      bgDraw->AddText(fHead, fHead->LegacySize * 0.88f, {wTl.x + 16.0f, wTl.y + 8.0f}, IM_COL32(242, 248, 255, 250), w.name.c_str());
-
-      if (w.isMelee) {
-        bgDraw->AddText(fMono, fMono->LegacySize, {wTl.x + 16.0f, wTl.y + 36.0f}, IM_COL32(248, 198, 72, 240),
-                        "BARE-KNUCKLE CQC   •   [LMB] COMBO  [Q/E] HEAVY");
-      } else {
-        char magTxt[24];
-        char resTxt[32];
-        std::snprintf(magTxt, sizeof(magTxt), "%02d", w.magAmmo);
-        std::snprintf(resTxt, sizeof(resTxt), "/ %d", w.reserveAmmo);
-        const ImU32 magCol = (w.magAmmo == 0) ? IM_COL32(252, 74, 74, 255) : IM_COL32(250, 252, 255, 255);
-        bgDraw->AddText(fTitle, fTitle->LegacySize * 0.82f, {wTl.x + 16.0f, wTl.y + 27.0f}, magCol, magTxt);
-        bgDraw->AddText(fHead, fHead->LegacySize * 0.90f, {wTl.x + 68.0f, wTl.y + 37.0f}, IM_COL32(158, 182, 208, 235), resTxt);
-
-        char modeTag[48];
-        std::snprintf(modeTag, sizeof(modeTag), "%s  •  %s",
-                      w.automatic ? "AUTO" : "SEMI",
-                      w.suppressed ? "SUBSONIC SD" : "LOUD");
-        const ImU32 tagCol = w.suppressed ? IM_COL32(82, 238, 172, 245) : IM_COL32(252, 168, 78, 245);
-        bgDraw->AddText(fMono, fMono->LegacySize * 0.92f, {wTl.x + 148.0f, wTl.y + 40.0f}, tagCol, modeTag);
-      }
-
-      // Quick 1..6 Weapon Slot Pip Strip along bottom of Arsenal plate
-      for (int si = 0; si < static_cast<int>(session.weapons().size()) && si < 6; ++si) {
-        const bool unlocked = session.weapons()[static_cast<size_t>(si)].unlocked;
-        const bool active = (si == session.activeWeaponIdx());
-        const float px = wTl.x + 16.0f + static_cast<float>(si) * 46.5f;
-        const float py = wTl.y + 66.0f;
-        const ImU32 pCol = active ? IM_COL32(72, 216, 255, 245)
-                         : (unlocked ? IM_COL32(62, 86, 114, 195) : IM_COL32(26, 34, 46, 150));
-        bgDraw->AddRectFilled({px, py}, {px + 41.0f, py + 12.0f}, pCol, 2.0f);
-        char sNum[8];
-        std::snprintf(sNum, sizeof(sNum), "%d", si + 1);
-        bgDraw->AddText(fMono, fMono->LegacySize * 0.78f, {px + 17.0f, py - 0.5f},
-                        active ? IM_COL32(8, 14, 22, 255) : IM_COL32(215, 228, 242, 210), sNum);
+        // Quick 1..6 Weapon Slot Pip Strip along bottom of Arsenal plate
+        for (int si = 0; si < static_cast<int>(session.weapons().size()) && si < 6; ++si) {
+          const bool unlocked = session.weapons()[static_cast<size_t>(si)].unlocked;
+          const bool active = (si == session.activeWeaponIdx());
+          const float px = wTl.x + 16.0f + static_cast<float>(si) * 46.5f;
+          const float py = wTl.y + 66.0f;
+          const ImU32 pCol = active ? IM_COL32(72, 216, 255, 245)
+                           : (unlocked ? IM_COL32(62, 86, 114, 195) : IM_COL32(26, 34, 46, 150));
+          bgDraw->AddRectFilled({px, py}, {px + 41.0f, py + 12.0f}, pCol, 2.0f);
+          char sNum[8];
+          std::snprintf(sNum, sizeof(sNum), "%d", si + 1);
+          bgDraw->AddText(fMono, fMono->LegacySize * 0.78f, {px + 17.0f, py - 0.5f},
+                          active ? IM_COL32(8, 14, 22, 255) : IM_COL32(215, 228, 242, 210), sNum);
+        }
       }
     }
   }
@@ -1284,17 +1406,16 @@ void drawWestgateHud(
     ImGui::TextColored({1.0f, 0.84f, 0.25f, 1.0f}, "OPERATIONAL RANK: [%c]   |   %s   |   Time: %.1fs",
                        db.rank, db.ghost ? "GHOST BONUS (+25%)" : "COMBAT CLEAR", db.elapsedSec);
     ImGui::Separator();
-    ImGui::Text("Rewards: +$%d Credits   |   +%d Intel   |   +%d Salvage",
-                db.creditsEarned, db.intelEarned, db.salvageEarned);
+    ImGui::TextColored({0.42f, 0.96f, 0.62f, 1.0f}, "Wire Payout: +$%d USD  (Deposited to iFruit Pay)", db.cashEarned);
     ImGui::Text("Eliminations: %d   |   Precision Headshots: %d", db.kills, db.headshots);
     ImGui::TextWrapped("%s", db.narrativeNote.c_str());
     ImGui::Separator();
     if (db.awaitsEpilogueChoice) {
       ImGui::TextColored({0.82f, 0.58f, 1.0f, 1.0f}, "FINAL DIRECTIVE - THE SOVEREIGN LEDGER:");
-      if (ImGui::Button("BURN THE LEDGER & VANISH (+120 Intel, +$8k)")) {
+      if (ImGui::Button("BURN THE LEDGER & VANISH (+$12,000 Clean Wire)")) {
         session.selectEpilogueChoice(EpilogueChoice::BurnLedger, audio);
       }
-      if (ImGui::Button("CLAIM CONSORTIUM ESCROW (+$25,000, +100 Salvage)")) {
+      if (ImGui::Button("CLAIM CONSORTIUM ESCROW (+$25,000 Offshore Wire)")) {
         session.selectEpilogueChoice(EpilogueChoice::ClaimConsortium, audio);
       }
     } else if (ImGui::Button("Close Debrief & Continue")) {
@@ -1363,7 +1484,7 @@ void drawWestgateHud(
                 physics.staticBodyCount(), physics.dynamicBodyCount(), telemetry.activePointLights,
                 telemetry.glbPropTypesLoaded, session.timeOfDayLabel().c_str(), session.weatherLabel().c_str());
     ImGui::Separator();
-    ImGui::Text("[TAB] Mouse: %s | [V] %s | [F2] 3D Gunsmith | [1-6] Weapons | [G] Vehicle | [P] Phone",
+    ImGui::Text("[TAB] Mouse: %s | [V] %s | [1-6] Weapons | [G] Vehicle | [P] iFruit Phone | [B] World Shops",
                 ui.mouseCaptured ? "ON" : "OFF",
                 session.firstPersonMode() ? "1ST-PERSON" : "3RD-PERSON");
     if (ImGui::Button("Toggle Phone [P]")) ui.showPhone = !ui.showPhone;
@@ -1371,11 +1492,6 @@ void drawWestgateHud(
     if (session.firstPersonMode()) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16f, 0.56f, 0.78f, 1.0f));
     if (ImGui::Button(session.firstPersonMode() ? "1st-Person [V]" : "3rd-Person [V]")) session.toggleFirstPersonMode();
     if (session.firstPersonMode()) ImGui::PopStyleColor();
-    ImGui::SameLine();
-    if (ImGui::Button("3D Gunsmith [F2]")) {
-      ui.showPhone = false;
-      session.setGunsmithOpen(true);
-    }
     ImGui::SameLine();
     if (ImGui::Button("Cycle Sky [T]")) session.cycleTimeOfDay();
     ImGui::SameLine();
@@ -1386,425 +1502,22 @@ void drawWestgateHud(
   }
 
   // -------------------------------------------------------------------------
-  // 6. Tactical Phone Overlay [P] (Contracts, Races, Gun Runner, GPS/Save)
+  // 6. Popup iFruit Phone 15iX (PearOS 15) — Screen-Space Only, Fixed Layout
   // -------------------------------------------------------------------------
-  if (ui.showPhone) {
-    ImGui::SetNextWindowPos({disp.x * 0.5f - 315.0f, disp.y * 0.5f - 230.0f}, ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize({630.0f, 465.0f}, ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowBgAlpha(0.92f);
-    if (ImGui::Begin("Westgate Tactical SkyPhone [P]", &ui.showPhone)) {
-      if (ImGui::BeginTabBar("PhoneTabs")) {
-        const ImGuiTabItemFlags campTabFlags = (ui.forcePhoneTab == 0) ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
-        if (ImGui::BeginTabItem("Campaign", nullptr, campTabFlags)) {
-          if (ui.forcePhoneTab == 0) ui.forcePhoneTab = -1;
-          ImGui::TextColored({0.42f, 0.92f, 1.0f, 1.0f}, "VOSS // BLACK CONTRACT  (Step %d/9)", session.storyStep());
-          ImGui::SameLine();
-          if (ImGui::SmallButton(GameSession::difficultyLabel(session.difficulty()))) {
-            session.setDifficulty(static_cast<DifficultyMode>((static_cast<int>(session.difficulty()) + 1) % 3));
-          }
-          if ((session.activeMission().active || session.activeSurveillance().active) && ImGui::SmallButton("Abort Active Deployment")) {
-            session.abortActiveMissionOrSurveillance();
-          }
-          ImGui::Separator();
-          ImGui::BeginChild("StoryChapterList", {0, 335}, true);
-          std::string prevAct;
-          for (const auto& ch : session.storyChapters()) {
-            if (ch.act != prevAct) {
-              prevAct = ch.act;
-              ImGui::TextColored({0.98f, 0.78f, 0.28f, 1.0f}, "-- %s --", ch.act.c_str());
-            }
-            const bool unlocked = session.isChapterUnlocked(ch.chapter);
-            ImGui::PushID(1000 + ch.chapter);
-            ImGui::TextColored(ch.completed ? ImVec4(0.42f, 0.96f, 0.62f, 1.0f)
-                                            : (unlocked ? ImVec4(0.94f, 0.96f, 1.0f, 1.0f) : ImVec4(0.52f, 0.55f, 0.62f, 1.0f)),
-                               "[%s] CH %s: %s - %s  %s",
-                               ch.letter.c_str(), ch.code.c_str(), ch.codename.c_str(), ch.title.c_str(),
-                               ch.completed ? (std::string("[RANK ") + ch.bestRank + (ch.ghostCleared ? " GHOST]" : "]")).c_str()
-                                            : (unlocked ? "[LIVE]" : "[LOCKED]"));
-            ImGui::TextDisabled("%s | %s", ch.district.c_str(), ch.tacticalFocus.c_str());
-            if (unlocked) {
-              if (ImGui::SmallButton("Deploy Now")) {
-                session.startStoryChapter(ch.chapter, player, world, audio, true);
-                ui.showPhone = false;
-              }
-              ImGui::SameLine();
-              if (ImGui::SmallButton("Track GPS")) {
-                session.setGpsWaypoint(ch.beaconPos, "CH " + ch.code + ": " + ch.codename);
-              }
-            }
-            ImGui::Separator();
-            ImGui::PopID();
-          }
-          ImGui::EndChild();
-          ImGui::EndTabItem();
-        }
-
-        const ImGuiTabItemFlags techTabFlags = (ui.forcePhoneTab == 5) ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
-        if (ImGui::BeginTabItem("Tech & Stats", nullptr, techTabFlags)) {
-          if (ui.forcePhoneTab == 5) ui.forcePhoneTab = -1;
-          ImGui::TextColored({0.38f, 0.96f, 0.58f, 1.0f}, "Credits: $%d   |   Intel: %d   |   Salvage: %d",
-                             session.playerCash(), session.playerIntel(), session.playerSalvage());
-          ImGui::Separator();
-          ImGui::BeginChild("TechAndBodyScroll", {0, 350}, true);
-          ImGui::TextColored({0.45f, 0.88f, 1.0f, 1.0f}, "BLACK-MARKET TECH UPGRADES:");
-          for (size_t uiIdx = 0; uiIdx < session.techUpgrades().size(); ++uiIdx) {
-            const auto& up = session.techUpgrades()[uiIdx];
-            const int lvl = session.upgradeLevel(up.id);
-            ImGui::PushID(static_cast<int>(1200 + uiIdx));
-            ImGui::Text("[%s] %s  (Tier %d/%d)", up.category.c_str(), up.name.c_str(), lvl, up.maxLevel);
-            if (lvl < up.maxLevel) {
-              char btn[96];
-              std::snprintf(btn, sizeof(btn), "Upgrade -> %s ($%d%s%s)",
-                            up.effectLabels[static_cast<size_t>(lvl)].c_str(),
-                            up.creditCosts[static_cast<size_t>(lvl)],
-                            up.intelCosts[static_cast<size_t>(lvl)] > 0 ? (" +" + std::to_string(up.intelCosts[static_cast<size_t>(lvl)]) + " INT").c_str() : "",
-                            up.salvageCosts[static_cast<size_t>(lvl)] > 0 ? (" +" + std::to_string(up.salvageCosts[static_cast<size_t>(lvl)]) + " SLV").c_str() : "");
-              if (ImGui::SmallButton(btn)) {
-                session.buyTechUpgrade(uiIdx, audio);
-              }
-            } else {
-              ImGui::TextColored({0.35f, 0.95f, 0.58f, 1.0f}, "MAX TIER (%s)", up.effectLabels[3].c_str());
-            }
-            ImGui::PopID();
-          }
-          ImGui::Separator();
-          ImGui::TextColored({0.98f, 0.78f, 0.28f, 1.0f}, "OPERATIVE CONDITIONING (BODY STATS):");
-          for (size_t bi = 0; bi < kBodyStatCount; ++bi) {
-            const auto kind = static_cast<BodyStatKind>(bi);
-            const float val = session.bodyStatValue(kind);
-            char lbl[64];
-            std::snprintf(lbl, sizeof(lbl), "%s (%s): %.0f / 100", GameSession::bodyStatName(kind), GameSession::bodyStatShort(kind), val);
-            ImGui::ProgressBar(val / 100.0f, {-1, 13}, lbl);
-          }
-          ImGui::EndChild();
-          ImGui::EndTabItem();
-        }
-
-        if (ImGui::BeginTabItem("Contracts")) {
-          for (size_t i = 0; i < session.contracts().size(); ++i) {
-            const auto& c = session.contracts()[i];
-            ImGui::PushID(static_cast<int>(i));
-            ImGui::Text("%s: %s - %s (%s)", c.code.c_str(), c.title.c_str(), c.targetName.c_str(), c.district.c_str());
-            ImGui::TextColored({0.4f, 0.9f, 0.5f, 1.0f}, "Payout: $%d (+$%d Unseen)  %s",
-                               c.rewardBase, c.unseenBonus, c.completed ? "[COMPLETED]" : "");
-            if (ImGui::Button("Accept & Track GPS")) {
-              session.acceptContract(static_cast<int>(i), world);
-            }
-            ImGui::Separator();
-            ImGui::PopID();
-          }
-          ImGui::EndTabItem();
-        }
-
-        if (ImGui::BeginTabItem("Races & Pit")) {
-          ImGui::Text("Iron Pit Championship (Wins: %d | Tier: %d/5 | Bookie Net: $%d)",
-                      session.ironPit().wins, session.ironPit().tier, session.ironPit().betProfit);
-          if (ImGui::Button("Teleport to Iron Pit (722, 115)")) {
-            session.teleportTo({world.fightPitPos.x, world.fightPitPos.y + 1.0f, world.fightPitPos.z - 2.6f}, 0.0f, player);
-            session.setGpsWaypoint(world.fightPitPos, "Iron Pit Arena");
-          }
-          ImGui::SameLine();
-          if (ImGui::Button("New Fight Card")) {
-            session.refreshFightCard();
-          }
-          ImGui::Separator();
-          ImGui::TextColored({1.0f, 0.78f, 0.28f, 1.0f}, "Viktor's 3-Match Underground Fight Card (AI-vs-AI Cage Bouts):");
-          const auto& roster = session.pitRoster();
-          const auto& card = session.pitCard();
-          for (size_t mi = 0; mi < card.size(); ++mi) {
-            const auto& m = card[mi];
-            if (static_cast<size_t>(m.redIdx) >= roster.size() || static_cast<size_t>(m.blueIdx) >= roster.size()) continue;
-            const auto& rf = roster[static_cast<size_t>(m.redIdx)];
-            const auto& bf = roster[static_cast<size_t>(m.blueIdx)];
-            ImGui::PushID(static_cast<int>(500 + mi));
-            ImGui::Text("Bout %zu: %s (%.2fx) vs %s (%.2fx) %s",
-                        mi + 1, rf.name.c_str(), m.redOdds, bf.name.c_str(), m.blueOdds,
-                        m.settled ? "[SETTLED]" : "");
-            if (!m.settled && !session.spectatorBout().active) {
-              if (ImGui::SmallButton("Bet Red $150")) {
-                session.startSpectatorBout(static_cast<int>(mi), 0, 150, false, world, audio);
-              }
-              ImGui::SameLine();
-              if (ImGui::SmallButton("Bet Blue $150")) {
-                session.startSpectatorBout(static_cast<int>(mi), 1, 150, false, world, audio);
-              }
-              ImGui::SameLine();
-              if (ImGui::SmallButton("Watch Free")) {
-                session.startSpectatorBout(static_cast<int>(mi), 0, 0, false, world, audio);
-              }
-            }
-            ImGui::PopID();
-          }
-          ImGui::Separator();
-          for (size_t i = 0; i < session.races().size(); ++i) {
-            const auto& r = session.races()[i];
-            ImGui::PushID(static_cast<int>(100 + i));
-            ImGui::Text("%s - 1st Prize: $%d %s", r.name.c_str(), r.rewardFirst, r.won ? "[WON]" : "");
-            if (ImGui::Button("Start Race (Spawns Supercar)")) {
-              session.startStreetRace(static_cast<int>(i), player, world);
-              ui.showPhone = false;
-            }
-            ImGui::PopID();
-          }
-          if (session.activeRaceIdx() >= 0 && ImGui::Button("Cancel Active Race")) {
-            session.cancelRace();
-          }
-          ImGui::EndTabItem();
-        }
-
-        const ImGuiTabItemFlags armoryTabFlags = (ui.forcePhoneTab == 2) ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
-        if (ImGui::BeginTabItem("Armory & Suit", nullptr, armoryTabFlags)) {
-          if (ui.forcePhoneTab == 2) ui.forcePhoneTab = -1;
-          const char* suitName = nullptr;
-          GameSession::suitTintColor(session.playerSuit(), &suitName);
-          ImGui::TextColored({0.52f, 0.92f, 1.0f, 1.0f}, "Operative Rig: %s", suitName ? suitName : "Vanguard");
-          ImGui::SameLine();
-          if (ImGui::SmallButton("Cycle Suit")) session.cyclePlayerSuit();
-          if (ImGui::Button("Buy Medkit + 100 Armor ($150)")) {
-            session.buyArmorAndMedkit(audio);
-          }
-          ImGui::SameLine();
-          ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16f, 0.54f, 0.78f, 1.0f));
-          if (ImGui::Button("Launch 3D Gunsmith Studio [F2]")) {
-            ui.showPhone = false;
-            session.setGunsmithOpen(true);
-            session.setGunsmithSlot(session.activeWeaponIdx() > 0 ? session.activeWeaponIdx() : 2);
-          }
-          ImGui::PopStyleColor();
-          ImGui::Text("Headshots: %d | Bodies Hidden: %d", session.totalHeadshots(), session.bodiesDisposedCount());
-          ImGui::Separator();
-
-          static const char* kOpticNames[5] = {"Irons", "Red Dot", "Holo", "ACOG", "8x Scope"};
-          static const char* kMuzzleNames[5] = {"Std", "Suppressor", "Compensator", "Osprey SD", "Wrapped SD"};
-          static const char* kUnderNames[4] = {"None", "Vert Grip", "PEQ Laser", "Angled Grip"};
-          static const char* kMagNames[3] = {"Std Mag", "Ext Mag", "Drum"};
-          static const char* kFinishNames[8] = {"Obsidian", "Coyote", "Arctic", "Crimson", "Gold", "Titanium", "Olive", "Cobalt"};
-
-          ImGui::BeginChild("ArmoryWorkbench", {0, 275}, true);
-          for (size_t i = 1; i < session.weapons().size(); ++i) {
-            const auto& w = session.weapons()[i];
-            ImGui::PushID(static_cast<int>(200 + i));
-            ImGui::TextColored(w.unlocked ? ImVec4(0.45f, 0.96f, 0.65f, 1.0f) : ImVec4(0.88f, 0.88f, 0.92f, 1.0f),
-                               "[%zu] %s  |  DMG %.0f  |  %d rnd  %s",
-                               i + 1, w.name.c_str(), w.damage, w.magSize, w.suppressed ? "[SD]" : "[LOUD]");
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Inspect 3D")) {
-              ui.showPhone = false;
-              session.setGunsmithOpen(true);
-              session.setGunsmithSlot(static_cast<int>(i));
-            }
-            if (!w.unlocked) {
-              char lbl[64];
-              std::snprintf(lbl, sizeof(lbl), "Unlock ($%d)", w.price);
-              if (ImGui::Button(lbl)) session.buyWeaponOrAmmo(static_cast<int>(i), audio);
-            } else {
-              char lbl[64];
-              std::snprintf(lbl, sizeof(lbl), "Ammo ($%d) [%d/%d]", w.ammoPrice, w.magAmmo, w.reserveAmmo);
-              if (ImGui::SmallButton(lbl)) session.buyWeaponOrAmmo(static_cast<int>(i), audio);
-              ImGui::SameLine();
-              if (ImGui::SmallButton((std::string("Optic: ") + kOpticNames[static_cast<int>(w.optic)]).c_str())) {
-                session.configureWeaponSlot(static_cast<int>(i), static_cast<WeaponOpticKind>((static_cast<int>(w.optic) + 1) % 5), w.muzzle, w.underbarrel, w.mag, w.bodyFinish);
-              }
-              ImGui::SameLine();
-              if (ImGui::SmallButton((std::string("Muz: ") + kMuzzleNames[static_cast<int>(w.muzzle)]).c_str())) {
-                session.configureWeaponSlot(static_cast<int>(i), w.optic, static_cast<WeaponMuzzleKind>((static_cast<int>(w.muzzle) + 1) % 5), w.underbarrel, w.mag, w.bodyFinish);
-              }
-              if (ImGui::SmallButton((std::string("Under: ") + kUnderNames[static_cast<int>(w.underbarrel)]).c_str())) {
-                session.configureWeaponSlot(static_cast<int>(i), w.optic, w.muzzle, static_cast<WeaponUnderbarrelKind>((static_cast<int>(w.underbarrel) + 1) % 4), w.mag, w.bodyFinish);
-              }
-              ImGui::SameLine();
-              if (ImGui::SmallButton((std::string("Mag: ") + kMagNames[static_cast<int>(w.mag)]).c_str())) {
-                session.configureWeaponSlot(static_cast<int>(i), w.optic, w.muzzle, w.underbarrel, static_cast<WeaponMagKind>((static_cast<int>(w.mag) + 1) % 3), w.bodyFinish);
-              }
-              ImGui::SameLine();
-              if (ImGui::SmallButton((std::string("Finish: ") + kFinishNames[static_cast<int>(w.bodyFinish)]).c_str())) {
-                session.configureWeaponSlot(static_cast<int>(i), w.optic, w.muzzle, w.underbarrel, w.mag, static_cast<WeaponFinishKind>((static_cast<int>(w.bodyFinish) + 1) % 8));
-              }
-            }
-            ImGui::Separator();
-            ImGui::PopID();
-          }
-          ImGui::EndChild();
-          ImGui::EndTabItem();
-        }
-
-        const ImGuiTabItemFlags garageTabFlags = (ui.forcePhoneTab == 4) ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
-        if (ImGui::BeginTabItem("Autos & Garage", nullptr, garageTabFlags)) {
-          if (ui.forcePhoneTab == 4) ui.forcePhoneTab = -1;
-          ImGui::TextColored({0.95f, 0.82f, 0.32f, 1.0f}, "Westgate Luxury Dealership & Personal Valet");
-          const char* paintNames[8] = {
-            "Glacier White", "Obsidian", "Corsa Red", "Cobalt Blue",
-            "Solar Amber", "Emerald", "Titanium", "Violet Dusk"
-          };
-          ImGui::Text("Custom Paint:");
-          for (int pi = 0; pi < 8; ++pi) {
-            if (pi == 4) ImGui::NewLine();
-            else if (pi > 0) ImGui::SameLine();
-            ImGui::PushID(700 + pi);
-            const bool sel = (session.selectedPaintIdx() == pi);
-            if (sel) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.24f, 0.58f, 0.34f, 1.0f));
-            if (ImGui::SmallButton(paintNames[pi])) session.setSelectedPaintIdx(pi);
-            if (sel) ImGui::PopStyleColor();
-            ImGui::PopID();
-          }
-          ImGui::Separator();
-          ImGui::BeginChild("AutoCatalogList", {0, 295}, true);
-          for (size_t k = 0; k < kVehicleModelCount; ++k) {
-            const auto kind = static_cast<VehicleModelKind>(k);
-            const auto& sp = GameSession::vehicleSpec(kind);
-            if (!sp.purchasable) continue;
-            const bool owned = session.ownsVehicle(kind);
-            ImGui::PushID(static_cast<int>(800 + k));
-            ImGui::TextColored(owned ? ImVec4(0.45f, 0.96f, 0.62f, 1.0f) : ImVec4(0.92f, 0.92f, 0.95f, 1.0f),
-                               "%s  [%s]  %.0f KM/H",
-                               sp.displayName, sp.category, sp.maxSpeed * 3.6f);
-            if (!owned) {
-              char buyLbl[64];
-              std::snprintf(buyLbl, sizeof(buyLbl), "Buy ($%d)", sp.dealershipPrice);
-              if (ImGui::Button(buyLbl)) {
-                session.buyDealershipVehicle(kind, audio);
-              }
-            } else {
-              if (ImGui::Button("Valet Deliver")) {
-                session.spawnPersonalVehicle(kind, session.selectedPaintIdx(), player, world, audio, false);
-              }
-              ImGui::SameLine();
-              if (ImGui::Button("Drive Now")) {
-                session.spawnPersonalVehicle(kind, session.selectedPaintIdx(), player, world, audio, true);
-                ui.showPhone = false;
-              }
-            }
-            ImGui::Separator();
-            ImGui::PopID();
-          }
-          ImGui::EndChild();
-          ImGui::EndTabItem();
-        }
-
-        const ImGuiTabItemFlags realtyTabFlags = (ui.forcePhoneTab == 7) ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
-        if (ImGui::BeginTabItem("Realty & World", nullptr, realtyTabFlags)) {
-          if (ui.forcePhoneTab == 7) ui.forcePhoneTab = -1;
-          ImGui::BeginChild("RealtyWorldScroll", {0, 390}, true);
-
-          if (session.activeApartmentIdx() >= 0) {
-            const auto& curApt = session.apartments()[static_cast<size_t>(session.activeApartmentIdx())];
-            ImGui::TextColored({0.35f, 0.96f, 0.65f, 1.0f}, "INSIDE SAFEHOUSE: %s (%s)", curApt.name.c_str(), curApt.district.c_str());
-            if (ImGui::SmallButton("Rest +6h & Heal")) session.useApartmentBed(audio);
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Wardrobe Suit")) session.useApartmentWardrobe(audio);
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Armory Refill")) session.useApartmentArmoryBench(audio);
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Exit Suite")) session.exitApartment(player, audio);
-            ImGui::Separator();
-          }
-
-          ImGui::TextColored({0.98f, 0.78f, 0.28f, 1.0f}, "WESTGATE LUXURY REALTY (SAFEHOUSES):");
-          for (size_t ai = 0; ai < session.apartments().size(); ++ai) {
-            const auto& apt = session.apartments()[ai];
-            ImGui::PushID(static_cast<int>(1200 + ai));
-            ImGui::TextColored(apt.owned ? ImVec4(0.42f, 0.96f, 0.62f, 1.0f) : ImVec4(0.94f, 0.94f, 0.98f, 1.0f),
-                               "%s [%s]  %s", apt.name.c_str(), apt.district.c_str(), apt.owned ? "[OWNED]" : "");
-            ImGui::TextDisabled("%s", apt.vibe.c_str());
-            if (!apt.owned) {
-              char buyAptLbl[64];
-              std::snprintf(buyAptLbl, sizeof(buyAptLbl), "Buy Deed ($%d)", apt.price);
-              if (ImGui::SmallButton(buyAptLbl)) session.buyApartment(static_cast<int>(ai), audio);
-            } else {
-              if (ImGui::SmallButton("Enter Sky-Suite")) {
-                session.enterApartment(static_cast<int>(ai), player, audio);
-                ui.showPhone = false;
-              }
-            }
-            ImGui::SameLine();
-            if (ImGui::SmallButton("GPS Door")) session.setGpsWaypoint(apt.doorPos, apt.name);
-            ImGui::Separator();
-            ImGui::PopID();
-          }
-
-          ImGui::TextColored({0.42f, 0.90f, 1.0f, 1.0f}, "LIVING WORLD EXPLORATION:");
-          char stashBar[64];
-          std::snprintf(stashBar, sizeof(stashBar), "Hidden Cash Stashes: %d / %d", session.stashesFound(), session.totalStashes());
-          ImGui::ProgressBar(static_cast<float>(session.stashesFound()) / static_cast<float>(std::max(1, session.totalStashes())), {-1, 15}, stashBar);
-          if (ImGui::SmallButton("Ping Nearest Unfound Stash GPS")) {
-            float bestD = 1e9f;
-            glm::vec3 bestP = pPos;
-            for (const auto& cp : session.collectibles()) {
-              if (!cp.collected && cp.kind == CollectibleKind::Stash) {
-                const float d = glm::distance(pPos, cp.pos);
-                if (d < bestD) { bestD = d; bestP = cp.pos; }
-              }
-            }
-            if (bestD < 1e8f) session.setGpsWaypoint(bestP, "Hidden Cash Stash");
-          }
-          ImGui::SameLine();
-          if (ImGui::SmallButton("Dispatch Street Event")) {
-            const auto nextKind = static_cast<RandomEventKind>(session.randomEventsResolved() % 3);
-            session.spawnRandomEvent(nextKind, pPos, world, audio);
-          }
-          ImGui::Text("Street Events Resolved: %d  |  3D Wildlife Active: %zu Quadrupeds + %zu Birds",
-                      session.randomEventsResolved(), session.wildlife().size(), session.birdFlocks().size());
-
-          ImGui::Separator();
-          ImGui::TextColored({0.98f, 0.68f, 0.24f, 1.0f}, "RADAR SPEED TRAPS (%d / %zu Target Beaten):",
-                             session.speedTrapsBeatenCount(), session.speedTraps().size());
-          for (size_t ti = 0; ti < session.speedTraps().size(); ++ti) {
-            const auto& tr = session.speedTraps()[ti];
-            const bool beaten = tr.bestKmh >= tr.targetKmh;
-            ImGui::PushID(static_cast<int>(1300 + ti));
-            if (ImGui::SmallButton("GPS")) session.setGpsWaypoint(tr.pos, tr.name);
-            ImGui::SameLine();
-            ImGui::TextColored(beaten ? ImVec4(0.42f, 0.96f, 0.62f, 1.0f) : ImVec4(0.88f, 0.88f, 0.92f, 1.0f),
-                               "%s: Best %d / %d km/h %s",
-                               tr.name.c_str(), tr.bestKmh, tr.targetKmh, beaten ? "[RECORD]" : "");
-            ImGui::PopID();
-          }
-
-          ImGui::EndChild();
-          ImGui::EndTabItem();
-        }
-
-        if (ImGui::BeginTabItem("GPS & Save")) {
-          ImGui::Text("Time of Day: %s", session.timeOfDayLabel().c_str());
-          if (ImGui::Button("Afternoon")) session.setTimeOfDayPreset(TimeOfDayPreset::Afternoon);
-          ImGui::SameLine();
-          if (ImGui::Button("Sunset")) session.setTimeOfDayPreset(TimeOfDayPreset::Sunset);
-          ImGui::SameLine();
-          if (ImGui::Button("Night")) session.setTimeOfDayPreset(TimeOfDayPreset::Night);
-          ImGui::SameLine();
-          if (ImGui::Button("Dawn")) session.setTimeOfDayPreset(TimeOfDayPreset::Dawn);
-          ImGui::Text("Weather: %s", session.weatherLabel().c_str());
-          if (ImGui::Button("Clear")) session.setWeatherPreset(WeatherPreset::Clear);
-          ImGui::SameLine();
-          if (ImGui::Button("Overcast")) session.setWeatherPreset(WeatherPreset::Overcast);
-          ImGui::SameLine();
-          if (ImGui::Button("Rain")) session.setWeatherPreset(WeatherPreset::Rain);
-          ImGui::SameLine();
-          if (ImGui::Button("Storm")) session.setWeatherPreset(WeatherPreset::Thunderstorm);
-          ImGui::Separator();
-          if (ImGui::Button("Save Progress")) session.saveToFile(ui.savePath);
-          ImGui::SameLine();
-          if (ImGui::Button("Load Progress")) session.loadFromFile(ui.savePath);
-          ImGui::Separator();
-          ImGui::BeginChild("DistrictList", {0, 210}, true);
-          for (size_t i = 0; i < world.teleports.size(); ++i) {
-            const auto& tp = world.teleports[i];
-            ImGui::PushID(static_cast<int>(300 + i));
-            if (ImGui::Button("Go")) session.teleportTo(tp.pos, tp.yawDeg, player);
-            ImGui::SameLine();
-            if (ImGui::Button("GPS")) session.setGpsWaypoint(tp.pos, tp.label);
-            ImGui::SameLine();
-            ImGui::Text("%s", tp.label.c_str());
-            ImGui::PopID();
-          }
-          ImGui::EndChild();
-          ImGui::EndTabItem();
-        }
-        ImGui::EndTabBar();
-      }
-    }
-    ImGui::End();
-  }
+  const float uiDt = 1.0f / std::max(15.0f, fps);
+  updateAndDrawPhoneOs(
+    ui.phoneOs,
+    ui.showPhone,
+    ui.fonts,
+    session,
+    player,
+    world,
+    audio,
+    ui.savePath,
+    uiDt,
+    elapsedSec,
+    ui.instantPhoneSlide
+  );
 }
 
 } // namespace westgate

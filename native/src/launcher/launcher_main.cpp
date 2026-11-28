@@ -32,9 +32,7 @@ namespace {
 struct SaveSummary {
   bool exists = false;
   int storyStep = 0;
-  int credits = 1250;
-  int intel = 0;
-  int salvage = 0;
+  int cashUsd = 1500;
   int stashes = 0;
   std::string difficulty = "OPERATIVE";
 };
@@ -80,9 +78,7 @@ SaveSummary inspectSaveFile(const std::filesystem::path& savePath) {
     in >> j;
     s.exists = true;
     s.storyStep = j.value("storyStep", 0);
-    s.credits = j.value("cash", 1250);
-    s.intel = j.value("intel", 0);
-    s.salvage = j.value("salvage", 0);
+    s.cashUsd = j.value("cash", 1500);
     const int diff = j.value("difficulty", 1);
     s.difficulty = (diff <= 0) ? "STORY" : ((diff == 1) ? "OPERATIVE" : "BLACK CONTRACT");
     if (j.contains("stashesCollected") && j["stashesCollected"].is_array()) {
@@ -441,14 +437,14 @@ int main(int argc, char** argv) {
       bg->AddText(fHead, fHead->LegacySize * 0.88f, {dosTl.x + 16.0f, dosTl.y + 34.0f}, IM_COL32(244, 248, 255, 250), saveLine1);
 
       char saveLine2[128];
-      std::snprintf(saveLine2, sizeof(saveLine2), "CREDITS $%d   •   INTEL %d   •   SALVAGE %d   •   STASHES %d",
-                    saveInfo.credits, saveInfo.intel, saveInfo.salvage, saveInfo.stashes);
+      std::snprintf(saveLine2, sizeof(saveLine2), "BANK BALANCE $%d USD   •   HIDDEN STASHES %d/15   •   OPEN-WORLD EDITION",
+                    saveInfo.cashUsd, saveInfo.stashes);
       bg->AddText(fMono, fMono->LegacySize * 0.92f, {dosTl.x + 16.0f, dosTl.y + 64.0f}, IM_COL32(182, 204, 226, 225), saveLine2);
     } else {
       bg->AddText(fHead, fHead->LegacySize * 0.88f, {dosTl.x + 16.0f, dosTl.y + 36.0f}, IM_COL32(244, 248, 255, 250),
                   "CHAPTER 01 // PROLOGUE DEPLOYMENT");
       bg->AddText(fMono, fMono->LegacySize * 0.92f, {dosTl.x + 16.0f, dosTl.y + 64.0f}, IM_COL32(182, 204, 226, 225),
-                  "420 CRESCENT SAFEHOUSE   •   STARTING CREDITS $1,250");
+                  "420 CRESCENT SAFEHOUSE   •   STARTING BALANCE $1,500 USD");
     }
     char gpuLine[160];
     std::snprintf(gpuLine, sizeof(gpuLine), "ADAPTER: %s   •   CLIENT: %s",
@@ -567,21 +563,14 @@ int main(int argc, char** argv) {
     ImGui::PopStyleColor(4);
     ImGui::PopFont();
 
-    if (ImGui::Button("LAUNCH TO LIVE 3D MAIN MENU", {-1.0f, 33.0f})) {
+    if (ImGui::Button("LAUNCH TO LIVE 3D MAIN MENU", {-1.0f, 35.0f})) {
       settings.saveToFile(settingsPath.string());
       if (launchGameClient(clientBin, makeArgs({}))) {
         running = false;
       }
     }
 
-    if (ImGui::Button("BOOT DIRECT TO 3D GUNSMITH STUDIO", {-1.0f, 33.0f})) {
-      settings.saveToFile(settingsPath.string());
-      if (launchGameClient(clientBin, makeArgs({"--boot-gunsmith"}))) {
-        running = false;
-      }
-    }
-
-    if (ImGui::Button("EXIT TO DESKTOP", {-1.0f, 30.0f})) {
+    if (ImGui::Button("EXIT TO DESKTOP", {-1.0f, 32.0f})) {
       settings.saveToFile(settingsPath.string());
       running = false;
     }

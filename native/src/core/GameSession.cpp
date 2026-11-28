@@ -263,25 +263,205 @@ glm::vec3 GameSession::weaponReticleColor(uint8_t idx, const char** outName) {
 glm::vec4 GameSession::suitTintColor(PlayerSuitPreset suit, const char** outName) {
   switch (suit) {
     case PlayerSuitPreset::VanguardObsidian:
-      if (outName) *outName = "Vanguard // Shadow Obsidian";
+      if (outName) *outName = "Shadow Obsidian Rig";
       return {0.82f, 0.86f, 0.92f, 1.0f};
     case PlayerSuitPreset::VanguardUrban:
-      if (outName) *outName = "Vanguard // Urban Navy";
+      if (outName) *outName = "Urban Navy Tactical";
       return {0.62f, 0.74f, 0.95f, 1.0f};
     case PlayerSuitPreset::VanguardCoyote:
-      if (outName) *outName = "Vanguard // Desert Coyote";
+      if (outName) *outName = "Desert Coyote Plate";
       return {1.05f, 0.92f, 0.72f, 1.0f};
     case PlayerSuitPreset::VanguardArctic:
-      if (outName) *outName = "Vanguard // Arctic Ghost";
+      if (outName) *outName = "Arctic Ghost Spec";
       return {1.18f, 1.20f, 1.25f, 1.0f};
     case PlayerSuitPreset::VanguardCrimson:
-      if (outName) *outName = "Vanguard // Crimson Spec-Ops";
+      if (outName) *outName = "Crimson Syndicate";
       return {1.10f, 0.62f, 0.64f, 1.0f};
     case PlayerSuitPreset::IronPitBrawler:
-      if (outName) *outName = "Iron Pit // Bare-Knuckle";
+      if (outName) *outName = "Street Brawler Athletic";
       return {1.0f, 1.0f, 1.0f, 1.0f};
+    case PlayerSuitPreset::MidnightExecutive:
+      if (outName) *outName = "Midnight Slate Executive";
+      return {0.52f, 0.56f, 0.68f, 1.0f};
+    case PlayerSuitPreset::EmeraldRanger:
+      if (outName) *outName = "OD Ranger Woodland";
+      return {0.66f, 0.88f, 0.68f, 1.0f};
   }
   return {1.0f, 1.0f, 1.0f, 1.0f};
+}
+
+int GameSession::suitPriceUsd(PlayerSuitPreset suit) {
+  switch (suit) {
+    case PlayerSuitPreset::VanguardObsidian: return 0;
+    case PlayerSuitPreset::IronPitBrawler:   return 0;
+    case PlayerSuitPreset::VanguardUrban:    return 650;
+    case PlayerSuitPreset::VanguardCoyote:   return 850;
+    case PlayerSuitPreset::EmeraldRanger:    return 950;
+    case PlayerSuitPreset::MidnightExecutive:return 1250;
+    case PlayerSuitPreset::VanguardArctic:   return 1500;
+    case PlayerSuitPreset::VanguardCrimson:  return 1850;
+  }
+  return 750;
+}
+
+bool GameSession::buyOrEquipSuit(PlayerSuitPreset suit, AudioEngine* audio) {
+  const size_t idx = static_cast<size_t>(suit);
+  if (idx >= kPlayerSuitCount) return false;
+  const char* sName = "Outfit";
+  suitTintColor(suit, &sName);
+  if (ownedSuits_[idx]) {
+    playerSuit_ = suit;
+    if (audio) audio->playFootstep(0.45f, false);
+    pushToast(std::string("EQUIPPED OUTFIT: ") + sName, 2.5f);
+    return true;
+  }
+  const int cost = suitPriceUsd(suit);
+  if (playerCash_ < cost) {
+    pushToast("Need $" + std::to_string(cost) + " to purchase " + sName, 2.6f);
+    return false;
+  }
+  playerCash_ -= cost;
+  recordBankEntry(-cost, std::string("Tailor Boutique: ") + sName);
+  ownedSuits_[idx] = true;
+  playerSuit_ = suit;
+  if (audio) audio->playCashChime();
+  pushToast(std::string("PURCHASED & EQUIPPED: ") + sName + " (-$" + std::to_string(cost) + ")", 3.2f);
+  return true;
+}
+
+void GameSession::setWardrobeOpen(bool open) {
+  if (wardrobeOpen_ == open) return;
+  wardrobeOpen_ = open;
+  if (open) {
+    gunsmithOpen_ = false;
+    aiming_ = false;
+    wardrobeYaw_ = 0.25f;
+    wardrobePitch_ = 0.06f;
+    wardrobeZoom_ = 2.45f;
+  }
+}
+
+void GameSession::orbitWardrobe(float dYawRad, float dPitchRad, float dZoom) {
+  wardrobeYaw_ += dYawRad;
+  wardrobePitch_ = std::clamp(wardrobePitch_ + dPitchRad, -0.22f, 0.42f);
+  wardrobeZoom_ = std::clamp(wardrobeZoom_ + dZoom, 1.55f, 3.65f);
+}
+
+std::string GameSession::currentClockString() const {
+  const int hh = static_cast<int>(timeOfDayHours_) % 24;
+  const int mm = static_cast<int>((timeOfDayHours_ - std::floor(timeOfDayHours_)) * 60.0f) % 60;
+  char buf[16];
+  std::snprintf(buf, sizeof(buf), "%02d:%02d", std::max(0, hh), std::max(0, mm));
+  return buf;
+}
+
+void GameSession::recordBankEntry(int amountUsd, const std::string& description) {
+  if (amountUsd == 0) return;
+  bankLedger_.insert(bankLedger_.begin(), BankTransaction{description, amountUsd, currentClockString()});
+  if (bankLedger_.size() > 28) {
+    bankLedger_.resize(28);
+  }
+}
+
+void GameSession::grantCash(int dollars, const std::string& label) {
+  playerCash_ = std::max(0, playerCash_ + dollars);
+  if (dollars != 0 && !label.empty()) {
+    recordBankEntry(dollars, label);
+  }
+}
+
+void GameSession::pushPhoneMessage(const std::string& sender, const std::string& subtitle, const std::string& body, uint32_t avatarHex) {
+  phoneMessages_.insert(phoneMessages_.begin(), PhoneSmsItem{sender, subtitle, body, currentClockString(), avatarHex, true});
+  if (phoneMessages_.size() > 24) {
+    phoneMessages_.resize(24);
+  }
+}
+
+int GameSession::unreadPhoneMessageCount() const {
+  int c = 0;
+  for (const auto& m : phoneMessages_) {
+    if (m.unread) ++c;
+  }
+  return c;
+}
+
+void GameSession::markPhoneMessagesRead() {
+  for (auto& m : phoneMessages_) m.unread = false;
+}
+
+bool GameSession::callBribePolice(AudioEngine* audio) {
+  if (wantedStars_ <= 0) {
+    pushToast("No active WSPD warrant on your record.", 2.4f);
+    return false;
+  }
+  const int cost = wantedStars_ * 500;
+  if (playerCash_ < cost) {
+    pushToast("Need $" + std::to_string(cost) + " for Fixer WSPD Dispatch Scrub!", 2.8f);
+    return false;
+  }
+  playerCash_ -= cost;
+  recordBankEntry(-cost, "Fixer Dispatch Scrub (" + std::to_string(wantedStars_) + "-Star)");
+  wantedStars_ = 0;
+  wantedHeat_ = 0.0f;
+  for (auto& n : npcs_) {
+    if (n.isPolice) {
+      n.alerted = false;
+      n.suspicion = 0.0f;
+    }
+  }
+  for (auto& v : vehicles_) {
+    if (v.isPolicePursuit) {
+      v.isPolicePursuit = false;
+      v.sirenActive = false;
+    }
+  }
+  if (audio) audio->playCashChime();
+  pushPhoneMessage("Fixer Rico", "WSPD Clean", "APBs scrubbed from precinct terminals. Keep a low profile.", 0x10B981u);
+  pushToast("WSPD HEAT CLEARED (-$" + std::to_string(cost) + ")", 3.2f);
+  return true;
+}
+
+bool GameSession::callFieldMedic(AudioEngine* audio) {
+  constexpr int kCost = 250;
+  if (playerHp_ >= playerMaxHp_ - 0.5f && playerArmor_ >= 99.5f) {
+    pushToast("Vitals & Body Armor already at 100%!", 2.2f);
+    return false;
+  }
+  if (playerCash_ < kCost) {
+    pushToast("Need $250 for St. Jude Mobile Trauma Response!", 2.6f);
+    return false;
+  }
+  playerCash_ -= kCost;
+  recordBankEntry(-kCost, "St. Jude Mobile Paramedic");
+  playerHp_ = playerMaxHp_;
+  playerArmor_ = std::max(playerArmor_, 75.0f);
+  if (audio) audio->playCashChime();
+  pushToast("TRAUMA KIT DELIVERED: Full HP + Armor (-$250)", 3.0f);
+  return true;
+}
+
+bool GameSession::callTaxiCab(const glm::vec3& destPos, float yawDeg, const std::string& destName, PlayerController& player, AudioEngine* audio) {
+  if (activeMission_.active || activeSurveillance_.active) {
+    pushToast("Westgate Cab unavailable during active operation!", 2.6f);
+    return false;
+  }
+  constexpr int kFare = 120;
+  if (playerCash_ < kFare) {
+    pushToast("Need $120 for Westgate Express Cab fare!", 2.5f);
+    return false;
+  }
+  if (inVehicle()) {
+    activeVehicleIdx_ = -1;
+  }
+  if (activeApartmentIdx_ >= 0) {
+    activeApartmentIdx_ = -1;
+  }
+  playerCash_ -= kFare;
+  recordBankEntry(-kFare, "Westgate Cab -> " + destName);
+  teleportTo(destPos, yawDeg, player);
+  if (audio) audio->playCashChime();
+  pushToast("CAB ARRIVED: " + destName + " (-$120)", 3.0f);
+  return true;
 }
 
 bool GameSession::shouldUseBareKnuckleRig(const WorldData& world, const glm::vec3& playerPos) const {
@@ -898,24 +1078,46 @@ void GameSession::init(const WorldData& world, PlayerController* player, Physics
   stuntJumps_.push_back({"stunt_canals", "Venice Canal Gap", {-505.0f, world.heightfield.sampleHeight(-505.0f, -315.0f), -315.0f}, 3.14f, false});
   stuntJumps_.push_back({"stunt_midtown", "Midtown Skyway Jump", {-335.0f, world.heightfield.sampleHeight(-335.0f, -140.0f), -140.0f}, 1.57f, false});
 
-  // 4 Stores + 4 Mod Garages
+  // 4 Marts + 4 Westgate Customs Garages + 4 Open-World Gunsmith Armories + 4 Open-World Clothing Boutiques
   shops_.clear();
-  shops_.push_back({"store_downtown", "24/7 Westgate Mart (Civic)", {-38.0f, world.heightfield.sampleHeight(-38.0f, -125.0f), -125.0f}, false, 0.0f});
-  shops_.push_back({"store_delsol", "24/7 Westgate Mart (Del Sol)", {-692.0f, world.heightfield.sampleHeight(-692.0f, -72.0f), -72.0f}, false, 0.0f});
-  shops_.push_back({"store_oldquarter", "24/7 Westgate Mart (Old Quarter)", {355.0f, world.heightfield.sampleHeight(355.0f, -160.0f), -160.0f}, false, 0.0f});
-  shops_.push_back({"store_mirror", "24/7 Westgate Mart (Mirror Park)", {-162.0f, world.heightfield.sampleHeight(-162.0f, 295.0f), 295.0f}, false, 0.0f});
+  shops_.push_back({"store_downtown",   "24/7 Westgate Mart (Civic)",        {-38.0f,  world.heightfield.sampleHeight(-38.0f, -125.0f),  -125.0f}, false, 0.0f, ShopKind::Mart});
+  shops_.push_back({"store_delsol",     "24/7 Westgate Mart (Del Sol)",      {-692.0f, world.heightfield.sampleHeight(-692.0f, -72.0f),   -72.0f}, false, 0.0f, ShopKind::Mart});
+  shops_.push_back({"store_oldquarter", "24/7 Westgate Mart (Old Quarter)",  {355.0f,  world.heightfield.sampleHeight(355.0f, -160.0f),  -160.0f}, false, 0.0f, ShopKind::Mart});
+  shops_.push_back({"store_mirror",     "24/7 Westgate Mart (Mirror Park)",  {-162.0f, world.heightfield.sampleHeight(-162.0f, 295.0f),   295.0f}, false, 0.0f, ShopKind::Mart});
 
-  shops_.push_back({"garage_downtown", "Westgate Customs (Downtown)", {112.0f, world.heightfield.sampleHeight(112.0f, -135.0f), -135.0f}, true, 0.0f});
-  shops_.push_back({"garage_delsol", "Westgate Customs (Del Sol)", {-640.0f, world.heightfield.sampleHeight(-640.0f, 75.0f), 75.0f}, true, 0.0f});
-  shops_.push_back({"garage_midtown", "Westgate Customs (Midtown)", {-350.0f, world.heightfield.sampleHeight(-350.0f, -165.0f), -165.0f}, true, 0.0f});
-  shops_.push_back({"garage_seaport", "Westgate Customs (Seaport)", {615.0f, world.heightfield.sampleHeight(615.0f, 345.0f), 345.0f}, true, 0.0f});
+  shops_.push_back({"garage_downtown",  "Westgate Customs (Downtown)",       {112.0f,  world.heightfield.sampleHeight(112.0f, -135.0f),  -135.0f}, true,  0.0f, ShopKind::Garage});
+  shops_.push_back({"garage_delsol",    "Westgate Customs (Del Sol)",        {-640.0f, world.heightfield.sampleHeight(-640.0f, 75.0f),     75.0f}, true,  0.0f, ShopKind::Garage});
+  shops_.push_back({"garage_midtown",   "Westgate Customs (Midtown)",        {-350.0f, world.heightfield.sampleHeight(-350.0f, -165.0f), -165.0f}, true,  0.0f, ShopKind::Garage});
+  shops_.push_back({"garage_seaport",   "Westgate Customs (Seaport)",        {615.0f,  world.heightfield.sampleHeight(615.0f, 345.0f),    345.0f}, true,  0.0f, ShopKind::Garage});
+
+  // Physical Open-World Gun Shops & Armory Workbenches (Weapon Buying + 3D Gunsmith Customization)
+  shops_.push_back({"armory_safehouse", "Safehouse Gunsmith Bench",          {-309.5f, world.heightfield.sampleHeight(-309.5f, 319.8f),   319.8f}, false, 0.0f, ShopKind::Armory});
+  shops_.push_back({"armory_downtown",  "Westgate Tactical Armory (Civic)",  {74.0f,   world.heightfield.sampleHeight(74.0f, -118.0f),   -118.0f}, false, 0.0f, ShopKind::Armory});
+  shops_.push_back({"armory_delsol",    "Del Sol Gun Club (West Coast)",     {-668.0f, world.heightfield.sampleHeight(-668.0f, -28.0f),   -28.0f}, false, 0.0f, ShopKind::Armory});
+  shops_.push_back({"armory_ironpit",   "Iron Pit Underground Armory",       {704.0f,  world.heightfield.sampleHeight(704.0f, 108.0f),    108.0f}, false, 0.0f, ShopKind::Armory});
+
+  // Physical Open-World Clothing Boutiques & Walk-In Closets (Character Outfit Customization)
+  shops_.push_back({"boutique_safehouse","Safehouse Walk-In Closet",         {-318.8f, world.heightfield.sampleHeight(-318.8f, 314.2f),   314.2f}, false, 0.0f, ShopKind::Boutique});
+  shops_.push_back({"boutique_downtown", "Vanguard Tailors (Legion Sq)",     {52.0f,   world.heightfield.sampleHeight(52.0f, -152.0f),   -152.0f}, false, 0.0f, ShopKind::Boutique});
+  shops_.push_back({"boutique_midtown",  "Moda Westgate (Midtown Mall)",     {-392.0f, world.heightfield.sampleHeight(-392.0f, -82.0f),   -82.0f}, false, 0.0f, ShopKind::Boutique});
+  shops_.push_back({"boutique_delsol",   "Del Sol Boardwalk Apparel",        {-696.0f, world.heightfield.sampleHeight(-696.0f, 28.0f),     28.0f}, false, 0.0f, ShopKind::Boutique});
+
+  ownedSuits_ = {true, false, false, false, false, true, false, false};
+  wardrobeOpen_ = false;
+  bankLedger_.clear();
+  recordBankEntry(playerCash_, "Initial Offshore Retainer");
+
+  phoneMessages_.clear();
+  pushPhoneMessage("Eddie's Valet", "Garage & Customs", "Your starter Golf R is ready. Order cars in Motorsports and tune them at Westgate Customs.", 0x3B82F6u);
+  pushPhoneMessage("Fixer Rico", "BlackNet Contracts", "High-paying cash hits are live on BlackNet. Visit a Tactical Armory bench to kit your rifle.", 0xEF4444u);
+  pushPhoneMessage("Mara Vance", "New Message", "Do you have time today? Check Ch 01 dossier when your gear is set at 420 Crescent.", 0x10B981u);
 
   hasWaypoint_ = true;
   waypointPos_ = world.fightPitPos;
   waypointLabel_ = "Iron Pit Arena (Tier 1)";
   initCampaignAndProgression(world);
   initLivingWorld(world);
-  pushToast("Welcome to Westgate Bay! Press [P] for SkyPhone & Campaign, [G] to Drive, [1-6] Weapons.", 5.0f);
+  pushToast("Welcome to Westgate Bay! Press [P] to open Phone, [G] to Drive, [B] at Shops/Benches.", 5.0f);
 
   if (player) {
     player->teleport(world.spawnPos, world.spawnYawDeg);
@@ -1323,12 +1525,13 @@ bool GameSession::buyWeaponOrAmmo(int slotIdx, AudioEngine* audio) {
       return false;
     }
     playerCash_ -= w.price;
+    recordBankEntry(-w.price, "Armory Firearm: " + w.name);
     w.unlocked = true;
     w.magAmmo = w.magSize;
     w.reserveAmmo = w.reserveMax;
     activeWeapon_ = slotIdx;
     if (audio) audio->playCashChime();
-    pushToast("Purchased " + w.name + "!", 3.0f);
+    pushToast("Purchased " + w.name + " (-$" + std::to_string(w.price) + ")!", 3.0f);
     return true;
   }
   if (w.reserveAmmo >= w.reserveMax && w.magAmmo >= w.magSize) {
@@ -1340,10 +1543,11 @@ bool GameSession::buyWeaponOrAmmo(int slotIdx, AudioEngine* audio) {
     return false;
   }
   playerCash_ -= w.ammoPrice;
+  recordBankEntry(-w.ammoPrice, "Armory Ammo: " + w.shortName);
   w.magAmmo = w.magSize;
   w.reserveAmmo = w.reserveMax;
   if (audio) audio->playCashChime();
-  pushToast("Refilled " + w.shortName + " ammo.", 2.5f);
+  pushToast("Refilled " + w.shortName + " ammo (-$" + std::to_string(w.ammoPrice) + ").", 2.5f);
   return true;
 }
 
@@ -1358,6 +1562,7 @@ bool GameSession::buyArmorAndMedkit(AudioEngine* audio) {
     return false;
   }
   playerCash_ -= kCost;
+  recordBankEntry(-kCost, "24/7 Mart: Trauma & Kevlar");
   playerHp_ = playerMaxHp_;
   playerArmor_ = 100.0f;
   if (audio) audio->playCashChime();
@@ -1460,8 +1665,10 @@ bool GameSession::buyDealershipVehicle(VehicleModelKind kind, AudioEngine* audio
     return false;
   }
   playerCash_ -= sp.dealershipPrice;
+  recordBankEntry(-sp.dealershipPrice, std::string("Motorsports: ") + sp.displayName);
   ownedVehicles_[idx] = true;
   if (audio) audio->playCashChime();
+  pushPhoneMessage("Legendary Motorsports", "Order Confirmed", std::string(sp.displayName) + " added to your Valet fleet.", 0x6366F1u);
   pushToast("PURCHASED: " + std::string(sp.displayName) + " (-$" + std::to_string(sp.dealershipPrice) + ")!", 3.5f);
   return true;
 }
@@ -1597,6 +1804,7 @@ bool GameSession::upgradeCurrentVehicleStage(AudioEngine* audio) {
     return false;
   }
   playerCash_ -= cost;
+  recordBankEntry(-cost, "Westgate Customs: Stage " + std::to_string(v.engineStage + 1) + " Tune");
   v.engineStage++;
   const VehicleSpec& sp = vehicleSpec(v.kind);
   const float mult = 1.0f + 0.10f * static_cast<float>(v.engineStage);
@@ -1841,7 +2049,7 @@ void GameSession::fireActiveWeapon(PlayerController& player, PhysicsWorld& physi
         }
         if (activeMission_.active && npc.contractIdx == -2) {
           activeMission_.missionKills++;
-          playerSalvage_ += 2;
+          playerCash_ += 40;
         }
         if ((npc.id % 4) == 0 && npc.role != EnemyRole::Civilian) {
           spawnMedkitDrop(npc.pos);
@@ -1861,6 +2069,8 @@ void GameSession::fireActiveWeapon(PlayerController& player, PhysicsWorld& physi
           const int bonus = contractSeenByWitness_ ? 0 : c.unseenBonus;
           const int total = c.rewardBase + bonus;
           playerCash_ += total;
+          recordBankEntry(total, "BlackNet Hit: " + c.targetName);
+          pushPhoneMessage("Fixer Rico", "Wire Transferred", "Clean work on " + c.targetName + ". $" + std::to_string(total) + " wired to your account.", 0x10B981u);
           if (audio) audio->playCashChime();
           pushToast("CONTRACT COMPLETE: " + c.targetName + " +$" + std::to_string(total) + " (Hide body for Clean Disposal!)", 5.0f);
           activeContractIdx_ = -1;
@@ -1953,7 +2163,7 @@ bool GameSession::trySilentTakedown(PlayerController& player, const WorldData& w
   addBodyStatXp(BodyStatKind::Strength, 6.0f);
   if (activeMission_.active && target.contractIdx == -2) {
     activeMission_.missionKills++;
-    playerSalvage_ += 3;
+    playerCash_ += 60;
   }
 
   bool witnessed = false;
@@ -3432,11 +3642,31 @@ void GameSession::updateActivitiesAndShops(float dt, const GameInputFrame& input
     }
   }
 
-  // Shops & Westgate Customs Garages
+  // Shops, Westgate Customs Garages, Open-World Armories & Clothing Boutiques
   for (auto& s : shops_) {
     s.robCooldown = std::max(0.0f, s.robCooldown - dt);
-    if (glm::distance(glm::vec2(pPos.x, pPos.z), glm::vec2(s.pos.x, s.pos.z)) < 8.0f) {
-      if (s.isGarage && inVehicle() && activeVehicleIdx_ >= 0) {
+    const float interactDist = (s.kind == ShopKind::Armory || s.kind == ShopKind::Boutique) ? 4.4f : 8.0f;
+    if (glm::distance(glm::vec2(pPos.x, pPos.z), glm::vec2(s.pos.x, s.pos.z)) < interactDist) {
+      if (s.kind == ShopKind::Armory) {
+        if (!inVehicle()) {
+          contextPrompt_ = "[B] Use " + s.name + " (Buy Weapons & Customize 3D Attachments)";
+          if (input.actionPressed) {
+            setGunsmithOpen(true);
+            setGunsmithSlot(activeWeapon_ > 0 ? activeWeapon_ : 2);
+            if (audio) audio->playCashChime();
+          }
+          break;
+        }
+      } else if (s.kind == ShopKind::Boutique) {
+        if (!inVehicle()) {
+          contextPrompt_ = "[B] Enter " + s.name + " (Try Outfits & Tailored Gear)";
+          if (input.actionPressed) {
+            setWardrobeOpen(true);
+            if (audio) audio->playFootstep(0.45f, false);
+          }
+          break;
+        }
+      } else if (s.isGarage && inVehicle() && activeVehicleIdx_ >= 0) {
         auto& v = vehicles_[static_cast<size_t>(activeVehicleIdx_)];
         const int nextCost = 400 + v.engineStage * 300;
         if (v.engineStage < 3) {
@@ -3456,19 +3686,21 @@ void GameSession::updateActivitiesAndShops(float dt, const GameInputFrame& input
         } else if (input.secondaryAction) {
           upgradeCurrentVehicleStage(audio);
         }
-      } else if (!s.isGarage) {
+        break;
+      } else if (s.kind == ShopKind::Mart) {
         contextPrompt_ = "[B] Buy Medkit+Armor ($150)  |  [H] Rob Register";
         if (input.actionPressed) {
           buyArmorAndMedkit(audio);
         } else if (input.secondaryAction && s.robCooldown <= 0.0f) {
           s.robCooldown = 45.0f;
           playerCash_ += 350;
+          recordBankEntry(350, "24/7 Register Hold-Up");
           if (audio) audio->playCashChime();
           reportCrime(CrimeKind::Robbery, s.pos, world, audio);
           pushToast("ROBBERY +$350! Police alerted!", 3.5f);
         }
+        break;
       }
-      break;
     }
   }
 
@@ -3586,9 +3818,9 @@ void GameSession::update(float dt, const GameInputFrame& input, PlayerController
     }
   }
 
-  // Movement: on foot vs inside vehicle (freeze movement while in 3D Gunsmith Studio)
+  // Movement: on foot vs inside vehicle (freeze movement while at Open-World Gunsmith Bench or Wardrobe)
   if (!inVehicle()) {
-    PlayerInputState footMove = gunsmithOpen_ ? PlayerInputState{} : input.moveInput;
+    PlayerInputState footMove = (gunsmithOpen_ || wardrobeOpen_) ? PlayerInputState{} : input.moveInput;
     if (isCarryingBody()) {
       footMove.moveForward *= 0.78f;
       footMove.moveRight *= 0.78f;
@@ -3663,6 +3895,17 @@ glm::vec3 GameSession::cameraPosition(const PlayerController& player) const {
     // Frame weapon slightly left of center so the right-side Gunsmith Studio UI panel never overlaps the barrel
     return anchor + orbitDir * gunsmithZoom_ + right * (gunsmithZoom_ * 0.22f);
   }
+  if (wardrobeOpen_) {
+    const float ang = player.yaw() + wardrobeYaw_;
+    const glm::vec3 orbitDir(
+      std::sin(ang) * std::cos(wardrobePitch_),
+      std::sin(wardrobePitch_),
+      std::cos(ang) * std::cos(wardrobePitch_)
+    );
+    const glm::vec3 right = glm::normalize(glm::cross(-orbitDir, glm::vec3(0.0f, 1.0f, 0.0f)));
+    const glm::vec3 focus = player.position() + glm::vec3(0.0f, 1.02f, 0.0f);
+    return focus + orbitDir * wardrobeZoom_ + right * (wardrobeZoom_ * 0.24f);
+  }
   if (activeVehicleIdx_ >= 0 && activeVehicleIdx_ < static_cast<int>(vehicles_.size())) {
     const auto& v = vehicles_[static_cast<size_t>(activeVehicleIdx_)];
     const VehicleSpec& sp = vehicleSpec(v.kind);
@@ -3714,6 +3957,16 @@ glm::vec3 GameSession::cameraTarget(const PlayerController& player) const {
     const glm::vec3 right = glm::normalize(glm::cross(-orbitDir, glm::vec3(0.0f, 1.0f, 0.0f)));
     return anchor + right * (gunsmithZoom_ * 0.22f);
   }
+  if (wardrobeOpen_) {
+    const float ang = player.yaw() + wardrobeYaw_;
+    const glm::vec3 orbitDir(
+      std::sin(ang) * std::cos(wardrobePitch_),
+      std::sin(wardrobePitch_),
+      std::cos(ang) * std::cos(wardrobePitch_)
+    );
+    const glm::vec3 right = glm::normalize(glm::cross(-orbitDir, glm::vec3(0.0f, 1.0f, 0.0f)));
+    return player.position() + glm::vec3(0.0f, 1.02f, 0.0f) + right * (wardrobeZoom_ * 0.24f);
+  }
   if (activeVehicleIdx_ >= 0 && activeVehicleIdx_ < static_cast<int>(vehicles_.size())) {
     const auto& v = vehicles_[static_cast<size_t>(activeVehicleIdx_)];
     const VehicleSpec& sp = vehicleSpec(v.kind);
@@ -3735,6 +3988,9 @@ glm::vec3 GameSession::cameraTarget(const PlayerController& player) const {
 float GameSession::cameraFovDeg(bool aiming) const {
   if (gunsmithOpen_) {
     return 40.0f;
+  }
+  if (wardrobeOpen_) {
+    return 46.0f;
   }
   const float fovScale = baseFovDeg_ / 75.0f;
   if (inVehicle()) {
@@ -3781,14 +4037,26 @@ std::vector<WorldMarkerBox> GameSession::gatherWorldMarkers(float elapsedSec) co
     out.push_back({{sj.pos.x, sj.pos.y + 0.7f, sj.pos.z}, {4.4f, 1.4f, 8.2f}, sj.yawRad, {0.98f, 0.68f, 0.14f}});
   }
 
-  // Shops (green) & Mod Garages (purple)
+  // Open-World Shops: 24/7 Marts (green), Westgate Customs (purple), Gunsmith Armories (amber), Clothing Boutiques (cyan-pink)
   for (const auto& s : shops_) {
-    out.push_back({
-      {s.pos.x, s.pos.y + 0.25f, s.pos.z},
-      {3.4f, 0.35f, 3.4f},
-      0.0f,
-      s.isGarage ? glm::vec3(0.68f, 0.28f, 0.96f) : glm::vec3(0.18f, 0.86f, 0.45f),
-    });
+    glm::vec3 scol(0.18f, 0.86f, 0.45f);
+    glm::vec3 sscale(3.4f, 0.35f, 3.4f);
+    if (s.kind == ShopKind::Garage) {
+      scol = {0.68f, 0.28f, 0.96f};
+    } else if (s.kind == ShopKind::Armory) {
+      scol = {0.98f, 0.68f, 0.16f};
+      sscale = {2.2f, 0.30f, 2.2f};
+      // Physical workbench crate silhouette + glowing gunsmith sign pillar
+      out.push_back({{s.pos.x, s.pos.y + 0.55f, s.pos.z}, {1.65f, 0.95f, 0.82f}, 0.0f, {0.14f, 0.16f, 0.20f}});
+      out.push_back({{s.pos.x, s.pos.y + 1.06f, s.pos.z}, {1.70f, 0.05f, 0.86f}, 0.0f, scol, 0.0f, 2.2f});
+    } else if (s.kind == ShopKind::Boutique) {
+      scol = {0.92f, 0.38f, 0.78f};
+      sscale = {2.2f, 0.30f, 2.2f};
+      // Physical boutique mirror/rack stand + neon trim
+      out.push_back({{s.pos.x, s.pos.y + 0.95f, s.pos.z}, {1.35f, 1.85f, 0.24f}, 0.0f, {0.15f, 0.17f, 0.22f}});
+      out.push_back({{s.pos.x, s.pos.y + 1.90f, s.pos.z}, {1.42f, 0.06f, 0.28f}, 0.0f, scol, 0.0f, 2.2f});
+    }
+    out.push_back({{s.pos.x, s.pos.y + 0.20f, s.pos.z}, sscale, 0.0f, scol});
   }
 
   // Bullet tracers rendered as glowing 3D streaks (yaw + pitch oriented!)
@@ -4024,10 +4292,8 @@ std::vector<DynamicPointLight> GameSession::gatherDynamicLights(const WorldData&
 bool GameSession::saveToFile(const std::string& path) const {
   try {
     nlohmann::json j;
-    j["version"] = 2;
+    j["version"] = 3;
     j["cash"] = playerCash_;
-    j["intel"] = playerIntel_;
-    j["salvage"] = playerSalvage_;
     j["hp"] = playerHp_;
     j["armor"] = playerArmor_;
     j["ironPitTier"] = ironPit_.tier;
@@ -4038,6 +4304,10 @@ bool GameSession::saveToFile(const std::string& path) const {
     j["storyStep"] = storyStep_;
     j["difficulty"] = static_cast<int>(difficulty_);
     j["epilogueChoice"] = static_cast<int>(epilogueChoice_);
+
+    nlohmann::json suitArr = nlohmann::json::array();
+    for (bool owned : ownedSuits_) suitArr.push_back(owned);
+    j["ownedSuits"] = suitArr;
 
     nlohmann::json wArr = nlohmann::json::array();
     for (const auto& w : weapons_) {
@@ -4129,8 +4399,12 @@ bool GameSession::loadFromFile(const std::string& path) {
     in >> j;
 
     playerCash_ = j.value("cash", playerCash_);
-    playerIntel_ = j.value("intel", playerIntel_);
-    playerSalvage_ = j.value("salvage", playerSalvage_);
+    if (j.contains("ownedSuits") && j["ownedSuits"].is_array()) {
+      for (size_t si = 0; si < ownedSuits_.size() && si < j["ownedSuits"].size(); ++si) {
+        if (j["ownedSuits"][si].is_boolean()) ownedSuits_[si] = j["ownedSuits"][si].get<bool>();
+      }
+      ownedSuits_[0] = true;
+    }
     ironPit_.tier = std::clamp(j.value("ironPitTier", ironPit_.tier), 1, 5);
     ironPit_.wins = j.value("ironPitWins", ironPit_.wins);
     timeOfDayHours_ = j.value("timeOfDayHours", timeOfDayHours_);

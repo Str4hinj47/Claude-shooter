@@ -228,11 +228,12 @@ if(WESTGATE_BUILD_DESKTOP)
   target_link_libraries(imgui_sdl3_wgpu PUBLIC SDL3::SDL3 wgpu_native)
 
   # Background Native Engine Runtime Library (westgate_runtime)
-  # Encapsulates WebGPU swapchain/PBR rendering, TrueType UI typography/theming, SDL3, and westgate_core
+  # Encapsulates WebGPU swapchain/PBR rendering, TrueType UI typography/theming, PearOS Phone OS, SDL3, and westgate_core
   add_library(westgate_runtime STATIC
     src/render/WgpuContext.cpp
     src/render/WorldRenderer.cpp
     src/render/UiTheme.cpp
+    src/app/PhoneOs.cpp
   )
   target_include_directories(westgate_runtime PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include"

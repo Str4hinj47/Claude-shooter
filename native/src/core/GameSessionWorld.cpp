@@ -139,8 +139,7 @@ void GameSession::initLivingWorld(const WorldData& world) {
     cp.id = "stash_" + std::to_string(i);
     cp.kind = CollectibleKind::Stash;
     cp.pos = {x, sampleGround(x, z), z};
-    cp.cashValue = 350;
-    cp.intelValue = 6;
+    cp.cashValue = 450;
     collectibles_.push_back(cp);
   }
   for (int i = 0; i < 8; ++i) {
@@ -151,7 +150,6 @@ void GameSession::initLivingWorld(const WorldData& world) {
     cp.kind = CollectibleKind::Medkit;
     cp.pos = {x, sampleGround(x, z), z};
     cp.cashValue = 0;
-    cp.intelValue = 0;
     collectibles_.push_back(cp);
   }
 
@@ -257,8 +255,10 @@ bool GameSession::buyApartment(int aptIdx, AudioEngine* audio) {
     return false;
   }
   playerCash_ -= apt.price;
+  recordBankEntry(-apt.price, "Dynasty 8 Deed: " + apt.name);
   apt.owned = true;
   if (audio) audio->playCashChime();
+  pushPhoneMessage("Dynasty 8 Executive", "Keys Activated", "Welcome to " + apt.name + "! Your private Walk-In Wardrobe and Armory Bench are ready.", 0xF59E0Bu);
   pushToast("PURCHASED SAFEHOUSE: " + apt.name + " (-$" + std::to_string(apt.price) + ")", 4.2f);
   return true;
 }
@@ -300,11 +300,8 @@ void GameSession::useApartmentBed(AudioEngine* audio) {
 }
 
 void GameSession::useApartmentWardrobe(AudioEngine* audio) {
-  cyclePlayerSuit();
-  const char* suitName = "Vanguard";
-  suitTintColor(playerSuit_, &suitName);
+  setWardrobeOpen(true);
   if (audio) audio->playFootstep(0.5f, false);
-  pushToast(std::string("WARDROBE SUIT: ") + suitName, 2.8f);
 }
 
 void GameSession::useApartmentArmoryBench(AudioEngine* audio) {
@@ -314,8 +311,10 @@ void GameSession::useApartmentArmoryBench(AudioEngine* audio) {
     w.magAmmo = w.magSize;
     w.reserveAmmo = std::max(w.reserveAmmo, w.reserveMax);
   }
+  setGunsmithOpen(true);
+  setGunsmithSlot(activeWeapon_ > 0 ? activeWeapon_ : 2);
   if (audio) audio->playCashChime();
-  pushToast("ARMORY BENCH // ALL WEAPONS & MAGAZINES TOPPED UP", 3.2f);
+  pushToast("ARMORY BENCH // ALL WEAPONS TOPPED UP — 3D GUNSMITH OPEN", 3.2f);
 }
 
 void GameSession::spawnMedkitDrop(const glm::vec3& pos) {
@@ -368,7 +367,7 @@ void GameSession::detonateExplosiveProp(
   if (audio) audio->playExplosion(blastPos);
   if (physics) physics->applyImpulseNear(blastPos, glm::vec3(0.0f, 14.0f, 0.0f), 9.5f);
   alertWildlifeNear(blastPos, 34.0f);
-  playerSalvage_ += 2;
+  playerCash_ += 75;
 
   constexpr float kBlastRadius = 8.5f;
   // Damage nearby NPCs
@@ -479,8 +478,7 @@ bool GameSession::spawnRandomEvent(
 
   if (kind == RandomEventKind::PurseSnatcher) {
     activeRandomEvent_.title = "STREET EVENT // STOP PURSE SNATCHER";
-    activeRandomEvent_.rewardCash = 380;
-    activeRandomEvent_.rewardIntel = 4;
+    activeRandomEvent_.rewardCash = 420;
 
     NpcEntity thief;
     thief.id = nextNpcId_++;
@@ -498,8 +496,7 @@ bool GameSession::spawnRandomEvent(
     npcs_.push_back(thief);
   } else if (kind == RandomEventKind::ArmoredTruck) {
     activeRandomEvent_.title = "STREET EVENT // ARMORED CONVOY INTERCEPT";
-    activeRandomEvent_.rewardCash = 900;
-    activeRandomEvent_.rewardIntel = 8;
+    activeRandomEvent_.rewardCash = 1050;
     activeRandomEvent_.pickupReady = true;
     activeRandomEvent_.pickupPos = {gx - 3.2f, gy, gz - 2.4f};
 
@@ -531,8 +528,7 @@ bool GameSession::spawnRandomEvent(
     }
   } else {
     activeRandomEvent_.title = "STREET EVENT // BREAK UP BACK-ALLEY BRAWL";
-    activeRandomEvent_.rewardCash = 450;
-    activeRandomEvent_.rewardIntel = 5;
+    activeRandomEvent_.rewardCash = 520;
 
     for (int b = 0; b < 2; ++b) {
       NpcEntity brawler;
@@ -589,12 +585,12 @@ void GameSession::updateLivingWorld(
         useApartmentBed(audio);
       }
     } else if (glm::distance(player.position(), closetPos) < 2.5f) {
-      contextPrompt_ = "[B] Walk-In Wardrobe (Cycle Operative Suit)";
+      contextPrompt_ = "[B] Open Walk-In Wardrobe (Outfits & Tailored Gear)";
       if (input.actionPressed) {
         useApartmentWardrobe(audio);
       }
     } else if (glm::distance(player.position(), armoryPos) < 2.5f) {
-      contextPrompt_ = "[B] Armory Refill  |  [F2] Open 3D Gunsmith Studio";
+      contextPrompt_ = "[B] Use Armory Gunsmith Bench (Resupply & Customize 3D Weapons)";
       if (input.actionPressed) {
         useApartmentArmoryBench(audio);
       }
@@ -635,12 +631,12 @@ void GameSession::updateLivingWorld(
         cp.collected = true;
         ++stashesFound_;
         playerCash_ += cp.cashValue;
-        playerIntel_ += cp.intelValue;
+        recordBankEntry(cp.cashValue, "Hidden Street Cash Stash");
         addBodyStatXp(BodyStatKind::Stealth, 8.0f);
         if (audio) audio->playCashChime();
         pushToast(
           "HIDDEN STASH (" + std::to_string(stashesFound_) + "/" + std::to_string(totalStashes_) +
-          ") +$" + std::to_string(cp.cashValue) + " +" + std::to_string(cp.intelValue) + " INTEL",
+          ") +$" + std::to_string(cp.cashValue),
           3.8f
         );
       } else if (cp.kind == CollectibleKind::Medkit) {
@@ -695,12 +691,12 @@ void GameSession::updateLivingWorld(
           addBodyStatXp(BodyStatKind::Agility, 12.0f);
 
           if (beatTarget && wasRecord) {
-            playerCash_ += 250;
-            playerIntel_ += 2;
+            playerCash_ += 300;
+            recordBankEntry(300, "Radar Speed Trap Record");
             if (audio) audio->playCashChime();
             pushToast(
               "RADAR RECORD! " + trap.name + ": " + std::to_string(speedKmh) +
-              " km/h (Target " + std::to_string(trap.targetKmh) + ") +$250",
+              " km/h (Target " + std::to_string(trap.targetKmh) + ") +$300",
               3.8f
             );
           } else {
@@ -741,13 +737,11 @@ void GameSession::updateLivingWorld(
 
     if (resolved) {
       playerCash_ += activeRandomEvent_.rewardCash;
-      playerIntel_ += activeRandomEvent_.rewardIntel;
-      playerSalvage_ += (activeRandomEvent_.kind == RandomEventKind::ArmoredTruck) ? 6 : 2;
+      recordBankEntry(activeRandomEvent_.rewardCash, activeRandomEvent_.title);
       ++randomEventsResolved_;
       if (audio) audio->playCashChime();
       pushToast(
-        "EVENT RESOLVED! +$" + std::to_string(activeRandomEvent_.rewardCash) +
-        " +" + std::to_string(activeRandomEvent_.rewardIntel) + " INTEL",
+        "EVENT RESOLVED! +$" + std::to_string(activeRandomEvent_.rewardCash),
         4.0f
       );
       activeRandomEvent_ = ActiveRandomEvent{};

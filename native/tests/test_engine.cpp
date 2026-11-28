@@ -455,7 +455,7 @@ int main() {
     westgate::GameSession session;
     session.init(world, &player, &physics);
     if (session.weapons().size() != 6 || session.vehicles().size() < 20 || session.npcs().size() < 20 ||
-        session.contracts().size() != 3 || session.races().size() != 3 || session.shops().size() != 8) {
+        session.contracts().size() != 3 || session.races().size() != 3 || session.shops().size() != 16) {
       std::fprintf(stderr, "FAIL GameSession init counts\n");
       return 1;
     }
@@ -1268,11 +1268,12 @@ int main() {
       WG_CHECK(player.position().y > 259.5f && player.position().y < 261.2f);
       WG_CHECK(physics.isCharacterGrounded());
 
-      const auto prevSuit = m5.playerSuit();
       m5.useApartmentWardrobe(nullptr);
-      WG_CHECK(m5.playerSuit() != prevSuit);
+      WG_CHECK(m5.wardrobeOpen());
+      m5.setWardrobeOpen(false);
       m5.useApartmentArmoryBench(nullptr);
-      WG_CHECK(m5.weapons()[2].unlocked && m5.weapons()[2].magAmmo == m5.weapons()[2].magSize);
+      WG_CHECK(m5.gunsmithOpen() && m5.weapons()[2].unlocked && m5.weapons()[2].magAmmo == m5.weapons()[2].magSize);
+      m5.setGunsmithOpen(false);
       m5.useApartmentBed(nullptr);
       WG_CHECK(m5.playerArmor() >= 99.9f && m5.wantedStars() == 0);
       m5.exitApartment(player, nullptr);
@@ -1280,22 +1281,21 @@ int main() {
       WG_CHECK(glm::distance(glm::vec2(player.position().x, player.position().z),
                              glm::vec2(m5.apartments()[3].doorPos.x, m5.apartments()[3].doorPos.z)) < 4.5f);
 
-      // 3. Collect Hidden Cash Stash (+$350 +6 Intel) + Chain-Detonate Explosive Fuel Tanks (+Salvage)
+      // 3. Collect Hidden Cash Stash (+$450 USD) + Chain-Detonate Explosive Fuel Tanks (+$150 USD)
       const int cashBeforeStash = m5.playerCash();
-      const int intelBeforeStash = m5.playerIntel();
       m5.teleportTo(m5.collectibles()[0].pos + glm::vec3(0.0f, 0.2f, 0.0f), 0.0f, player);
       {
         westgate::GameInputFrame stepIn{};
         m5.update(1.0f / 60.0f, stepIn, player, physics, world, nullptr);
       }
       WG_CHECK(m5.stashesFound() == 1);
-      WG_CHECK(m5.playerCash() == cashBeforeStash + 350 && m5.playerIntel() == intelBeforeStash + 6);
+      WG_CHECK(m5.playerCash() == cashBeforeStash + 450);
 
       // Pair 0 & 1 of explosiveProps_ are (548, 176) and (552, 178) (~4.47m apart < 6.2m chain radius!)
-      const int salvageBeforeBlast = m5.playerSalvage();
+      const int cashBeforeBlast = m5.playerCash();
       m5.detonateExplosiveProp(0, world, &player, &physics, nullptr);
       WG_CHECK(m5.explosiveProps()[0].exploded && m5.explosiveProps()[1].exploded);
-      WG_CHECK(m5.playerSalvage() >= salvageBeforeBlast + 4);
+      WG_CHECK(m5.playerCash() >= cashBeforeBlast + 150);
 
       // 4. Radar Speed Trap Record + Wildlife Flee + Street Random Event + Save v2 Persistence
       m5.grantVehicleOwnership(westgate::VehicleModelKind::Ferrari);
@@ -1621,6 +1621,80 @@ int main() {
       WG_CHECK(!testAud.isPaused());
 
       std::printf("[PASS] AAA GameSettings presets/persistence, live FOV, invertY, dynamic streaming & audio mixer OK\n");
+    }
+
+    // 5j. Pure $USD Economy, Open-World Armories/Boutiques & PearOS Phone Services
+    {
+      westgate::GameSession owSess;
+      owSess.init(world, &player, &physics);
+
+      // Verify 4 Open-World Armories & 4 Open-World Clothing Boutiques exist in shops()
+      int armoryCount = 0;
+      int boutiqueCount = 0;
+      glm::vec3 armoryPos{0.0f};
+      glm::vec3 boutiquePos{0.0f};
+      for (const auto& s : owSess.shops()) {
+        if (s.kind == westgate::ShopKind::Armory) {
+          ++armoryCount;
+          armoryPos = s.pos;
+        } else if (s.kind == westgate::ShopKind::Boutique) {
+          ++boutiqueCount;
+          boutiquePos = s.pos;
+        }
+      }
+      WG_CHECK(armoryCount == 4 && boutiqueCount == 4);
+
+      // Walk up to an Open-World Armory Bench and press [B] -> opens 3D Gunsmith Bench!
+      owSess.teleportTo(armoryPos + glm::vec3(0.0f, 1.0f, 1.2f), 0.0f, player);
+      {
+        westgate::GameInputFrame pressB{};
+        pressB.actionPressed = true;
+        owSess.update(1.0f / 60.0f, pressB, player, physics, world, nullptr);
+      }
+      WG_CHECK(owSess.gunsmithOpen() && !owSess.wardrobeOpen());
+      owSess.setGunsmithOpen(false);
+
+      // Walk up to an Open-World Clothing Boutique and press [B] -> opens 3D Wardrobe!
+      owSess.teleportTo(boutiquePos + glm::vec3(0.0f, 1.0f, 1.2f), 0.0f, player);
+      {
+        westgate::GameInputFrame pressB{};
+        pressB.actionPressed = true;
+        owSess.update(1.0f / 60.0f, pressB, player, physics, world, nullptr);
+      }
+      WG_CHECK(owSess.wardrobeOpen() && !owSess.gunsmithOpen());
+      owSess.orbitWardrobe(0.4f, 0.1f, -0.2f);
+      WG_CHECK(owSess.cameraFovDeg(false) == 46.0f);
+
+      // Buy & Equip $USD Outfit (Midnight Slate Executive = $1,250) and verify FruitPay Bank Ledger
+      owSess.grantCash(3000, "Test Retainer");
+      const int cashBeforeSuit = owSess.playerCash();
+      const size_t ledgerBefore = owSess.bankTransactions().size();
+      WG_CHECK(!owSess.ownsSuit(westgate::PlayerSuitPreset::MidnightExecutive));
+      WG_CHECK(owSess.buyOrEquipSuit(westgate::PlayerSuitPreset::MidnightExecutive, nullptr));
+      WG_CHECK(owSess.ownsSuit(westgate::PlayerSuitPreset::MidnightExecutive));
+      WG_CHECK(owSess.playerSuit() == westgate::PlayerSuitPreset::MidnightExecutive);
+      WG_CHECK(owSess.playerCash() == cashBeforeSuit - 1250);
+      WG_CHECK(owSess.bankTransactions().size() == ledgerBefore + 1);
+      owSess.setWardrobeOpen(false);
+
+      // Verify PearOS SMS Inbox & Express Cab ($120)
+      WG_CHECK(!owSess.phoneMessages().empty() && owSess.unreadPhoneMessageCount() >= 1);
+      owSess.markPhoneMessagesRead();
+      WG_CHECK(owSess.unreadPhoneMessageCount() == 0);
+      const int cashBeforeCab = owSess.playerCash();
+      WG_CHECK(owSess.callTaxiCab({62.0f, 5.0f, -134.0f}, 0.0f, "Downtown Civic", player, nullptr));
+      WG_CHECK(owSess.playerCash() == cashBeforeCab - 120);
+
+      // Verify Save v3 persists ownedSuits without any fictional currencies
+      const std::string v3Path = "/tmp/westgate_v3_usd_test.json";
+      WG_CHECK(owSess.saveToFile(v3Path));
+      westgate::GameSession owLoaded;
+      owLoaded.init(world, &player, &physics);
+      WG_CHECK(owLoaded.loadFromFile(v3Path));
+      WG_CHECK(owLoaded.ownsSuit(westgate::PlayerSuitPreset::MidnightExecutive));
+      WG_CHECK(owLoaded.playerSuit() == westgate::PlayerSuitPreset::MidnightExecutive);
+
+      std::printf("[PASS] $USD Economy, 4 Armories + 4 Boutiques, 3D Wardrobe, FruitPay Ledger & PearOS Services OK\n");
     }
 
     std::printf("[PASS] GameSession full loop: %zu vehicles, %zu NPCs, driving/gunplay/contracts/sky/save OK\n",

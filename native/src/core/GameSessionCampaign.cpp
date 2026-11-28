@@ -242,23 +242,18 @@ bool GameSession::buyTechUpgrade(size_t upgradeIdx, AudioEngine* audio) {
     pushToast(def.name + " is already at MAX Tier!", 2.4f);
     return false;
   }
-  const int cCost = def.creditCosts[static_cast<size_t>(curLvl)];
-  const int iCost = def.intelCosts[static_cast<size_t>(curLvl)];
-  const int sCost = def.salvageCosts[static_cast<size_t>(curLvl)];
-  if (playerCash_ < cCost || playerIntel_ < iCost || playerSalvage_ < sCost) {
-    pushToast("Insufficient resources! Need $" + std::to_string(cCost) +
-              (iCost > 0 ? (" + " + std::to_string(iCost) + " Intel") : "") +
-              (sCost > 0 ? (" + " + std::to_string(sCost) + " Salvage") : ""), 3.0f);
+  const int cCost = def.dollarCosts[static_cast<size_t>(curLvl)];
+  if (playerCash_ < cCost) {
+    pushToast("Insufficient funds! Need $" + std::to_string(cCost) + " for " + def.name, 3.0f);
     return false;
   }
   playerCash_ -= cCost;
-  playerIntel_ -= iCost;
-  playerSalvage_ -= sCost;
+  recordBankEntry(-cCost, def.category + " Upgrade: " + def.name + " T" + std::to_string(curLvl + 1));
   upgradeLevels_[upgradeIdx] = curLvl + 1;
   recomputePlayerDerivedStats();
   if (audio) audio->playCashChime();
   pushToast("UPGRADED: " + def.name + " -> Tier " + std::to_string(curLvl + 1) +
-            " (" + def.effectLabels[static_cast<size_t>(curLvl)] + ")", 3.2f);
+            " (" + def.effectLabels[static_cast<size_t>(curLvl)] + ", -$" + std::to_string(cCost) + ")", 3.2f);
   return true;
 }
 
@@ -266,31 +261,32 @@ void GameSession::initCampaignAndProgression(const WorldData& world) {
   upgradeLevels_.fill(0);
   bodyStats_ = {12.0f, 15.0f, 12.0f, 10.0f, 12.0f, 15.0f, 14.0f, 10.0f};
   bodyStatsXp_.fill(0.0f);
-  playerIntel_ = 25;
-  playerSalvage_ = 30;
   storyStep_ = 1;
   epilogueChoice_ = EpilogueChoice::None;
   activeMission_ = ActiveCampaignMission{};
   activeSurveillance_ = ActiveSurveillanceState{};
   lastDebrief_ = MissionDebriefReport{};
 
+  // Purchased strictly in the open world:
+  // [0..3] Weapons -> Open-World Gunsmith Armory Benches
+  // [4..7] Armour / Stealth / Precision -> Open-World Clothing Boutiques & Walk-In Wardrobes
   techUpgrades_ = {
     {"barrel_damage",   "Weapons",   "Subsonic Hollow-Point",     "Heavy-jacketed subsonic rounds boost ballistic damage", 4,
-      {100, 180, 290, 440}, {0, 0, 0, 0}, {15, 30, 50, 80}, {"+12% Damage", "+24% Damage", "+38% Damage", "+55% Damage"}},
+      {350, 700, 1150, 1750}, {"+12% Damage", "+24% Damage", "+38% Damage", "+55% Damage"}},
     {"silencer_baffle", "Weapons",   "Titanium Baffle Core",      "Multi-stage suppressor baffles shrink gunshot noise",   4,
-      {90, 160, 260, 390},  {10, 22, 38, 60}, {0, 0, 0, 0}, {"-16% Shot Noise", "-30% Shot Noise", "-42% Shot Noise", "-54% Shot Noise"}},
+      {320, 640, 1050, 1600}, {"-16% Shot Noise", "-30% Shot Noise", "-42% Shot Noise", "-54% Shot Noise"}},
     {"extended_mags",   "Weapons",   "High-Cap Magazines",        "Expanded magazine wells across all suppressed weapons", 4,
-      {85, 155, 250, 380},  {0, 0, 0, 0}, {12, 25, 45, 70}, {"+15% Capacity", "+30% Capacity", "+45% Capacity", "+60% Capacity"}},
+      {300, 600, 980, 1500},  {"+15% Capacity", "+30% Capacity", "+45% Capacity", "+60% Capacity"}},
     {"bolt_cycling",    "Weapons",   "Match-Grade Bolt",          "Polished carrier group increases cyclic fire rate",     4,
-      {95, 170, 275, 420},  {0, 0, 0, 0}, {12, 28, 48, 75}, {"+8% Fire Rate", "+16% Fire Rate", "+25% Fire Rate", "+35% Fire Rate"}},
+      {340, 680, 1100, 1680}, {"+8% Fire Rate", "+16% Fire Rate", "+25% Fire Rate", "+35% Fire Rate"}},
     {"ballistic_plates","Armour",    "Ceramic Ballistic Plates",  "Reinforced chest & back inserts raise operator Max HP", 4,
-      {110, 200, 320, 480}, {0, 0, 0, 0}, {18, 35, 55, 85}, {"120 Max HP", "145 Max HP", "175 Max HP", "210 Max HP"}},
+      {380, 750, 1250, 1900}, {"120 Max HP", "145 Max HP", "175 Max HP", "210 Max HP"}},
     {"kevlar_weave",    "Armour",    "Reactive Kevlar Weave",     "Aramid trauma liner reduces incoming combat damage",    4,
-      {100, 185, 300, 450}, {0, 0, 0, 0}, {15, 30, 50, 80}, {"-10% Dmg Taken", "-20% Dmg Taken", "-30% Dmg Taken", "-40% Dmg Taken"}},
-    {"optical_camo",    "Stealth",   "Optical Camo Weave",        "Light-bending cloak slows guard suspicion buildup",     4,
-      {105, 190, 310, 460}, {14, 28, 46, 70}, {0, 0, 0, 0}, {"-14% Detection", "-28% Detection", "-40% Detection", "-52% Detection"}},
-    {"neural_sync",     "Precision", "Neural Reflex Sync",        "Ocular stabilizer tightens ADS spread & reload pace",   4,
-      {115, 210, 330, 490}, {16, 32, 52, 78}, {0, 0, 0, 0}, {"-15% ADS Spread", "-28% ADS Spread", "-40% ADS Spread", "-52% ADS Spread"}},
+      {360, 720, 1180, 1800}, {"-10% Dmg Taken", "-20% Dmg Taken", "-30% Dmg Taken", "-40% Dmg Taken"}},
+    {"optical_camo",    "Stealth",   "Acoustic Stealth Lining",   "Low-signature suit lining slows guard suspicion buildup", 4,
+      {400, 780, 1300, 1950}, {"-14% Detection", "-28% Detection", "-40% Detection", "-52% Detection"}},
+    {"neural_sync",     "Precision", "Stabilized Shooting Cuffs", "Tailored wrist stabilizers tighten ADS spread & reload", 4,
+      {420, 820, 1350, 2050}, {"-15% ADS Spread", "-28% ADS Spread", "-40% ADS Spread", "-52% ADS Spread"}},
   };
 
   auto beaconAt = [&](float x, float z, float minY = 2.8f) -> glm::vec3 {
@@ -431,15 +427,15 @@ void GameSession::selectEpilogueChoice(EpilogueChoice choice, AudioEngine* audio
   epilogueChoice_ = choice;
   lastDebrief_.awaitsEpilogueChoice = false;
   if (choice == EpilogueChoice::BurnLedger) {
-    playerIntel_ += 120;
-    playerCash_ += 8000;
+    playerCash_ += 12000;
+    recordBankEntry(12000, "Whistleblower Clean Wire");
     triggerCommsLine("ELIAS VOSS", "Ledger burned to zero bytes. Cut all satellites, Mara - Elias Voss never existed.", "audio/story/voss_m6_extract.mp3", audio, nullptr);
-    pushToast("EPILOGUE: GHOST OF WESTGATE (+120 Intel, +$8,000 Clean Wire)", 5.0f);
+    pushToast("EPILOGUE: GHOST OF WESTGATE (+$12,000 Clean Wire)", 5.0f);
   } else {
     playerCash_ += 25000;
-    playerSalvage_ += 100;
+    recordBankEntry(25000, "Consortium Sovereign Escrow");
     triggerCommsLine("MARA VANCE", "Consortium escrow rerouted into our Sovereign accounts. Westgate Bay belongs to us now, Voss.", "audio/chapters/ch08_debrief.mp3", audio, nullptr);
-    pushToast("EPILOGUE: SOVEREIGN BROKER (+$25,000 Consortium Escrow, +100 Salvage)", 5.0f);
+    pushToast("EPILOGUE: SOVEREIGN BROKER (+$25,000 Consortium Escrow)", 5.0f);
   }
 }
 
@@ -1190,13 +1186,14 @@ void GameSession::updateCampaignAndSurveillance(
           if (it.progress >= it.duration) {
             it.completed = true;
             if (audio) audio->playCashChime();
-            playerIntel_ += (it.kind == MissionInteractKind::Terminal) ? 8 : 5;
+            const int secCash = (it.kind == MissionInteractKind::Terminal) ? 200 : 150;
+            playerCash_ += secCash;
             for (auto& obj : activeMission_.objectives) {
               if (obj.id == it.objectiveId) {
                 obj.current = std::min(obj.required, obj.current + 1);
               }
             }
-            pushToast("SECURED: " + it.label + " (+" + std::to_string(it.kind == MissionInteractKind::Terminal ? 8 : 5) + " Intel)", 3.0f);
+            pushToast("SECURED: " + it.label + " (+$" + std::to_string(secCash) + ")", 3.0f);
           }
         } else {
           it.progress = std::max(0.0f, it.progress - dt * 0.8f);
@@ -1246,14 +1243,14 @@ void GameSession::updateCampaignAndSurveillance(
         const char rank = (score >= 4) ? 'S' : ((score == 3) ? 'A' : ((score == 2) ? 'B' : 'C'));
 
         const float mult = difficultyRewardMult() * (ghost ? 1.25f : 1.0f);
-        const int baseCreds = (activeMission_.missionId == 0) ? 800 : (2800 + chIdx * 950);
-        const int earnedCreds = static_cast<int>(std::round(static_cast<float>(baseCreds) * mult));
-        const int earnedIntel = 12 + chIdx * 5 + (ghost ? 10 : 0);
-        const int earnedSalvage = 16 + chIdx * 6;
+        const int baseCash = (activeMission_.missionId == 0) ? 950 : (3000 + chIdx * 1050);
+        const int earnedCash = static_cast<int>(std::round(static_cast<float>(baseCash) * mult));
 
-        playerCash_ += earnedCreds;
-        playerIntel_ += earnedIntel;
-        playerSalvage_ += earnedSalvage;
+        playerCash_ += earnedCash;
+        recordBankEntry(earnedCash, "Campaign Op CH " + ch.code + ": " + ch.codename);
+        pushPhoneMessage("Mara Vance", "CH " + ch.code + " Escrow Wired",
+                         "Rank " + std::string(1, rank) + " on " + ch.title + ". $" + std::to_string(earnedCash) + " transferred to FruitPay.",
+                         0x10B981u);
 
         ch.completed = true;
         if (ch.bestRank == '-' || rank < ch.bestRank) ch.bestRank = rank;
@@ -1269,9 +1266,7 @@ void GameSession::updateCampaignAndSurveillance(
         lastDebrief_.kills = activeMission_.missionKills;
         lastDebrief_.headshots = activeMission_.missionHeadshots;
         lastDebrief_.elapsedSec = activeMission_.elapsedSec;
-        lastDebrief_.creditsEarned = earnedCreds;
-        lastDebrief_.intelEarned = earnedIntel;
-        lastDebrief_.salvageEarned = earnedSalvage;
+        lastDebrief_.cashEarned = earnedCash;
         lastDebrief_.narrativeNote = ch.debriefLine;
         lastDebrief_.awaitsEpilogueChoice = (chIdx == 9 && epilogueChoice_ == EpilogueChoice::None);
 
@@ -1282,8 +1277,7 @@ void GameSession::updateCampaignAndSurveillance(
           const auto& nextCh = storyChapters_[static_cast<size_t>(storyStep_)];
           setGpsWaypoint(nextCh.beaconPos, "NEXT CH " + nextCh.code + ": " + nextCh.codename);
         }
-        pushToast(std::string("CHAPTER COMPLETE [RANK ") + rank + "] +$" + std::to_string(earnedCreds) +
-                  " +" + std::to_string(earnedIntel) + " Intel +" + std::to_string(earnedSalvage) + " Salvage!", 5.0f);
+        pushToast(std::string("CHAPTER COMPLETE [RANK ") + rank + "] +$" + std::to_string(earnedCash) + "!", 5.0f);
       }
     } else {
       // Point GPS at next incomplete interactable, destroyable, or boss
@@ -1335,13 +1329,11 @@ void GameSession::updateCampaignAndSurveillance(
         auto& ch = storyChapters_[static_cast<size_t>(chIdx)];
         const char rank = (sv.unseen && deepSea) ? 'S' : ((sv.unseen || deepSea) ? 'A' : 'B');
         const float mult = difficultyRewardMult();
-        const int earnedCreds = static_cast<int>(std::round((3500.0f + (sv.unseen ? 1500.0f : 0.0f) + (deepSea ? 1000.0f : 0.0f)) * mult));
-        const int earnedIntel = 18 + (sv.unseen ? 8 : 0);
-        const int earnedSalvage = 15 + (deepSea ? 10 : 0);
+        const int earnedCash = static_cast<int>(std::round((3800.0f + (sv.unseen ? 1500.0f : 0.0f) + (deepSea ? 1000.0f : 0.0f)) * mult));
 
-        playerCash_ += earnedCreds;
-        playerIntel_ += earnedIntel;
-        playerSalvage_ += earnedSalvage;
+        playerCash_ += earnedCash;
+        recordBankEntry(earnedCash, "Surveillance Hit CH " + ch.code + ": " + sv.targetName);
+        pushPhoneMessage("Mara Vance", "Hit Verified", sv.targetName + " silenced cleanly. $" + std::to_string(earnedCash) + " wired to FruitPay.", 0x10B981u);
 
         ch.completed = true;
         if (ch.bestRank == '-' || rank < ch.bestRank) ch.bestRank = rank;
@@ -1357,9 +1349,7 @@ void GameSession::updateCampaignAndSurveillance(
         lastDebrief_.kills = 1;
         lastDebrief_.headshots = totalHeadshots_ > 0 ? 1 : 0;
         lastDebrief_.elapsedSec = sv.elapsedSec;
-        lastDebrief_.creditsEarned = earnedCreds;
-        lastDebrief_.intelEarned = earnedIntel;
-        lastDebrief_.salvageEarned = earnedSalvage;
+        lastDebrief_.cashEarned = earnedCash;
         lastDebrief_.narrativeNote = ch.debriefLine;
         lastDebrief_.awaitsEpilogueChoice = false;
 
@@ -1370,7 +1360,7 @@ void GameSession::updateCampaignAndSurveillance(
           const auto& nextCh = storyChapters_[static_cast<size_t>(storyStep_)];
           setGpsWaypoint(nextCh.beaconPos, "NEXT CH " + nextCh.code + ": " + nextCh.codename);
         }
-        pushToast(std::string("SURVEILLANCE HIT COMPLETE [RANK ") + rank + "] +$" + std::to_string(earnedCreds) + "!", 5.0f);
+        pushToast(std::string("SURVEILLANCE HIT COMPLETE [RANK ") + rank + "] +$" + std::to_string(earnedCash) + "!", 5.0f);
       }
       return;
     }

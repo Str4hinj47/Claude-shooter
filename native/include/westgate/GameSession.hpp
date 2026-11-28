@@ -124,8 +124,10 @@ enum class PlayerSuitPreset : uint8_t {
   VanguardArctic = 3,
   VanguardCrimson = 4,
   IronPitBrawler = 5,
+  MidnightExecutive = 6,
+  EmeraldRanger = 7,
 };
-static constexpr int kPlayerSuitCount = 6;
+static constexpr int kPlayerSuitCount = 8;
 
 enum class WeaponOpticKind : uint8_t {
   IronSights = 0,
@@ -432,9 +434,7 @@ struct TechUpgradeDef {
   std::string name;
   std::string subtitle;
   int maxLevel = 4;
-  std::array<int, 4> creditCosts{};
-  std::array<int, 4> intelCosts{};
-  std::array<int, 4> salvageCosts{};
+  std::array<int, 4> dollarCosts{};
   std::array<std::string, 4> effectLabels{};
 };
 
@@ -519,9 +519,7 @@ struct MissionDebriefReport {
   int kills = 0;
   int headshots = 0;
   float elapsedSec = 0.0f;
-  int creditsEarned = 0;
-  int intelEarned = 0;
-  int salvageEarned = 0;
+  int cashEarned = 0;
   std::string narrativeNote;
   bool awaitsEpilogueChoice = false;
 };
@@ -610,12 +608,35 @@ struct StuntJumpDef {
   bool completed = false;
 };
 
+enum class ShopKind : uint8_t {
+  Mart = 0,
+  Garage = 1,
+  Armory = 2,   // Physical Open-World Gun Shop & 3D Gunsmith Bench
+  Boutique = 3, // Physical Open-World Clothing Store & Walk-In Wardrobe
+};
+
 struct ShopDef {
   std::string id;
   std::string name;
   glm::vec3 pos{0.0f};
   bool isGarage = false;
   float robCooldown = 0.0f;
+  ShopKind kind = ShopKind::Mart;
+};
+
+struct BankTransaction {
+  std::string description;
+  int amountUsd = 0;
+  std::string timeLabel;
+};
+
+struct PhoneSmsItem {
+  std::string sender;
+  std::string subtitle;
+  std::string body;
+  std::string timeLabel;
+  uint32_t avatarHex = 0x38BDF8u;
+  bool unread = false;
 };
 
 struct BulletTracer {
@@ -717,7 +738,6 @@ struct CollectiblePickup {
   CollectibleKind kind = CollectibleKind::Stash;
   glm::vec3 pos{0.0f};
   int cashValue = 350;
-  int intelValue = 6;
   bool collected = false;
   float ttl = -1.0f;
 };
@@ -755,7 +775,6 @@ struct ActiveRandomEvent {
   glm::vec3 origin{0.0f};
   float timer = 0.0f;
   int rewardCash = 400;
-  int rewardIntel = 4;
   std::vector<int> npcIds;
   int vehicleId = -1;
   bool pickupReady = false;
@@ -852,14 +871,17 @@ public:
   const NpcEntity* activeBossNpc() const;
   const NpcEntity* activeAllyNpc() const;
 
-  // Currencies (Credits / Intel / Salvage), Difficulty, Tech Upgrades & BodyStats
-  int playerIntel() const { return playerIntel_; }
-  int playerSalvage() const { return playerSalvage_; }
-  void grantCurrencies(int credits, int intel, int salvage) {
-    playerCash_ += credits;
-    playerIntel_ += intel;
-    playerSalvage_ += salvage;
-  }
+  // USD Cash Economy, Bank Ledger, Phone OS Services, Difficulty, Upgrades & BodyStats
+  void grantCash(int dollars, const std::string& label = "");
+  void grantCurrencies(int dollars, int = 0, int = 0) { grantCash(dollars); }
+  const std::vector<BankTransaction>& bankTransactions() const { return bankLedger_; }
+  const std::vector<PhoneSmsItem>& phoneMessages() const { return phoneMessages_; }
+  void pushPhoneMessage(const std::string& sender, const std::string& subtitle, const std::string& body, uint32_t avatarHex = 0x38BDF8u);
+  int unreadPhoneMessageCount() const;
+  void markPhoneMessagesRead();
+  bool callBribePolice(AudioEngine* audio);
+  bool callFieldMedic(AudioEngine* audio);
+  bool callTaxiCab(const glm::vec3& destPos, float yawDeg, const std::string& destName, PlayerController& player, AudioEngine* audio);
   DifficultyMode difficulty() const { return difficulty_; }
   void setDifficulty(DifficultyMode mode);
   static const char* difficultyLabel(DifficultyMode mode);
@@ -980,11 +1002,22 @@ public:
   glm::vec3 gunsmithAnchorPos(const PlayerController& player) const;
   void triggerGunsmithTestFire(AudioEngine* audio = nullptr);
 
-  // Player Vanguard Tactical Suit & Outfit Presets
+  // Open-World Wardrobe / Boutique Fitting Room & Character Outfits
+  bool wardrobeOpen() const { return wardrobeOpen_; }
+  void setWardrobeOpen(bool open);
+  void orbitWardrobe(float dYawRad, float dPitchRad, float dZoom);
+  float wardrobeYaw() const { return wardrobeYaw_; }
   PlayerSuitPreset playerSuit() const { return playerSuit_; }
-  void setPlayerSuit(PlayerSuitPreset suit) { playerSuit_ = suit; }
+  void setPlayerSuit(PlayerSuitPreset suit) {
+    playerSuit_ = suit;
+    ownedSuits_[static_cast<size_t>(suit)] = true;
+  }
+  bool ownsSuit(PlayerSuitPreset suit) const { return ownedSuits_[static_cast<size_t>(suit)]; }
+  static int suitPriceUsd(PlayerSuitPreset suit);
+  bool buyOrEquipSuit(PlayerSuitPreset suit, AudioEngine* audio);
   void cyclePlayerSuit() {
     playerSuit_ = static_cast<PlayerSuitPreset>((static_cast<int>(playerSuit_) + 1) % kPlayerSuitCount);
+    ownedSuits_[static_cast<size_t>(playerSuit_)] = true;
   }
   static glm::vec4 suitTintColor(PlayerSuitPreset suit, const char** outName = nullptr);
   bool shouldUseBareKnuckleRig(const WorldData& world, const glm::vec3& playerPos) const;
@@ -1048,9 +1081,11 @@ public:
   glm::vec3 gpsWaypoint() const { return waypointPos_; }
   std::string gpsLabel() const { return waypointLabel_; }
   void setGpsWaypoint(const glm::vec3& pos, const std::string& label);
+  void clearGpsWaypoint() { hasWaypoint_ = false; waypointLabel_.clear(); }
 
   float timeOfDayHours() const { return timeOfDayHours_; }
   std::string timeOfDayLabel() const;
+  std::string currentClockString() const;
 
   const std::string& contextPrompt() const { return contextPrompt_; }
   const std::string& toastText() const { return toastText_; }
@@ -1238,6 +1273,8 @@ private:
   void appendCampaignLights(float elapsedSec, std::vector<DynamicPointLight>& out) const;
   void recomputePlayerDerivedStats();
 
+  void recordBankEntry(int amountUsd, const std::string& description);
+
   std::vector<StoryChapterInfo> storyChapters_;
   int storyStep_ = 1; // Ch 00 & Ch 01 unlocked at start; advances to 9
   ActiveCampaignMission activeMission_;
@@ -1245,12 +1282,17 @@ private:
   MissionDebriefReport lastDebrief_;
   EpilogueChoice epilogueChoice_ = EpilogueChoice::None;
   DifficultyMode difficulty_ = DifficultyMode::Operative;
-  int playerIntel_ = 25;
-  int playerSalvage_ = 30;
   std::vector<TechUpgradeDef> techUpgrades_;
   std::array<int, 8> upgradeLevels_{};
   std::array<float, kBodyStatCount> bodyStats_{12.0f, 15.0f, 12.0f, 10.0f, 12.0f, 15.0f, 14.0f, 10.0f};
   std::array<float, kBodyStatCount> bodyStatsXp_{};
+  std::array<bool, kPlayerSuitCount> ownedSuits_{true, false, false, false, false, true, false, false};
+  bool wardrobeOpen_ = false;
+  float wardrobeYaw_ = 0.35f;
+  float wardrobePitch_ = 0.08f;
+  float wardrobeZoom_ = 2.45f;
+  std::vector<BankTransaction> bankLedger_;
+  std::vector<PhoneSmsItem> phoneMessages_;
   uint32_t rng_ = 0x9E3779B9u;
 
   // Milestone 5: Living World Systems (GameSessionWorld.cpp)
