@@ -50,8 +50,26 @@ int main() {
 
   const float pitY = world.heightfield.sampleHeight(world.fightPitPos.x, world.fightPitPos.z);
   assert(std::isfinite(pitY) && std::abs(pitY - 2.8f) < 0.8f);
-  std::printf("[PASS] WorldData loaded: %ux%u heightfield, %zu chunks, %zu roads, %zu props, fightPitY=%.2fm\n",
-              world.heightfield.gridSize(), world.heightfield.gridSize(), world.chunks.size(), world.roads.size(), world.props.size(), pitY);
+  assert(world.hasCustomMeshes);
+  assert(world.customMeshVertices.size() > 500000);
+  assert(world.customMeshIndices.size() > 1500000);
+  assert(world.propPrototypes.size() == 3);
+  assert(world.glbPlacements.size() > 900);
+  // Verify cx * 15 + cz chunk ordering: Safehouse (cx=5,cz=9 -> 84) & Del Sol Pier (cx=2,cz=7 -> 37)
+  assert(world.chunks[84].cx == 5 && world.chunks[84].cz == 9);
+  assert(world.chunks[84].meshSlice.indexCount > 500 && !world.chunks[84].nearBoxes.empty());
+  assert(world.chunks[37].cx == 2 && world.chunks[37].cz == 7);
+  assert(world.chunks[37].meshSlice.indexCount > 500 && !world.chunks[37].nearBoxes.empty());
+  {
+    westgate::GltfModel sofaModel;
+    const bool okSofa = westgate::GltfAssetLoader::loadGlb((publicDir / "models" / "ph_sofa.glb").string(), sofaModel, true, &err);
+    assert(okSofa && !sofaModel.primitives.empty() && !sofaModel.textures.empty());
+    const float nLen = glm::length(sofaModel.primitives[0].vertices[0].normal);
+    assert(std::isfinite(nLen) && nLen > 0.98f && nLen < 1.02f);
+  }
+  std::printf("[PASS] WorldData v2 loaded: %ux%u heightfield, %zu chunks, %zu customVerts, %zu glbPlacements, fightPitY=%.2fm\n",
+              world.heightfield.gridSize(), world.heightfield.gridSize(), world.chunks.size(),
+              world.customMeshVertices.size(), world.glbPlacements.size(), pitY);
 
   // 2. Multi-threaded JobSystem & Frustum/ChunkStreamer
   westgate::JobSystem jobs(2);

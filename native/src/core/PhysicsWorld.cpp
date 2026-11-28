@@ -263,8 +263,38 @@ bool PhysicsWorld::initFromWorld(const WorldData& world, std::string* err) {
     }
   }
 
-  // 3c. Walk-In Interior Room Walls & Roofs (Safehouse, Downtown 24/7 Mart, Customs Garage, Iron Pit Armory)
-  {
+  // 3c. Del Sol Ocean Pier deck + approach ramp & Observatory Overlook Terrace Jolt colliders
+  if (world.hasCustomMeshes) {
+    const float pierZ = 40.0f;
+    const float xStart = -760.0f + pierZ * 0.06f + std::sin(pierZ * 0.0042f) * 34.0f + std::cos(pierZ * 0.0095f) * 14.0f + 4.0f;
+    const float xEnd = xStart - 138.0f;
+    const float deckW = xStart - xEnd;
+    const float xMid = (xStart + xEnd) * 0.5f;
+    const float deckY = 4.2f;
+    JPH::ShapeRefC pierDeck = JPH::BoxShapeSettings(JPH::Vec3(deckW * 0.5f, 0.25f, 8.0f)).Create().Get();
+    bodyInterface.CreateAndAddBody(
+      JPH::BodyCreationSettings(pierDeck, JPH::RVec3(xMid, deckY - 0.15f, pierZ), JPH::Quat::sIdentity(), JPH::EMotionType::Static, Layers::NON_MOVING),
+      JPH::EActivation::DontActivate
+    );
+    ++staticBodyCount_;
+
+    const float beachY = world.heightfield.sampleHeight(xStart + 11.0f, pierZ);
+    const float rampLen = 12.0f;
+    const float rampPitch = std::atan2(deckY - beachY, rampLen);
+    JPH::ShapeRefC rampShape = JPH::BoxShapeSettings(JPH::Vec3(rampLen * 0.5f, 0.22f, 7.0f)).Create().Get();
+    bodyInterface.CreateAndAddBody(
+      JPH::BodyCreationSettings(
+        rampShape,
+        JPH::RVec3(xStart + rampLen * 0.5f - 0.5f, (beachY + deckY) * 0.5f - 0.15f, pierZ),
+        JPH::Quat::sRotation(JPH::Vec3::sAxisZ(), -rampPitch),
+        JPH::EMotionType::Static,
+        Layers::NON_MOVING
+      ),
+      JPH::EActivation::DontActivate
+    );
+    ++staticBodyCount_;
+  } else {
+    // Legacy synthetic fallback rooms when custom mesh pack is absent
     auto addWall = [&](const glm::vec3& c, const glm::vec3& halfExt) {
       JPH::ShapeRefC s = JPH::BoxShapeSettings(JPH::Vec3(halfExt.x, halfExt.y, halfExt.z)).Create().Get();
       bodyInterface.CreateAndAddBody(
@@ -275,21 +305,16 @@ bool PhysicsWorld::initFromWorld(const WorldData& world, std::string* err) {
     };
     auto addWalkInRoom = [&](float rx, float rz, float halfW, float halfD, float wallH) {
       const float gy = world.heightfield.sampleHeight(rx, rz);
-      addWall({rx, gy + 0.08f, rz}, {halfW, 0.08f, halfD}); // floor slab
-      addWall({rx, gy + wallH + 0.12f, rz}, {halfW + 0.2f, 0.12f, halfD + 0.2f}); // roof
-      addWall({rx - halfW, gy + wallH * 0.5f, rz}, {0.18f, wallH * 0.5f, halfD}); // west
-      addWall({rx + halfW, gy + wallH * 0.5f, rz}, {0.18f, wallH * 0.5f, halfD}); // east
-      addWall({rx, gy + wallH * 0.5f, rz - halfD}, {halfW, wallH * 0.5f, 0.18f}); // north back wall
-      // South wall has a wide 3.4m walk/drive doorway gap!
+      addWall({rx, gy + 0.08f, rz}, {halfW, 0.08f, halfD});
+      addWall({rx, gy + wallH + 0.12f, rz}, {halfW + 0.2f, 0.12f, halfD + 0.2f});
+      addWall({rx - halfW, gy + wallH * 0.5f, rz}, {0.18f, wallH * 0.5f, halfD});
+      addWall({rx + halfW, gy + wallH * 0.5f, rz}, {0.18f, wallH * 0.5f, halfD});
+      addWall({rx, gy + wallH * 0.5f, rz - halfD}, {halfW, wallH * 0.5f, 0.18f});
       const float wingW = std::max(0.5f, (halfW * 2.0f - 3.4f) * 0.25f);
       addWall({rx - halfW + wingW, gy + wallH * 0.5f, rz + halfD}, {wingW, wallH * 0.5f, 0.18f});
       addWall({rx + halfW - wingW, gy + wallH * 0.5f, rz + halfD}, {wingW, wallH * 0.5f, 0.18f});
     };
-
-    addWalkInRoom(world.spawnPos.x - 13.0f, world.spawnPos.z - 11.0f, 4.8f, 4.2f, 3.4f); // Safehouse
-    addWalkInRoom(-38.0f, -125.0f, 5.2f, 4.5f, 3.6f);                                   // Civic 24/7 Mart
-    addWalkInRoom(112.0f, -135.0f, 6.2f, 5.6f, 4.2f);                                   // Customs Garage
-    addWalkInRoom(704.0f, 108.0f, 4.4f, 4.0f, 3.4f);                                    // Iron Pit Armory
+    addWalkInRoom(world.spawnPos.x - 13.0f, world.spawnPos.z - 11.0f, 4.8f, 4.2f, 3.4f);
   }
 
   // 4. Iron Pit Arena Platform + Bleachers + Cage Posts colliders

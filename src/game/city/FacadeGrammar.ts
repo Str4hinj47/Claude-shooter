@@ -428,12 +428,28 @@ export interface BuildFacadeShellOpts {
   maxBays?: number;
 }
 
+export type NativeGrammarExportHook = (parent: THREE.Object3D, opts: BuildFacadeShellOpts) => void;
+
+let nativeGrammarExportHook: NativeGrammarExportHook | null = null;
+
+export function setNativeGrammarExportHook(hook: NativeGrammarExportHook | null): void {
+  nativeGrammarExportHook = hook;
+}
+
 /**
  * Generates a true 3D recessed architectural facade shell (curtainwall, grid, louver, or classical)
  * around a `(w x h x d)` building volume with real 14–24 cm window reveals, projecting stone sills,
  * vertical mullions, louvers, and night-lit interior window panes, merged into <= 6 draw calls.
  */
 export function buildGrammarFacadeShell(parent: THREE.Object3D, opts: BuildFacadeShellOpts): THREE.Group {
+  if (nativeGrammarExportHook) {
+    nativeGrammarExportHook(parent, opts);
+    const dummy = new THREE.Group();
+    dummy.position.set(opts.x, opts.yBase, opts.z);
+    dummy.rotation.y = opts.yaw ?? 0;
+    parent.add(dummy);
+    return dummy;
+  }
   const baseSpec = FACADE_PRESETS[opts.style];
   const spec: FacadeGrammarSpec = {
     ...baseSpec,

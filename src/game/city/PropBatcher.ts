@@ -67,6 +67,10 @@ export class PropBatcher {
     return this.prototypes.has(id);
   }
 
+  getPrototype(id: string): PropPrototype | undefined {
+    return this.prototypes.get(id);
+  }
+
   getPlacements(): Array<{ protoId: string; x: number; y: number; z: number; ry: number; sx: number; sy: number; sz: number }> {
     const out: Array<{ protoId: string; x: number; y: number; z: number; ry: number; sx: number; sy: number; sz: number }> = [];
     for (const [key, list] of this.buckets) {

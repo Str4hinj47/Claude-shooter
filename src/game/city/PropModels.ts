@@ -193,10 +193,25 @@ export interface AttachGlbOptions {
   onAttached?: (wrapper: THREE.Group) => void;
 }
 
+export type NativeGlbExportHook = (
+  parent: THREE.Object3D,
+  filename: string,
+  x: number,
+  y: number,
+  z: number,
+  opts: AttachGlbOptions,
+) => void;
+
+let nativeGlbExportHook: NativeGlbExportHook | null = null;
+
+export function setNativeGlbExportHook(hook: NativeGlbExportHook | null): void {
+  nativeGlbExportHook = hook;
+}
+
 /**
  * Asynchronously attaches a cached, scaled GLB into `parent` (e.g. `chunk.nearGroup`).
  * Marks the subtree `userData.noMerge = true` and freezes static transform matrices.
- * No-op in headless Node SSR tests.
+ * No-op in headless Node SSR tests unless `setNativeGlbExportHook` is active.
  */
 export function attachGlbToGroup(
   parent: THREE.Object3D,
@@ -206,6 +221,10 @@ export function attachGlbToGroup(
   z: number,
   opts: AttachGlbOptions,
 ): void {
+  if (nativeGlbExportHook) {
+    nativeGlbExportHook(parent, filename, x, y, z, opts);
+    return;
+  }
   if (typeof window === "undefined") return;
   if (opts.fitFootprint && !getLauncherProfile().maxHouseGlbs) return;
   void loadCityGlb(filename).then((raw) => {

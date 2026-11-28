@@ -378,9 +378,9 @@ void GameSession::spawnSparks(const glm::vec3& pos, const glm::vec3& normal, con
 void GameSession::setTimeOfDayPreset(TimeOfDayPreset preset) {
   switch (preset) {
     case TimeOfDayPreset::Afternoon: timeOfDayHours_ = 14.5f; break;
-    case TimeOfDayPreset::Sunset: timeOfDayHours_ = 18.4f; break;
+    case TimeOfDayPreset::Sunset: timeOfDayHours_ = 17.55f; break;
     case TimeOfDayPreset::Night: timeOfDayHours_ = 22.8f; break;
-    case TimeOfDayPreset::Dawn: timeOfDayHours_ = 6.2f; break;
+    case TimeOfDayPreset::Dawn: timeOfDayHours_ = 6.45f; break;
   }
 }
 
@@ -400,6 +400,19 @@ std::string GameSession::timeOfDayLabel() const {
 
 void GameSession::setWeatherPreset(WeatherPreset preset) {
   weatherPreset_ = preset;
+  if (preset == WeatherPreset::Rain) {
+    rainIntensity_ = std::max(rainIntensity_, 0.68f);
+    wetness_ = std::max(wetness_, 0.92f);
+  } else if (preset == WeatherPreset::Thunderstorm) {
+    rainIntensity_ = 1.0f;
+    wetness_ = 1.0f;
+  } else if (preset == WeatherPreset::Overcast) {
+    rainIntensity_ = 0.0f;
+    wetness_ = std::max(wetness_, 0.35f);
+  } else {
+    rainIntensity_ = 0.0f;
+    wetness_ = 0.0f;
+  }
   pushToast("Weather: " + weatherLabel(), 2.5f);
 }
 

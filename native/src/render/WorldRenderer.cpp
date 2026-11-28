@@ -14,6 +14,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace westgate {
@@ -27,9 +28,11 @@ InstanceAttrib makeInst(
   float sx, float sy, float sz,
   const glm::quat& q,
   float r, float g, float b,
-  float emissive = 0.0f
+  float emissive = 0.0f,
+  float overrideRoughness = -1.0f,
+  float familyAndMetal = 0.0f
 ) {
-  return InstanceAttrib{x, y, z, sx, sy, sz, q.x, q.y, q.z, q.w, r, g, b, emissive};
+  return InstanceAttrib{x, y, z, sx, sy, sz, q.x, q.y, q.z, q.w, r, g, b, emissive, overrideRoughness, familyAndMetal};
 }
 
 InstanceAttrib makeInstYaw(
@@ -37,10 +40,34 @@ InstanceAttrib makeInstYaw(
   float sx, float sy, float sz,
   float yawRad,
   float r, float g, float b,
-  float emissive = 0.0f
+  float emissive = 0.0f,
+  float overrideRoughness = -1.0f,
+  float familyAndMetal = 0.0f
 ) {
   const glm::quat q = glm::angleAxis(yawRad, glm::vec3(0.0f, 1.0f, 0.0f));
-  return makeInst(x, y, z, sx, sy, sz, q, r, g, b, emissive);
+  return makeInst(x, y, z, sx, sy, sz, q, r, g, b, emissive, overrideRoughness, familyAndMetal);
+}
+
+InstanceAttrib makeArchBoxInst(const PackedArchBox& b) {
+  constexpr float invQ = 1.0f / 32767.0f;
+  constexpr float inv255 = 1.0f / 255.0f;
+  glm::quat q(b.qw * invQ, b.qx * invQ, b.qy * invQ, b.qz * invQ);
+  const float qLen = glm::length(q);
+  if (qLen > 1e-4f) q /= qLen;
+  else q = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+
+  const float rough = std::clamp(b.rough * inv255, 0.05f, 0.98f);
+  const float metal = std::clamp(b.metal * inv255, 0.0f, 1.0f);
+  const float fam = static_cast<float>(std::min<uint8_t>(b.family, 9u));
+  return InstanceAttrib{
+    b.cx, b.cy, b.cz,
+    b.hx * 2.0f, b.hy * 2.0f, b.hz * 2.0f,
+    q.x, q.y, q.z, q.w,
+    b.r * inv255, b.g * inv255, b.b * inv255,
+    (b.emissive * inv255) * 4.0f,
+    rough,
+    fam + metal * 0.49f
+  };
 }
 
 struct StaticVertex {
@@ -88,6 +115,18 @@ WGPUBuffer createBufferWithData(WGPUDevice dev, WGPUQueue queue, WGPUBufferUsage
   return buf;
 }
 
+bool sphereInFrustum(const Frustum& f, const glm::vec3& c, float r) {
+  for (const auto& pl : f.planes) {
+    if (pl.x * c.x + pl.y * c.y + pl.z * c.z + pl.w < -r) return false;
+  }
+  return true;
+}
+
+bool aabbOverlapsXZ(const AABB& b, const glm::vec3& center, float halfExt) {
+  return b.max.x >= center.x - halfExt && b.min.x <= center.x + halfExt &&
+         b.max.z >= center.z - halfExt && b.min.z <= center.z + halfExt;
+}
+
 void appendBox(
   std::vector<glm::vec3>& outPos,
   std::vector<glm::vec3>& outNorm,
@@ -128,17 +167,83 @@ void appendBox(
 
 } // namespace
 
+WGPUBindGroup WorldRenderer::createPbrMatBindGroup(
+  WgpuContext& ctx,
+  WGPUTextureView albedoView,
+  WGPUTextureView normalView,
+  WGPUTextureView mrView,
+  WGPUTextureView emissiveView
+) {
+  WGPUBindGroupEntry entries[5]{};
+  entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
+  entries[0].binding = 0;
+  entries[0].textureView = albedoView ? albedoView : defaultWhiteTex_.view;
+
+  entries[1] = WGPU_BIND_GROUP_ENTRY_INIT;
+  entries[1].binding = 1;
+  entries[1].sampler = repeatSampler_;
+
+  entries[2] = WGPU_BIND_GROUP_ENTRY_INIT;
+  entries[2].binding = 2;
+  entries[2].textureView = normalView ? normalView : defaultFlatNormalTex_.view;
+
+  entries[3] = WGPU_BIND_GROUP_ENTRY_INIT;
+  entries[3].binding = 3;
+  entries[3].textureView = mrView ? mrView : defaultWhiteTex_.view;
+
+  entries[4] = WGPU_BIND_GROUP_ENTRY_INIT;
+  entries[4].binding = 4;
+  entries[4].textureView = emissiveView ? emissiveView : defaultWhiteTex_.view;
+
+  WGPUBindGroupDescriptor bgd = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+  bgd.layout = matBgl_;
+  bgd.entryCount = 5;
+  bgd.entries = entries;
+  return wgpuDeviceCreateBindGroup(ctx.device(), &bgd);
+}
+
 WorldRenderer::GpuTextureBinding WorldRenderer::createRgbaTexture(
   WgpuContext& ctx,
   uint32_t w,
   uint32_t h,
-  const uint8_t* rgba8
+  const uint8_t* rgba8,
+  bool createDefaultMatBg
 ) {
+  // Prefilter oversized >1024 textures via 2x box downsample to save VRAM & prevent subpixel aliasing
+  std::vector<uint8_t> downsampled;
+  uint32_t curW = w;
+  uint32_t curH = h;
+  const uint8_t* srcPtr = rgba8;
+  while ((curW > 1024 || curH > 1024) && curW >= 2 && curH >= 2) {
+    const uint32_t nw = curW / 2;
+    const uint32_t nh = curH / 2;
+    std::vector<uint8_t> next(static_cast<size_t>(nw) * nh * 4);
+    for (uint32_t y = 0; y < nh; ++y) {
+      for (uint32_t x = 0; x < nw; ++x) {
+        const size_t i00 = (static_cast<size_t>(y * 2) * curW + (x * 2)) * 4;
+        const size_t i10 = i00 + 4;
+        const size_t i01 = i00 + static_cast<size_t>(curW) * 4;
+        const size_t i11 = i01 + 4;
+        const size_t dstIdx = (static_cast<size_t>(y) * nw + x) * 4;
+        for (size_t c = 0; c < 4; ++c) {
+          next[dstIdx + c] = static_cast<uint8_t>((
+            uint32_t(srcPtr[i00 + c]) + uint32_t(srcPtr[i10 + c]) +
+            uint32_t(srcPtr[i01 + c]) + uint32_t(srcPtr[i11 + c]) + 2u
+          ) >> 2);
+        }
+      }
+    }
+    downsampled = std::move(next);
+    srcPtr = downsampled.data();
+    curW = nw;
+    curH = nh;
+  }
+
   GpuTextureBinding out{};
   WGPUTextureDescriptor td = WGPU_TEXTURE_DESCRIPTOR_INIT;
   td.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
   td.dimension = WGPUTextureDimension_2D;
-  td.size = {w, h, 1};
+  td.size = {curW, curH, 1};
   td.format = WGPUTextureFormat_RGBA8Unorm;
   td.mipLevelCount = 1;
   td.sampleCount = 1;
@@ -152,10 +257,10 @@ WorldRenderer::GpuTextureBinding WorldRenderer::createRgbaTexture(
 
   WGPUTexelCopyBufferLayout layout{};
   layout.offset = 0;
-  layout.bytesPerRow = w * 4;
-  layout.rowsPerImage = h;
-  WGPUExtent3D ext{w, h, 1};
-  wgpuQueueWriteTexture(ctx.queue(), &dst, rgba8, static_cast<size_t>(w) * h * 4, &layout, &ext);
+  layout.bytesPerRow = curW * 4;
+  layout.rowsPerImage = curH;
+  WGPUExtent3D ext{curW, curH, 1};
+  wgpuQueueWriteTexture(ctx.queue(), &dst, srcPtr, static_cast<size_t>(curW) * curH * 4, &layout, &ext);
 
   WGPUTextureViewDescriptor tvd = WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
   tvd.format = WGPUTextureFormat_RGBA8Unorm;
@@ -165,19 +270,9 @@ WorldRenderer::GpuTextureBinding WorldRenderer::createRgbaTexture(
   tvd.aspect = WGPUTextureAspect_All;
   out.view = wgpuTextureCreateView(out.texture, &tvd);
 
-  WGPUBindGroupEntry entries[2]{};
-  entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
-  entries[0].binding = 0;
-  entries[0].textureView = out.view;
-  entries[1] = WGPU_BIND_GROUP_ENTRY_INIT;
-  entries[1].binding = 1;
-  entries[1].sampler = linearSampler_;
-
-  WGPUBindGroupDescriptor bgd = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-  bgd.layout = matBgl_;
-  bgd.entryCount = 2;
-  bgd.entries = entries;
-  out.bindGroup = wgpuDeviceCreateBindGroup(ctx.device(), &bgd);
+  if (createDefaultMatBg && defaultFlatNormalTex_.view && defaultWhiteTex_.view) {
+    out.bindGroup = createPbrMatBindGroup(ctx, out.view, defaultFlatNormalTex_.view, defaultWhiteTex_.view, defaultWhiteTex_.view);
+  }
   return out;
 }
 
@@ -263,6 +358,17 @@ bool WorldRenderer::init(
     ssd.compare = WGPUCompareFunction_LessEqual;
     shadowSampler_ = wgpuDeviceCreateSampler(ctx.device(), &ssd);
 
+    // Repeat sampler for 3D PBR material textures (GLB tiled roofs, brick, roads, KHR_texture_transform)
+    WGPUSamplerDescriptor rsd = WGPU_SAMPLER_DESCRIPTOR_INIT;
+    rsd.addressModeU = WGPUAddressMode_Repeat;
+    rsd.addressModeV = WGPUAddressMode_Repeat;
+    rsd.addressModeW = WGPUAddressMode_Repeat;
+    rsd.magFilter = WGPUFilterMode_Linear;
+    rsd.minFilter = WGPUFilterMode_Linear;
+    rsd.mipmapFilter = WGPUMipmapFilterMode_Linear;
+    repeatSampler_ = wgpuDeviceCreateSampler(ctx.device(), &rsd);
+
+    // ClampToEdge sampler for screen-space Post-FX passes (SSAO, Bloom, Composite)
     WGPUSamplerDescriptor lsd = WGPU_SAMPLER_DESCRIPTOR_INIT;
     lsd.addressModeU = WGPUAddressMode_ClampToEdge;
     lsd.addressModeV = WGPUAddressMode_ClampToEdge;
@@ -276,7 +382,7 @@ bool WorldRenderer::init(
   frameUbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Uniform, nullptr, sizeof(FrameUniforms));
   postUbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Uniform, nullptr, sizeof(PostUniforms));
 
-  // @group(0): FrameUniforms only (shared safely between Shadow Pass & Forward Pass)
+  // @group(0): FrameUniforms
   {
     WGPUBindGroupLayoutEntry entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
     entry.binding = 0;
@@ -302,7 +408,7 @@ bool WorldRenderer::init(
     frameBg_ = wgpuDeviceCreateBindGroup(ctx.device(), &bgDesc);
   }
 
-  // @group(3): 2-Cascade shadowMap (2DArray) + shadowSampler (Forward Pass only)
+  // @group(3): 2-Cascade shadowMap + shadowSampler
   {
     WGPUBindGroupLayoutEntry entries[2]{};
     entries[0] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
@@ -368,27 +474,42 @@ bool WorldRenderer::init(
     }
   }
 
-  // @group(2): Albedo texture + sampler
+  // @group(2): Full PBR Material BindGroup (albedoTex, repeatSampler, normalTex, mrTex, emissiveTex)
   {
-    WGPUBindGroupLayoutEntry entries[2]{};
-    entries[0] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-    entries[0].binding = 0;
-    entries[0].visibility = WGPUShaderStage_Fragment;
-    entries[0].texture.sampleType = WGPUTextureSampleType_Float;
-    entries[0].texture.viewDimension = WGPUTextureViewDimension_2D;
-
+    WGPUBindGroupLayoutEntry entries[5]{};
+    auto initTexEntry = [&](uint32_t binding) {
+      WGPUBindGroupLayoutEntry e = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+      e.binding = binding;
+      e.visibility = WGPUShaderStage_Fragment;
+      e.texture.sampleType = WGPUTextureSampleType_Float;
+      e.texture.viewDimension = WGPUTextureViewDimension_2D;
+      return e;
+    };
+    entries[0] = initTexEntry(0);
     entries[1] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
     entries[1].binding = 1;
     entries[1].visibility = WGPUShaderStage_Fragment;
     entries[1].sampler.type = WGPUSamplerBindingType_Filtering;
+    entries[2] = initTexEntry(2);
+    entries[3] = initTexEntry(3);
+    entries[4] = initTexEntry(4);
 
     WGPUBindGroupLayoutDescriptor bglDesc = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-    bglDesc.entryCount = 2;
+    bglDesc.entryCount = 5;
     bglDesc.entries = entries;
     matBgl_ = wgpuDeviceCreateBindGroupLayout(ctx.device(), &bglDesc);
 
     const uint8_t white[4] = {255, 255, 255, 255};
-    defaultWhiteTex_ = createRgbaTexture(ctx, 1, 1, white);
+    const uint8_t flatNorm[4] = {128, 128, 255, 255};
+    defaultWhiteTex_ = createRgbaTexture(ctx, 1, 1, white, false);
+    defaultFlatNormalTex_ = createRgbaTexture(ctx, 1, 1, flatNorm, false);
+    defaultWhiteTex_.bindGroup = createPbrMatBindGroup(
+      ctx,
+      defaultWhiteTex_.view,
+      defaultFlatNormalTex_.view,
+      defaultWhiteTex_.view,
+      defaultWhiteTex_.view
+    );
   }
 
   // Pipeline layouts
@@ -409,7 +530,7 @@ bool WorldRenderer::init(
     scenePipeLayout_ = wgpuDeviceCreatePipelineLayout(ctx.device(), &pld);
   }
 
-  // Post-FX bind group layout (@group(0): uPost, texA, texB, linearSampler, depthTex, texSSAO)
+  // Post-FX bind group layout
   {
     WGPUBindGroupLayoutEntry pe[6]{};
     pe[0] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
@@ -498,17 +619,45 @@ bool WorldRenderer::init(
   terrainVbl.attributeCount = 4;
   terrainVbl.attributes = terrainAttrs;
 
+  // PackedWorldVertex (28 bytes) layout
+  WGPUVertexAttribute customMeshAttrs[5]{};
+  customMeshAttrs[0] = {nullptr, WGPUVertexFormat_Float32x3, offsetof(PackedWorldVertex, px), 0};
+  customMeshAttrs[1] = {nullptr, WGPUVertexFormat_Sint8x4,   offsetof(PackedWorldVertex, nx), 1};
+  customMeshAttrs[2] = {nullptr, WGPUVertexFormat_Sint16x2,  offsetof(PackedWorldVertex, u),  2};
+  customMeshAttrs[3] = {nullptr, WGPUVertexFormat_Unorm8x4,  offsetof(PackedWorldVertex, r),  3};
+  customMeshAttrs[4] = {nullptr, WGPUVertexFormat_Unorm8x4,  offsetof(PackedWorldVertex, rough), 4};
+  WGPUVertexBufferLayout customMeshVbl = WGPU_VERTEX_BUFFER_LAYOUT_INIT;
+  customMeshVbl.stepMode = WGPUVertexStepMode_Vertex;
+  customMeshVbl.arrayStride = sizeof(PackedWorldVertex);
+  customMeshVbl.attributeCount = 5;
+  customMeshVbl.attributes = customMeshAttrs;
+
+  WGPUVertexAttribute customInstAttrs[5]{};
+  customInstAttrs[0] = {nullptr, WGPUVertexFormat_Float32x3, offsetof(InstanceAttrib, x), 5};
+  customInstAttrs[1] = {nullptr, WGPUVertexFormat_Float32x3, offsetof(InstanceAttrib, sx), 6};
+  customInstAttrs[2] = {nullptr, WGPUVertexFormat_Float32x4, offsetof(InstanceAttrib, qx), 7};
+  customInstAttrs[3] = {nullptr, WGPUVertexFormat_Float32x4, offsetof(InstanceAttrib, r), 8};
+  customInstAttrs[4] = {nullptr, WGPUVertexFormat_Float32x2, offsetof(InstanceAttrib, overrideRoughness), 9};
+  WGPUVertexBufferLayout customInstVbls[2]{};
+  customInstVbls[0] = customMeshVbl;
+  customInstVbls[1] = WGPU_VERTEX_BUFFER_LAYOUT_INIT;
+  customInstVbls[1].stepMode = WGPUVertexStepMode_Instance;
+  customInstVbls[1].arrayStride = sizeof(InstanceAttrib);
+  customInstVbls[1].attributeCount = 5;
+  customInstVbls[1].attributes = customInstAttrs;
+
   WGPUVertexAttribute modelAttrs[5]{};
   modelAttrs[0] = {nullptr, WGPUVertexFormat_Float32x3, offsetof(ModelVertex, px), 0};
   modelAttrs[1] = {nullptr, WGPUVertexFormat_Float32x3, offsetof(ModelVertex, nx), 1};
   modelAttrs[2] = {nullptr, WGPUVertexFormat_Float32x2, offsetof(ModelVertex, u), 2};
   modelAttrs[3] = {nullptr, WGPUVertexFormat_Float32x3, offsetof(ModelVertex, r), 3};
   modelAttrs[4] = {nullptr, WGPUVertexFormat_Float32x2, offsetof(ModelVertex, metallic), 8};
-  WGPUVertexAttribute instAttrs[4]{};
+  WGPUVertexAttribute instAttrs[5]{};
   instAttrs[0] = {nullptr, WGPUVertexFormat_Float32x3, offsetof(InstanceAttrib, x), 4};
   instAttrs[1] = {nullptr, WGPUVertexFormat_Float32x3, offsetof(InstanceAttrib, sx), 5};
   instAttrs[2] = {nullptr, WGPUVertexFormat_Float32x4, offsetof(InstanceAttrib, qx), 6};
   instAttrs[3] = {nullptr, WGPUVertexFormat_Float32x4, offsetof(InstanceAttrib, r), 7};
+  instAttrs[4] = {nullptr, WGPUVertexFormat_Float32x2, offsetof(InstanceAttrib, overrideRoughness), 9};
   WGPUVertexBufferLayout instVbls[2]{};
   instVbls[0] = WGPU_VERTEX_BUFFER_LAYOUT_INIT;
   instVbls[0].stepMode = WGPUVertexStepMode_Vertex;
@@ -518,7 +667,7 @@ bool WorldRenderer::init(
   instVbls[1] = WGPU_VERTEX_BUFFER_LAYOUT_INIT;
   instVbls[1].stepMode = WGPUVertexStepMode_Instance;
   instVbls[1].arrayStride = sizeof(InstanceAttrib);
-  instVbls[1].attributeCount = 4;
+  instVbls[1].attributeCount = 5;
   instVbls[1].attributes = instAttrs;
 
   WGPUVertexAttribute skinAttrs[6]{};
@@ -534,7 +683,7 @@ bool WorldRenderer::init(
   skinVbl.attributeCount = 6;
   skinVbl.attributes = skinAttrs;
 
-  // 2-Cascade Shadow pipelines (depth-only, Near 52m + Far 260m)
+  // 2-Cascade Shadow pipelines
   {
     WGPURenderPipelineDescriptor rp = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
     rp.layout = shadowStaticPipeLayout_;
@@ -554,6 +703,24 @@ bool WorldRenderer::init(
     rp.vertex.entryPoint = {"vsShadowTerrainFar", 18};
     shadowTerrainFarPipeline_ = wgpuDeviceCreateRenderPipeline(ctx.device(), &rp);
 
+    rp.primitive.cullMode = WGPUCullMode_None;
+    rp.vertex.entryPoint = {"vsShadowCustomNear", 18};
+    rp.vertex.bufferCount = 1;
+    rp.vertex.buffers = &customMeshVbl;
+    shadowCustomNearPipeline_ = wgpuDeviceCreateRenderPipeline(ctx.device(), &rp);
+
+    rp.vertex.entryPoint = {"vsShadowCustomFar", 17};
+    shadowCustomFarPipeline_ = wgpuDeviceCreateRenderPipeline(ctx.device(), &rp);
+
+    rp.vertex.entryPoint = {"vsShadowCustomInstNear", 22};
+    rp.vertex.bufferCount = 2;
+    rp.vertex.buffers = customInstVbls;
+    shadowCustomInstNearPipeline_ = wgpuDeviceCreateRenderPipeline(ctx.device(), &rp);
+
+    rp.vertex.entryPoint = {"vsShadowCustomInstFar", 21};
+    shadowCustomInstFarPipeline_ = wgpuDeviceCreateRenderPipeline(ctx.device(), &rp);
+
+    rp.primitive.cullMode = WGPUCullMode_Back;
     rp.vertex.entryPoint = {"vsShadowInstancedNear", 21};
     rp.vertex.bufferCount = 2;
     rp.vertex.buffers = instVbls;
@@ -563,6 +730,7 @@ bool WorldRenderer::init(
     shadowInstancedFarPipeline_ = wgpuDeviceCreateRenderPipeline(ctx.device(), &rp);
 
     rp.layout = shadowSkinnedPipeLayout_;
+    rp.primitive.cullMode = WGPUCullMode_None;
     rp.vertex.entryPoint = {"vsShadowSkinnedNear", 19};
     rp.vertex.bufferCount = 1;
     rp.vertex.buffers = &skinVbl;
@@ -615,9 +783,25 @@ bool WorldRenderer::init(
     rp.multisample.mask = 0xFFFFFFFFu;
     terrainPipeline_ = wgpuDeviceCreateRenderPipeline(ctx.device(), &rp);
 
+    rp.vertex.entryPoint = {"vsCustomMesh", 12};
+    rp.vertex.bufferCount = 1;
+    rp.vertex.buffers = &customMeshVbl;
+    rp.primitive.cullMode = WGPUCullMode_None;
+    customMeshPipeline_ = wgpuDeviceCreateRenderPipeline(ctx.device(), &rp);
+
+    rp.vertex.entryPoint = {"vsCustomInstanced", 17};
+    rp.vertex.bufferCount = 2;
+    rp.vertex.buffers = customInstVbls;
+    rp.primitive.cullMode = WGPUCullMode_None;
+    customInstancedPipeline_ = wgpuDeviceCreateRenderPipeline(ctx.device(), &rp);
+
     rp.vertex.entryPoint = {"vsInstanced", 11};
     rp.vertex.bufferCount = 2;
     rp.vertex.buffers = instVbls;
+    rp.primitive.cullMode = WGPUCullMode_Back;
+    archBoxPipeline_ = wgpuDeviceCreateRenderPipeline(ctx.device(), &rp);
+
+    rp.primitive.cullMode = WGPUCullMode_None;
     instancedPipeline_ = wgpuDeviceCreateRenderPipeline(ctx.device(), &rp);
 
     rp.vertex.entryPoint = {"vsSkinned", 9};
@@ -627,7 +811,7 @@ bool WorldRenderer::init(
     skinnedPipeline_ = wgpuDeviceCreateRenderPipeline(ctx.device(), &rp);
   }
 
-  // Post-FX Pipelines (SSAO, Bloom Threshold, Bloom H/V Blur, Composite Tonemap)
+  // Post-FX Pipelines
   {
     auto makePostPipe = [&](const char* fragEntry, const WGPUColorTargetState* target) {
       WGPUFragmentState fs = WGPU_FRAGMENT_STATE_INIT;
@@ -661,7 +845,10 @@ bool WorldRenderer::init(
   ensureOffscreenTargets(ctx);
 
   buildTerrainAndOceanBuffers(ctx, world);
-  buildRoadAndArenaBuffers(ctx, world);
+  buildCustomWorldMeshBuffers(ctx, world);
+  if (!world.hasCustomMeshes) {
+    buildRoadAndArenaBuffers(ctx, world);
+  }
   buildPropAndVehicleBatches(ctx, world, assets.assetsRoot);
 
   if (assets.playerBody) buildSkinnedMesh(ctx, *assets.playerBody, playerBodyGpu_);
@@ -676,12 +863,12 @@ bool WorldRenderer::init(
 }
 
 void WorldRenderer::buildTerrainAndOceanBuffers(WgpuContext& ctx, const WorldData& world) {
-  constexpr uint32_t N = 384;
-  constexpr uint32_t WN = 96;
+  constexpr uint32_t N = 512;
+  constexpr uint32_t WN = 240;
   std::vector<StaticVertex> verts;
   std::vector<uint32_t> indices;
-  verts.reserve(N * N + WN * WN);
-  indices.reserve((N - 1) * (N - 1) * 6 + (WN - 1) * (WN - 1) * 6);
+  verts.reserve(N * N + WN * WN + 64);
+  indices.reserve((N - 1) * (N - 1) * 6 + WN * WN * 3);
 
   for (uint32_t iz = 0; iz < N; ++iz) {
     const float tz = static_cast<float>(iz) / static_cast<float>(N - 1);
@@ -689,13 +876,29 @@ void WorldRenderer::buildTerrainAndOceanBuffers(WgpuContext& ctx, const WorldDat
     for (uint32_t ix = 0; ix < N; ++ix) {
       const float tx = static_cast<float>(ix) / static_cast<float>(N - 1);
       const float x = world.worldMin + tx * (world.worldMax - world.worldMin);
-      const float y = world.heightfield.sampleHeight(x, z);
+      const float rawY = world.heightfield.sampleHeight(x, z);
+      const float y = world.hasCustomMeshes ? (rawY - 0.035f) : rawY;
       const glm::vec3 n = world.heightfield.sampleNormal(x, z);
 
-      glm::vec3 col(0.22f, 0.35f, 0.19f);
-      if (y < 0.8f) col = glm::vec3(0.68f, 0.62f, 0.46f);
-      else if (n.y < 0.78f || y > 38.0f) col = glm::vec3(0.42f, 0.41f, 0.39f);
-      else if (x > -420.0f && x < 340.0f && z > -420.0f && z < 480.0f) col = glm::vec3(0.28f, 0.30f, 0.32f);
+      // Multi-biome Westgate Bay terrain splatting (Beach Sand, Riprap, Park Lawn, Foothills Chaparral, Seaport Gravel)
+      glm::vec3 col(0.24f, 0.38f, 0.20f); // lush coastal grass default
+      if (rawY < 0.35f) {
+        col = (x < -580.0f) ? glm::vec3(0.62f, 0.56f, 0.42f) : glm::vec3(0.36f, 0.35f, 0.33f);
+      } else if (x < -640.0f && rawY < 4.2f) {
+        const float sandT = std::clamp((4.2f - rawY) / 3.4f, 0.0f, 1.0f);
+        col = glm::mix(glm::vec3(0.28f, 0.40f, 0.22f), glm::vec3(0.78f, 0.71f, 0.53f), sandT);
+      } else if (rawY < 2.2f && x > -580.0f) {
+        col = glm::vec3(0.45f, 0.44f, 0.41f); // river/canal/harbor stone riprap bank
+      } else if (n.y < 0.76f) {
+        col = glm::vec3(0.44f, 0.42f, 0.39f); // steep granite cliff
+      } else if (z < -420.0f || rawY > 28.0f) {
+        const float chapT = std::clamp((rawY - 18.0f) / 45.0f, 0.0f, 1.0f);
+        col = glm::mix(glm::vec3(0.32f, 0.39f, 0.21f), glm::vec3(0.46f, 0.43f, 0.28f), chapT);
+      } else if (x > 420.0f && z > 40.0f) {
+        col = glm::vec3(0.39f, 0.39f, 0.38f); // East Seaport industrial gravel
+      } else if (x > -240.0f && x < 240.0f && z > -260.0f && z < 360.0f) {
+        col = glm::vec3(0.26f, 0.36f, 0.22f); // Downtown / Midtown manicured park & boulevard turf
+      }
 
       verts.push_back(StaticVertex{x, y, z, n.x, n.y, n.z, col.r, col.g, col.b, x * 0.05f, z * 0.05f, 0.0f});
     }
@@ -716,21 +919,27 @@ void WorldRenderer::buildTerrainAndOceanBuffers(WgpuContext& ctx, const WorldDat
     }
   }
 
-  // Subdivided Ocean Water Grid at y = 0 (kind = 1.0, u = groundY for shoreline foam & shallow cove tint)
+  // Wet-cell-clipped Interior Water Mesh (Pacific Ocean, Westgate River, Seaport Harbor, Venice Canals, Coves)
   const uint32_t wBase = static_cast<uint32_t>(verts.size());
-  const float wExt = 1800.0f;
+  std::vector<float> waterGroundY(WN * WN, 0.0f);
   for (uint32_t iz = 0; iz < WN; ++iz) {
     const float tz = static_cast<float>(iz) / static_cast<float>(WN - 1);
-    const float z = -wExt + tz * (2.0f * wExt);
+    const float z = world.worldMin + tz * (world.worldMax - world.worldMin);
     for (uint32_t ix = 0; ix < WN; ++ix) {
       const float tx = static_cast<float>(ix) / static_cast<float>(WN - 1);
-      const float x = -wExt + tx * (2.0f * wExt);
-      const float groundY = world.heightfield.sampleHeight(x, z);
-      verts.push_back(StaticVertex{x, 0.0f, z, 0.0f, 1.0f, 0.0f, 0.06f, 0.22f, 0.34f, groundY, tz, 1.0f});
+      const float x = world.worldMin + tx * (world.worldMax - world.worldMin);
+      const float gy = world.heightfield.sampleHeight(x, z);
+      waterGroundY[iz * WN + ix] = gy;
+      verts.push_back(StaticVertex{x, 0.0f, z, 0.0f, 1.0f, 0.0f, 0.06f, 0.22f, 0.34f, gy, tz, 1.0f});
     }
   }
   for (uint32_t iz = 0; iz < WN - 1; ++iz) {
     for (uint32_t ix = 0; ix < WN - 1; ++ix) {
+      const float g0 = waterGroundY[iz * WN + ix];
+      const float g1 = waterGroundY[iz * WN + ix + 1];
+      const float g2 = waterGroundY[(iz + 1) * WN + ix];
+      const float g3 = waterGroundY[(iz + 1) * WN + ix + 1];
+      if (std::min({g0, g1, g2, g3}) > 0.65f) continue; // Clip dry inland cells!
       const uint32_t i0 = wBase + iz * WN + ix;
       const uint32_t i1 = i0 + 1;
       const uint32_t i2 = i0 + WN;
@@ -744,17 +953,58 @@ void WorldRenderer::buildTerrainAndOceanBuffers(WgpuContext& ctx, const WorldDat
     }
   }
 
+  // Outer Pacific Ocean & Southern Bay Horizon Skirts out to +-3200m (zero dry-land overlap!)
+  auto addWaterSkirt = [&](float minX, float maxX, float minZ, float maxZ, uint32_t gx, uint32_t gz) {
+    const uint32_t sb = static_cast<uint32_t>(verts.size());
+    for (uint32_t iz = 0; iz <= gz; ++iz) {
+      const float z = minZ + (static_cast<float>(iz) / static_cast<float>(gz)) * (maxZ - minZ);
+      for (uint32_t ix = 0; ix <= gx; ++ix) {
+        const float x = minX + (static_cast<float>(ix) / static_cast<float>(gx)) * (maxX - minX);
+        verts.push_back(StaticVertex{x, 0.0f, z, 0.0f, 1.0f, 0.0f, 0.05f, 0.19f, 0.32f, -14.0f, 0.5f, 1.0f});
+      }
+    }
+    const uint32_t row = gx + 1;
+    for (uint32_t iz = 0; iz < gz; ++iz) {
+      for (uint32_t ix = 0; ix < gx; ++ix) {
+        const uint32_t i0 = sb + iz * row + ix;
+        const uint32_t i1 = i0 + 1;
+        const uint32_t i2 = i0 + row;
+        const uint32_t i3 = i2 + 1;
+        indices.push_back(i0); indices.push_back(i2); indices.push_back(i1);
+        indices.push_back(i1); indices.push_back(i2); indices.push_back(i3);
+      }
+    }
+  };
+  addWaterSkirt(-3400.0f, world.worldMin, -3400.0f, 3400.0f, 24, 48); // Western Pacific horizon
+  addWaterSkirt(world.worldMin, 3400.0f, world.worldMax, 3400.0f, 36, 24); // Southern Ocean/Harbor horizon
+  addWaterSkirt(world.worldMax, 3400.0f, -3400.0f, world.worldMax, 18, 36); // Eastern Bay horizon
+
   terrainIndexCount_ = static_cast<uint32_t>(indices.size());
   telemetry_.terrainTriangles = terrainIndexCount_ / 3;
   terrainVbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, verts.data(), verts.size() * sizeof(StaticVertex));
   terrainIbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Index, indices.data(), indices.size() * sizeof(uint32_t));
 }
 
+void WorldRenderer::buildCustomWorldMeshBuffers(WgpuContext& ctx, const WorldData& world) {
+  if (!world.hasCustomMeshes || world.customMeshVertices.empty() || world.customMeshIndices.empty()) return;
+
+  customMeshIndexCount_ = static_cast<uint32_t>(world.customMeshIndices.size());
+  customMeshVbo_ = createBufferWithData(
+    ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex,
+    world.customMeshVertices.data(),
+    world.customMeshVertices.size() * sizeof(PackedWorldVertex)
+  );
+  customMeshIbo_ = createBufferWithData(
+    ctx.device(), ctx.queue(), WGPUBufferUsage_Index,
+    world.customMeshIndices.data(),
+    world.customMeshIndices.size() * sizeof(uint32_t)
+  );
+}
+
 void WorldRenderer::buildRoadAndArenaBuffers(WgpuContext& ctx, const WorldData& world) {
   std::vector<StaticVertex> verts;
   std::vector<uint32_t> indices;
 
-  // 1. Exported roads with distance UVs for yellow center lines & lane dashes (kind = 2.0)
   for (const auto& seg : world.roads) {
     if (seg.samples.size() < 2) continue;
     const float hw = seg.width * 0.5f;
@@ -780,126 +1030,6 @@ void WorldRenderer::buildRoadAndArenaBuffers(WgpuContext& ctx, const WorldData& 
         indices.push_back(r1);
       }
     }
-
-    // Concrete Sidewalks / Bridge Guardrails flanking road edges (kind = 3.0)
-    const float swW = seg.isBridge ? 1.1f : 2.1f;
-    const float swY = seg.isBridge ? 0.42f : 0.14f;
-    const glm::vec3 swCol = seg.isBridge ? glm::vec3(0.45f, 0.48f, 0.52f) : glm::vec3(0.50f, 0.52f, 0.54f);
-    for (float side : {-1.0f, 1.0f}) {
-      const uint32_t sBase = static_cast<uint32_t>(verts.size());
-      for (size_t i = 0; i < seg.samples.size(); ++i) {
-        const auto& sp = seg.samples[i];
-        const glm::vec3 inner = sp.pos + glm::vec3(sp.rx * hw * side, 0.0f, sp.rz * hw * side);
-        const glm::vec3 outer = sp.pos + glm::vec3(sp.rx * (hw + swW) * side, 0.0f, sp.rz * (hw + swW) * side);
-        verts.push_back(StaticVertex{inner.x, inner.y + swY, inner.z, 0.0f, 1.0f, 0.0f, swCol.r, swCol.g, swCol.b, 0.0f, 0.0f, 3.0f});
-        verts.push_back(StaticVertex{outer.x, outer.y + swY, outer.z, 0.0f, 1.0f, 0.0f, swCol.r, swCol.g, swCol.b, 1.0f, 0.0f, 3.0f});
-        if (i > 0) {
-          const uint32_t r0 = sBase + static_cast<uint32_t>((i - 1) * 2);
-          const uint32_t r1 = sBase + static_cast<uint32_t>(i * 2);
-          if (side > 0.0f) {
-            indices.push_back(r0); indices.push_back(r0 + 1); indices.push_back(r1);
-            indices.push_back(r0 + 1); indices.push_back(r1 + 1); indices.push_back(r1);
-          } else {
-            indices.push_back(r0); indices.push_back(r1); indices.push_back(r0 + 1);
-            indices.push_back(r0 + 1); indices.push_back(r1); indices.push_back(r1 + 1);
-          }
-        }
-      }
-    }
-  }
-
-  // 2. Westgate Iron Pit Boxing Ring at fightPitPos (kind = 3.0)
-  {
-    const float groundY = world.heightfield.sampleHeight(world.fightPitPos.x, world.fightPitPos.z);
-    const glm::vec3 center(world.fightPitPos.x, groundY, world.fightPitPos.z);
-    std::vector<glm::vec3> bPos, bNorm, bCol;
-    std::vector<uint32_t> bIdx;
-
-    // Concrete apron + canvas mat
-    appendBox(bPos, bNorm, bCol, bIdx, center + glm::vec3(0.0f, 0.25f, 0.0f), glm::vec3(13.0f, 0.5f, 13.0f), glm::vec3(0.20f, 0.21f, 0.24f));
-    appendBox(bPos, bNorm, bCol, bIdx, center + glm::vec3(0.0f, 0.55f, 0.0f), glm::vec3(10.6f, 0.14f, 10.6f), glm::vec3(0.68f, 0.18f, 0.18f));
-    appendBox(bPos, bNorm, bCol, bIdx, center + glm::vec3(0.0f, 0.63f, 0.0f), glm::vec3(9.4f, 0.04f, 9.4f), glm::vec3(0.24f, 0.26f, 0.30f));
-
-    // 4 Corner posts + 12 ring ropes
-    const float rHalf = 5.1f;
-    const glm::vec2 corners[4] = {{-rHalf, -rHalf}, {rHalf, -rHalf}, {rHalf, rHalf}, {-rHalf, rHalf}};
-    for (int c = 0; c < 4; ++c) {
-      const glm::vec3 postCol = (c == 0) ? glm::vec3(0.85f, 0.15f, 0.15f)
-                              : (c == 2) ? glm::vec3(0.15f, 0.42f, 0.88f)
-                                         : glm::vec3(0.82f, 0.82f, 0.84f);
-      appendBox(bPos, bNorm, bCol, bIdx, center + glm::vec3(corners[c].x, 1.35f, corners[c].y), glm::vec3(0.26f, 1.7f, 0.26f), postCol);
-    }
-    const float ropeHeights[3] = {1.05f, 1.48f, 1.92f};
-    for (float ry : ropeHeights) {
-      const glm::vec3 ropeCol = (ry > 1.7f) ? glm::vec3(0.88f, 0.18f, 0.18f) : glm::vec3(0.86f, 0.86f, 0.88f);
-      appendBox(bPos, bNorm, bCol, bIdx, center + glm::vec3(0.0f, ry, -rHalf), glm::vec3(rHalf * 2.0f, 0.06f, 0.06f), ropeCol);
-      appendBox(bPos, bNorm, bCol, bIdx, center + glm::vec3(0.0f, ry, rHalf), glm::vec3(rHalf * 2.0f, 0.06f, 0.06f), ropeCol);
-      appendBox(bPos, bNorm, bCol, bIdx, center + glm::vec3(-rHalf, ry, 0.0f), glm::vec3(0.06f, 0.06f, rHalf * 2.0f), ropeCol);
-      appendBox(bPos, bNorm, bCol, bIdx, center + glm::vec3(rHalf, ry, 0.0f), glm::vec3(0.06f, 0.06f, rHalf * 2.0f), ropeCol);
-    }
-
-    // North & South 2-tier spectator bleachers
-    for (float side : {-1.0f, 1.0f}) {
-      const float bz = side * 8.6f;
-      appendBox(bPos, bNorm, bCol, bIdx, center + glm::vec3(0.0f, 0.45f, bz), glm::vec3(8.8f, 0.14f, 0.7f), glm::vec3(0.36f, 0.24f, 0.15f));
-      appendBox(bPos, bNorm, bCol, bIdx, center + glm::vec3(0.0f, 0.92f, bz + side * 0.65f), glm::vec3(8.8f, 0.14f, 0.7f), glm::vec3(0.36f, 0.24f, 0.15f));
-    }
-    // Viktor's Bookie Desk & Canopy (West-North apron)
-    appendBox(bPos, bNorm, bCol, bIdx, center + glm::vec3(-9.2f, 0.42f, 3.4f), glm::vec3(1.8f, 0.84f, 0.85f), glm::vec3(0.34f, 0.22f, 0.14f));
-    appendBox(bPos, bNorm, bCol, bIdx, center + glm::vec3(-9.2f, 2.55f, 3.4f), glm::vec3(2.4f, 0.12f, 1.4f), glm::vec3(0.14f, 0.17f, 0.22f));
-    // Heavy Punching Bag Gallows Stand & Barbell Rack (South-West warm-up zone)
-    appendBox(bPos, bNorm, bCol, bIdx, center + glm::vec3(-9.0f, 1.35f, -5.2f), glm::vec3(0.14f, 2.7f, 0.14f), glm::vec3(0.16f, 0.19f, 0.24f));
-    appendBox(bPos, bNorm, bCol, bIdx, center + glm::vec3(-8.4f, 2.65f, -5.2f), glm::vec3(1.2f, 0.10f, 0.10f), glm::vec3(0.16f, 0.19f, 0.24f));
-    appendBox(bPos, bNorm, bCol, bIdx, center + glm::vec3(-7.9f, 1.55f, -5.2f), glm::vec3(0.42f, 1.15f, 0.42f), glm::vec3(0.42f, 0.11f, 0.09f));
-    // Entrance fire-drum braziers
-    for (float bz : {-3.6f, 3.8f}) {
-      appendBox(bPos, bNorm, bCol, bIdx, center + glm::vec3(-7.6f, 0.48f, bz), glm::vec3(0.62f, 0.96f, 0.62f), glm::vec3(0.32f, 0.24f, 0.19f));
-      appendBox(bPos, bNorm, bCol, bIdx, center + glm::vec3(-7.6f, 1.00f, bz), glm::vec3(0.44f, 0.12f, 0.44f), glm::vec3(0.95f, 0.45f, 0.12f));
-    }
-
-    // 3. Pelican Key Suspension Bridge Towers, Piers & Lighthouse
-    for (float t : {0.30f, 0.70f}) {
-      const float bx = -706.0f + (-920.0f - -706.0f) * t;
-      const float bz = 65.0f + (345.0f - 65.0f) * t;
-      const float deckY = std::max(world.heightfield.sampleHeight(bx, bz), 2.2f + std::sin(t * 3.14159f) * 14.5f);
-      // Concrete submerged piers + twin crimson suspension towers + crossbeam
-      appendBox(bPos, bNorm, bCol, bIdx, {bx, deckY * 0.5f - 1.5f, bz}, {12.5f, deckY + 3.0f, 3.2f}, {0.42f, 0.44f, 0.46f});
-      appendBox(bPos, bNorm, bCol, bIdx, {bx - 4.8f, deckY + 11.0f, bz + 3.8f}, {1.4f, 22.0f, 1.4f}, {0.78f, 0.22f, 0.18f});
-      appendBox(bPos, bNorm, bCol, bIdx, {bx + 4.8f, deckY + 11.0f, bz - 3.8f}, {1.4f, 22.0f, 1.4f}, {0.78f, 0.22f, 0.18f});
-      appendBox(bPos, bNorm, bCol, bIdx, {bx, deckY + 19.5f, bz}, {11.0f, 1.6f, 1.2f}, {0.78f, 0.22f, 0.18f});
-    }
-    // Pelican Key Island Lighthouse
-    {
-      const float lx = -965.0f, lz = 415.0f;
-      const float ly = world.heightfield.sampleHeight(lx, lz);
-      appendBox(bPos, bNorm, bCol, bIdx, {lx, ly + 8.0f, lz}, {3.6f, 16.0f, 3.6f}, {0.92f, 0.90f, 0.86f});
-      appendBox(bPos, bNorm, bCol, bIdx, {lx, ly + 17.2f, lz}, {2.6f, 2.4f, 2.6f}, {0.98f, 0.84f, 0.34f});
-      appendBox(bPos, bNorm, bCol, bIdx, {lx, ly + 19.2f, lz}, {3.2f, 1.2f, 3.2f}, {0.76f, 0.18f, 0.16f});
-    }
-
-    // 4. Walk-In Interior Architecture (Safehouse, Civic 24/7 Mart, Customs Garage, Iron Pit Armory)
-    auto appendWalkInRoom = [&](float rx, float rz, float halfW, float halfD, float wallH, const glm::vec3& wallCol, const glm::vec3& floorCol) {
-      const float gy = world.heightfield.sampleHeight(rx, rz);
-      appendBox(bPos, bNorm, bCol, bIdx, {rx, gy + 0.08f, rz}, {halfW * 2.0f, 0.16f, halfD * 2.0f}, floorCol);
-      appendBox(bPos, bNorm, bCol, bIdx, {rx, gy + wallH + 0.12f, rz}, {halfW * 2.0f + 0.4f, 0.24f, halfD * 2.0f + 0.4f}, {0.26f, 0.28f, 0.32f});
-      appendBox(bPos, bNorm, bCol, bIdx, {rx - halfW, gy + wallH * 0.5f, rz}, {0.36f, wallH, halfD * 2.0f}, wallCol);
-      appendBox(bPos, bNorm, bCol, bIdx, {rx + halfW, gy + wallH * 0.5f, rz}, {0.36f, wallH, halfD * 2.0f}, wallCol);
-      appendBox(bPos, bNorm, bCol, bIdx, {rx, gy + wallH * 0.5f, rz - halfD}, {halfW * 2.0f, wallH, 0.36f}, wallCol);
-      const float wingW = std::max(0.5f, (halfW * 2.0f - 3.4f) * 0.25f);
-      appendBox(bPos, bNorm, bCol, bIdx, {rx - halfW + wingW, gy + wallH * 0.5f, rz + halfD}, {wingW * 2.0f, wallH, 0.36f}, wallCol);
-      appendBox(bPos, bNorm, bCol, bIdx, {rx + halfW - wingW, gy + wallH * 0.5f, rz + halfD}, {wingW * 2.0f, wallH, 0.36f}, wallCol);
-      appendBox(bPos, bNorm, bCol, bIdx, {rx, gy + wallH - 0.35f, rz + halfD}, {3.6f, 0.7f, 0.40f}, {0.18f, 0.42f, 0.72f});
-    };
-    appendWalkInRoom(world.spawnPos.x - 13.0f, world.spawnPos.z - 11.0f, 4.8f, 4.2f, 3.4f, {0.72f, 0.68f, 0.62f}, {0.42f, 0.32f, 0.24f});
-    appendWalkInRoom(-38.0f, -125.0f, 5.2f, 4.5f, 3.6f, {0.82f, 0.84f, 0.86f}, {0.58f, 0.60f, 0.64f});
-    appendWalkInRoom(112.0f, -135.0f, 6.2f, 5.6f, 4.2f, {0.46f, 0.48f, 0.52f}, {0.30f, 0.32f, 0.35f});
-    appendWalkInRoom(704.0f, 108.0f, 4.4f, 4.0f, 3.4f, {0.38f, 0.34f, 0.32f}, {0.24f, 0.24f, 0.26f});
-
-    const uint32_t vBase = static_cast<uint32_t>(verts.size());
-    for (size_t i = 0; i < bPos.size(); ++i) {
-      verts.push_back(StaticVertex{bPos[i].x, bPos[i].y, bPos[i].z, bNorm[i].x, bNorm[i].y, bNorm[i].z, bCol[i].r, bCol[i].g, bCol[i].b, 0.0f, 0.0f, 3.0f});
-    }
-    for (uint32_t idx : bIdx) indices.push_back(vBase + idx);
   }
 
   roadIndexCount_ = static_cast<uint32_t>(indices.size());
@@ -1019,7 +1149,6 @@ void WorldRenderer::ensureOffscreenTargets(WgpuContext& ctx) {
     relBg(postBgComposite_);
   }
 
-  // Always bind the live ctx.depthView() so recreated depth buffers never leave a frozen silhouette in SSAO/Composite
   boundDepthView_ = ctx.depthView();
   postBgSSAO_ = createPostBindGroup(ctx, defaultWhiteTex_.view, defaultWhiteTex_.view, boundDepthView_, defaultWhiteTex_.view);
   postBgThresh_ = createPostBindGroup(ctx, hdrView_, defaultWhiteTex_.view, boundDepthView_, defaultWhiteTex_.view);
@@ -1036,32 +1165,80 @@ bool WorldRenderer::loadGlbBatch(
   float normalizeTargetLength,
   bool decodeTextures,
   bool isVehicle,
-  float yawOffsetRad
+  float yawOffsetRad,
+  bool centerXZOnRaw
 ) {
   if (!std::filesystem::exists(path)) return false;
   GltfModel model;
   if (!GltfAssetLoader::loadGlb(path, model, decodeTextures, nullptr) || model.primitives.empty()) return false;
 
-  std::vector<ModelVertex> verts;
-  std::vector<uint32_t> indices;
-  const glm::vec3 size = model.boundsMax - model.boundsMin;
-  const float maxHoriz = std::max(size.x, size.z);
-  const float scale = (normalizeTargetLength > 0.0f && maxHoriz > 1e-4f) ? (normalizeTargetLength / maxHoriz) : 1.0f;
-  const float cx = (normalizeTargetLength > 0.0f) ? (model.boundsMin.x + model.boundsMax.x) * 0.5f : 0.0f;
-  const float cz = (normalizeTargetLength > 0.0f) ? (model.boundsMin.z + model.boundsMax.z) * 0.5f : 0.0f;
-  const float minY = model.boundsMin.y;
   const float cosY = std::cos(yawOffsetRad);
   const float sinY = std::sin(yawOffsetRad);
 
-  std::unordered_map<int32_t, WGPUBindGroup> texBgCache;
+  // Compute post-yawOffset bounds so rotated models (90-deg houses, aircraft, mustangs) center & scale identically to PropModels.ts
+  glm::vec3 rotMin(1e30f), rotMax(-1e30f);
+  for (const auto& prim : model.primitives) {
+    for (const auto& v : prim.vertices) {
+      const float rx = v.position.x * cosY + v.position.z * sinY;
+      const float rz = -v.position.x * sinY + v.position.z * cosY;
+      rotMin = glm::min(rotMin, glm::vec3(rx, v.position.y, rz));
+      rotMax = glm::max(rotMax, glm::vec3(rx, v.position.y, rz));
+    }
+  }
+  if (rotMin.x > rotMax.x) {
+    rotMin = model.boundsMin;
+    rotMax = model.boundsMax;
+  }
+  outBatch.rawMin = rotMin;
+  outBatch.rawMax = rotMax;
+
+  const glm::vec3 size = rotMax - rotMin;
+  const float maxHoriz = std::max(size.x, size.z);
+  const float scale = (normalizeTargetLength > 0.0f && maxHoriz > 1e-4f) ? (normalizeTargetLength / maxHoriz) : 1.0f;
+  const bool doCenterXZ = (normalizeTargetLength > 0.0f) || centerXZOnRaw;
+  const float cx = doCenterXZ ? (rotMin.x + rotMax.x) * 0.5f : 0.0f;
+  const float cz = doCenterXZ ? (rotMin.z + rotMax.z) * 0.5f : 0.0f;
+  const float minY = rotMin.y;
+
+  std::unordered_map<int32_t, WGPUTextureView> texViewCache;
+  auto getTexView = [&](int32_t idx, WGPUTextureView fallback) -> WGPUTextureView {
+    if (idx < 0 || static_cast<size_t>(idx) >= model.textures.size()) return fallback;
+    auto it = texViewCache.find(idx);
+    if (it != texViewCache.end()) return it->second;
+    const auto& td = model.textures[idx];
+    if (td.width == 0 || td.height == 0 || td.rgba8.empty()) return fallback;
+    GpuTextureBinding gtb = createRgbaTexture(ctx, td.width, td.height, td.rgba8.data(), false);
+    outBatch.ownedTextures.push_back(gtb);
+    texViewCache[idx] = gtb.view;
+    return gtb.view;
+  };
+
+  std::unordered_map<uint64_t, WGPUBindGroup> matBgCache;
+  auto getPbrBg = [&](int32_t alb, int32_t nrm, int32_t mr, int32_t em) -> WGPUBindGroup {
+    if (alb < 0 && nrm < 0 && mr < 0 && em < 0) return defaultWhiteTex_.bindGroup;
+    const uint64_t key =
+      (static_cast<uint64_t>(static_cast<uint16_t>(alb + 1)) << 48) |
+      (static_cast<uint64_t>(static_cast<uint16_t>(nrm + 1)) << 32) |
+      (static_cast<uint64_t>(static_cast<uint16_t>(mr + 1))  << 16) |
+      static_cast<uint64_t>(static_cast<uint16_t>(em + 1));
+    auto it = matBgCache.find(key);
+    if (it != matBgCache.end()) return it->second;
+    WGPUBindGroup bg = createPbrMatBindGroup(
+      ctx,
+      getTexView(alb, defaultWhiteTex_.view),
+      getTexView(nrm, defaultFlatNormalTex_.view),
+      getTexView(mr, defaultWhiteTex_.view),
+      getTexView(em, defaultWhiteTex_.view)
+    );
+    outBatch.ownedBindGroups.push_back(bg);
+    matBgCache[key] = bg;
+    return bg;
+  };
+
   std::vector<size_t> primOrder(model.primitives.size());
   for (size_t i = 0; i < primOrder.size(); ++i) primOrder[i] = i;
   std::sort(primOrder.begin(), primOrder.end(), [&](size_t a, size_t b) {
-    const int32_t ma = model.primitives[a].materialIndex;
-    const int32_t mb = model.primitives[b].materialIndex;
-    const int32_t ta = (ma >= 0 && static_cast<size_t>(ma) < model.materials.size()) ? model.materials[ma].baseColorTexIndex : -1;
-    const int32_t tb = (mb >= 0 && static_cast<size_t>(mb) < model.materials.size()) ? model.materials[mb].baseColorTexIndex : -1;
-    return ta < tb;
+    return model.primitives[a].materialIndex < model.primitives[b].materialIndex;
   });
 
   auto startsWith = [](const std::string& s, const char* prefix) -> bool {
@@ -1074,14 +1251,17 @@ bool WorldRenderer::loadGlbBatch(
     return lo.find(needle) != std::string::npos;
   };
 
+  std::vector<ModelVertex> verts;
+  std::vector<uint32_t> indices;
   WGPUBindGroup curTexBg = nullptr;
+
   for (size_t pi : primOrder) {
     const auto& prim = model.primitives[pi];
     const uint32_t base = static_cast<uint32_t>(verts.size());
     const uint32_t iStart = static_cast<uint32_t>(indices.size());
     glm::vec3 matCol(1.0f);
     float metallic = 0.05f;
-    float roughness = 0.58f;
+    float roughness = 0.62f;
     float encodedMetallic = metallic;
     WGPUBindGroup texBg = defaultWhiteTex_.bindGroup;
     bool hasTexture = false;
@@ -1090,98 +1270,52 @@ bool WorldRenderer::loadGlbBatch(
       const auto& mat = model.materials[prim.materialIndex];
       matCol = glm::vec3(mat.baseColor);
       metallic = std::clamp(mat.metallic, 0.0f, 1.0f);
-      roughness = std::clamp(mat.roughness, 0.08f, 0.98f);
-      if (mat.baseColorTexIndex >= 0 && static_cast<size_t>(mat.baseColorTexIndex) < model.textures.size()) {
-        auto it = texBgCache.find(mat.baseColorTexIndex);
-        if (it != texBgCache.end()) {
-          texBg = it->second;
-          matCol = glm::vec3(1.0f);
-          hasTexture = true;
-        } else {
-          const auto& td = model.textures[mat.baseColorTexIndex];
-          if (td.width > 0 && td.height > 0 && !td.rgba8.empty()) {
-            GpuTextureBinding gtb = createRgbaTexture(ctx, td.width, td.height, td.rgba8.data());
-            texBg = gtb.bindGroup;
-            texBgCache[mat.baseColorTexIndex] = texBg;
-            outBatch.ownedTextures.push_back(gtb);
-            matCol = glm::vec3(1.0f);
-            hasTexture = true;
-          }
-        }
-      }
+      roughness = std::clamp(mat.roughness, 0.06f, 0.98f);
+      hasTexture = (mat.baseColorTexIndex >= 0 && static_cast<size_t>(mat.baseColorTexIndex) < model.textures.size());
+      texBg = getPbrBg(mat.baseColorTexIndex, mat.normalTexIndex, mat.metallicRoughnessTexIndex, mat.emissiveTexIndex);
 
       if (isVehicle) {
         const std::string& mn = mat.name;
         if (startsWith(mn, "paint__")) {
-          // Metallic clearcoat body paint (receives instance colorTint)
           metallic = 0.26f;
           roughness = 0.14f;
           encodedMetallic = 2.0f + metallic;
           if (!hasTexture) matCol = glm::vec3(1.0f);
         } else if (startsWith(mn, "headlight__")) {
           if (containsCI(mn, "cover") || containsCI(mn, "glass")) {
-            encodedMetallic = -3.0f;
-            roughness = 0.05f;
-            matCol = glm::vec3(0.84f, 0.90f, 0.96f);
+            encodedMetallic = -3.0f; roughness = 0.05f; matCol = glm::vec3(0.84f, 0.90f, 0.96f);
           } else if (containsCI(mn, "beacon_blue")) {
-            encodedMetallic = -4.0f;
-            roughness = 0.10f;
-            matCol = glm::vec3(0.18f, 0.48f, 1.0f);
+            encodedMetallic = -4.0f; roughness = 0.10f; matCol = glm::vec3(0.18f, 0.48f, 1.0f);
           } else {
-            encodedMetallic = -1.0f;
-            roughness = 0.10f;
-            matCol = glm::vec3(0.96f, 0.98f, 1.0f);
+            encodedMetallic = -1.0f; roughness = 0.10f; matCol = glm::vec3(0.96f, 0.98f, 1.0f);
           }
         } else if (startsWith(mn, "taillight__")) {
           if (containsCI(mn, "cover")) {
-            encodedMetallic = -3.0f;
-            roughness = 0.06f;
-            matCol = glm::vec3(0.55f, 0.04f, 0.06f);
+            encodedMetallic = -3.0f; roughness = 0.06f; matCol = glm::vec3(0.55f, 0.04f, 0.06f);
           } else if (containsCI(mn, "beacon_red")) {
-            encodedMetallic = -5.0f;
-            roughness = 0.10f;
-            matCol = glm::vec3(1.0f, 0.10f, 0.10f);
+            encodedMetallic = -5.0f; roughness = 0.10f; matCol = glm::vec3(1.0f, 0.10f, 0.10f);
           } else {
-            encodedMetallic = -2.0f;
-            roughness = 0.12f;
-            matCol = glm::vec3(0.95f, 0.08f, 0.08f);
+            encodedMetallic = -2.0f; roughness = 0.12f; matCol = glm::vec3(0.95f, 0.08f, 0.08f);
           }
         } else if (startsWith(mn, "glass__") || containsCI(mn, "windshield")) {
-          encodedMetallic = -3.0f;
-          roughness = 0.05f;
-          matCol = glm::vec3(0.10f, 0.14f, 0.20f);
+          encodedMetallic = -3.0f; roughness = 0.05f; matCol = glm::vec3(0.10f, 0.14f, 0.20f);
         } else {
           if (startsWith(mn, "chrome__")) {
-            metallic = 1.0f;
-            roughness = 0.08f;
+            metallic = 1.0f; roughness = 0.08f;
           } else if (startsWith(mn, "rim__")) {
-            metallic = 0.88f;
-            roughness = 0.18f;
+            metallic = 0.88f; roughness = 0.18f;
           } else if (startsWith(mn, "brake__")) {
             const bool isDisc = containsCI(mn, "disc") || containsCI(mn, "disk") || containsCI(mn, "pad2") || containsCI(mn, "brake-discs");
-            if (isDisc) {
-              metallic = 0.90f;
-              roughness = 0.22f;
-            } else {
-              metallic = 0.52f;
-              roughness = 0.30f;
-              if (!hasTexture) matCol = glm::vec3(0.76f, 0.09f, 0.09f);
-            }
+            if (isDisc) { metallic = 0.90f; roughness = 0.22f; }
+            else { metallic = 0.52f; roughness = 0.30f; if (!hasTexture) matCol = glm::vec3(0.76f, 0.09f, 0.09f); }
           } else if (startsWith(mn, "plate__")) {
-            metallic = 0.34f;
-            roughness = 0.28f;
-            if (!hasTexture && matCol.r > 0.88f && matCol.g > 0.88f && matCol.b > 0.88f) {
-              matCol = glm::vec3(0.84f, 0.87f, 0.91f);
-            }
+            metallic = 0.34f; roughness = 0.28f;
+            if (!hasTexture && matCol.r > 0.88f && matCol.g > 0.88f && matCol.b > 0.88f) matCol = glm::vec3(0.84f, 0.87f, 0.91f);
           } else if (startsWith(mn, "tire__")) {
-            metallic = 0.02f;
-            roughness = 0.86f;
-            if (!hasTexture && (matCol.r > 0.25f || matCol.g > 0.25f || matCol.b > 0.25f)) {
-              matCol = glm::vec3(0.085f, 0.095f, 0.11f);
-            }
+            metallic = 0.02f; roughness = 0.86f;
+            if (!hasTexture && (matCol.r > 0.25f || matCol.g > 0.25f || matCol.b > 0.25f)) matCol = glm::vec3(0.085f, 0.095f, 0.11f);
           } else if (startsWith(mn, "trim__") || startsWith(mn, "carbon__")) {
-            metallic = 0.16f;
-            roughness = 0.42f;
+            metallic = 0.16f; roughness = 0.42f;
             if (!hasTexture && !containsCI(mn, "_livery")) {
               const float lum = matCol.r * 0.299f + matCol.g * 0.587f + matCol.b * 0.114f;
               if (lum > 0.72f) matCol = glm::vec3(0.095f, 0.105f, 0.125f);
@@ -1198,17 +1332,17 @@ bool WorldRenderer::loadGlbBatch(
 
     for (const auto& v : prim.vertices) {
       const glm::vec3 col = glm::vec3(v.color) * matCol;
-      const float lx = (v.position.x - cx) * scale;
+      const float rxRaw = v.position.x * cosY + v.position.z * sinY;
+      const float rzRaw = -v.position.x * sinY + v.position.z * cosY;
+      const float lx = (rxRaw - cx) * scale;
       const float ly = (v.position.y - minY) * scale;
-      const float lz = (v.position.z - cz) * scale;
-      const float rx = lx * cosY + lz * sinY;
-      const float rz = -lx * sinY + lz * cosY;
+      const float lz = (rzRaw - cz) * scale;
       const float nx = v.normal.x * cosY + v.normal.z * sinY;
       const float nz = -v.normal.x * sinY + v.normal.z * cosY;
       verts.push_back(ModelVertex{
-        rx, ly, rz,
+        lx, ly, lz,
         nx, v.normal.y, nz,
-        std::max(0.0f, v.uv.x), std::max(0.0f, v.uv.y),
+        v.uv.x, v.uv.y, // Preserve unclamped tiled UVs for Repeat sampler!
         col.r, col.g, col.b,
         encodedMetallic, roughness
       });
@@ -1232,13 +1366,21 @@ bool WorldRenderer::loadGlbBatch(
   outBatch.vbo = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, verts.data(), verts.size() * sizeof(ModelVertex));
   outBatch.ibo = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Index, indices.data(), indices.size() * sizeof(uint32_t));
 
-  outBatch.maxInstances = static_cast<uint32_t>(std::max<size_t>(32, instances.size()));
+  outBatch.maxInstances = static_cast<uint32_t>(std::max<size_t>(16, instances.size()));
   outBatch.instanceCount = static_cast<uint32_t>(instances.size());
   outBatch.instVbo = createBufferWithData(
-    ctx.device(),
-    ctx.queue(),
-    WGPUBufferUsage_Vertex,
+    ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex,
     instances.empty() ? nullptr : instances.data(),
+    outBatch.maxInstances * sizeof(InstanceAttrib)
+  );
+  outBatch.shadowNearInstVbo = createBufferWithData(
+    ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex,
+    nullptr,
+    outBatch.maxInstances * sizeof(InstanceAttrib)
+  );
+  outBatch.shadowFarInstVbo = createBufferWithData(
+    ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex,
+    nullptr,
     outBatch.maxInstances * sizeof(InstanceAttrib)
   );
   return true;
@@ -1250,104 +1392,21 @@ bool WorldRenderer::loadGlbUnitBoxBatch(
   uint32_t maxInstances,
   InstancedGlbBatch& outBatch
 ) {
-  if (!std::filesystem::exists(path)) return false;
-  GltfModel model;
-  if (!GltfAssetLoader::loadGlb(path, model, false, nullptr) || model.primitives.empty()) return false;
-
-  std::vector<ModelVertex> verts;
-  std::vector<uint32_t> indices;
-  const glm::vec3 sz = glm::max(model.boundsMax - model.boundsMin, glm::vec3(0.01f));
-  const glm::vec3 ctr = (model.boundsMin + model.boundsMax) * 0.5f;
-
-  std::unordered_map<int32_t, WGPUBindGroup> texBgCache;
-  std::vector<size_t> primOrder(model.primitives.size());
-  for (size_t i = 0; i < primOrder.size(); ++i) primOrder[i] = i;
-  std::sort(primOrder.begin(), primOrder.end(), [&](size_t a, size_t b) {
-    const int32_t ma = model.primitives[a].materialIndex;
-    const int32_t mb = model.primitives[b].materialIndex;
-    const int32_t ta = (ma >= 0 && static_cast<size_t>(ma) < model.materials.size()) ? model.materials[ma].baseColorTexIndex : -1;
-    const int32_t tb = (mb >= 0 && static_cast<size_t>(mb) < model.materials.size()) ? model.materials[mb].baseColorTexIndex : -1;
-    return ta < tb;
-  });
-
-  WGPUBindGroup curTexBg = nullptr;
-  for (size_t pi : primOrder) {
-    const auto& prim = model.primitives[pi];
-    const uint32_t base = static_cast<uint32_t>(verts.size());
-    const uint32_t iStart = static_cast<uint32_t>(indices.size());
-    glm::vec3 matCol(1.0f);
-    float metallic = 0.04f;
-    float roughness = 0.76f;
-    WGPUBindGroup texBg = defaultWhiteTex_.bindGroup;
-
-    if (prim.materialIndex >= 0 && static_cast<size_t>(prim.materialIndex) < model.materials.size()) {
-      const auto& mat = model.materials[prim.materialIndex];
-      matCol = glm::vec3(mat.baseColor);
-      metallic = std::clamp(mat.metallic, 0.0f, 1.0f);
-      roughness = std::clamp(mat.roughness, 0.12f, 0.98f);
-      if (mat.baseColorTexIndex >= 0 && static_cast<size_t>(mat.baseColorTexIndex) < model.textures.size()) {
-        auto it = texBgCache.find(mat.baseColorTexIndex);
-        if (it != texBgCache.end()) {
-          texBg = it->second;
-          matCol = glm::vec3(1.0f);
-        } else {
-          const auto& td = model.textures[mat.baseColorTexIndex];
-          if (td.width > 0 && td.height > 0 && !td.rgba8.empty()) {
-            GpuTextureBinding gtb = createRgbaTexture(ctx, td.width, td.height, td.rgba8.data());
-            texBg = gtb.bindGroup;
-            texBgCache[mat.baseColorTexIndex] = texBg;
-            outBatch.ownedTextures.push_back(gtb);
-            matCol = glm::vec3(1.0f);
-          }
-        }
-      }
-    }
-
-    for (const auto& v : prim.vertices) {
-      const glm::vec3 col = glm::vec3(v.color) * matCol;
-      verts.push_back(ModelVertex{
-        (v.position.x - ctr.x) / sz.x,
-        (v.position.y - ctr.y) / sz.y,
-        (v.position.z - ctr.z) / sz.z,
-        v.normal.x, v.normal.y, v.normal.z,
-        std::max(0.0f, v.uv.x), std::max(0.0f, v.uv.y),
-        col.r, col.g, col.b,
-        metallic, roughness
-      });
-    }
-    for (uint32_t idx : prim.indices) {
-      indices.push_back(base + idx);
-    }
-    const uint32_t addedIdx = static_cast<uint32_t>(indices.size()) - iStart;
-    if (addedIdx > 0) {
-      if (!outBatch.submeshes.empty() && curTexBg == texBg) {
-        outBatch.submeshes.back().indexCount += addedIdx;
-      } else {
-        outBatch.submeshes.push_back(GlbSubmesh{iStart, addedIdx, texBg});
-        curTexBg = texBg;
-      }
-    }
-  }
-  if (indices.empty()) return false;
-
-  outBatch.indexCount = static_cast<uint32_t>(indices.size());
-  outBatch.vbo = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, verts.data(), verts.size() * sizeof(ModelVertex));
-  outBatch.ibo = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Index, indices.data(), indices.size() * sizeof(uint32_t));
-  outBatch.maxInstances = std::max(64u, maxInstances);
+  std::vector<InstanceAttrib> dummy(maxInstances);
+  if (!loadGlbBatch(ctx, path, dummy, outBatch, 1.0f, true, false, 0.0f, true)) return false;
   outBatch.instanceCount = 0;
-  outBatch.instVbo = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, nullptr, outBatch.maxInstances * sizeof(InstanceAttrib));
   return true;
 }
 
 void WorldRenderer::buildPropAndVehicleBatches(WgpuContext& ctx, const WorldData& world, const std::string& assetsRoot) {
-  // Unit 1x1x1 cube for buildings & fallback props (uv = (-1, -1) flags building window grid in WGSL)
+  // Unit 1x1x1 cube (uv = (-1000, -1000) flags procedural window grid ONLY on legacy untextured unitBox towers)
   const ModelVertex boxVerts[24] = {
-    {-0.5f, -0.5f,  0.5f, 0, 0, 1, -1, -1, 1, 1, 1, 0.04f, 0.72f}, { 0.5f, -0.5f,  0.5f, 0, 0, 1, -1, -1, 1, 1, 1, 0.04f, 0.72f}, { 0.5f,  0.5f,  0.5f, 0, 0, 1, -1, -1, 1, 1, 1, 0.04f, 0.72f}, {-0.5f,  0.5f,  0.5f, 0, 0, 1, -1, -1, 1, 1, 1, 0.04f, 0.72f},
-    { 0.5f, -0.5f, -0.5f, 0, 0, -1, -1, -1, 1, 1, 1, 0.04f, 0.72f}, {-0.5f, -0.5f, -0.5f, 0, 0, -1, -1, -1, 1, 1, 1, 0.04f, 0.72f}, {-0.5f,  0.5f, -0.5f, 0, 0, -1, -1, -1, 1, 1, 1, 0.04f, 0.72f}, { 0.5f,  0.5f, -0.5f, 0, 0, -1, -1, -1, 1, 1, 1, 0.04f, 0.72f},
-    { 0.5f, -0.5f,  0.5f, 1, 0, 0, -1, -1, 1, 1, 1, 0.04f, 0.72f}, { 0.5f, -0.5f, -0.5f, 1, 0, 0, -1, -1, 1, 1, 1, 0.04f, 0.72f}, { 0.5f,  0.5f, -0.5f, 1, 0, 0, -1, -1, 1, 1, 1, 0.04f, 0.72f}, { 0.5f,  0.5f,  0.5f, 1, 0, 0, -1, -1, 1, 1, 1, 0.04f, 0.72f},
-    {-0.5f, -0.5f, -0.5f, -1, 0, 0, -1, -1, 1, 1, 1, 0.04f, 0.72f}, {-0.5f, -0.5f,  0.5f, -1, 0, 0, -1, -1, 1, 1, 1, 0.04f, 0.72f}, {-0.5f,  0.5f,  0.5f, -1, 0, 0, -1, -1, 1, 1, 1, 0.04f, 0.72f}, {-0.5f,  0.5f, -0.5f, -1, 0, 0, -1, -1, 1, 1, 1, 0.04f, 0.72f},
-    {-0.5f,  0.5f,  0.5f, 0, 1, 0, -1, -1, 1, 1, 1, 0.04f, 0.72f}, { 0.5f,  0.5f,  0.5f, 0, 1, 0, -1, -1, 1, 1, 1, 0.04f, 0.72f}, { 0.5f,  0.5f, -0.5f, 0, 1, 0, -1, -1, 1, 1, 1, 0.04f, 0.72f}, {-0.5f,  0.5f, -0.5f, 0, 1, 0, -1, -1, 1, 1, 1, 0.04f, 0.72f},
-    {-0.5f, -0.5f, -0.5f, 0, -1, 0, -1, -1, 1, 1, 1, 0.04f, 0.72f}, { 0.5f, -0.5f, -0.5f, 0, -1, 0, -1, -1, 1, 1, 1, 0.04f, 0.72f}, { 0.5f, -0.5f,  0.5f, 0, -1, 0, -1, -1, 1, 1, 1, 0.04f, 0.72f}, {-0.5f, -0.5f,  0.5f, 0, -1, 0, -1, -1, 1, 1, 1, 0.04f, 0.72f},
+    {-0.5f, -0.5f,  0.5f, 0, 0, 1, -1000, -1000, 1, 1, 1, 0.04f, 0.72f}, { 0.5f, -0.5f,  0.5f, 0, 0, 1, -1000, -1000, 1, 1, 1, 0.04f, 0.72f}, { 0.5f,  0.5f,  0.5f, 0, 0, 1, -1000, -1000, 1, 1, 1, 0.04f, 0.72f}, {-0.5f,  0.5f,  0.5f, 0, 0, 1, -1000, -1000, 1, 1, 1, 0.04f, 0.72f},
+    { 0.5f, -0.5f, -0.5f, 0, 0, -1, -1000, -1000, 1, 1, 1, 0.04f, 0.72f}, {-0.5f, -0.5f, -0.5f, 0, 0, -1, -1000, -1000, 1, 1, 1, 0.04f, 0.72f}, {-0.5f,  0.5f, -0.5f, 0, 0, -1, -1000, -1000, 1, 1, 1, 0.04f, 0.72f}, { 0.5f,  0.5f, -0.5f, 0, 0, -1, -1000, -1000, 1, 1, 1, 0.04f, 0.72f},
+    { 0.5f, -0.5f,  0.5f, 1, 0, 0, -1000, -1000, 1, 1, 1, 0.04f, 0.72f}, { 0.5f, -0.5f, -0.5f, 1, 0, 0, -1000, -1000, 1, 1, 1, 0.04f, 0.72f}, { 0.5f,  0.5f, -0.5f, 1, 0, 0, -1000, -1000, 1, 1, 1, 0.04f, 0.72f}, { 0.5f,  0.5f,  0.5f, 1, 0, 0, -1000, -1000, 1, 1, 1, 0.04f, 0.72f},
+    {-0.5f, -0.5f, -0.5f, -1, 0, 0, -1000, -1000, 1, 1, 1, 0.04f, 0.72f}, {-0.5f, -0.5f,  0.5f, -1, 0, 0, -1000, -1000, 1, 1, 1, 0.04f, 0.72f}, {-0.5f,  0.5f,  0.5f, -1, 0, 0, -1000, -1000, 1, 1, 1, 0.04f, 0.72f}, {-0.5f,  0.5f, -0.5f, -1, 0, 0, -1000, -1000, 1, 1, 1, 0.04f, 0.72f},
+    {-0.5f,  0.5f,  0.5f, 0, 1, 0, -1000, -1000, 1, 1, 1, 0.04f, 0.72f}, { 0.5f,  0.5f,  0.5f, 0, 1, 0, -1000, -1000, 1, 1, 1, 0.04f, 0.72f}, { 0.5f,  0.5f, -0.5f, 0, 1, 0, -1000, -1000, 1, 1, 1, 0.04f, 0.72f}, {-0.5f,  0.5f, -0.5f, 0, 1, 0, -1000, -1000, 1, 1, 1, 0.04f, 0.72f},
+    {-0.5f, -0.5f, -0.5f, 0, -1, 0, -1000, -1000, 1, 1, 1, 0.04f, 0.72f}, { 0.5f, -0.5f, -0.5f, 0, -1, 0, -1000, -1000, 1, 1, 1, 0.04f, 0.72f}, { 0.5f, -0.5f,  0.5f, 0, -1, 0, -1000, -1000, 1, 1, 1, 0.04f, 0.72f}, {-0.5f, -0.5f,  0.5f, 0, -1, 0, -1000, -1000, 1, 1, 1, 0.04f, 0.72f},
   };
   const uint32_t boxIdx[36] = {
      0,  1,  2,  0,  2,  3,  4,  5,  6,  4,  6,  7,
@@ -1358,11 +1417,19 @@ void WorldRenderer::buildPropAndVehicleBatches(WgpuContext& ctx, const WorldData
   unitBoxVbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, boxVerts, sizeof(boxVerts));
   unitBoxIbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Index, boxIdx, sizeof(boxIdx));
 
-  size_t totalB = 0;
-  for (const auto& c : world.chunks) totalB += c.buildings.size();
-  buildingCapacity_ = static_cast<uint32_t>(std::max<size_t>(64, totalB));
+  size_t totalNearBoxes = 0;
+  for (const auto& c : world.chunks) {
+    totalNearBoxes += c.nearBoxes.size() + c.lodBoxes.size() + c.buildings.size();
+  }
+  buildingCapacity_ = static_cast<uint32_t>(std::clamp<size_t>(totalNearBoxes / 2 + 16384, 16384, 180000));
+  shadowNearBoxCapacity_ = 40000;
+  shadowFarBoxCapacity_ = 48000;
   buildingInstVbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, nullptr, buildingCapacity_ * sizeof(InstanceAttrib));
+  shadowNearBoxInstVbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, nullptr, shadowNearBoxCapacity_ * sizeof(InstanceAttrib));
+  shadowFarBoxInstVbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, nullptr, shadowFarBoxCapacity_ * sizeof(InstanceAttrib));
   buildingStaging_.reserve(buildingCapacity_);
+  shadowNearBoxStaging_.reserve(shadowNearBoxCapacity_);
+  shadowFarBoxStaging_.reserve(shadowFarBoxCapacity_);
 
   markerCapacity_ = 1024;
   markerInstVbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, nullptr, markerCapacity_ * sizeof(InstanceAttrib));
@@ -1372,158 +1439,181 @@ void WorldRenderer::buildPropAndVehicleBatches(WgpuContext& ctx, const WorldData
   dynPropInstVbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, nullptr, dynPropCapacity_ * sizeof(InstanceAttrib));
   dynPropStaging_.reserve(dynPropCapacity_);
 
-  static const std::unordered_map<std::string, std::pair<std::string, float>> protoGlbMap = {
-    {"palm_tree", {"tree_palm.glb", 1.75f}},
-    {"oak_tree", {"tree_oak.glb", 1.95f}},
-    {"pine_tree", {"tree_pine.glb", 1.95f}},
-    {"bush", {"bush.glb", 1.15f}},
-    {"rock", {"rock.glb", 1.15f}},
-    {"dumpster", {"dumpster_bin.glb", 1.0f}},
-    {"park_bench", {"park_bench.glb", 1.0f}},
-    {"stop_sign", {"sign_stop.glb", 1.0f}},
-    {"trashcan", {"trash_bin.glb", 1.0f}},
+  telemetry_.glbPropTypesLoaded = 0;
+
+  // 1. Upload PropBatcher multi-part procedural prototypes (streetlight, traffic_light, hydrant)
+  std::unordered_map<std::string, size_t> customProtoIndex;
+  for (const auto& pp : world.propPrototypes) {
+    if (pp.vertices.empty() || pp.indices.empty()) continue;
+    CustomPropBatch cb;
+    cb.protoId = pp.id;
+    cb.indexCount = static_cast<uint32_t>(pp.indices.size());
+    cb.vbo = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, pp.vertices.data(), pp.vertices.size() * sizeof(PackedWorldVertex));
+    cb.ibo = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Index, pp.indices.data(), pp.indices.size() * sizeof(uint32_t));
+    customProtoIndex[pp.id] = customPropBatches_.size();
+    customPropBatches_.push_back(std::move(cb));
+  }
+
+  // 2. Group world.props across customPropBatches_ + textured GLB street props
+  struct StreetGlbSpec { const char* file; float targetHeight; float maxDist; };
+  static const std::unordered_map<std::string, StreetGlbSpec> protoGlbMap = {
+    {"palm_tree",  {"tree_palm.glb",     9.2f, 520.0f}},
+    {"oak_tree",   {"tree_oak.glb",      6.8f, 480.0f}},
+    {"pine_tree",  {"tree_pine.glb",     8.2f, 500.0f}},
+    {"bush",       {"bush.glb",          1.35f, 260.0f}},
+    {"rock",       {"rock.glb",          1.55f, 320.0f}},
+    {"dumpster",   {"dumpster_bin.glb",  1.85f, 260.0f}},
+    {"park_bench", {"park_bench.glb",    1.65f, 240.0f}},
+    {"stop_sign",  {"sign_stop.glb",     2.35f, 240.0f}},
+    {"trashcan",   {"trash_bin.glb",     1.05f, 220.0f}},
   };
 
-  std::unordered_map<std::string, std::vector<InstanceAttrib>> grouped;
+  std::unordered_map<std::string, std::vector<SpatialInstanceItem>> streetGlbItems;
   std::vector<InstanceAttrib> fallbackInst;
 
   for (const auto& p : world.props) {
-    auto it = protoGlbMap.find(p.proto);
-    if (it != protoGlbMap.end()) {
-      const float s = p.scale * it->second.second;
-      grouped[p.proto].push_back(makeInstYaw(p.pos.x, p.pos.y, p.pos.z, s, s, s, p.ry, 1.0f, 1.0f, 1.0f));
-    } else if (p.proto == "streetlight") {
-      fallbackInst.push_back(makeInstYaw(p.pos.x, p.pos.y + 3.6f, p.pos.z, 0.24f, 7.2f, 0.24f, p.ry, 0.34f, 0.37f, 0.42f));
-      fallbackInst.push_back(makeInstYaw(p.pos.x, p.pos.y + 7.25f, p.pos.z, 0.85f, 0.22f, 0.35f, p.ry, 0.98f, 0.86f, 0.58f, 0.65f));
-    } else if (p.proto == "traffic_light") {
-      fallbackInst.push_back(makeInstYaw(p.pos.x, p.pos.y + 3.1f, p.pos.z, 0.28f, 6.2f, 0.28f, p.ry, 0.18f, 0.20f, 0.22f));
-      fallbackInst.push_back(makeInstYaw(p.pos.x, p.pos.y + 5.9f, p.pos.z, 0.45f, 0.95f, 0.45f, p.ry, 0.95f, 0.22f, 0.18f, 0.85f));
-    } else {
-      fallbackInst.push_back(makeInstYaw(p.pos.x, p.pos.y + 0.48f, p.pos.z, 0.34f, 0.96f, 0.34f, p.ry, 0.82f, 0.18f, 0.14f));
+    auto cit = customProtoIndex.find(p.proto);
+    if (cit != customProtoIndex.end()) {
+      auto& cb = customPropBatches_[cit->second];
+      const float r = (p.proto == "hydrant") ? 0.9f : 4.2f;
+      const float maxD = (p.proto == "hydrant") ? 210.0f : 440.0f;
+      cb.spatialItems.push_back(SpatialInstanceItem{
+        p.pos + glm::vec3(0.0f, r * 0.7f, 0.0f),
+        r * p.scale,
+        maxD,
+        makeInstYaw(p.pos.x, p.pos.y, p.pos.z, p.scale, p.scale, p.scale, p.ry, 1.0f, 1.0f, 1.0f)
+      });
+      continue;
+    }
+
+    auto git = protoGlbMap.find(p.proto);
+    if (git != protoGlbMap.end()) {
+      streetGlbItems[p.proto].push_back(SpatialInstanceItem{
+        p.pos,
+        git->second.targetHeight * 0.6f * p.scale,
+        git->second.maxDist,
+        makeInstYaw(p.pos.x, p.pos.y, p.pos.z, p.scale, p.scale, p.scale, p.ry, 1.0f, 1.0f, 1.0f)
+      });
+    } else if (!world.hasCustomMeshes) {
+      fallbackInst.push_back(makeInstYaw(p.pos.x, p.pos.y + 0.5f, p.pos.z, 0.36f, 1.0f, 0.36f, p.ry, 0.80f, 0.20f, 0.16f));
     }
   }
 
-  telemetry_.glbPropTypesLoaded = 0;
-  for (auto& [proto, instList] : grouped) {
-    const auto& info = protoGlbMap.at(proto);
-    const std::string glbPath = (std::filesystem::path(assetsRoot) / "models" / info.first).string();
+  for (auto& cb : customPropBatches_) {
+    cb.maxInstances = static_cast<uint32_t>(std::max<size_t>(16, cb.spatialItems.size()));
+    cb.instVbo = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, nullptr, cb.maxInstances * sizeof(InstanceAttrib));
+    cb.shadowNearInstVbo = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, nullptr, cb.maxInstances * sizeof(InstanceAttrib));
+    cb.visibleStaging.reserve(cb.maxInstances);
+    cb.shadowNearStaging.reserve(cb.maxInstances);
+  }
+
+  // Load street prop GLBs normalized by Y height (matching Three.js PropBatcher)
+  for (auto& [proto, items] : streetGlbItems) {
+    const auto& spec = protoGlbMap.at(proto);
+    const std::string glbPath = (std::filesystem::path(assetsRoot) / "models" / spec.file).string();
+    std::vector<InstanceAttrib> placeholder(items.size());
     InstancedGlbBatch batch;
-    if (loadGlbBatch(ctx, glbPath, instList, batch)) {
-      glbPropBatches_.push_back(batch);
+    batch.protoId = proto;
+    if (loadGlbBatch(ctx, glbPath, placeholder, batch, 0.0f, true, false, 0.0f, true)) {
+      const glm::vec3 rawSpan = glm::max(batch.rawMax - batch.rawMin, glm::vec3(0.01f));
+      const float refDim = std::max(rawSpan.y, std::max(rawSpan.x, rawSpan.z));
+      const float unitScale = spec.targetHeight / std::max(0.01f, refDim);
+      for (auto& it : items) {
+        it.attrib.sx *= unitScale;
+        it.attrib.sy *= unitScale;
+        it.attrib.sz *= unitScale;
+        it.center.y += (rawSpan.y * it.attrib.sy) * 0.5f;
+        it.radius = glm::length(rawSpan) * it.attrib.sx * 0.52f;
+      }
+      batch.spatialItems = std::move(items);
+      batch.visibleStaging.reserve(batch.maxInstances);
+      batch.shadowNearStaging.reserve(batch.maxInstances);
+      batch.shadowFarStaging.reserve(batch.maxInstances);
+      glbPropBatches_.push_back(std::move(batch));
       ++telemetry_.glbPropTypesLoaded;
-    } else {
-      for (const auto& inst : instList) {
-        fallbackInst.push_back(makeInst(inst.x, inst.y + 2.5f, inst.z, 1.2f, 5.0f, 1.2f, glm::quat(inst.qw, inst.qx, inst.qy, inst.qz), 0.25f, 0.48f, 0.22f));
-      }
     }
   }
 
-  // Stage all 11+ CC0 Iron Pit GLB props & interior props around world.fightPitPos!
-  {
-    const float pitY = world.heightfield.sampleHeight(world.fightPitPos.x, world.fightPitPos.z);
-    const float px = world.fightPitPos.x;
-    const float pz = world.fightPitPos.z;
-    struct PitPropPlace { const char* file; float normLen; float dx; float dy; float dz; float yaw; };
-    const PitPropPlace pitPlaces[] = {
-      {"pit_floodlight.glb", 2.4f, -6.2f, 0.0f, -6.2f,  0.78f},
-      {"pit_floodlight.glb", 2.4f,  6.2f, 0.0f, -6.2f, -0.78f},
-      {"pit_floodlight.glb", 2.4f, -6.2f, 0.0f,  6.2f,  2.35f},
-      {"pit_floodlight.glb", 2.4f,  6.2f, 0.0f,  6.2f, -2.35f},
-      {"pit_speaker.glb",    1.3f, -5.9f, 0.55f, -1.8f,  1.57f},
-      {"pit_speaker.glb",    1.3f, -5.9f, 0.55f,  1.8f,  1.57f},
-      {"pit_speaker.glb",    1.3f,  5.9f, 0.55f,  0.0f, -1.57f},
-      {"pit_stool.glb",      0.75f, -4.4f, 0.65f, -4.4f,  0.0f},
-      {"pit_stool.glb",      0.75f,  4.4f, 0.65f,  4.4f,  3.14f},
-      {"pit_cash_register.glb", 0.65f, -9.1f, 0.85f,  3.2f, 1.57f},
-      {"pos_terminal.glb",   0.52f, -9.1f, 0.85f,  3.8f, 1.57f},
-      {"pit_chair.glb",      0.95f, -10.1f, 0.0f,  3.4f, 1.57f},
-      {"pit_trophy.glb",     0.72f, -9.1f, 0.85f,  2.6f, 1.57f},
-      {"pit_barrel.glb",     1.05f, -7.8f, 0.0f,  6.8f,  0.2f},
-      {"pit_barrel_open.glb",1.05f,  7.8f, 0.0f, -6.8f,  1.1f},
-      {"pit_crate_stack.glb",1.95f,  9.2f, 0.0f,  4.8f,  0.4f},
-      {"pit_pallet.glb",     1.80f, -9.0f, 0.0f, -7.4f,  0.0f},
-      {"pit_barrier.glb",    2.60f,  0.0f, 0.0f, -7.3f,  0.0f},
-      {"pit_barrier.glb",    2.60f,  0.0f, 0.0f,  7.3f,  3.14f},
-      {"medkit.glb",         0.62f, -8.8f, 0.85f, -2.5f, 0.4f},
-      {"stash_bag.glb",      0.78f, -9.6f, 0.0f,  4.4f,  0.8f},
-      {"int_table.glb",      1.65f,  9.4f, 0.0f, -2.2f,  0.0f},
+  // 3. Load all 94 exact world.glbPlacements (PropModels.ts houses, villas, storefronts, trees, 737, ships, interiors, Fight Pit!)
+  if (!world.glbPlacements.empty()) {
+    struct PlacementGroupKey {
+      std::string file;
+      int32_t yawOffKey = 0;
+      bool operator==(const PlacementGroupKey& o) const { return file == o.file && yawOffKey == o.yawOffKey; }
     };
-    std::unordered_map<std::string, std::pair<float, std::vector<InstanceAttrib>>> pitGrouped;
-    for (const auto& pp : pitPlaces) {
-      auto& entry = pitGrouped[pp.file];
-      entry.first = pp.normLen;
-      entry.second.push_back(makeInstYaw(px + pp.dx, pitY + pp.dy, pz + pp.dz, 1.0f, 1.0f, 1.0f, pp.yaw, 1.0f, 1.0f, 1.0f));
+    struct PlacementGroupHash {
+      size_t operator()(const PlacementGroupKey& k) const {
+        return std::hash<std::string>{}(k.file) ^ (static_cast<size_t>(k.yawOffKey) * 2654435761u);
+      }
+    };
+
+    std::unordered_map<PlacementGroupKey, std::vector<const GlbPlacementData*>, PlacementGroupHash> groups;
+    for (const auto& gp : world.glbPlacements) {
+      PlacementGroupKey key{gp.file, static_cast<int32_t>(std::round(gp.yawOffset * 1000.0f))};
+      groups[key].push_back(&gp);
     }
 
-    // Walk-in Interior Furniture (Safehouse, Civic 24/7 Mart, Customs Garage, Iron Pit Armory) & Bay/Airport Landmarks
-    const float shX = world.spawnPos.x - 13.0f, shZ = world.spawnPos.z - 11.0f;
-    const float shY = world.heightfield.sampleHeight(shX, shZ) + 0.16f;
-    const float martY = world.heightfield.sampleHeight(-38.0f, -125.0f) + 0.16f;
-    const float garY = world.heightfield.sampleHeight(112.0f, -135.0f) + 0.16f;
-    const float armY = world.heightfield.sampleHeight(704.0f, 108.0f) + 0.16f;
-    const struct LandmarkProp { const char* file; float normLen; float x; float y; float z; float yaw; } landmarks[] = {
-      // Safehouse Studio interior
-      {"int_bed.glb",       2.2f, shX - 2.6f, shY, shZ - 2.2f, 0.0f},
-      {"int_couch_l.glb",   2.4f, shX + 2.2f, shY, shZ - 1.5f, 3.14f},
-      {"int_tv.glb",        1.2f, shX + 2.2f, shY, shZ - 3.6f, 0.0f},
-      {"kk_rug.glb",        2.8f, shX + 0.0f, shY, shZ + 0.2f, 0.0f},
-      {"int_fridge.glb",    1.0f, shX - 3.8f, shY, shZ + 1.2f, 1.57f},
-      {"stash_bag.glb",     0.8f, shX - 3.0f, shY, shZ - 0.5f, 0.4f},
-      {"medkit.glb",        0.6f, shX + 3.4f, shY, shZ + 1.4f, 0.0f},
-      // Civic 24/7 Mart interior
-      {"store_shelf.glb",   2.2f, -40.5f, martY, -126.5f, 0.0f},
-      {"store_shelf.glb",   2.2f, -35.5f, martY, -126.5f, 0.0f},
-      {"int_fridge.glb",    1.1f, -42.0f, martY, -123.5f, 1.57f},
-      {"pos_terminal.glb",  0.55f,-38.0f, martY + 0.85f, -122.2f, 0.0f},
-      // Westgate Customs Garage interior
-      {"ph_steel_shelves.glb", 2.0f, 107.0f, garY, -138.0f, 1.57f},
-      {"pit_barrel.glb",       1.0f, 116.5f, garY, -138.0f, 0.0f},
-      {"pit_crate_stack.glb",  1.8f, 116.2f, garY, -133.0f, 0.5f},
-      // Iron Pit Armory interior
-      {"ph_steel_shelves.glb", 2.0f, 701.2f, armY, 105.0f, 0.0f},
-      {"int_table.glb",        1.6f, 705.5f, armY, 107.0f, 0.0f},
-      {"medkit.glb",           0.65f,705.5f, armY + 0.78f, 107.0f, 0.3f},
-      // Bay & Airport Landmarks
-      {"cruise_ship.glb",  62.0f, -890.0f, -0.4f, 130.0f, 0.35f},
-      {"airliner_737.glb", 38.0f, 18.0f, world.heightfield.sampleHeight(18.0f, 975.0f), 975.0f, 1.57f},
-      {"plane.glb",        11.0f, -24.0f, world.heightfield.sampleHeight(-24.0f, 945.0f), 945.0f, 1.57f},
-      {"fuel_tank.glb",    6.5f,  612.0f, world.heightfield.sampleHeight(612.0f, 448.0f), 448.0f, 0.0f},
-      {"fuel_tank.glb",    6.5f,  622.0f, world.heightfield.sampleHeight(622.0f, 448.0f), 448.0f, 0.0f},
-    };
-    for (const auto& lm : landmarks) {
-      auto& entry = pitGrouped[lm.file];
-      entry.first = lm.normLen;
-      entry.second.push_back(makeInstYaw(lm.x, lm.y, lm.z, 1.0f, 1.0f, 1.0f, lm.yaw, 1.0f, 1.0f, 1.0f));
-    }
-
-    for (const auto& [fname, pairData] : pitGrouped) {
-      const std::string glbPath = (std::filesystem::path(assetsRoot) / "models" / fname).string();
+    for (auto& [key, list] : groups) {
+      const std::string glbPath = (std::filesystem::path(assetsRoot) / "models" / key.file).string();
+      std::vector<InstanceAttrib> placeholder(list.size());
       InstancedGlbBatch batch;
-      if (loadGlbBatch(ctx, glbPath, pairData.second, batch, pairData.first)) {
-        glbPropBatches_.push_back(batch);
-        ++telemetry_.glbPropTypesLoaded;
-      }
-    }
-  }
+      batch.protoId = key.file;
+      const float yawOff = list.front()->yawOffset;
+      if (!loadGlbBatch(ctx, glbPath, placeholder, batch, 0.0f, true, false, yawOff, true)) continue;
 
-  // Real 3D GLB House & Storefront Prototypes (normalized to unit 1x1x1 box so they match Jolt colliders 1:1!)
-  const char* houseFiles[kNumHouseGlbs] = {
-    "houses/kenney-suburban/building-type-a.glb",
-    "houses/kenney-suburban/building-type-c.glb",
-    "houses/kenney-suburban/building-type-e.glb",
-    "houses/kenney-suburban/building-type-g.glb",
-    "houses/quaternius-buildings-2/House1.glb",
-    "houses/quaternius-buildings-2/House2.glb",
-    "houses/quaternius-buildings-3/2Story_Balcony_Mat.glb",
-    "houses/quaternius-buildings-3/2Story_Wide_Mat.glb",
-    "houses/quaternius-buildings-3/3Story_Balcony_Mat.glb",
-    "houses/quaternius-buildings-3/3Story_Slim_Mat.glb",
-    "houses/quaternius-buildings-2/Building1_Large.glb",
-    "houses/quaternius-buildings-2/Building2_Large.glb",
-  };
-  for (size_t hi = 0; hi < kNumHouseGlbs; ++hi) {
-    loadGlbUnitBoxBatch(ctx, (std::filesystem::path(assetsRoot) / "models" / houseFiles[hi]).string(), 1024, houseBatches_[hi]);
-    houseStaging_[hi].reserve(512);
+      const glm::vec3 rawSpan = glm::max(batch.rawMax - batch.rawMin, glm::vec3(0.01f));
+      batch.spatialItems.reserve(list.size());
+      for (const GlbPlacementData* gp : list) {
+        float k = 1.0f;
+        if (gp->hasFitFootprint) {
+          const float sx = gp->fitMaxWdh.x / rawSpan.x;
+          const float sz = gp->fitMaxWdh.y / rawSpan.z;
+          const float sy = gp->fitMaxWdh.z / rawSpan.y;
+          k = std::min({sx, sz, sy});
+        } else {
+          float denom = rawSpan.y;
+          if (gp->axis == 'x') denom = rawSpan.x;
+          else if (gp->axis == 'z') denom = rawSpan.z;
+          else if (gp->axis == 'm') denom = std::max({rawSpan.x, rawSpan.y, rawSpan.z});
+          k = gp->targetMeters / std::max(0.01f, denom);
+        }
+        const glm::vec3 worldSize = rawSpan * k;
+        const float radius = glm::length(worldSize) * 0.55f;
+        const float maxDist = (radius > 9.0f) ? 1550.0f : (radius > 3.2f) ? 720.0f : 380.0f;
+        const glm::vec3 basePos(gp->pos.x, gp->pos.y + gp->baseY, gp->pos.z);
+        batch.spatialItems.push_back(SpatialInstanceItem{
+          basePos + glm::vec3(0.0f, worldSize.y * 0.5f, 0.0f),
+          radius,
+          maxDist,
+          makeInstYaw(basePos.x, basePos.y, basePos.z, k, k, k, gp->yaw, 1.0f, 1.0f, 1.0f)
+        });
+      }
+      batch.visibleStaging.reserve(batch.maxInstances);
+      batch.shadowNearStaging.reserve(batch.maxInstances);
+      batch.shadowFarStaging.reserve(batch.maxInstances);
+      glbPropBatches_.push_back(std::move(batch));
+      ++telemetry_.glbPropTypesLoaded;
+    }
+  } else if (!world.hasCustomMeshes) {
+    // Legacy synthetic unit-test fallback houses when custom mesh pack is absent
+    const char* houseFiles[kNumHouseGlbs] = {
+      "houses/kenney-suburban/building-type-a.glb",
+      "houses/kenney-suburban/building-type-c.glb",
+      "houses/kenney-suburban/building-type-e.glb",
+      "houses/kenney-suburban/building-type-g.glb",
+      "houses/quaternius-buildings-2/House1.glb",
+      "houses/quaternius-buildings-2/House2.glb",
+      "houses/quaternius-buildings-3/2Story_Balcony_Mat.glb",
+      "houses/quaternius-buildings-3/2Story_Wide_Mat.glb",
+      "houses/quaternius-buildings-3/3Story_Balcony_Mat.glb",
+      "houses/quaternius-buildings-3/3Story_Slim_Mat.glb",
+      "houses/quaternius-buildings-2/Building1_Large.glb",
+      "houses/quaternius-buildings-2/Building2_Large.glb",
+    };
+    for (size_t hi = 0; hi < kNumHouseGlbs; ++hi) {
+      loadGlbUnitBoxBatch(ctx, (std::filesystem::path(assetsRoot) / "models" / houseFiles[hi]).string(), 512, houseBatches_[hi]);
+      houseStaging_[hi].reserve(256);
+    }
   }
 
   fallbackPropCount_ = static_cast<uint32_t>(fallbackInst.size());
@@ -1531,8 +1621,7 @@ void WorldRenderer::buildPropAndVehicleBatches(WgpuContext& ctx, const WorldData
     fallbackPropInstVbo_ = createBufferWithData(ctx.device(), ctx.queue(), WGPUBufferUsage_Vertex, fallbackInst.data(), fallbackInst.size() * sizeof(InstanceAttrib));
   }
 
-  // All 16 Real GLB Vehicles (Cars, Emergency, Trucks, Speedboats, Cruisers & Helicopter!)
-  // GameSession forward is +Z at yaw=0; models facing -Z (mustang, semi) receive a PI yaw offset.
+  // 4. All 16 Real GLB Vehicles
   struct VehicleGlbSpec { const char* file; float length; float yawOffset; };
   const VehicleGlbSpec vehicleSpecs[kVehicleModelCount] = {
     {"police_cruiser.glb", 4.45f, 0.0f},
@@ -1562,7 +1651,8 @@ void WorldRenderer::buildPropAndVehicleBatches(WgpuContext& ctx, const WorldData
       vehicleSpecs[vi].length,
       true,
       true,
-      vehicleSpecs[vi].yawOffset
+      vehicleSpecs[vi].yawOffset,
+      true
     );
   }
 }
@@ -1571,8 +1661,20 @@ void WorldRenderer::buildSkinnedMesh(WgpuContext& ctx, const GltfModel& model, S
   std::vector<SkinnedVertex> verts;
   std::vector<uint32_t> indices;
 
-  // Create GPU textures for referenced material images
-  std::unordered_map<int32_t, WGPUBindGroup> texBgCache;
+  std::unordered_map<int32_t, WGPUTextureView> texViewCache;
+  auto getTexView = [&](int32_t idx, WGPUTextureView fallback) -> WGPUTextureView {
+    if (idx < 0 || static_cast<size_t>(idx) >= model.textures.size()) return fallback;
+    auto it = texViewCache.find(idx);
+    if (it != texViewCache.end()) return it->second;
+    const auto& td = model.textures[idx];
+    if (td.width == 0 || td.height == 0 || td.rgba8.empty()) return fallback;
+    GpuTextureBinding gtb = createRgbaTexture(ctx, td.width, td.height, td.rgba8.data(), false);
+    outMesh.ownedTextures.push_back(gtb);
+    texViewCache[idx] = gtb.view;
+    return gtb.view;
+  };
+
+  std::unordered_map<uint64_t, WGPUBindGroup> matBgCache;
   for (const auto& prim : model.primitives) {
     const uint32_t vBase = static_cast<uint32_t>(verts.size());
     const uint32_t iStart = static_cast<uint32_t>(indices.size());
@@ -1582,21 +1684,31 @@ void WorldRenderer::buildSkinnedMesh(WgpuContext& ctx, const GltfModel& model, S
     if (prim.materialIndex >= 0 && static_cast<size_t>(prim.materialIndex) < model.materials.size()) {
       const auto& mat = model.materials[prim.materialIndex];
       matCol = glm::vec3(mat.baseColor);
-      if (mat.baseColorTexIndex >= 0 && static_cast<size_t>(mat.baseColorTexIndex) < model.textures.size()) {
-        auto it = texBgCache.find(mat.baseColorTexIndex);
-        if (it != texBgCache.end()) {
+      const int32_t alb = mat.baseColorTexIndex;
+      const int32_t nrm = mat.normalTexIndex;
+      const int32_t mr  = mat.metallicRoughnessTexIndex;
+      const int32_t em  = mat.emissiveTexIndex;
+      if (alb >= 0 || nrm >= 0 || mr >= 0 || em >= 0) {
+        const uint64_t key =
+          (static_cast<uint64_t>(static_cast<uint16_t>(alb + 1)) << 48) |
+          (static_cast<uint64_t>(static_cast<uint16_t>(nrm + 1)) << 32) |
+          (static_cast<uint64_t>(static_cast<uint16_t>(mr + 1))  << 16) |
+          static_cast<uint64_t>(static_cast<uint16_t>(em + 1));
+        auto it = matBgCache.find(key);
+        if (it != matBgCache.end()) {
           texBg = it->second;
         } else {
-          const auto& td = model.textures[mat.baseColorTexIndex];
-          if (td.width > 0 && td.height > 0 && !td.rgba8.empty()) {
-            GpuTextureBinding gtb = createRgbaTexture(ctx, td.width, td.height, td.rgba8.data());
-            texBg = gtb.bindGroup;
-            texBgCache[mat.baseColorTexIndex] = texBg;
-            outMesh.ownedTextures.push_back(gtb);
-            // When textured, avoid double-darkening via scalar baseColor if material uses albedo map
-            matCol = glm::vec3(1.0f);
-          }
+          texBg = createPbrMatBindGroup(
+            ctx,
+            getTexView(alb, defaultWhiteTex_.view),
+            getTexView(nrm, defaultFlatNormalTex_.view),
+            getTexView(mr, defaultWhiteTex_.view),
+            getTexView(em, defaultWhiteTex_.view)
+          );
+          outMesh.ownedBindGroups.push_back(texBg);
+          matBgCache[key] = texBg;
         }
+        if (alb >= 0) matCol = glm::vec3(1.0f);
       }
     }
 
@@ -1650,54 +1762,185 @@ void WorldRenderer::render(
   const glm::mat4 vp = proj * view;
 
   const Frustum frustum = Frustum::fromViewProj(vp);
-  streamer.update(focusPos, frustum);
+  // Stream chunks around camPos so distant camera shots (--cam) and helicopter flight stream Near detail around the viewer
+  streamer.update(camPos, frustum);
 
-  // Gather streamed buildings: route low/mid-rise buildings to real 3D GLB houses/storefronts, keep tall towers in unitBox
+  // Compute 2-cascade texel-snapped directional sun shadow matrices
+  const glm::vec3 sunDir = glm::normalize(sky.sunDir);
+  const glm::vec3 shadowUp = (std::abs(sunDir.y) > 0.98f) ? glm::vec3(0.0f, 0.0f, 1.0f) : glm::vec3(0.0f, 1.0f, 0.0f);
+  const glm::vec3 shadowAnchor = (glm::distance(camPos, focusPos) > 45.0f) ? camTarget : focusPos;
+
+  const float nearExt = 56.0f;
+  const float nearTexel = (nearExt * 2.0f) / static_cast<float>(kShadowMapSize);
+  const glm::vec3 nearCenter(
+    std::floor(shadowAnchor.x / nearTexel) * nearTexel,
+    shadowAnchor.y,
+    std::floor(shadowAnchor.z / nearTexel) * nearTexel
+  );
+  const glm::mat4 lightProjNear = glm::orthoZO(-nearExt, nearExt, -nearExt, nearExt, 1.0f, 380.0f);
+  const glm::mat4 lightViewNear = glm::lookAt(nearCenter + sunDir * 180.0f, nearCenter, shadowUp);
+
+  const float farExt = 270.0f;
+  const float farTexel = (farExt * 2.0f) / static_cast<float>(kShadowMapSize);
+  const glm::vec3 farCenter(
+    std::floor(shadowAnchor.x / farTexel) * farTexel,
+    shadowAnchor.y,
+    std::floor(shadowAnchor.z / farTexel) * farTexel
+  );
+  const glm::mat4 lightProjFar = glm::orthoZO(-farExt, farExt, -farExt, farExt, 1.0f, 680.0f);
+  const glm::mat4 lightViewFar = glm::lookAt(farCenter + sunDir * 320.0f, farCenter, shadowUp);
+
+  // 1. Gather streamed chunk custom mesh slices + architectural boxes (Near vs Lod + Shadow Cascades)
   buildingStaging_.clear();
+  shadowNearBoxStaging_.clear();
+  shadowFarBoxStaging_.clear();
   for (auto& hs : houseStaging_) hs.clear();
+  std::vector<ChunkMeshSlice> visibleCustomSlices;
+  std::vector<ChunkMeshSlice> shadowNearCustomSlices;
+  std::vector<ChunkMeshSlice> shadowFarCustomSlices;
+  visibleCustomSlices.reserve(96);
+  shadowNearCustomSlices.reserve(16);
+  shadowFarCustomSlices.reserve(64);
+
   uint32_t totalBuildingsDrawn = 0;
-  for (const auto& v : streamer.views()) {
-    if (!v.visibleInFrustum) continue;
-    const auto& ch = world.chunks[v.chunkIndex];
-    for (const auto& b : ch.buildings) {
-      if (v.state == ChunkLodState::Lod && b.size.y < 8.0f) continue;
-      const bool useHouseGlb = (b.size.y < 24.0f && std::max(b.size.x, b.size.z) < 28.0f);
-      if (useHouseGlb) {
-        const uint32_t hIdx = static_cast<uint32_t>(std::abs(static_cast<int>(b.center.x * 13.0f + b.center.z * 7.0f))) % kNumHouseGlbs;
-        if (houseBatches_[hIdx].vbo && houseStaging_[hIdx].size() < houseBatches_[hIdx].maxInstances) {
-          const float yaw = (static_cast<int>(std::abs(b.center.x + b.center.z)) % 4) * 1.5707963f;
-          houseStaging_[hIdx].push_back(makeInstYaw(
-            b.center.x, b.center.y, b.center.z,
-            b.size.x, b.size.y, b.size.z,
-            yaw,
-            0.88f + 0.12f * b.color.r, 0.88f + 0.12f * b.color.g, 0.88f + 0.12f * b.color.b
-          ));
+
+  if (world.hasCustomMeshes) {
+    for (size_t ci = 0; ci < world.chunks.size(); ++ci) {
+      const auto& ch = world.chunks[ci];
+      const auto& cv = streamer.views()[ci];
+      const bool inShadNear = aabbOverlapsXZ(ch.bounds, nearCenter, nearExt + 24.0f);
+      const bool inShadFar  = aabbOverlapsXZ(ch.bounds, farCenter, farExt + 45.0f);
+
+      if (ch.meshSlice.indexCount > 0) {
+        if (cv.visibleInFrustum) visibleCustomSlices.push_back(ch.meshSlice);
+        if (inShadNear) shadowNearCustomSlices.push_back(ch.meshSlice);
+        if (inShadFar)  shadowFarCustomSlices.push_back(ch.meshSlice);
+      }
+
+      if (cv.visibleInFrustum) {
+        const auto& srcBoxes = (cv.state == ChunkLodState::Near) ? ch.nearBoxes : ch.lodBoxes;
+        for (const auto& pb : srcBoxes) {
+          if (buildingStaging_.size() >= buildingCapacity_) break;
+          buildingStaging_.push_back(makeArchBoxInst(pb));
           ++totalBuildingsDrawn;
-          continue;
         }
       }
-      if (buildingStaging_.size() < buildingCapacity_) {
-        buildingStaging_.push_back(makeInstYaw(
-          b.center.x, b.center.y, b.center.z,
-          b.size.x, b.size.y, b.size.z,
-          0.0f,
-          b.color.r, b.color.g, b.color.b
-        ));
-        ++totalBuildingsDrawn;
+
+      if (inShadNear) {
+        for (const auto& pb : ch.nearBoxes) {
+          if (shadowNearBoxStaging_.size() >= shadowNearBoxCapacity_) break;
+          if (pb.hy < 0.22f) continue;
+          shadowNearBoxStaging_.push_back(makeArchBoxInst(pb));
+        }
+      }
+      if (inShadFar) {
+        // Use clean structural boxes (>1.2m half-height) in far cascade for ultra-fast crisp skyline shadows
+        const auto& farSrc = !ch.lodBoxes.empty() ? ch.lodBoxes : ch.nearBoxes;
+        for (const auto& pb : farSrc) {
+          if (shadowFarBoxStaging_.size() >= shadowFarBoxCapacity_) break;
+          if (pb.hy < 0.85f) continue;
+          shadowFarBoxStaging_.push_back(makeArchBoxInst(pb));
+        }
       }
     }
+  } else {
+    // Legacy synthetic unit-test path
+    for (const auto& v : streamer.views()) {
+      if (!v.visibleInFrustum) continue;
+      const auto& ch = world.chunks[v.chunkIndex];
+      for (const auto& b : ch.buildings) {
+        if (v.state == ChunkLodState::Lod && b.size.y < 8.0f) continue;
+        if (buildingStaging_.size() < buildingCapacity_) {
+          buildingStaging_.push_back(makeInstYaw(b.center.x, b.center.y, b.center.z, b.size.x, b.size.y, b.size.z, 0.0f, b.color.r, b.color.g, b.color.b));
+          ++totalBuildingsDrawn;
+        }
+      }
+    }
+    shadowNearBoxStaging_ = buildingStaging_;
+    shadowFarBoxStaging_ = buildingStaging_;
   }
+
   if (!buildingStaging_.empty()) {
     wgpuQueueWriteBuffer(ctx.queue(), buildingInstVbo_, 0, buildingStaging_.data(), buildingStaging_.size() * sizeof(InstanceAttrib));
   }
-  for (size_t hi = 0; hi < kNumHouseGlbs; ++hi) {
-    const uint32_t cnt = static_cast<uint32_t>(houseStaging_[hi].size());
-    if (cnt > 0 && houseBatches_[hi].instVbo) {
-      wgpuQueueWriteBuffer(ctx.queue(), houseBatches_[hi].instVbo, 0, houseStaging_[hi].data(), cnt * sizeof(InstanceAttrib));
+  if (!shadowNearBoxStaging_.empty()) {
+    wgpuQueueWriteBuffer(ctx.queue(), shadowNearBoxInstVbo_, 0, shadowNearBoxStaging_.data(), shadowNearBoxStaging_.size() * sizeof(InstanceAttrib));
+  }
+  if (!shadowFarBoxStaging_.empty()) {
+    wgpuQueueWriteBuffer(ctx.queue(), shadowFarBoxInstVbo_, 0, shadowFarBoxStaging_.data(), shadowFarBoxStaging_.size() * sizeof(InstanceAttrib));
+  }
+
+  // 2. Spatial + Frustum + Shadow-Cascade Culling for PropBatcher Prototypes & 94 PBR GLB Placement Batches
+  uint32_t drawnPropsCount = fallbackPropCount_;
+  const float nearShadR2 = (nearExt + 18.0f) * (nearExt + 18.0f);
+  const float farShadR2  = (farExt + 32.0f) * (farExt + 32.0f);
+
+  for (auto& cb : customPropBatches_) {
+    cb.visibleStaging.clear();
+    cb.shadowNearStaging.clear();
+    for (const auto& it : cb.spatialItems) {
+      const glm::vec3 dCam = it.center - camPos;
+      const float d2 = glm::dot(dCam, dCam);
+      if (d2 <= it.maxDrawDist * it.maxDrawDist && sphereInFrustum(frustum, it.center, it.radius)) {
+        cb.visibleStaging.push_back(it.attrib);
+      }
+      const float dxN = it.center.x - nearCenter.x;
+      const float dzN = it.center.z - nearCenter.z;
+      if (dxN * dxN + dzN * dzN <= nearShadR2 && it.radius > 1.2f) {
+        cb.shadowNearStaging.push_back(it.attrib);
+      }
+    }
+    cb.visibleCount = static_cast<uint32_t>(cb.visibleStaging.size());
+    cb.shadowNearCount = static_cast<uint32_t>(cb.shadowNearStaging.size());
+    drawnPropsCount += cb.visibleCount;
+    if (cb.visibleCount > 0) {
+      wgpuQueueWriteBuffer(ctx.queue(), cb.instVbo, 0, cb.visibleStaging.data(), cb.visibleCount * sizeof(InstanceAttrib));
+    }
+    if (cb.shadowNearCount > 0) {
+      wgpuQueueWriteBuffer(ctx.queue(), cb.shadowNearInstVbo, 0, cb.shadowNearStaging.data(), cb.shadowNearCount * sizeof(InstanceAttrib));
     }
   }
 
-  // Upload dynamic markers, 3D pitched tracers & sparks (with emissive boost!)
+  for (auto& batch : glbPropBatches_) {
+    if (batch.spatialItems.empty()) continue;
+    batch.visibleStaging.clear();
+    batch.shadowNearStaging.clear();
+    batch.shadowFarStaging.clear();
+    for (const auto& it : batch.spatialItems) {
+      const glm::vec3 dCam = it.center - camPos;
+      const float d2 = glm::dot(dCam, dCam);
+      if (d2 <= it.maxDrawDist * it.maxDrawDist && sphereInFrustum(frustum, it.center, it.radius)) {
+        batch.visibleStaging.push_back(it.attrib);
+      }
+      const float dxN = it.center.x - nearCenter.x;
+      const float dzN = it.center.z - nearCenter.z;
+      if (dxN * dxN + dzN * dzN <= nearShadR2) {
+        batch.shadowNearStaging.push_back(it.attrib);
+      }
+      if (it.radius >= 2.2f) {
+        const float dxF = it.center.x - farCenter.x;
+        const float dzF = it.center.z - farCenter.z;
+        if (dxF * dxF + dzF * dzF <= farShadR2) {
+          batch.shadowFarStaging.push_back(it.attrib);
+        }
+      }
+    }
+    batch.instanceCount = static_cast<uint32_t>(batch.visibleStaging.size());
+    batch.shadowNearCount = static_cast<uint32_t>(batch.shadowNearStaging.size());
+    batch.shadowFarCount = static_cast<uint32_t>(batch.shadowFarStaging.size());
+    drawnPropsCount += batch.instanceCount;
+    if (batch.instanceCount > 0) {
+      wgpuQueueWriteBuffer(ctx.queue(), batch.instVbo, 0, batch.visibleStaging.data(), batch.instanceCount * sizeof(InstanceAttrib));
+    }
+    if (batch.shadowNearCount > 0) {
+      wgpuQueueWriteBuffer(ctx.queue(), batch.shadowNearInstVbo, 0, batch.shadowNearStaging.data(), batch.shadowNearCount * sizeof(InstanceAttrib));
+    }
+    if (batch.shadowFarCount > 0) {
+      wgpuQueueWriteBuffer(ctx.queue(), batch.shadowFarInstVbo, 0, batch.shadowFarStaging.data(), batch.shadowFarCount * sizeof(InstanceAttrib));
+    }
+  }
+
+  // 3. Upload dynamic markers, tracers & helicopter rotor blades
   markerStaging_.clear();
   for (const auto& m : markers) {
     if (markerStaging_.size() >= markerCapacity_) break;
@@ -1705,7 +1948,6 @@ void WorldRenderer::render(
                         glm::angleAxis(m.pitchRad, glm::vec3(1.0f, 0.0f, 0.0f));
     markerStaging_.push_back(makeInst(m.pos.x, m.pos.y, m.pos.z, m.scale.x, m.scale.y, m.scale.z, q, m.color.r, m.color.g, m.color.b, 2.2f));
   }
-  // Spinning helicopter main & tail rotor blades
   for (const auto& v : vehicles) {
     if (v.kind != VehicleModelKind::Helicopter) continue;
     if (markerStaging_.size() + 2 > markerCapacity_) break;
@@ -1713,7 +1955,7 @@ void WorldRenderer::render(
                          glm::angleAxis(v.pitchRad, glm::vec3(1.0f, 0.0f, 0.0f)) *
                          glm::angleAxis(v.rollRad, glm::vec3(0.0f, 0.0f, 1.0f));
     const glm::vec3 rotorHub = v.pos + vq * glm::vec3(0.0f, 3.05f, 0.25f);
-    const float rotorAngle = timeSec * (v.occupiedByPlayer ? 22.0f : 14.0f);
+    const float rotorAngle = v.rotorAngleRad != 0.0f ? v.rotorAngleRad : (timeSec * (v.occupiedByPlayer ? 22.0f : 14.0f));
     const glm::quat rq1 = vq * glm::angleAxis(rotorAngle, glm::vec3(0.0f, 1.0f, 0.0f));
     const glm::quat rq2 = vq * glm::angleAxis(rotorAngle + 1.5707963f, glm::vec3(0.0f, 1.0f, 0.0f));
     markerStaging_.push_back(makeInst(rotorHub.x, rotorHub.y, rotorHub.z, 9.6f, 0.06f, 0.22f, rq1, 0.16f, 0.17f, 0.20f, 0.0f));
@@ -1723,7 +1965,7 @@ void WorldRenderer::render(
     wgpuQueueWriteBuffer(ctx.queue(), markerInstVbo_, 0, markerStaging_.data(), markerStaging_.size() * sizeof(InstanceAttrib));
   }
 
-  // Upload dynamic Jolt rigid-body crates, barrels & knockable street props (full 6-DOF quaternion rotation!)
+  // 4. Upload dynamic Jolt rigid-body crates, barrels & knockable props
   dynPropStaging_.clear();
   for (const auto& dp : dynamicProps) {
     if (dynPropStaging_.size() >= dynPropCapacity_) break;
@@ -1731,7 +1973,8 @@ void WorldRenderer::render(
       dp.position.x, dp.position.y, dp.position.z,
       dp.halfExtents.x * 2.0f, dp.halfExtents.y * 2.0f, dp.halfExtents.z * 2.0f,
       dp.rotation,
-      dp.color.r, dp.color.g, dp.color.b
+      dp.color.r, dp.color.g, dp.color.b,
+      0.0f, 0.78f, 5.0f
     ));
   }
   if (!dynPropStaging_.empty()) {
@@ -1739,7 +1982,7 @@ void WorldRenderer::render(
   }
   telemetry_.dynamicPhysicsProps = static_cast<uint32_t>(dynPropStaging_.size());
 
-  // Upload dynamic vehicles across all 16 GLB models with pitch & roll (wave buoyancy / heli banking)
+  // 5. Upload dynamic vehicles across all 16 GLB models
   uint32_t totalVehiclesDrawn = 0;
   for (auto& vs : vehicleStaging_) vs.clear();
   for (const auto& v : vehicles) {
@@ -1758,30 +2001,6 @@ void WorldRenderer::render(
       totalVehiclesDrawn += cnt;
     }
   }
-
-  // Compute 2-cascade texel-snapped directional sun shadow matrices
-  const glm::vec3 sunDir = glm::normalize(sky.sunDir);
-  const glm::vec3 shadowUp = (std::abs(sunDir.y) > 0.98f) ? glm::vec3(0.0f, 0.0f, 1.0f) : glm::vec3(0.0f, 1.0f, 0.0f);
-
-  const float nearExt = 52.0f;
-  const float nearTexel = (nearExt * 2.0f) / static_cast<float>(kShadowMapSize);
-  const glm::vec3 nearCenter(
-    std::floor(focusPos.x / nearTexel) * nearTexel,
-    focusPos.y,
-    std::floor(focusPos.z / nearTexel) * nearTexel
-  );
-  const glm::mat4 lightProjNear = glm::orthoZO(-nearExt, nearExt, -nearExt, nearExt, 1.0f, 360.0f);
-  const glm::mat4 lightViewNear = glm::lookAt(nearCenter + sunDir * 170.0f, nearCenter, shadowUp);
-
-  const float farExt = 260.0f;
-  const float farTexel = (farExt * 2.0f) / static_cast<float>(kShadowMapSize);
-  const glm::vec3 farCenter(
-    std::floor(focusPos.x / farTexel) * farTexel,
-    focusPos.y,
-    std::floor(focusPos.z / farTexel) * farTexel
-  );
-  const glm::mat4 lightProjFar = glm::orthoZO(-farExt, farExt, -farExt, farExt, 1.0f, 650.0f);
-  const glm::mat4 lightViewFar = glm::lookAt(farCenter + sunDir * 300.0f, farCenter, shadowUp);
 
   const uint32_t lightCount = static_cast<uint32_t>(std::min<size_t>(pointLights.size(), kMaxPointLights));
   telemetry_.activePointLights = lightCount;
@@ -1803,11 +2022,10 @@ void WorldRenderer::render(
   wgpuQueueWriteBuffer(ctx.queue(), frameUbo_, 0, &ubo, sizeof(ubo));
 
   PostUniforms postUbo{};
-  postUbo.screenSize = glm::vec4(static_cast<float>(ctx.width()), static_cast<float>(ctx.height()), 1.05f, 0.28f);
+  postUbo.screenSize = glm::vec4(static_cast<float>(ctx.width()), static_cast<float>(ctx.height()), 1.05f, 0.26f);
   postUbo.projParams = glm::vec4(0.25f, 2800.0f, 16.0f, 0.72f);
   wgpuQueueWriteBuffer(ctx.queue(), postUbo_, 0, &postUbo, sizeof(postUbo));
 
-  // Upload skinned character uniform slots
   const uint32_t charCount = static_cast<uint32_t>(std::min<size_t>(characters.size(), kMaxSkinSlots));
   for (uint32_t ci = 0; ci < charCount; ++ci) {
     const auto& ch = characters[ci];
@@ -1834,7 +2052,7 @@ void WorldRenderer::render(
   telemetry_.nearChunks = streamer.nearCount();
   telemetry_.lodChunks = streamer.lodCount();
   telemetry_.drawnBuildings = totalBuildingsDrawn;
-  telemetry_.drawnProps = static_cast<uint32_t>(world.props.size());
+  telemetry_.drawnProps = drawnPropsCount;
   telemetry_.drawnVehicles = totalVehiclesDrawn;
   telemetry_.drawnCharacters = charCount;
 
@@ -1867,16 +2085,23 @@ void WorldRenderer::render(
     ownsBackView = true;
   }
 
-  // Ensure offscreen targets + depth bind groups AFTER any swapchain reconfiguration so boundDepthView_ is always live
   ensureOffscreenTargets(ctx);
 
   WGPUCommandEncoderDescriptor encDesc = {};
   WGPUCommandEncoder enc = wgpuDeviceCreateCommandEncoder(ctx.device(), &encDesc);
 
   // -------------------------------------------------------------------------
-  // Pass 1A & 1B: 2-Cascade 2048x2048 Directional Sun Shadow Passes (Near 52m + Far 260m)
+  // Pass 1A & 1B: 2-Cascade 2048x2048 Directional Sun Shadow Passes
   // -------------------------------------------------------------------------
-  const auto runShadowCascade = [&](WGPUTextureView layerView, WGPURenderPipeline terrainPipe, WGPURenderPipeline instPipe, WGPURenderPipeline skinPipe) {
+  const auto runShadowCascade = [&](
+    bool isNear,
+    WGPUTextureView layerView,
+    WGPURenderPipeline terrainPipe,
+    WGPURenderPipeline customPipe,
+    WGPURenderPipeline customInstPipe,
+    WGPURenderPipeline instPipe,
+    WGPURenderPipeline skinPipe
+  ) {
     WGPURenderPassDepthStencilAttachment sDepth = WGPU_RENDER_PASS_DEPTH_STENCIL_ATTACHMENT_INIT;
     sDepth.view = layerView;
     sDepth.depthLoadOp = WGPULoadOp_Clear;
@@ -1890,42 +2115,61 @@ void WorldRenderer::render(
     WGPURenderPassEncoder spass = wgpuCommandEncoderBeginRenderPass(enc, &srp);
     wgpuRenderPassEncoderSetBindGroup(spass, 0, frameBg_, 0, nullptr);
 
-    if (terrainPipe && terrainIndexCount_ > 0) {
+    if (!isNear && terrainPipe && terrainIndexCount_ > 0) {
       wgpuRenderPassEncoderSetPipeline(spass, terrainPipe);
       wgpuRenderPassEncoderSetVertexBuffer(spass, 0, terrainVbo_, 0, WGPU_WHOLE_SIZE);
       wgpuRenderPassEncoderSetIndexBuffer(spass, terrainIbo_, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
       wgpuRenderPassEncoderDrawIndexed(spass, terrainIndexCount_, 1, 0, 0, 0);
     }
 
-    wgpuRenderPassEncoderSetPipeline(spass, instPipe);
-    if (!buildingStaging_.empty()) {
-      wgpuRenderPassEncoderSetVertexBuffer(spass, 0, unitBoxVbo_, 0, WGPU_WHOLE_SIZE);
-      wgpuRenderPassEncoderSetVertexBuffer(spass, 1, buildingInstVbo_, 0, WGPU_WHOLE_SIZE);
-      wgpuRenderPassEncoderSetIndexBuffer(spass, unitBoxIbo_, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
-      wgpuRenderPassEncoderDrawIndexed(spass, unitBoxIndexCount_, static_cast<uint32_t>(buildingStaging_.size()), 0, 0, 0);
-    }
-    for (size_t hi = 0; hi < kNumHouseGlbs; ++hi) {
-      const uint32_t cnt = static_cast<uint32_t>(houseStaging_[hi].size());
-      if (cnt > 0 && houseBatches_[hi].vbo) {
-        wgpuRenderPassEncoderSetVertexBuffer(spass, 0, houseBatches_[hi].vbo, 0, WGPU_WHOLE_SIZE);
-        wgpuRenderPassEncoderSetVertexBuffer(spass, 1, houseBatches_[hi].instVbo, 0, WGPU_WHOLE_SIZE);
-        wgpuRenderPassEncoderSetIndexBuffer(spass, houseBatches_[hi].ibo, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
-        wgpuRenderPassEncoderDrawIndexed(spass, houseBatches_[hi].indexCount, cnt, 0, 0, 0);
+    const auto& customSlices = isNear ? shadowNearCustomSlices : shadowFarCustomSlices;
+    if (customPipe && customMeshVbo_ && !customSlices.empty()) {
+      wgpuRenderPassEncoderSetPipeline(spass, customPipe);
+      wgpuRenderPassEncoderSetVertexBuffer(spass, 0, customMeshVbo_, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderSetIndexBuffer(spass, customMeshIbo_, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
+      for (const auto& sl : customSlices) {
+        wgpuRenderPassEncoderDrawIndexed(spass, sl.indexCount, 1, sl.firstIndex, 0, 0);
       }
     }
-    if (!dynPropStaging_.empty() && dynPropInstVbo_) {
+
+    if (isNear && customInstPipe && !customPropBatches_.empty()) {
+      wgpuRenderPassEncoderSetPipeline(spass, customInstPipe);
+      for (const auto& cb : customPropBatches_) {
+        if (cb.shadowNearCount == 0) continue;
+        wgpuRenderPassEncoderSetVertexBuffer(spass, 0, cb.vbo, 0, WGPU_WHOLE_SIZE);
+        wgpuRenderPassEncoderSetVertexBuffer(spass, 1, cb.shadowNearInstVbo, 0, WGPU_WHOLE_SIZE);
+        wgpuRenderPassEncoderSetIndexBuffer(spass, cb.ibo, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
+        wgpuRenderPassEncoderDrawIndexed(spass, cb.indexCount, cb.shadowNearCount, 0, 0, 0);
+      }
+    }
+
+    wgpuRenderPassEncoderSetPipeline(spass, instPipe);
+    const auto& boxStaging = isNear ? shadowNearBoxStaging_ : shadowFarBoxStaging_;
+    WGPUBuffer boxInstBuf  = isNear ? shadowNearBoxInstVbo_ : shadowFarBoxInstVbo_;
+    if (!boxStaging.empty() && boxInstBuf) {
+      wgpuRenderPassEncoderSetVertexBuffer(spass, 0, unitBoxVbo_, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderSetVertexBuffer(spass, 1, boxInstBuf, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderSetIndexBuffer(spass, unitBoxIbo_, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderDrawIndexed(spass, unitBoxIndexCount_, static_cast<uint32_t>(boxStaging.size()), 0, 0, 0);
+    }
+
+    if (isNear && !dynPropStaging_.empty() && dynPropInstVbo_) {
       wgpuRenderPassEncoderSetVertexBuffer(spass, 0, unitBoxVbo_, 0, WGPU_WHOLE_SIZE);
       wgpuRenderPassEncoderSetVertexBuffer(spass, 1, dynPropInstVbo_, 0, WGPU_WHOLE_SIZE);
       wgpuRenderPassEncoderSetIndexBuffer(spass, unitBoxIbo_, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
       wgpuRenderPassEncoderDrawIndexed(spass, unitBoxIndexCount_, static_cast<uint32_t>(dynPropStaging_.size()), 0, 0, 0);
     }
+
     for (const auto& batch : glbPropBatches_) {
-      if (batch.instanceCount == 0) continue;
+      const uint32_t cnt = isNear ? batch.shadowNearCount : batch.shadowFarCount;
+      WGPUBuffer ibuf = isNear ? batch.shadowNearInstVbo : batch.shadowFarInstVbo;
+      if (cnt == 0 || !ibuf) continue;
       wgpuRenderPassEncoderSetVertexBuffer(spass, 0, batch.vbo, 0, WGPU_WHOLE_SIZE);
-      wgpuRenderPassEncoderSetVertexBuffer(spass, 1, batch.instVbo, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderSetVertexBuffer(spass, 1, ibuf, 0, WGPU_WHOLE_SIZE);
       wgpuRenderPassEncoderSetIndexBuffer(spass, batch.ibo, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
-      wgpuRenderPassEncoderDrawIndexed(spass, batch.indexCount, batch.instanceCount, 0, 0, 0);
+      wgpuRenderPassEncoderDrawIndexed(spass, batch.indexCount, cnt, 0, 0, 0);
     }
+
     for (size_t k = 0; k < kVehicleModelCount; ++k) {
       const uint32_t cnt = static_cast<uint32_t>(vehicleStaging_[k].size());
       if (cnt > 0 && vehicleBatches_[k].vbo) {
@@ -1936,7 +2180,7 @@ void WorldRenderer::render(
       }
     }
 
-    if (charCount > 0) {
+    if (isNear && charCount > 0) {
       wgpuRenderPassEncoderSetPipeline(spass, skinPipe);
       wgpuRenderPassEncoderSetBindGroup(spass, 0, frameBg_, 0, nullptr);
       for (uint32_t ci = 0; ci < charCount; ++ci) {
@@ -1965,8 +2209,8 @@ void WorldRenderer::render(
     wgpuRenderPassEncoderRelease(spass);
   };
 
-  runShadowCascade(shadowLayerViews_[0], shadowTerrainNearPipeline_, shadowInstancedNearPipeline_, shadowSkinnedNearPipeline_);
-  runShadowCascade(shadowLayerViews_[1], shadowTerrainFarPipeline_, shadowInstancedFarPipeline_, shadowSkinnedFarPipeline_);
+  runShadowCascade(true,  shadowLayerViews_[0], shadowTerrainNearPipeline_, shadowCustomNearPipeline_, shadowCustomInstNearPipeline_, shadowInstancedNearPipeline_, shadowSkinnedNearPipeline_);
+  runShadowCascade(false, shadowLayerViews_[1], shadowTerrainFarPipeline_,  shadowCustomFarPipeline_,  shadowCustomInstFarPipeline_,  shadowInstancedFarPipeline_,  shadowSkinnedFarPipeline_);
 
   // -------------------------------------------------------------------------
   // Pass 2: Main Linear HDR Forward PBR + 2-Cascade Shadows Scene Pass
@@ -1992,7 +2236,6 @@ void WorldRenderer::render(
 
     WGPURenderPassEncoder pass = wgpuCommandEncoderBeginRenderPass(enc, &rpDesc);
 
-    // Sky Dome + FBM Clouds + Sun + Moon + Stars (fullscreen atmospheric pass)
     if (skyPipeline_) {
       wgpuRenderPassEncoderSetPipeline(pass, skyPipeline_);
       wgpuRenderPassEncoderSetBindGroup(pass, 0, frameBg_, 0, nullptr);
@@ -2004,20 +2247,50 @@ void WorldRenderer::render(
     wgpuRenderPassEncoderSetBindGroup(pass, 2, defaultWhiteTex_.bindGroup, 0, nullptr);
     wgpuRenderPassEncoderSetBindGroup(pass, 3, shadowReadBg_, 0, nullptr);
 
-    // Terrain + Depth-Tinted Ocean
+    // 1. Westgate Bay Terrain + Wet-Cell-Clipped Ocean/River/Harbor/Canal Water
     wgpuRenderPassEncoderSetPipeline(pass, terrainPipeline_);
     wgpuRenderPassEncoderSetVertexBuffer(pass, 0, terrainVbo_, 0, WGPU_WHOLE_SIZE);
     wgpuRenderPassEncoderSetIndexBuffer(pass, terrainIbo_, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
     wgpuRenderPassEncoderDrawIndexed(pass, terrainIndexCount_, 1, 0, 0, 0);
 
-    // Roads + Iron Pit Ring
     if (roadIndexCount_ > 0) {
       wgpuRenderPassEncoderSetVertexBuffer(pass, 0, roadVbo_, 0, WGPU_WHOLE_SIZE);
       wgpuRenderPassEncoderSetIndexBuffer(pass, roadIbo_, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
       wgpuRenderPassEncoderDrawIndexed(pass, roadIndexCount_, 1, 0, 0, 0);
     }
 
-    // Helper for multi-submesh textured GLB instanced batches
+    // 2. Streamed Custom World Meshes (RoadNetwork + Roundabouts + 5 Bridges + Landmarks + Safehouse + Compounds)
+    if (customMeshPipeline_ && customMeshVbo_ && !visibleCustomSlices.empty()) {
+      wgpuRenderPassEncoderSetPipeline(pass, customMeshPipeline_);
+      wgpuRenderPassEncoderSetVertexBuffer(pass, 0, customMeshVbo_, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderSetIndexBuffer(pass, customMeshIbo_, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
+      for (const auto& sl : visibleCustomSlices) {
+        wgpuRenderPassEncoderDrawIndexed(pass, sl.indexCount, 1, sl.firstIndex, 0, 0);
+      }
+    }
+
+    // 3. Multi-part PropBatcher Streetlights, Traffic Lights & Hydrants
+    if (customInstancedPipeline_ && !customPropBatches_.empty()) {
+      wgpuRenderPassEncoderSetPipeline(pass, customInstancedPipeline_);
+      for (const auto& cb : customPropBatches_) {
+        if (cb.visibleCount == 0) continue;
+        wgpuRenderPassEncoderSetVertexBuffer(pass, 0, cb.vbo, 0, WGPU_WHOLE_SIZE);
+        wgpuRenderPassEncoderSetVertexBuffer(pass, 1, cb.instVbo, 0, WGPU_WHOLE_SIZE);
+        wgpuRenderPassEncoderSetIndexBuffer(pass, cb.ibo, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
+        wgpuRenderPassEncoderDrawIndexed(pass, cb.indexCount, cb.visibleCount, 0, 0, 0);
+      }
+    }
+
+    // 4. Streamed Procedural Architecture Boxes (Back-face culled: FacadeGrammar + CityBuildingKit + Compounds)
+    if (!buildingStaging_.empty() && archBoxPipeline_) {
+      wgpuRenderPassEncoderSetPipeline(pass, archBoxPipeline_);
+      wgpuRenderPassEncoderSetBindGroup(pass, 2, defaultWhiteTex_.bindGroup, 0, nullptr);
+      wgpuRenderPassEncoderSetVertexBuffer(pass, 0, unitBoxVbo_, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderSetVertexBuffer(pass, 1, buildingInstVbo_, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderSetIndexBuffer(pass, unitBoxIbo_, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
+      wgpuRenderPassEncoderDrawIndexed(pass, unitBoxIndexCount_, static_cast<uint32_t>(buildingStaging_.size()), 0, 0, 0);
+    }
+
     const auto drawGlbBatch = [&](const InstancedGlbBatch& batch, uint32_t count) {
       if (count == 0 || !batch.vbo || !batch.ibo) return;
       wgpuRenderPassEncoderSetVertexBuffer(pass, 0, batch.vbo, 0, WGPU_WHOLE_SIZE);
@@ -2034,15 +2307,8 @@ void WorldRenderer::render(
       }
     };
 
-    // Instanced Buildings, Textured GLB Houses/Props/Vehicles, Fallback Street Props, Dynamic Props, Markers
+    // 5. Textured PBR GLB Houses, Landmarks, Trees, Interiors, Vehicles & Dynamic Props
     wgpuRenderPassEncoderSetPipeline(pass, instancedPipeline_);
-    if (!buildingStaging_.empty()) {
-      wgpuRenderPassEncoderSetBindGroup(pass, 2, defaultWhiteTex_.bindGroup, 0, nullptr);
-      wgpuRenderPassEncoderSetVertexBuffer(pass, 0, unitBoxVbo_, 0, WGPU_WHOLE_SIZE);
-      wgpuRenderPassEncoderSetVertexBuffer(pass, 1, buildingInstVbo_, 0, WGPU_WHOLE_SIZE);
-      wgpuRenderPassEncoderSetIndexBuffer(pass, unitBoxIbo_, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
-      wgpuRenderPassEncoderDrawIndexed(pass, unitBoxIndexCount_, static_cast<uint32_t>(buildingStaging_.size()), 0, 0, 0);
-    }
     for (size_t hi = 0; hi < kNumHouseGlbs; ++hi) {
       drawGlbBatch(houseBatches_[hi], static_cast<uint32_t>(houseStaging_[hi].size()));
     }
@@ -2074,7 +2340,7 @@ void WorldRenderer::render(
       drawGlbBatch(vehicleBatches_[k], static_cast<uint32_t>(vehicleStaging_[k].size()));
     }
 
-    // Skinned Textured Characters (Player + City Pedestrians + Police + Contract Targets + Iron Pit)
+    // 6. Skinned Textured Characters
     if (charCount > 0) {
       wgpuRenderPassEncoderSetPipeline(pass, skinnedPipeline_);
       for (uint32_t ci = 0; ci < charCount; ++ci) {
@@ -2182,15 +2448,26 @@ void WorldRenderer::shutdown() {
     relBuf(b.vbo);
     relBuf(b.ibo);
     relBuf(b.instVbo);
+    relBuf(b.shadowNearInstVbo);
+    relBuf(b.shadowFarInstVbo);
+    for (auto& bg : b.ownedBindGroups) {
+      if (bg) wgpuBindGroupRelease(bg);
+    }
+    b.ownedBindGroups.clear();
     for (auto& t : b.ownedTextures) relTex(t);
     b.ownedTextures.clear();
     b.submeshes.clear();
+    b.spatialItems.clear();
     b.indexCount = 0;
     b.instanceCount = 0;
   };
   auto relSkin = [&](SkinnedMeshGpu& m) {
     relBuf(m.vbo);
     relBuf(m.ibo);
+    for (auto& bg : m.ownedBindGroups) {
+      if (bg) wgpuBindGroupRelease(bg);
+    }
+    m.ownedBindGroups.clear();
     for (auto& t : m.ownedTextures) relTex(t);
     m.ownedTextures.clear();
     m.submeshes.clear();
@@ -2200,14 +2477,25 @@ void WorldRenderer::shutdown() {
   relBuf(terrainIbo_);
   relBuf(roadVbo_);
   relBuf(roadIbo_);
+  relBuf(customMeshVbo_);
+  relBuf(customMeshIbo_);
   relBuf(unitBoxVbo_);
   relBuf(unitBoxIbo_);
   relBuf(buildingInstVbo_);
+  relBuf(shadowNearBoxInstVbo_);
+  relBuf(shadowFarBoxInstVbo_);
   relBuf(fallbackPropInstVbo_);
   relBuf(markerInstVbo_);
   relBuf(dynPropInstVbo_);
   relBuf(frameUbo_);
   relBuf(postUbo_);
+  for (auto& cb : customPropBatches_) {
+    relBuf(cb.vbo);
+    relBuf(cb.ibo);
+    relBuf(cb.instVbo);
+    relBuf(cb.shadowNearInstVbo);
+  }
+  customPropBatches_.clear();
   for (auto& s : skinSlots_) {
     relBuf(s.ubo);
     if (s.bindGroup) { wgpuBindGroupRelease(s.bindGroup); s.bindGroup = nullptr; }
@@ -2224,6 +2512,7 @@ void WorldRenderer::shutdown() {
   relSkin(policeGpu_);
   relSkin(securityGpu_);
   relTex(defaultWhiteTex_);
+  relTex(defaultFlatNormalTex_);
 
   for (auto& lv : shadowLayerViews_) {
     if (lv) { wgpuTextureViewRelease(lv); lv = nullptr; }
@@ -2231,6 +2520,7 @@ void WorldRenderer::shutdown() {
   if (shadowArrayView_) { wgpuTextureViewRelease(shadowArrayView_); shadowArrayView_ = nullptr; }
   if (shadowTex_) { wgpuTextureRelease(shadowTex_); shadowTex_ = nullptr; }
   if (shadowSampler_) { wgpuSamplerRelease(shadowSampler_); shadowSampler_ = nullptr; }
+  if (repeatSampler_) { wgpuSamplerRelease(repeatSampler_); repeatSampler_ = nullptr; }
   if (linearSampler_) { wgpuSamplerRelease(linearSampler_); linearSampler_ = nullptr; }
 
   auto relPipe = [](WGPURenderPipeline& p) {
@@ -2238,12 +2528,19 @@ void WorldRenderer::shutdown() {
   };
   relPipe(shadowTerrainNearPipeline_);
   relPipe(shadowTerrainFarPipeline_);
+  relPipe(shadowCustomNearPipeline_);
+  relPipe(shadowCustomFarPipeline_);
+  relPipe(shadowCustomInstNearPipeline_);
+  relPipe(shadowCustomInstFarPipeline_);
   relPipe(shadowInstancedNearPipeline_);
   relPipe(shadowInstancedFarPipeline_);
   relPipe(shadowSkinnedNearPipeline_);
   relPipe(shadowSkinnedFarPipeline_);
   relPipe(skyPipeline_);
   relPipe(terrainPipeline_);
+  relPipe(customMeshPipeline_);
+  relPipe(customInstancedPipeline_);
+  relPipe(archBoxPipeline_);
   relPipe(instancedPipeline_);
   relPipe(skinnedPipeline_);
   relPipe(ssaoPipeline_);

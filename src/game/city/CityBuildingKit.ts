@@ -500,8 +500,10 @@ export class CityChunkDispatcher {
     for (let i = 0; i < this.globalHooks.length; i++) {
       this.globalHooks[i](chunk, terrainAt, roads);
     }
-    mergeGroupVisuals(chunk.nearGroup, new Set(chunk.colliders));
-    mergeGroupVisuals(chunk.lodGroup);
+    if (!nativeKitExportHook) {
+      mergeGroupVisuals(chunk.nearGroup, new Set(chunk.colliders));
+      mergeGroupVisuals(chunk.lodGroup);
+    }
   }
 }
 
@@ -638,9 +640,17 @@ export function getKitMaterials(): KitMaterials {
 
 class GeoBatcher {
   private readonly buckets = new Map<THREE.Material, THREE.BufferGeometry[]>();
+  private readonly rawBoxes: THREE.Mesh[] = [];
 
   add(mat: THREE.Material, geo: THREE.BufferGeometry, lx = 0, ly = 0, lz = 0, rx = 0, ry = 0, rz = 0): void {
     const boxParams = (geo as THREE.BoxGeometry & { parameters?: { width: number; height: number; depth: number } }).parameters;
+    if (nativeKitExportHook && boxParams && typeof boxParams.width === "number") {
+      const m = new THREE.Mesh(geo, mat);
+      m.position.set(lx, ly, lz);
+      m.rotation.set(rx, ry, rz, "ZYX");
+      this.rawBoxes.push(m);
+      return;
+    }
     if (boxParams && typeof boxParams.width === "number" && typeof boxParams.height === "number" && typeof boxParams.depth === "number") {
       bakeBoxMetricUv(geo, boxParams.width, boxParams.height, boxParams.depth, 1.8, 1.8);
     }
@@ -659,6 +669,12 @@ class GeoBatcher {
   }
 
   flush(parent: THREE.Object3D, castShadow = true, receiveShadow = true): void {
+    for (const m of this.rawBoxes) {
+      m.castShadow = castShadow;
+      m.receiveShadow = receiveShadow;
+      parent.add(m);
+    }
+    this.rawBoxes.length = 0;
     for (const [mat, list] of this.buckets) {
       if (list.length === 0) continue;
       const merged = list.length === 1 ? list[0] : mergeGeometries(list, false);
@@ -955,6 +971,30 @@ export function addDetailedHouse(chunk: CityChunk, opts: DetailedHouseOpts): voi
   }
 }
 
+export interface NativeKitDetailRecord {
+  kind: "relief" | "storefront" | "rooftop";
+  x: number;
+  y: number;
+  z: number;
+  w: number;
+  h: number;
+  d: number;
+  yaw: number;
+  balconies?: boolean;
+  tall?: boolean;
+  waterTower?: boolean;
+  billboard?: boolean;
+  awningColor?: number;
+}
+
+let nativeKitExportHook: ((parent: THREE.Object3D, rec: NativeKitDetailRecord) => void) | null = null;
+
+export function setNativeKitExportHook(
+  hook: ((parent: THREE.Object3D, rec: NativeKitDetailRecord) => void) | null,
+): void {
+  nativeKitExportHook = hook;
+}
+
 /**
  * Adds architectural rooftop equipment merged per material on midrise/highrise buildings.
  */
@@ -968,6 +1008,32 @@ export function addRooftopDetails(
   yaw: number,
   opts: { tall?: boolean; waterTower?: boolean; billboard?: boolean; seed?: number } = {},
 ): void {
+  if (nativeKitExportHook) {
+    const grp = new THREE.Group();
+    grp.position.set(x, yTop, z);
+    grp.rotation.y = yaw;
+    parent.add(grp);
+    if (opts.tall) {
+      const ph2 = 3.2;
+      attachGlbToGroup(grp, "antenna.glb", w * 0.22, ph2, -d * 0.22, { axis: "y", targetMeters: 3.6 });
+    } else if (w >= 11 && d >= 10) {
+      attachGlbToGroup(grp, "rooftop_ac.glb", -w * 0.26, 0, d * 0.22, { axis: "y", targetMeters: 1.45, yaw: 0.2 });
+    }
+    nativeKitExportHook(parent, {
+      kind: "rooftop",
+      x,
+      y: yTop,
+      z,
+      w,
+      h: 0,
+      d,
+      yaw,
+      tall: Boolean(opts.tall),
+      waterTower: Boolean(opts.waterTower),
+      billboard: Boolean(opts.billboard),
+    });
+    return;
+  }
   const km = getKitMaterials();
   const grp = new THREE.Group();
   grp.position.set(x, yTop, z);
@@ -1065,6 +1131,21 @@ export function addStorefrontBay(
   yaw: number,
   awningMat: THREE.Material,
 ): void {
+  if (nativeKitExportHook) {
+    const std = awningMat as THREE.MeshStandardMaterial;
+    nativeKitExportHook(parent, {
+      kind: "storefront",
+      x,
+      y: yBase,
+      z,
+      w,
+      h: 3.6,
+      d,
+      yaw,
+      awningColor: std?.color ? std.color.getHex() : 0x1e40af,
+    });
+    return;
+  }
   const km = getKitMaterials();
   const grp = new THREE.Group();
   grp.position.set(x, yBase, z);
@@ -1140,6 +1221,20 @@ export function addFacadeRelief(
   opts: { balconies?: boolean; pilasterMat?: THREE.Material } = {},
 ): void {
   if (h < 8) return;
+  if (nativeKitExportHook) {
+    nativeKitExportHook(parent, {
+      kind: "relief",
+      x,
+      y: yBase,
+      z,
+      w,
+      h,
+      d,
+      yaw,
+      balconies: Boolean(opts.balconies),
+    });
+    return;
+  }
   const km = getKitMaterials();
   const pilMat = opts.pilasterMat ?? km.darkSteel;
   const grp = new THREE.Group();

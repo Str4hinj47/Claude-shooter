@@ -177,7 +177,20 @@ void extractPrimitive(
       v.normal = len > 1e-5f ? n / len : glm::vec3(0.0f, 1.0f, 0.0f);
     }
     if (!uvBuf.empty()) {
-      v.uv = glm::vec2(uvBuf[vi * 2 + 0], uvBuf[vi * 2 + 1]);
+      glm::vec2 uv(uvBuf[vi * 2 + 0], uvBuf[vi * 2 + 1]);
+      if (prim.material && prim.material->has_pbr_metallic_roughness &&
+          prim.material->pbr_metallic_roughness.base_color_texture.has_transform) {
+        const cgltf_texture_transform& tr = prim.material->pbr_metallic_roughness.base_color_texture.transform;
+        glm::vec2 s(uv.x * tr.scale[0], uv.y * tr.scale[1]);
+        if (std::abs(tr.rotation) > 1e-6f) {
+          const float cr = std::cos(tr.rotation);
+          const float sr = std::sin(tr.rotation);
+          // glTF KHR_texture_transform rotates around UV origin with +V downward
+          s = glm::vec2(s.x * cr + s.y * sr, -s.x * sr + s.y * cr);
+        }
+        uv = s + glm::vec2(tr.offset[0], tr.offset[1]);
+      }
+      v.uv = uv;
     }
     if (!colBuf.empty()) {
       if (colComps == 4) {
@@ -320,14 +333,27 @@ bool GltfAssetLoader::loadGlb(const std::string& path, GltfModel& outModel, bool
     const cgltf_material& m = data->materials[mi];
     GltfMaterialInfo info;
     info.name = m.name ? m.name : "";
+    info.emissiveFactor = glm::vec3(m.emissive_factor[0], m.emissive_factor[1], m.emissive_factor[2]);
+    info.transparent = (m.alpha_mode == cgltf_alpha_mode_blend);
     if (m.has_pbr_metallic_roughness) {
       const auto& p = m.pbr_metallic_roughness;
       info.baseColor = glm::vec4(p.base_color_factor[0], p.base_color_factor[1], p.base_color_factor[2], p.base_color_factor[3]);
+      if (info.baseColor.a < 0.985f) info.transparent = true;
       info.metallic = p.metallic_factor;
       info.roughness = p.roughness_factor;
       if (p.base_color_texture.texture && p.base_color_texture.texture->image) {
         info.baseColorTexIndex = static_cast<int32_t>(p.base_color_texture.texture->image - data->images);
       }
+      if (p.metallic_roughness_texture.texture && p.metallic_roughness_texture.texture->image) {
+        info.metallicRoughnessTexIndex = static_cast<int32_t>(p.metallic_roughness_texture.texture->image - data->images);
+      }
+    }
+    if (m.normal_texture.texture && m.normal_texture.texture->image) {
+      info.normalTexIndex = static_cast<int32_t>(m.normal_texture.texture->image - data->images);
+      info.normalScale = m.normal_texture.scale > 0.0f ? m.normal_texture.scale : 1.0f;
+    }
+    if (m.emissive_texture.texture && m.emissive_texture.texture->image) {
+      info.emissiveTexIndex = static_cast<int32_t>(m.emissive_texture.texture->image - data->images);
     }
     outModel.materials.push_back(std::move(info));
   }
@@ -359,7 +385,13 @@ bool GltfAssetLoader::loadGlb(const std::string& path, GltfModel& outModel, bool
     anyNodeMesh = true;
     const bool isSkinned = (node.skin != nullptr) && outModel.skin.valid;
     const glm::mat4 worldMat = nodeWorldMatrix(&node);
-    const glm::mat3 normalMat = glm::transpose(glm::inverse(glm::mat3(worldMat)));
+    glm::mat3 m3(worldMat);
+    for (int c = 0; c < 3; ++c) {
+      const float cl = glm::length(m3[c]);
+      if (cl > 1e-12f) m3[c] /= cl;
+    }
+    const float det = glm::determinant(m3);
+    const glm::mat3 normalMat = (std::abs(det) > 1e-6f) ? glm::transpose(glm::inverse(m3)) : glm::mat3(1.0f);
     for (cgltf_size pi = 0; pi < node.mesh->primitives_count; ++pi) {
       const cgltf_primitive& prim = node.mesh->primitives[pi];
       if (prim.type != cgltf_primitive_type_triangles) continue;

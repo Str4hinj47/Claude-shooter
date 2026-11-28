@@ -21,9 +21,15 @@ struct GltfVertex {
 struct GltfMaterialInfo {
   std::string name;
   glm::vec4 baseColor{1.0f};
+  glm::vec3 emissiveFactor{0.0f};
   float metallic = 0.0f;
   float roughness = 0.8f;
+  float normalScale = 1.0f;
+  bool transparent = false;
   int32_t baseColorTexIndex = -1;
+  int32_t normalTexIndex = -1;
+  int32_t metallicRoughnessTexIndex = -1;
+  int32_t emissiveTexIndex = -1;
 };
 
 struct GltfTextureData {

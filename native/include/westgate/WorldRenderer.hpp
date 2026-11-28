@@ -38,7 +38,10 @@ struct InstanceAttrib {
   float sx, sy, sz;
   float qx, qy, qz, qw;
   float r, g, b, emissive;
+  float overrideRoughness = -1.0f; // < 0 uses vertex/GLB PBR; >= 0 overrides with PackedArchBox roughness
+  float familyAndMetal = 0.0f;     // floor = surfaceFamilyId (0..9), fract * 2.0 = metallic (0..1)
 };
+static_assert(sizeof(InstanceAttrib) == 64, "InstanceAttrib must be 64 bytes");
 
 enum class SkinnedPartKind : uint8_t {
   PlayerBody = 0,
@@ -112,9 +115,9 @@ private:
     glm::mat4 lightViewProjNear;
     glm::mat4 lightViewProjFar;
     glm::vec4 camPos;
-    glm::vec4 sunDir;   // w = pointLightCount
+    glm::vec4 sunDir;        // w = pointLightCount
     glm::vec4 sunColor;
-    glm::vec4 fogColor; // w = nightFactor
+    glm::vec4 fogColor;      // w = nightFactor
     glm::vec4 weatherParams; // x = rainIntensity, y = wetness, z = lightningFlash, w = nearSplit
     std::array<GpuPointLight, kMaxPointLights> pointLights;
   };
@@ -136,6 +139,13 @@ private:
     WGPUBindGroup bindGroup = nullptr;
   };
 
+  struct SpatialInstanceItem {
+    glm::vec3 center{0.0f};
+    float radius = 2.0f;
+    float maxDrawDist = 520.0f;
+    InstanceAttrib attrib{};
+  };
+
   struct GlbSubmesh {
     uint32_t indexOffset = 0;
     uint32_t indexCount = 0;
@@ -147,11 +157,37 @@ private:
     WGPUBuffer vbo = nullptr;
     WGPUBuffer ibo = nullptr;
     WGPUBuffer instVbo = nullptr;
+    WGPUBuffer shadowNearInstVbo = nullptr;
+    WGPUBuffer shadowFarInstVbo = nullptr;
     std::vector<GlbSubmesh> submeshes;
     std::vector<GpuTextureBinding> ownedTextures;
+    std::vector<WGPUBindGroup> ownedBindGroups;
+    std::vector<SpatialInstanceItem> spatialItems;
+    std::vector<InstanceAttrib> visibleStaging;
+    std::vector<InstanceAttrib> shadowNearStaging;
+    std::vector<InstanceAttrib> shadowFarStaging;
+    glm::vec3 rawMin{0.0f};
+    glm::vec3 rawMax{1.0f};
     uint32_t indexCount = 0;
     uint32_t instanceCount = 0;
+    uint32_t shadowNearCount = 0;
+    uint32_t shadowFarCount = 0;
     uint32_t maxInstances = 0;
+  };
+
+  struct CustomPropBatch {
+    std::string protoId;
+    WGPUBuffer vbo = nullptr;
+    WGPUBuffer ibo = nullptr;
+    WGPUBuffer instVbo = nullptr;
+    WGPUBuffer shadowNearInstVbo = nullptr;
+    uint32_t indexCount = 0;
+    uint32_t maxInstances = 0;
+    uint32_t visibleCount = 0;
+    uint32_t shadowNearCount = 0;
+    std::vector<SpatialInstanceItem> spatialItems;
+    std::vector<InstanceAttrib> visibleStaging;
+    std::vector<InstanceAttrib> shadowNearStaging;
   };
 
   struct SkinnedSubmesh {
@@ -165,6 +201,7 @@ private:
     WGPUBuffer ibo = nullptr;
     std::vector<SkinnedSubmesh> submeshes;
     std::vector<GpuTextureBinding> ownedTextures;
+    std::vector<WGPUBindGroup> ownedBindGroups;
   };
 
   struct SkinSlot {
@@ -174,6 +211,7 @@ private:
 
   void buildTerrainAndOceanBuffers(WgpuContext& ctx, const WorldData& world);
   void buildRoadAndArenaBuffers(WgpuContext& ctx, const WorldData& world);
+  void buildCustomWorldMeshBuffers(WgpuContext& ctx, const WorldData& world);
   void buildPropAndVehicleBatches(WgpuContext& ctx, const WorldData& world, const std::string& assetsRoot);
   bool loadGlbBatch(
     WgpuContext& ctx,
@@ -183,11 +221,19 @@ private:
     float normalizeTargetLength = 0.0f,
     bool decodeTextures = false,
     bool isVehicle = false,
-    float yawOffsetRad = 0.0f
+    float yawOffsetRad = 0.0f,
+    bool centerXZOnRaw = false
   );
   bool loadGlbUnitBoxBatch(WgpuContext& ctx, const std::string& glbPath, uint32_t maxInstances, InstancedGlbBatch& outBatch);
   void buildSkinnedMesh(WgpuContext& ctx, const GltfModel& model, SkinnedMeshGpu& outMesh);
-  GpuTextureBinding createRgbaTexture(WgpuContext& ctx, uint32_t w, uint32_t h, const uint8_t* rgba8);
+  GpuTextureBinding createRgbaTexture(WgpuContext& ctx, uint32_t w, uint32_t h, const uint8_t* rgba8, bool createDefaultMatBg = false);
+  WGPUBindGroup createPbrMatBindGroup(
+    WgpuContext& ctx,
+    WGPUTextureView albedoView,
+    WGPUTextureView normalView,
+    WGPUTextureView mrView,
+    WGPUTextureView emissiveView
+  );
   void ensureOffscreenTargets(WgpuContext& ctx);
   void releaseOffscreenTargets();
   WGPUBindGroup createPostBindGroup(WgpuContext& ctx, WGPUTextureView texA, WGPUTextureView texB, WGPUTextureView depthView, WGPUTextureView ssaoView);
@@ -209,12 +255,19 @@ private:
 
   WGPURenderPipeline shadowTerrainNearPipeline_ = nullptr;
   WGPURenderPipeline shadowTerrainFarPipeline_ = nullptr;
+  WGPURenderPipeline shadowCustomNearPipeline_ = nullptr;
+  WGPURenderPipeline shadowCustomFarPipeline_ = nullptr;
+  WGPURenderPipeline shadowCustomInstNearPipeline_ = nullptr;
+  WGPURenderPipeline shadowCustomInstFarPipeline_ = nullptr;
   WGPURenderPipeline shadowInstancedNearPipeline_ = nullptr;
   WGPURenderPipeline shadowInstancedFarPipeline_ = nullptr;
   WGPURenderPipeline shadowSkinnedNearPipeline_ = nullptr;
   WGPURenderPipeline shadowSkinnedFarPipeline_ = nullptr;
   WGPURenderPipeline skyPipeline_ = nullptr;
   WGPURenderPipeline terrainPipeline_ = nullptr;
+  WGPURenderPipeline customMeshPipeline_ = nullptr;
+  WGPURenderPipeline customInstancedPipeline_ = nullptr;
+  WGPURenderPipeline archBoxPipeline_ = nullptr;
   WGPURenderPipeline instancedPipeline_ = nullptr;
   WGPURenderPipeline skinnedPipeline_ = nullptr;
 
@@ -228,8 +281,10 @@ private:
   WGPUTextureView shadowLayerViews_[2] = {nullptr, nullptr};
   WGPUTextureView shadowArrayView_ = nullptr;
   WGPUSampler shadowSampler_ = nullptr;
+  WGPUSampler repeatSampler_ = nullptr;
   WGPUSampler linearSampler_ = nullptr;
   GpuTextureBinding defaultWhiteTex_{};
+  GpuTextureBinding defaultFlatNormalTex_{};
 
   uint32_t offscreenW_ = 0;
   uint32_t offscreenH_ = 0;
@@ -260,12 +315,23 @@ private:
   WGPUBuffer roadIbo_ = nullptr;
   uint32_t roadIndexCount_ = 0;
 
+  WGPUBuffer customMeshVbo_ = nullptr;
+  WGPUBuffer customMeshIbo_ = nullptr;
+  uint32_t customMeshIndexCount_ = 0;
+
   WGPUBuffer unitBoxVbo_ = nullptr;
   WGPUBuffer unitBoxIbo_ = nullptr;
   uint32_t unitBoxIndexCount_ = 0;
+
   WGPUBuffer buildingInstVbo_ = nullptr;
+  WGPUBuffer shadowNearBoxInstVbo_ = nullptr;
+  WGPUBuffer shadowFarBoxInstVbo_ = nullptr;
   uint32_t buildingCapacity_ = 0;
+  uint32_t shadowNearBoxCapacity_ = 0;
+  uint32_t shadowFarBoxCapacity_ = 0;
   std::vector<InstanceAttrib> buildingStaging_;
+  std::vector<InstanceAttrib> shadowNearBoxStaging_;
+  std::vector<InstanceAttrib> shadowFarBoxStaging_;
 
   WGPUBuffer fallbackPropInstVbo_ = nullptr;
   uint32_t fallbackPropCount_ = 0;
@@ -278,6 +344,7 @@ private:
   uint32_t dynPropCapacity_ = 0;
   std::vector<InstanceAttrib> dynPropStaging_;
 
+  std::vector<CustomPropBatch> customPropBatches_;
   std::vector<InstancedGlbBatch> glbPropBatches_;
   std::array<InstancedGlbBatch, kNumHouseGlbs> houseBatches_{};
   std::array<std::vector<InstanceAttrib>, kNumHouseGlbs> houseStaging_{};

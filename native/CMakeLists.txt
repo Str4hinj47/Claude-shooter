@@ -282,12 +282,12 @@ if(WESTGATE_BUILD_DESKTOP)
         COMMAND ${CMAKE_COMMAND} -E copy_directory
           "${CMAKE_CURRENT_SOURCE_DIR}/../public/models"
           "$<TARGET_FILE_DIR:westgate_engine>/assets/models"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+          "${CMAKE_CURRENT_SOURCE_DIR}/../public/audio"
+          "$<TARGET_FILE_DIR:westgate_engine>/assets/audio"
       )
     else()
       add_custom_command(TARGET westgate_engine POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E create_symlink
-          "${CMAKE_CURRENT_SOURCE_DIR}/../public/characters"
-          "$<TARGET_FILE_DIR:westgate_engine>/assets/characters_link"
         COMMAND ${CMAKE_COMMAND} -E copy_directory
           "${CMAKE_CURRENT_SOURCE_DIR}/shaders"
           "$<TARGET_FILE_DIR:westgate_engine>/assets/shaders"

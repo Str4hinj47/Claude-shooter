@@ -18,7 +18,11 @@ export function bevelledBox(
 ): THREE.BufferGeometry {
   const key = `${width.toFixed(3)}|${height.toFixed(3)}|${depth.toFixed(3)}|${bevel.toFixed(3)}|${segments}`;
   const cached = boxGeoCache.get(key);
-  if (cached) return cached.clone();
+  if (cached) {
+    const cl = cached.clone();
+    cl.userData.boxDims = [width, height, depth];
+    return cl;
+  }
 
   const b = Math.max(0.001, Math.min(bevel, width / 2.08, height / 2.08, depth / 2.08));
   const w = Math.max(0.001, width / 2 - b);
@@ -43,7 +47,9 @@ export function bevelledBox(
   geo.translate(0, 0, -(depth / 2 - b));
   geo.computeVertexNormals();
   boxGeoCache.set(key, geo);
-  return geo.clone();
+  const cl = geo.clone();
+  cl.userData.boxDims = [width, height, depth];
+  return cl;
 }
 
 export function part(

@@ -121,10 +121,21 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  const std::filesystem::path fallbackPublic = std::filesystem::current_path().parent_path() / "public";
+  std::filesystem::path publicRoot = assetsRoot;
+  for (const auto& cand : {
+    std::filesystem::current_path() / "public",
+    std::filesystem::current_path().parent_path() / "public",
+    assetsRoot.parent_path().parent_path().parent_path() / "public",
+    assetsRoot
+  }) {
+    if (std::filesystem::exists(cand / "models" / "ph_sofa.glb") || std::filesystem::exists(cand / "models")) {
+      publicRoot = cand;
+      if (std::filesystem::exists(cand / "models" / "ph_sofa.glb")) break;
+    }
+  }
   auto resolveAsset = [&](const std::filesystem::path& rel) -> std::filesystem::path {
     if (std::filesystem::exists(assetsRoot / rel)) return assetsRoot / rel;
-    if (std::filesystem::exists(fallbackPublic / rel)) return fallbackPublic / rel;
+    if (std::filesystem::exists(publicRoot / rel)) return publicRoot / rel;
     return assetsRoot / rel;
   };
 
@@ -197,7 +208,7 @@ int main(int argc, char** argv) {
   westgate::PlayerController player;
   player.init(&physics, world.spawnPos, world.spawnYawDeg);
 
-  westgate::ChunkStreamer streamer(340.0f, 980.0f, 24.0f);
+  westgate::ChunkStreamer streamer(335.0f, 1550.0f, 24.0f);
   streamer.init(world);
 
   westgate::AudioEngine audio;
@@ -279,7 +290,7 @@ int main(int argc, char** argv) {
   ImGui_ImplWGPU_Init(&uiInfo);
 
   westgate::WorldRenderAssets renderAssets;
-  renderAssets.assetsRoot = assetsRoot.string();
+  renderAssets.assetsRoot = publicRoot.string();
   renderAssets.playerBody = hasBody ? &bodyModel : nullptr;
   renderAssets.playerShorts = hasShorts ? &shortsModel : nullptr;
   renderAssets.playerHair = hasHair ? &hairModel : nullptr;
@@ -289,7 +300,10 @@ int main(int argc, char** argv) {
   renderAssets.securityModel = hasSec ? &secModel : nullptr;
 
   westgate::WorldRenderer renderer;
-  const std::filesystem::path shaderPath = assetsRoot / "shaders" / "westgate.wgsl";
+  std::filesystem::path shaderPath = assetsRoot / "shaders" / "westgate.wgsl";
+  if (std::filesystem::exists("native/shaders/westgate.wgsl")) {
+    shaderPath = "native/shaders/westgate.wgsl";
+  }
   if (!renderer.init(gpu, world, shaderPath.string(), renderAssets, &err)) {
     std::fprintf(stderr, "WorldRenderer init failed: %s\n", err.c_str());
     ImGui_ImplWGPU_Shutdown();
